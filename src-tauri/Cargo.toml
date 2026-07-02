@@ -1,0 +1,51 @@
+[package]
+name = "mesa"
+version = "0.1.0"
+description = "Mesa — an open-source note vault with a living graph view"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "mesa_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-fs = { version = "2", features = ["watch"] }
+tauri-plugin-dialog = "2"
+tiny_http = { version = "0.12", features = ["ssl-rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+portable-pty = "0.8"
+
+# P2P device sync is end-to-end encrypted over TLS (LocalSend-style):
+# - rcgen mints a persistent self-signed cert/key per device (the identity).
+# - tiny_http serves the sync API over HTTPS using that cert.
+# - reqwest + rustls is the client, with a custom certificate verifier that
+#   pins the peer's SHA-256 cert fingerprint (trust-on-first-use, then enforced).
+# The client crates (reqwest/rustls/ring/sha2) are already in the tree; only
+# rcgen + pem are new.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# The sync engine (sync_run) runs transfers with bounded concurrency on the
+# Tauri tokio runtime; tokio itself was already in the tree via tauri/reqwest —
+# this only turns on the sync/time/rt feature flags used directly.
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies"] }
+sha2 = "0.10"
+pem = "3"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

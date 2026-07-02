@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["msi", "nsis"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "wix": null,
+      "nsis": {
+        "displayLanguageSelector": false,
+        "languages": ["English"]
+      }
+    }
+  }
+}
