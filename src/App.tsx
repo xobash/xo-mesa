@@ -394,7 +394,14 @@ function PanelWindow({ kind }: { kind: RightPanel }) {
 function AgentWindow() {
   const vaultPath = useAppStore((s) => s.vaultPath);
   const selectFile = useAppStore((s) => s.selectFile);
-  const sel = useMemo(() => new URLSearchParams(location.search).get("sel"), []);
+  const routeParams = useMemo(() => new URLSearchParams(location.search), []);
+  const sel = routeParams.get("sel");
+  // The live Pi session id handed off by the window this was popped out
+  // from (see `openAgentWindow` in store.ts). This window is a separate
+  // Tauri WebviewWindow/JS realm, so without carrying this across explicitly
+  // AgentSurface has no way to know a `pi` process is already running for
+  // this vault and would spawn a second, contextless one.
+  const attachSessionId = routeParams.get("piSession");
   useEffect(() => {
     if (vaultPath && sel) void selectFile(sel);
   }, [vaultPath, sel, selectFile]);
@@ -419,7 +426,7 @@ function AgentWindow() {
           </button>
         </div>
       </header>
-      <AgentSurface embedded />
+      <AgentSurface embedded attachSessionId={attachSessionId} />
     </div>
   );
 }

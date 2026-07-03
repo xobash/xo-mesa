@@ -9,6 +9,11 @@
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
+  "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": false
+    }
+  },
   "app": {
     "withGlobalTauri": false,
     "windows": [

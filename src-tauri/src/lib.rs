@@ -8,6 +8,7 @@
 
 mod activity;
 mod browse;
+mod harness;
 mod sync;
 mod sync_core;
 mod terminal;
@@ -62,6 +63,12 @@ pub fn run() {
             activity::activity_start,
             activity::activity_stop,
             browse::browse_fetch,
+            harness::harness_navigate,
+            harness::harness_bounds,
+            harness::harness_visibility,
+            harness::harness_history,
+            harness::harness_status,
+            harness::harness_nudge,
             terminal::terminal_start,
             terminal::terminal_resize,
             terminal::terminal_write,

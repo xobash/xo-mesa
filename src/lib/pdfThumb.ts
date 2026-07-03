@@ -22,7 +22,10 @@ function enqueueThumbRender<T>(task: () => Promise<T>): Promise<T> {
         .then(resolve, reject)
         .finally(() => {
           activeThumbRenders--;
-          thumbQueue.shift()?.();
+          // LIFO: newest request first. Sweeping the pointer down the sidebar
+          // queues a prewarm per file — the PDF actually being hovered is the
+          // most recent one, so it must not wait behind stale prewarms.
+          thumbQueue.pop()?.();
         });
     };
     if (activeThumbRenders < MAX_ACTIVE_THUMB_RENDERS) run();
@@ -30,11 +33,28 @@ function enqueueThumbRender<T>(task: () => Promise<T>): Promise<T> {
   });
 }
 
-async function loadPdfjs(): Promise<PdfJsModule> {
-  const pdfjs = await import("pdfjs-dist");
-  const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-  return pdfjs;
+let pdfjsPromise: Promise<PdfJsModule> | null = null;
+
+function loadPdfjs(): Promise<PdfJsModule> {
+  if (!pdfjsPromise) {
+    pdfjsPromise = (async () => {
+      const pdfjs = await import("pdfjs-dist");
+      const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url"))
+        .default;
+      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+      return pdfjs;
+    })();
+    pdfjsPromise.catch(() => {
+      pdfjsPromise = null;
+    });
+  }
+  return pdfjsPromise;
+}
+
+/** Idle-time warmup: import pdf.js before the first hover needs it, so module
+ *  parse never lands on the interaction path. Safe to call repeatedly. */
+export function warmPdfEngine(): void {
+  void loadPdfjs().catch(() => undefined);
 }
 
 async function loadPdfBytes(path: string): Promise<Uint8Array> {
@@ -46,10 +66,32 @@ async function loadPdfBytes(path: string): Promise<Uint8Array> {
   return new Uint8Array(await response.arrayBuffer());
 }
 
+/**
+ * A thumbnail only rasterizes page 1, so it should never pull the whole file
+ * through IPC and parse every object. In Tauri, hand pdf.js the asset-protocol
+ * URL: with auto-fetch disabled it range-requests just the chunks page 1 needs
+ * (header, xref, one page tree branch) — on a multi-hundred-MB scan that is the
+ * difference between milliseconds and seconds. Files with junk before the
+ * %PDF header (or a protocol quirk) fall back to the full-bytes + sanitize path.
+ */
+async function openThumbDocument(pdfjs: PdfJsModule, path: string) {
+  if (IN_TAURI) {
+    try {
+      return await pdfjs.getDocument({
+        url: urlForPath(path),
+        disableAutoFetch: true,
+      }).promise;
+    } catch {
+      // fall through to the byte-based path below
+    }
+  }
+  const data = await loadPdfBytes(path);
+  return pdfjs.getDocument({ data: sanitizePdfBytes(data).slice(0) }).promise;
+}
+
 async function renderPdfThumb(path: string): Promise<PdfThumbSnapshot> {
   const pdfjs = await loadPdfjs();
-  const data = await loadPdfBytes(path);
-  const doc = await pdfjs.getDocument({ data: sanitizePdfBytes(data).slice(0) }).promise;
+  const doc = await openThumbDocument(pdfjs, path);
   try {
     const page = await doc.getPage(1);
     const base = page.getViewport({ scale: 1 });

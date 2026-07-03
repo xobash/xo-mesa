@@ -21,6 +21,12 @@ import {
   planWriteRecovery,
   type FoundArtifact,
 } from "./writeRecovery";
+import {
+  isAgentSnapshotName,
+  latestAgentSnapshot,
+  planAgentSnapshotPrune,
+  type FoundAgentSnapshot,
+} from "./agentBackup";
 
 /** The one fs adapter every verified vault write goes through. `rename` makes
  *  the final commit atomic (temp → target), so a crash can never leave a
@@ -100,6 +106,13 @@ function toRel(root: string, full: string): string {
 function baseName(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || p;
+}
+/** Parent directory of an absolute path, forward-slash normalized, no
+ *  trailing slash — pairs with `joinPath`/`baseName` for splitting a path. */
+function dirName(p: string): string {
+  const norm = p.replace(/\\/g, "/");
+  const i = norm.lastIndexOf("/");
+  return i < 0 ? "" : norm.slice(0, i);
 }
 /**
  * Normalize an external path into a vault-relative path Mesa can match.
@@ -643,6 +656,108 @@ async function collectArtifacts(dir: string, out: FoundArtifact[]): Promise<void
       out.push({ dir, name: e.name });
     }
   }
+}
+
+/** Outcome of an agent-snapshot prune sweep, for status/logging. */
+export interface AgentSnapshotPruneResult {
+  removed: string[];
+}
+
+/**
+ * Sweep the vault for stale Pi-write safety snapshots (dot-prefixed
+ * `.name.ext.mesa-pi-snapshot-…bak` siblings — see `src/lib/agentBackup.ts`)
+ * and remove everything past the retention window (`planAgentSnapshotPrune`).
+ * Runs at vault open, alongside `recoverWriteArtifacts`. Never throws —
+ * pruning must not block opening a vault.
+ */
+export async function pruneAgentSnapshots(
+  root: string
+): Promise<AgentSnapshotPruneResult> {
+  const result: AgentSnapshotPruneResult = { removed: [] };
+  if (!IN_TAURI || isDemo(root)) return result;
+  try {
+    const found: FoundAgentSnapshot[] = [];
+    await collectAgentSnapshots(root, found);
+    if (!found.length) return result;
+    for (const action of planAgentSnapshotPrune(found, Date.now())) {
+      const artifactAbs = joinPath(action.dir, action.name);
+      try {
+        await remove(artifactAbs);
+        result.removed.push(artifactAbs);
+      } catch {
+        /* skip — a locked or vanished artifact must not abort the sweep */
+      }
+    }
+  } catch (e) {
+    console.error("[mesa] agent-snapshot prune sweep failed:", e);
+  }
+  return result;
+}
+
+async function collectAgentSnapshots(
+  dir: string,
+  out: FoundAgentSnapshot[]
+): Promise<void> {
+  let entries;
+  try {
+    entries = await readDir(dir);
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (!e.name) continue;
+    if (e.isDirectory) {
+      // Same skip rules as the write-artifact and scan walks.
+      if (e.name.startsWith(".") || e.name === "node_modules") continue;
+      await collectAgentSnapshots(joinPath(dir, e.name), out);
+    } else if (e.isFile && isAgentSnapshotName(e.name)) {
+      out.push({ dir, name: e.name });
+    }
+  }
+}
+
+/**
+ * Find the newest Pi-write safety snapshot for `absPath`, if one exists.
+ * Read-only — does not touch the target file. Returns the snapshot's
+ * absolute path, or null.
+ */
+export async function findLatestAgentSnapshot(
+  absPath: string
+): Promise<string | null> {
+  if (!IN_TAURI) return null;
+  const dir = dirName(absPath);
+  const target = baseName(absPath);
+  let entries;
+  try {
+    entries = await readDir(dir);
+  } catch {
+    return null;
+  }
+  const found: FoundAgentSnapshot[] = entries
+    .filter((e): e is typeof e & { name: string } => Boolean(e.isFile && e.name && isAgentSnapshotName(e.name)))
+    .map((e) => ({ dir, name: e.name }));
+  const match = latestAgentSnapshot(found, dir, target);
+  return match ? joinPath(match.dir, match.name) : null;
+}
+
+/**
+ * Restore `absPath` from its newest Pi-write safety snapshot, if one exists.
+ * The restore write itself goes through `persistVerifiedBytes` — the
+ * *recovery* write gets Mesa's normal backup/atomic-rename/read-back
+ * guarantees even though the original corrupting write (made by Pi's
+ * external process) did not. Returns whether a snapshot was found and
+ * restored; never throws.
+ */
+export async function restoreLatestAgentSnapshot(
+  absPath: string
+): Promise<boolean> {
+  const snapshotAbs = await findLatestAgentSnapshot(absPath);
+  if (!snapshotAbs) return false;
+  const bytes = await readFile(snapshotAbs);
+  await persistVerifiedBytes(absPath, bytes, VAULT_FS, {
+    kind: "Pi-agent snapshot restore",
+  });
+  return true;
 }
 
 export async function removeFile(absPath: string): Promise<void> {

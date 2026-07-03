@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
-import { archiveRelPath, webSearchUrl } from "../lib/agent";
+import { archiveRelPath, resolveNavTarget, webSearchUrl } from "../lib/agent";
+import { rectsDiffer, rectUsable, roundRect, type HarnessRect } from "../lib/harness";
 import { IN_TAURI, writeVaultTextFile } from "../lib/vault";
 import { bumpActivityAmount } from "../lib/activity";
 
@@ -9,19 +10,19 @@ import { bumpActivityAmount } from "../lib/activity";
 // BEHIND the Pi agent window (see AgentSurface) — it never covers the
 // terminal.
 //
-// Page loading is two-tier in the desktop app:
-//   1. Mesa first fetches the page natively (Rust `browse_fetch`, no CORS) and
-//      reads the response headers. If the site allows framing, the iframe
-//      loads the real URL — full fidelity.
-//   2. If the site forbids framing (X-Frame-Options / CSP frame-ancestors —
-//      google.com, github.com, most login pages; previously a silent white
-//      rectangle), Mesa renders the fetched HTML in a sandboxed srcdoc
-//      "reader mode": a <base> tag resolves the page's own assets, and an
-//      injected interceptor forwards link clicks / GET form submits back to
-//      the harness so navigation keeps working. Reader-mode frames get NO
-//      `allow-same-origin`, so page scripts stay isolated from Mesa.
-// In the browser demo (no Rust), the harness falls back to a plain iframe
-// with timer-based block detection.
+// Page loading in the desktop app is NATIVE-first:
+//   1. Pages render in a real native child webview (`harness_navigate` /
+//      src-tauri/src/harness.rs, Tauri multiwebview) positioned over this
+//      component's frame slot. Real JS, real sessions, real Google/YouTube —
+//      no more embed-blocked skeletons. An injected reporter streams the
+//      rendered DOM back to Mesa so the Pi agent reads exactly what the user
+//      sees. The frontend owns the webview's rect (rAF bounds sync below) and
+//      its visibility follows the wing.
+//   2. If native webview creation fails at runtime, the harness falls back to
+//      the legacy two-tier iframe path: `browse_fetch` header check → direct
+//      iframe when framing is allowed, sandboxed srcdoc "reader mode" when
+//      blocked. The browser demo (no Rust) always uses the legacy path with
+//      timer-based block detection.
 
 interface BrowsePage {
   finalUrl: string;
@@ -31,7 +32,31 @@ interface BrowsePage {
   body: string | null;
 }
 
-type FrameMode = "start" | "direct" | "reader";
+interface HarnessDiag {
+  bounds: [number, number, number, number] | null;
+  offset: [number, number];
+  titlebarComp: number;
+  viewportH: number;
+  scale: number;
+  innerSize: [number, number];
+  outerSize: [number, number];
+  innerPos: [number, number];
+  outerPos: [number, number];
+}
+
+interface HarnessStatus {
+  exists: boolean;
+  url: string | null;
+  title: string | null;
+  diag: HarnessDiag | null;
+}
+
+const fmtRect = (r: { x: number; y: number; w: number; h: number } | null) =>
+  r ? `${r.x},${r.y} ${r.w}×${r.h}` : "—";
+const fmtArr = (a: [number, number, number, number] | null) =>
+  a ? `${Math.round(a[0])},${Math.round(a[1])} ${Math.round(a[2])}×${Math.round(a[3])}` : "—";
+
+type FrameMode = "start" | "native" | "direct" | "reader";
 
 function browserStartHtml(): string {
   return `<!doctype html>
@@ -95,7 +120,7 @@ const READER_BRIDGE = `<script>
 
 /** Prepare fetched HTML for the sandboxed reader iframe: resolve relative
  * URLs via <base>, drop meta-CSP (it would block our bridge script), and
- * inject the navigation bridge. */
+ * inject the navigation bridge. (Legacy/demo path only.) */
 export function buildReaderHtml(rawHtml: string, baseUrl: string): string {
   const safeBase = baseUrl.replace(/"/g, "%22");
   let html = rawHtml
@@ -132,15 +157,53 @@ export function BrowserHarness({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [archiveStatus, setArchiveStatus] = useState("");
-  // Back/forward stacks; browserUrl holds the current page.
+  // Legacy-path back/forward stacks; in native mode history lives in the real
+  // webview (`harness_history`) and these stay untouched.
   const [historyBack, setHistoryBack] = useState<string[]>([]);
   const [historyForward, setHistoryForward] = useState<string[]>([]);
   const [frameBlocked, setFrameBlocked] = useState(false);
+  // null = native untried · true = native webview live · false = fell back to
+  // the legacy iframe path for the rest of the session.
+  const [nativeOk, setNativeOk] = useState<boolean | null>(IN_TAURI ? null : false);
+  // Calibration mode: dashed outline on the intended slot rect + a diagnostics
+  // row with the native side's numbers and placement nudge buttons. Click the
+  // status line to toggle. TEMPORARILY default-on while the macOS webview
+  // placement offset is being calibrated on a live build.
+  const [debugCal, setDebugCal] = useState(true);
+  const [diag, setDiag] = useState<HarnessDiag | null>(null);
+  const lastSentRef = useRef<HarnessRect | null>(null);
   const frameLoadedRef = useRef(false);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const frameSlotRef = useRef<HTMLDivElement | null>(null);
   const lastPageRef = useRef<BrowsePage | null>(null);
   const loadSeqRef = useRef(0);
+  const modeRef = useRef<FrameMode>("start");
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
+  const measureSlot = (): HarnessRect | null => {
+    const el = frameSlotRef.current;
+    if (!el) return null;
+    const rect = roundRect(el.getBoundingClientRect());
+    return rectUsable(rect) ? rect : null;
+  };
+
+  /** The wing mounts + slides open in the same beat as agent-driven
+   * navigations; wait a few frames for a usable rect instead of parking the
+   * native webview at a made-up one. */
+  const measureSlotSoon = async (): Promise<HarnessRect> => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const rect = measureSlot();
+      if (rect) return rect;
+      await new Promise<void>((resolve) =>
+        window.requestAnimationFrame(() => resolve())
+      );
+    }
+    return { x: 0, y: 0, w: 480, h: 480 };
+  };
+
+  // --- legacy iframe path (browser demo + native-failure fallback) ---------
   const loadUrl = async (url: string) => {
     setLoadError("");
     setFrameBlocked(false);
@@ -182,19 +245,52 @@ export function BrowserHarness({
     }
   };
 
+  // --- native webview path (desktop default) -------------------------------
+  const nativeNavigate = async (url: string) => {
+    setLoadError("");
+    if (!url) {
+      setMode("start");
+      void invoke("harness_visibility", { visible: false }).catch(() => {});
+      return;
+    }
+    const rect = await measureSlotSoon();
+    lastSentRef.current = rect;
+    try {
+      await invoke("harness_navigate", { url, ...rect, viewportH: window.innerHeight });
+      setNativeOk(true);
+      setMode("native");
+    } catch (e) {
+      // Multiwebview unavailable on this platform/build — legacy path for the
+      // rest of the session, and tell the user why fidelity dropped.
+      setNativeOk(false);
+      setLoadError(`native webview unavailable: ${String(e)}`);
+      await loadUrl(url);
+    }
+  };
+
   const navigate = (rawValue = "", opts?: { skipHistory?: boolean }) => {
-    const raw = rawValue.trim();
-    const next = raw ? (/^https?:\/\//i.test(raw) ? raw : webSearchUrl(raw)) : "";
-    if (!opts?.skipHistory && browserUrl && next !== browserUrl) {
+    const next = resolveNavTarget(rawValue);
+    const useNative = IN_TAURI && nativeOk !== false;
+    if (
+      !useNative &&
+      !opts?.skipHistory &&
+      browserUrl &&
+      next !== browserUrl
+    ) {
       setHistoryBack((h) => [...h, browserUrl]);
       setHistoryForward([]);
     }
     setBrowserUrl(next);
     setBrowserInput("");
-    void loadUrl(next);
+    if (useNative) void nativeNavigate(next);
+    else void loadUrl(next);
   };
 
   const goBack = () => {
+    if (mode === "native") {
+      void invoke("harness_history", { direction: "back" }).catch(() => {});
+      return;
+    }
     setHistoryBack((h) => {
       if (h.length === 0) return h;
       const prev = h[h.length - 1];
@@ -206,6 +302,10 @@ export function BrowserHarness({
   };
 
   const goForward = () => {
+    if (mode === "native") {
+      void invoke("harness_history", { direction: "forward" }).catch(() => {});
+      return;
+    }
     setHistoryForward((f) => {
       if (f.length === 0) return f;
       const next = f[f.length - 1];
@@ -217,17 +317,137 @@ export function BrowserHarness({
   };
 
   const reloadBrowser = () => {
+    if (mode === "native") {
+      void invoke("harness_history", { direction: "reload" }).catch(() => {});
+      return;
+    }
     if (browserUrl) void loadUrl(browserUrl);
   };
 
   const goHome = () => {
-    if (browserUrl) {
+    if (mode !== "native" && browserUrl) {
       setHistoryBack((h) => [...h, browserUrl]);
       setHistoryForward([]);
     }
     setBrowserUrl("");
     setBrowserInput("");
-    void loadUrl("");
+    if (mode === "native") {
+      setMode("start");
+      void invoke("harness_visibility", { visible: false }).catch(() => {});
+    } else {
+      void loadUrl("");
+    }
+  };
+
+  // Adopt a still-live native webview when the wing reopens: restore the
+  // address bar and keep the page instead of resetting to the start card.
+  useEffect(() => {
+    if (!IN_TAURI) return;
+    let alive = true;
+    void invoke<HarnessStatus>("harness_status")
+      .then((status) => {
+        if (!alive || !status.exists) return;
+        if (status.url) setBrowserUrl(status.url);
+        setNativeOk(true);
+        setMode("native");
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Native mode: the webview's visibility follows the wing (mount/unmount).
+  useEffect(() => {
+    if (mode !== "native") return;
+    void invoke("harness_visibility", { visible: true }).catch(() => {});
+    return () => {
+      void invoke("harness_visibility", { visible: false }).catch(() => {});
+    };
+  }, [mode]);
+
+  // Native mode: follow the frame slot's on-screen rect every frame (wing
+  // slide animation, overlay window drags, pane resizes). Pushes only when
+  // the rounded rect actually changes.
+  useEffect(() => {
+    if (mode !== "native") return;
+    let raf = 0;
+    let last: HarnessRect | null = null;
+    const tick = () => {
+      const el = frameSlotRef.current;
+      if (el) {
+        const rect = roundRect(el.getBoundingClientRect());
+        if (rectUsable(rect) && rectsDiffer(last, rect)) {
+          last = rect;
+          lastSentRef.current = rect;
+          void invoke("harness_bounds", { ...rect, viewportH: window.innerHeight }).catch(() => {});
+        }
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, [mode]);
+
+  // Native mode: the real webview reports where it actually is (redirects,
+  // link clicks inside the page, SPA pushState moves) via `mesa://harness-nav`
+  // — keep the address bar honest.
+  useEffect(() => {
+    if (!IN_TAURI) return;
+    let unlisten: (() => void) | null = null;
+    let alive = true;
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const un = await listen<{ url?: string }>("mesa://harness-nav", (ev) => {
+          const url = ev.payload?.url;
+          if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return;
+          if (modeRef.current === "native") setBrowserUrl(url);
+        });
+        if (!alive) un();
+        else unlisten = un;
+      } catch {
+        /* @tauri-apps/api/event unavailable */
+      }
+    })();
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+
+  // Calibration mode: poll the native side's view of the placement so the
+  // diagnostics row can show both coordinate systems side by side.
+  useEffect(() => {
+    if (mode !== "native" || !debugCal || !IN_TAURI) return;
+    let alive = true;
+    const poll = () => {
+      void invoke<HarnessStatus>("harness_status")
+        .then((s) => {
+          if (alive) setDiag(s.diag ?? null);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const timer = window.setInterval(poll, 1000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [mode, debugCal]);
+
+  // Calibration nudge: shift the native webview by (dx, dy) logical px (or
+  // reset), then re-push the last rect so the change applies immediately.
+  const nudge = async (dx: number, dy: number, reset = false) => {
+    try {
+      await invoke("harness_nudge", { dx, dy, reset });
+      const rect = lastSentRef.current ?? (await measureSlotSoon());
+      await invoke("harness_bounds", { ...rect, viewportH: window.innerHeight });
+      const s = await invoke<HarnessStatus>("harness_status");
+      setDiag(s.diag ?? null);
+    } catch {
+      /* calibration is best-effort */
+    }
   };
 
   // Follow the Pi agent's browse tool: navigate whenever a new request lands.
@@ -270,9 +490,23 @@ export function BrowserHarness({
     let html = "";
     const cached = lastPageRef.current;
     if (cached?.body && cached.finalUrl && IN_TAURI) {
-      // Reuse the natively fetched body — works even for sites that block
-      // webview fetch entirely.
+      // Legacy path already fetched the body — reuse it.
       html = cached.body;
+    } else if (IN_TAURI) {
+      // Native mode keeps no fetched body around; grab one now through the
+      // shared native client (works even for sites the webview cannot fetch).
+      try {
+        const page = await invoke<BrowsePage>("browse_fetch", { url: target });
+        html = page.body ?? "";
+        if (!html) throw new Error(`no text body (${page.contentType || "unknown"})`);
+      } catch (e) {
+        html = `<!doctype html>
+<meta charset="utf-8">
+<title>Archived link</title>
+<h1>Archived link</h1>
+<p><a href="${target}">${target}</a></p>
+<p>Mesa could not fetch the page body. Error: ${String(e)}</p>`;
+      }
     } else {
       try {
         const res = await fetch(target);
@@ -328,6 +562,7 @@ export function BrowserHarness({
   }, [mode, browserUrl]);
 
   const showStart = mode === "start" || !browserUrl;
+  const legacyNav = mode !== "native";
 
   return (
     <section className="agent-browser">
@@ -336,7 +571,7 @@ export function BrowserHarness({
           <button
             className="browser-nav-btn"
             onClick={goBack}
-            disabled={historyBack.length === 0}
+            disabled={legacyNav && historyBack.length === 0}
             title="Back"
             aria-label="Back"
           >
@@ -347,7 +582,7 @@ export function BrowserHarness({
           <button
             className="browser-nav-btn"
             onClick={goForward}
-            disabled={historyForward.length === 0}
+            disabled={legacyNav && historyForward.length === 0}
             title="Forward"
             aria-label="Forward"
           >
@@ -418,32 +653,48 @@ export function BrowserHarness({
           </button>
         )}
       </div>
-      <iframe
-        ref={iframeRef}
-        className="agent-browser-frame"
-        src={!showStart && mode === "direct" ? browserUrl : undefined}
-        srcDoc={
-          showStart
-            ? browserStartHtml()
-            : mode === "reader"
-              ? readerHtml
-              : undefined
+      <div
+        ref={frameSlotRef}
+        className={
+          "agent-browser-frame-slot" +
+          (debugCal && mode === "native" ? " debug" : "")
         }
-        title="Pi browser harness"
-        // Reader mode renders untrusted remote HTML from our own origin
-        // (srcdoc), so it must NOT get allow-same-origin — that combination
-        // would hand page scripts access to Mesa itself.
-        sandbox={
-          mode === "reader"
-            ? "allow-scripts allow-forms allow-popups"
-            : "allow-same-origin allow-scripts allow-popups allow-forms allow-modals"
-        }
-        onLoad={() => {
-          frameLoadedRef.current = true;
-          setFrameBlocked(false);
-        }}
-        onError={() => setFrameBlocked(true)}
-      />
+      >
+        {mode === "native" && !showStart ? (
+          // The native webview paints OVER this placeholder; it only shows
+          // through for the first frames while the page spins up.
+          <div className="agent-browser-native-host" aria-hidden="true">
+            <span>Loading page in the native webview…</span>
+          </div>
+        ) : (
+          <iframe
+            ref={iframeRef}
+            className="agent-browser-frame"
+            src={!showStart && mode === "direct" ? browserUrl : undefined}
+            srcDoc={
+              showStart
+                ? browserStartHtml()
+                : mode === "reader"
+                  ? readerHtml
+                  : undefined
+            }
+            title="Pi browser harness"
+            // Reader mode renders untrusted remote HTML from our own origin
+            // (srcdoc), so it must NOT get allow-same-origin — that combination
+            // would hand page scripts access to Mesa itself.
+            sandbox={
+              mode === "reader"
+                ? "allow-scripts allow-forms allow-popups"
+                : "allow-same-origin allow-scripts allow-popups allow-forms allow-modals"
+            }
+            onLoad={() => {
+              frameLoadedRef.current = true;
+              setFrameBlocked(false);
+            }}
+            onError={() => setFrameBlocked(true)}
+          />
+        )}
+      </div>
       {frameBlocked && (
         <div className="agent-browser-fallback">
           <div>
@@ -458,16 +709,50 @@ export function BrowserHarness({
           </button>
         </div>
       )}
-      {(mode === "reader" || loading || loadError || archiveStatus) && (
-        <div className="agent-browser-status">
+      {(mode === "reader" || mode === "native" || loading || loadError || archiveStatus) && (
+        <div
+          className="agent-browser-status"
+          onClick={() => setDebugCal((v) => !v)}
+          title="Click to toggle placement calibration"
+        >
           {loading
             ? "Loading…"
             : loadError
               ? `Fetch failed: ${loadError}`
               : mode === "reader"
                 ? "Reader view — this site blocks embedding; use ⧉ for the full site."
-                : archiveStatus}
-          {mode === "reader" && archiveStatus ? ` · ${archiveStatus}` : ""}
+                : mode === "native"
+                  ? "Live page — real native webview; Pi reads exactly what you see."
+                  : archiveStatus}
+          {(mode === "reader" || mode === "native") && archiveStatus
+            ? ` · ${archiveStatus}`
+            : ""}
+        </div>
+      )}
+      {debugCal && mode === "native" && (
+        <div
+          className="agent-browser-calib"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span>
+            {`slot ${fmtRect(lastSentRef.current)} · native ${fmtArr(diag?.bounds ?? null)}`}
+            {diag
+              ? ` · off ${Math.round(diag.offset[0])},${Math.round(diag.offset[1])}` +
+                ` (tb ${Math.round(diag.titlebarComp)}, vh ${Math.round(diag.viewportH)})` +
+                ` · in ${Math.round(diag.innerSize[0])}×${Math.round(diag.innerSize[1])}` +
+                ` out ${Math.round(diag.outerSize[0])}×${Math.round(diag.outerSize[1])}` +
+                ` · ipos ${Math.round(diag.innerPos[0])},${Math.round(diag.innerPos[1])}` +
+                ` opos ${Math.round(diag.outerPos[0])},${Math.round(diag.outerPos[1])}` +
+                ` · s${diag.scale}`
+              : " · waiting for native diag…"}
+          </span>
+          <span className="agent-browser-calib-buttons">
+            <button onClick={() => void nudge(0, -6)} title="Move webview up 6px">▲</button>
+            <button onClick={() => void nudge(0, 6)} title="Move webview down 6px">▼</button>
+            <button onClick={() => void nudge(-6, 0)} title="Move webview left 6px">◀</button>
+            <button onClick={() => void nudge(6, 0)} title="Move webview right 6px">▶</button>
+            <button onClick={() => void nudge(0, 0, true)} title="Reset nudge">0</button>
+          </span>
         </div>
       )}
     </section>

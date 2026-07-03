@@ -387,7 +387,11 @@ export function SyncModal() {
           if (!peer || !alive) return;
           setNearby((current) => ({ ...current, [peer.id]: peer }));
         });
-        await startSyncDiscovery(vaultName || "Mesa device", settings.syncPort, listening);
+        await startSyncDiscovery(
+          settings.syncDeviceName.trim() || vaultName || "Mesa device",
+          settings.syncPort,
+          listening
+        );
       } catch {
         /* Discovery is best-effort. Sync still works through manual pairing. */
       }
@@ -404,6 +408,7 @@ export function SyncModal() {
     settings.syncEnabled,
     settings.syncDiscovery,
     settings.syncPort,
+    settings.syncDeviceName,
     vaultName,
   ]);
 
@@ -517,6 +522,18 @@ export function SyncModal() {
                   on={listening}
                   disabled={!canReceive}
                   onChange={() => void toggleListen()}
+                />
+              </div>
+              <div className="sync-device-name">
+                <span className="sync-fingerprint-label">
+                  Appears to other devices as
+                </span>
+                <input
+                  className="text-input sync-device-name-input"
+                  value={settings.syncDeviceName}
+                  spellCheck={false}
+                  aria-label="This device's name"
+                  onChange={(e) => setSetting("syncDeviceName", e.target.value)}
                 />
               </div>
               {listening && myCode && (

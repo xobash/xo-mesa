@@ -50,8 +50,60 @@ never leave a half-written file where a note or PDF used to be.
   equality and ignored (undo history survives saves).
 - Hover thumbnails are invalidated when a PDF changes on disk.
 
+## Writes Mesa does not make itself: the embedded Pi agent
+
+Everything above covers writes Mesa's own code performs. It does not cover
+Pi: the embedded agent runs as a real, unsandboxed native process
+(`src-tauri/src/terminal.rs`, cwd = the vault folder) driven by whatever
+provider/model the user configured in the terminal. When Pi's own `write` or
+`edit` tool touches a file, the bytes land on disk straight from that
+external process — never through `persistVerifiedBytes` — so a bad tool call,
+a hand-rolled extraction script, or a model mistake can overwrite a vault file
+with none of the guarantees above. Binary files like PDFs are the most
+visible casualty, since a text-oriented tool is the least equipped to
+round-trip them safely, but the gap is general: any file Pi's tools touch is
+exposed.
+
+Mesa cannot stop an external process from writing bad bytes to disk. What it
+can do — and does — is make sure that write is always recoverable:
+
+- `src-tauri/resources/mesa-activity.ts` (the bundled Pi extension that also
+  powers living-graph read/write reporting) intercepts Pi's `tool_call` event,
+  which fires *before* a built-in `read`/`write`/`edit` tool runs. On a
+  `write`/`edit` against a file that already exists, it synchronously copies
+  the file's current on-disk bytes to a dot-prefixed sibling snapshot before
+  the tool proceeds. This is best-effort and never blocks or alters the tool
+  call — same "observe, never gate" contract as the activity reporting it
+  shares a hook with.
+- Naming/retention is a pure, unit-tested contract in `src/lib/agentBackup.ts`
+  (`.name.ext.mesa-pi-snapshot-<epoch-ms>-<rand>.bak`) — dot-prefixed, so the
+  same scan/watch/sync skip rules that hide Mesa's own write artifacts hide
+  these too. It is a deliberately distinct scheme from
+  `verifiedWrite.ts`'s `mesa-(save|backup)-…tmp` names: `writeRecovery.ts`'s
+  crash-recovery sweep assumes a stale backup is redundant once its target
+  exists, which is true for Mesa's own atomic writes but not for a Pi-write
+  snapshot (the target existing says nothing about whether those bytes are
+  trustworthy) — the two schemes must never collide.
+- `pruneAgentSnapshots` in `src/lib/vault.ts` sweeps the vault at open (right
+  alongside `recoverWriteArtifacts`) and removes anything past the retention
+  window: at most 5 snapshots kept per file, and none older than 14 days
+  regardless of count.
+- Snapshots are never restored automatically — that stays a deliberate action
+  so Mesa never silently discards a Pi edit the user actually wanted.
+  `findLatestAgentSnapshot`/`restoreLatestAgentSnapshot` in `src/lib/vault.ts`
+  locate and restore the newest snapshot for a file; the restore write itself
+  goes through `persistVerifiedBytes`, so the *recovery* gets Mesa's normal
+  backup/atomic-rename/read-back guarantees even though the original
+  corrupting write did not. `PdfView` surfaces this as a "Restore previous
+  version" button whenever the PDF it has open turns out not to be valid.
+
 ## Scope
 
-- This covers every write Mesa itself performs inside the vault. Deletes and
-  renames initiated by the user in the UI are ordinary filesystem operations
-  (rename copies-then-deletes via the verified path).
+- Mesa's own writes (note saves, PDF saves, file duplication, drag-and-drop
+  imports, zip extraction) are covered by the verified-write guarantees above.
+  Deletes and renames initiated by the user in the UI are ordinary filesystem
+  operations (rename copies-then-deletes via the verified path).
+- Writes made by the embedded Pi agent's own tools are covered by the
+  snapshot-and-restore safety net in the section above, not by
+  `persistVerifiedBytes` (Mesa's code never touches those bytes on the way to
+  disk, so it cannot verify or roll them back the same way).

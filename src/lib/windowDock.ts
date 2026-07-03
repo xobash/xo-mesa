@@ -2,6 +2,17 @@ import type { PaneView } from "../types";
 
 export const DOCK_WINDOW_EVENT = "mesa://dock-window";
 export const GLOBAL_AGENT_EVENT = "mesa://global-agent";
+// Broadcast (all windows) the instant a Pi terminal session receives its
+// first real keystroke. Every Mesa surface that can host the shared Pi
+// session — main-window modal/overlay/workspace pane, and any popped-out Pi
+// OS window that reattached to the same backend session — tracks its own
+// local "has this session been talked to yet" flag so it knows whether it's
+// safe to silently relaunch `pi` on a startup-context change. That flag only
+// updates from `onData` in whichever window the user is actually typing
+// into, so without this broadcast a *different* window holding the same
+// session id could still think it's untouched and kill the live process out
+// from under the user (e.g. type in the popped-out window, then dock back).
+export const PI_INPUT_SEEN_EVENT = "mesa://pi-input-seen";
 
 export type DockWindowPayload =
   | { kind: "doc"; relPath: string }

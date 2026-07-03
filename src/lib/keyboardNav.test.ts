@@ -17,6 +17,7 @@ const baseSettings: Settings = {
   syncEnabled: true,
   syncDiscovery: true,
   syncToken: "",
+  syncDeviceName: "Test Device",
   syncAutoMinutes: 0,
   peers: [],
   sortMode: "name",

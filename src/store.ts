@@ -31,6 +31,7 @@ import {
   watchVault,
   importDroppedPaths,
   recoverWriteArtifacts,
+  pruneAgentSnapshots,
   isTextExt,
   extOf,
   stripExt,
@@ -60,6 +61,7 @@ import {
   type SyncReport,
 } from "./lib/sync";
 import { parsePeerInput } from "./lib/pairing";
+import { generateDeviceName } from "./lib/deviceName";
 import type { KeyboardFocus } from "./lib/keyboardNav";
 import {
   applyTemplate,
@@ -72,6 +74,7 @@ import {
 import { planKeyMigration } from "./lib/migrate";
 import { forgetRecentVault, rememberRecentVault } from "./lib/recentVaults";
 import { updateTaskLine, type TaskLinePatch } from "./lib/tasks";
+import { getPiSessionSnapshot } from "./lib/piSessionBridge";
 
 const CALENDAR_FILE = "calendar.json";
 
@@ -150,6 +153,7 @@ const DEFAULT_SETTINGS: Settings = {
   syncEnabled: true,
   syncDiscovery: true,
   syncToken: "",
+  syncDeviceName: "",
   syncAutoMinutes: 0,
   peers: [],
   sortMode: "name",
@@ -180,6 +184,7 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 function initialSettings(): Settings {
+  let settings: Settings = { ...DEFAULT_SETTINGS };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (raw) {
@@ -198,12 +203,22 @@ function initialSettings(): Settings {
       }
       delete parsed.graphMinDegree;
       delete parsed.syncPeers;
-      return { ...DEFAULT_SETTINGS, ...parsed };
+      settings = { ...DEFAULT_SETTINGS, ...parsed };
     }
   } catch {
     /* ignore */
   }
-  return { ...DEFAULT_SETTINGS };
+  // First launch (or pre-name settings): mint this device's LocalSend-style
+  // name once and persist it immediately so it stays stable across restarts.
+  if (!settings.syncDeviceName?.trim()) {
+    settings.syncDeviceName = generateDeviceName();
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      /* localStorage unavailable — name regenerates next launch */
+    }
+  }
+  return settings;
 }
 
 export type ThemeId = "system" | "void" | "darkroom";
@@ -746,9 +761,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
   // --- sync console bridge -------------------------------------------------
   // The Rust engine emits structured `sync://log` + `sync://progress` events
-  // during `sync_run`; collect them into the store so SyncModal's embedded
-  // console can render (and export) exactly what happened. Registered once,
-  // before the first sync, so no line is ever missed.
+  // during `sync_run` AND while the embedded server handles an incoming sync
+  // (`[serve]` lines); collect them into the store so SyncModal's embedded
+  // console renders both directions. Registered once at vault open (so a
+  // receiving device misses nothing) and re-ensured before every local sync.
   let syncBridgeReady: Promise<void> | null = null;
   function ensureSyncEventBridge(): Promise<void> {
     if (!IN_TAURI) return Promise.resolve();
@@ -1158,10 +1174,22 @@ export const useAppStore = create<AppState>((set, get) => {
           const theme = get().theme;
           const active = get().activePath;
           const docParam = active ? `&sel=${encodeURIComponent(active)}` : "";
+          // Hand off the live Pi session (if this vault already has one
+          // running) so the popped-out window reattaches to the same
+          // backend `pi` process instead of silently starting a second one.
+          // A Tauri WebviewWindow is a separate JS realm, so the new
+          // window's copy of AgentPanel's SHARED_PI_SESSION singleton starts
+          // out empty even though the real session is still alive — see
+          // adoptSharedPiSession in components/AgentPanel.tsx.
+          const liveSession = getPiSessionSnapshot();
+          const sessionParam =
+            liveSession.sessionId && liveSession.vaultPath === vault
+              ? `&piSession=${encodeURIComponent(liveSession.sessionId)}`
+              : "";
           const label = `agent-${Date.now().toString(36)}`;
           const url = `index.html?agent=1&vault=${encodeURIComponent(
             vault
-          )}&theme=${theme}${docParam}`;
+          )}&theme=${theme}${docParam}${sessionParam}`;
           new WebviewWindow(label, {
             url,
             title: "Pi agent",
@@ -1197,6 +1225,11 @@ export const useAppStore = create<AppState>((set, get) => {
           recovered.restored
         );
       }
+      // Prune stale Pi-write safety snapshots (see src/lib/agentBackup.ts).
+      // Independent of the crash-recovery sweep above: these are defensive
+      // copies taken before the embedded Pi agent's own write/edit tool calls,
+      // not Mesa's own in-flight write artifacts. Never blocks vault open.
+      void pruneAgentSnapshots(root);
 
       const files = await scanVault(root);
       // read note contents in parallel — far faster startup on large vaults
@@ -1261,6 +1294,11 @@ export const useAppStore = create<AppState>((set, get) => {
 
       void setupWatcher(root);
       void setupActivityBridge();
+      // Register the sync log/progress listener now — not just before a local
+      // sync — so INCOMING syncs (this device receiving; `[serve]` lines from
+      // the Rust server) fill the console too. Without this, the receiving
+      // device dropped every event and showed no console at all.
+      void ensureSyncEventBridge();
     },
 
     selectFile: async (relPath) => {

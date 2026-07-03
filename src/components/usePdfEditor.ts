@@ -33,6 +33,10 @@ export interface PdfTextRun {
 interface PdfEditorOptions {
   enabled?: boolean;
   extractText?: boolean;
+  /** Extract fillable form fields (a full pdf-lib parse on the main thread).
+   *  Off by default so the read-only viewer never pays for it; the editor
+   *  turns it on when entering edit mode. */
+  formFields?: boolean;
   /** Changes when the file changes on disk (e.g. its mtime). A change makes
    *  the hook re-check the disk bytes: our own save echo is ignored, a clean
    *  document adopts the new bytes, and unsaved edits are preserved. */
@@ -55,11 +59,20 @@ function nextFrame(): Promise<void> {
  * the undo/redo history, and saving — extracted from the view so the component
  * is just annotation UI. Returns the canvas/viewport refs the view binds to.
  */
+/** pdf.js failures caused by our own cancel/destroy during cleanup — not real
+ *  render errors, so they must never flip the UI into the error/fallback state. */
+function isPdfjsCancellation(err: unknown): boolean {
+  const name = (err as { name?: string } | null)?.name;
+  if (name === "RenderingCancelledException" || name === "AbortException") return true;
+  return /destroyed|cancell/i.test(String((err as Error)?.message ?? err));
+}
+
 export function usePdfEditor(
   file: VaultFile | undefined,
-  { enabled = true, extractText = false, reloadToken }: PdfEditorOptions = {}
+  { enabled = true, extractText = false, formFields = false, reloadToken }: PdfEditorOptions = {}
 ) {
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
+  const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [scale, setScale] = useState(1.2);
   const [renderScale, setRenderScale] = useState(1.2);
@@ -78,6 +91,7 @@ export function usePdfEditor(
   const renderCanvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
   const renderPageOverrideRef = useRef<Set<number> | null>(null);
   const bytesRef = useRef<Uint8Array | null>(null);
+  const docRef = useRef<pdfjs.PDFDocumentProxy | null>(null);
   const savedBytesRef = useRef<Uint8Array | null>(null);
   const historyRef = useRef<Uint8Array[]>([]);
   const futureRef = useRef<Uint8Array[]>([]);
@@ -93,6 +107,9 @@ export function usePdfEditor(
     historyRef.current = [];
     futureRef.current = [];
     queueRef.current = Promise.resolve();
+    docRef.current?.destroy();
+    docRef.current = null;
+    setDoc(null);
     setBytes(null);
     setRenderError(false);
     setLoadFailed(false);
@@ -141,10 +158,6 @@ export function usePdfEditor(
     setDirty(false);
   }, []);
 
-  const refreshFormFields = useCallback(async (next: Uint8Array) => {
-    setFields(await getFormFields(next).catch(() => []));
-  }, []);
-
   const enqueue = useCallback((operation: () => Promise<void>): Promise<void> => {
     const job = queueRef.current.then(operation);
     queueRef.current = job.catch(() => undefined);
@@ -186,6 +199,15 @@ export function usePdfEditor(
     return () => window.clearTimeout(id);
   }, [scale]);
 
+  // Release the shared pdf.js document (worker memory) on unmount. Replacement
+  // during the document's life is handled by the parse effect below.
+  useEffect(() => {
+    return () => {
+      docRef.current?.destroy();
+      docRef.current = null;
+    };
+  }, []);
+
   // load bytes from disk (or fetch in the browser/demo); re-runs when the
   // reloadToken says the file changed on disk underneath us
   const loadedPathRef = useRef<string | null>(null);
@@ -198,13 +220,14 @@ export function usePdfEditor(
     const isNewDocument = loadedPathRef.current !== file.path;
     loadedPathRef.current = file.path;
     let cancelled = false;
-    let raf = 0;
     if (isNewDocument) {
       resetDocumentState();
       setStatus("Loading PDF...");
     }
     (async () => {
       try {
+        // readFile/arrayBuffer both hand us a fresh buffer nothing else holds,
+        // so setSavedBytes' defensive snapshot is the only copy on the open path.
         let data: Uint8Array;
         if (IN_TAURI && file) data = await readFile(file.path);
         else {
@@ -212,7 +235,6 @@ export function usePdfEditor(
           data = new Uint8Array(await r.arrayBuffer());
         }
         if (cancelled) return;
-        data = copyPdfBytes(data);
         if (!isNewDocument) {
           // Same document, changed on disk. Serialize through the byte queue so
           // an in-flight edit transform cannot interleave with the reload.
@@ -236,23 +258,13 @@ export function usePdfEditor(
             setHistorySnapshots([]);
             setFutureSnapshots([]);
             setSavedBytes(data);
-            await refreshFormFields(data);
             setStatus("Reloaded — this PDF changed on disk.");
           });
           return;
         }
+        // Form fields are extracted lazily (edit mode only) by the effect
+        // below — pdf-lib's full main-thread parse has no place on the open path.
         setSavedBytes(data);
-        // Let the editor paint page 1 immediately, then fill in the full page
-        // count and form metadata after the first render has a chance to land.
-        setPageCount(1);
-        raf = requestAnimationFrame(async () => {
-          if (cancelled) return;
-          try {
-            setFields(await getFormFields(data).catch(() => []));
-          } catch {
-            if (!cancelled) setFields([]);
-          }
-        });
       } catch (e) {
         if (!cancelled && isNewDocument) {
           setStatus(`Could not open PDF: ${String(e)}`);
@@ -262,37 +274,86 @@ export function usePdfEditor(
     })();
     return () => {
       cancelled = true;
-      if (raf) cancelAnimationFrame(raf);
     };
   }, [
     enabled,
     file?.path,
     reloadToken,
     enqueue,
-    refreshFormFields,
     resetDocumentState,
     setHistorySnapshots,
     setFutureSnapshots,
     setSavedBytes,
   ]);
 
-  // render every page with pdf.js whenever the bytes or settled zoom change
+  // Parse the document once per byte-state. Rendering, zooming, and text
+  // extraction all reuse this proxy — previously every zoom settle and canvas
+  // remount re-copied the full bytes and re-parsed the entire document.
   useEffect(() => {
-    if (!enabled || !bytes) return;
+    if (!enabled || !bytes) {
+      docRef.current?.destroy();
+      docRef.current = null;
+      setDoc(null);
+      return;
+    }
     let cancelled = false;
-    let doc: pdfjs.PDFDocumentProxy | null = null;
+    (async () => {
+      try {
+        // pdf.js transfers this buffer to its worker, so it gets its own copy.
+        const next = await pdfjs.getDocument({
+          data: sanitizePdfBytes(bytes).slice(0),
+        }).promise;
+        if (cancelled) {
+          void next.destroy();
+          return;
+        }
+        docRef.current?.destroy();
+        docRef.current = next;
+        setPageCount(next.numPages);
+        setDoc(next);
+      } catch (err) {
+        if (!cancelled && !isPdfjsCancellation(err)) setRenderError(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, bytes]);
+
+  // Fillable form fields — pdf-lib parses the whole document on the main
+  // thread, so this only runs when the caller actually wants fields (edit mode).
+  useEffect(() => {
+    if (!enabled || !formFields || !bytes) {
+      setFields([]);
+      return;
+    }
+    let cancelled = false;
+    void getFormFields(bytes).then(
+      (next) => {
+        if (!cancelled) setFields(next);
+      },
+      () => {
+        if (!cancelled) setFields([]);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, formFields, bytes]);
+
+  // Render pages into their canvases whenever the parsed document, settled
+  // zoom, or the mounted canvas set changes. No parsing happens here anymore.
+  useEffect(() => {
+    if (!enabled || !doc) return;
+    let cancelled = false;
     let activeTask: pdfjs.RenderTask | null = null;
     (async () => {
       try {
-        doc = await pdfjs.getDocument({ data: sanitizePdfBytes(bytes).slice(0) })
-          .promise;
-        if (cancelled) return;
-        setPageCount(doc.numPages);
         const pageOverride = renderPageOverrideRef.current;
         renderPageOverrideRef.current = null;
         const pageNumbers = pageOverride
           ? [...pageOverride]
-              .filter((pageIdx) => pageIdx >= 0 && pageIdx < doc!.numPages)
+              .filter((pageIdx) => pageIdx >= 0 && pageIdx < doc.numPages)
               .sort((a, b) => a - b)
               .map((pageIdx) => pageIdx + 1)
           : Array.from({ length: doc.numPages }, (_, pageIdx) => pageIdx + 1);
@@ -352,34 +413,29 @@ export function usePdfEditor(
           });
           if (i === 1) {
             setStatus("");
-            setPageCount(doc.numPages);
           } else if (doc.numPages > 8) {
             await nextFrame();
           }
         }
         setRenderError(false);
-      } catch {
-        if (!cancelled) setRenderError(true);
+      } catch (err) {
+        if (!cancelled && !isPdfjsCancellation(err)) setRenderError(true);
       }
     })();
     return () => {
       cancelled = true;
       activeTask?.cancel();
-      doc?.destroy();
     };
-  }, [enabled, bytes, renderScale, canvasVersion]);
+  }, [enabled, doc, renderScale, canvasVersion]);
 
   useEffect(() => {
-    if (!enabled || !extractText || !bytes) {
+    if (!enabled || !extractText || !doc) {
       setTextRuns([]);
       return;
     }
     let cancelled = false;
-    let doc: pdfjs.PDFDocumentProxy | null = null;
     (async () => {
       try {
-        doc = await pdfjs.getDocument({ data: sanitizePdfBytes(bytes).slice(0) })
-          .promise;
         const nextTextRuns: PdfTextRun[] = [];
         for (let i = 1; i <= doc.numPages; i++) {
           const page = await doc.getPage(i);
@@ -425,9 +481,8 @@ export function usePdfEditor(
     })();
     return () => {
       cancelled = true;
-      doc?.destroy();
     };
-  }, [enabled, extractText, bytes, renderScale]);
+  }, [enabled, extractText, doc, renderScale]);
 
   /** Run a byte transform, pushing the previous bytes onto the undo stack. */
   const apply = (transform: PdfTransform, options: PdfApplyOptions = {}) => {
@@ -451,7 +506,6 @@ export function usePdfEditor(
         setHistorySnapshots([...historyRef.current, beforeSnapshot]);
         setFutureSnapshots([]);
         setCurrentBytes(result);
-        await refreshFormFields(result);
       } catch (e) {
         setStatus(`Edit failed: ${String(e)}`);
       }
@@ -471,7 +525,6 @@ export function usePdfEditor(
         setHistorySnapshots(history.slice(0, -1));
         setFutureSnapshots([...futureRef.current, copyPdfBytes(current)]);
         setCurrentBytes(previous);
-        await refreshFormFields(previous);
       } catch (e) {
         setStatus(`Undo failed: ${String(e)}`);
       }
@@ -490,7 +543,6 @@ export function usePdfEditor(
         setFutureSnapshots(future.slice(0, -1));
         setHistorySnapshots([...historyRef.current, copyPdfBytes(current)]);
         setCurrentBytes(next);
-        await refreshFormFields(next);
       } catch (e) {
         setStatus(`Redo failed: ${String(e)}`);
       }

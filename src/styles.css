@@ -3091,6 +3091,17 @@ body,
   gap: 10px;
   margin-top: 8px;
 }
+.sync-device-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+.sync-device-name-input {
+  max-width: 200px;
+  text-align: right;
+}
 .sync-fingerprint-label {
   font-size: 11px;
   color: var(--text-faint);
@@ -3825,6 +3836,11 @@ body,
 .pdf-error-msg {
   font-size: 13px;
   line-height: 1.6;
+}
+.pdf-error-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
 }
 .pdf-body {
   flex: 1 1 auto;
@@ -4758,6 +4774,16 @@ body,
   opacity: 0.35;
   cursor: default;
 }
+/* The frame slot is the harness's page area. In the desktop app the NATIVE
+   harness webview (src-tauri/src/harness.rs) is bounds-synced to this exact
+   rect and paints over it; the legacy iframe path renders inside it. */
+.agent-browser-frame-slot {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
 .agent-browser-frame {
   flex: 1 1 auto;
   min-height: 0;
@@ -4765,6 +4791,57 @@ body,
   border: none;
   background: #050508; /* dark so the start page + unloaded frames aren't a white rectangle */
   color-scheme: dark;
+}
+/* Shows through only for the first frames before the native webview paints. */
+.agent-browser-native-host {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  background: #050508; /* matches .agent-browser-frame's documented exception */
+  color: var(--text-dim);
+  font-size: 12px;
+}
+/* Calibration mode: dashed outline marks where the native webview SHOULD be.
+   The webview composites above the DOM, so the outline peeks out exactly
+   where placement is off. (#f55 debug-only literal — calibration chrome,
+   not themable UI.) */
+.agent-browser-frame-slot.debug {
+  outline: 2px dashed #ff5555;
+  outline-offset: -2px;
+}
+.agent-browser-calib {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding: 4px 12px;
+  background: var(--bg-1);
+  color: #ff8585; /* debug-only literal */
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  user-select: text;
+}
+.agent-browser-calib-buttons {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.agent-browser-calib-buttons button {
+  width: 20px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-3);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+.agent-browser-calib-buttons button:hover {
+  color: var(--text);
 }
 .agent-browser-fallback {
   position: absolute;

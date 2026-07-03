@@ -1,0 +1,90 @@
+# ---------------------------------------------------------------------------
+# Dependencies & build output
+# ---------------------------------------------------------------------------
+node_modules
+dist
+dist-ssr
+build
+coverage
+
+# ---------------------------------------------------------------------------
+# Rust / Tauri
+# ---------------------------------------------------------------------------
+src-tauri/target
+src-tauri/gen
+# build-cache location stamp (written by run.sh / run.cmd; machine-specific)
+src-tauri/.build-cache-path
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------------------------
+# Vite transient config artifacts
+# ---------------------------------------------------------------------------
+vite.config.ts.timestamp-*.mjs
+vite.config.js.timestamp-*.mjs
+
+# ---------------------------------------------------------------------------
+# Local QA / troubleshooting output
+# ---------------------------------------------------------------------------
+output/
+playwright-report/
+test-results/
+
+# ---------------------------------------------------------------------------
+# Editor / OS cruft
+# ---------------------------------------------------------------------------
+# session checkpoint copies (vitest already excludes **/.backups/**)
+.backups/
+# FUSE placeholders for deleted-but-open files (sandboxed sessions)
+.fuse_hidden*
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# ---------------------------------------------------------------------------
+# Secrets & credentials — never publish
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_ed25519
+*.local
+
+# ---------------------------------------------------------------------------
+# Private working notes, agent contracts & design docs — never publish
+# ---------------------------------------------------------------------------
+REQUESTS.local.md
+CONTINUE_PROMPT.local.md
+*.local.md
+AGENTS.md
+**/AGENTS.md
+DEAD_CODE_AUDIT.md
+HANDOFF.md
+DESIGN.md
+DOX/
+.dox/

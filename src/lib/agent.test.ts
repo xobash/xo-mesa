@@ -6,6 +6,7 @@ import {
   contextPrompt,
   piActivityLaunch,
   piStartupArgs,
+  resolveNavTarget,
   vaultFilePath,
   webSearchUrl,
 } from "./agent";
@@ -20,6 +21,7 @@ const settings: Settings = {
   syncEnabled: true,
   syncDiscovery: true,
   syncToken: "",
+  syncDeviceName: "Test Device",
   syncAutoMinutes: 0,
   peers: [],
   sortMode: "name",
@@ -101,6 +103,17 @@ describe("Pi agent browser helpers", () => {
         new Date("2026-06-25T12:34:56Z")
       )
     ).toBe("Web Archives/2026-06-25T12-34-56-example-com-article.html");
+  });
+
+  it("resolves address-bar input: URLs direct, everything else a search", () => {
+    expect(resolveNavTarget("https://example.com/a?b=1")).toBe(
+      "https://example.com/a?b=1"
+    );
+    expect(resolveNavTarget("  HTTP://EXAMPLE.COM  ")).toBe("HTTP://EXAMPLE.COM");
+    expect(resolveNavTarget("mesa notes")).toBe(
+      "https://duckduckgo.com/html/?q=mesa%20notes"
+    );
+    expect(resolveNavTarget("   ")).toBe("");
   });
 });
 

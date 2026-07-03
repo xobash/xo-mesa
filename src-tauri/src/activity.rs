@@ -114,13 +114,36 @@ fn auth_ok(req: &Request, token: &str) -> bool {
         .any(|h| h.field.equiv("Authorization") && h.value.as_str() == expected)
 }
 
+fn json_response(req: Request, json: String) {
+    let mut resp = Response::from_string(json);
+    if let Ok(h) = "Content-Type: application/json".parse::<tiny_http::Header>() {
+        resp = resp.with_header(h);
+    }
+    let _ = req.respond(resp);
+}
+
 fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
+    let url = req.url().to_string();
+    let method = req.method().clone();
+    // Rendered-DOM snapshots from the native harness webview. This route is
+    // token-in-body instead of header-auth: the reporter posts with
+    // `mode: "no-cors"` (the only way an https page may reach loopback without
+    // a preflight), and no-cors requests cannot carry an Authorization header.
+    // `ingest_snapshot_body` verifies the same per-run token before storing.
+    if url == "/harness" && method == Method::Post {
+        let mut body = String::new();
+        if req.as_reader().read_to_string(&mut body).is_ok() {
+            let _ = crate::harness::ingest_snapshot_body(app, &body, token);
+            let _ = req.respond(Response::from_string("ok"));
+        } else {
+            let _ = req.respond(Response::from_string("read error").with_status_code(400));
+        }
+        return;
+    }
     if !auth_ok(&req, token) {
         let _ = req.respond(Response::from_string("unauthorized").with_status_code(401));
         return;
     }
-    let url = req.url().to_string();
-    let method = req.method().clone();
     if url == "/activity" && method == Method::Post {
         let mut body = String::new();
         if req.as_reader().read_to_string(&mut body).is_ok() {
@@ -131,10 +154,15 @@ fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
         }
         return;
     }
-    // Pi's `browse` tool: fetch a page on the agent's behalf and mirror the
-    // navigation into the visible harness. The fetch goes through the same
-    // shared client (and cookie jar) as the user-driven harness, so the user
-    // watches exactly what the agent sees.
+    // Pi's `browse` tool: navigate the visible harness and answer with the
+    // RENDERED page. The `mesa://browse` event pops the wing open; the wing
+    // drives the native harness webview; its injected reporter streams the
+    // rendered DOM back here (POST /harness above). We wait for the snapshot
+    // that belongs to this navigation, so the agent reads exactly what the
+    // user's harness displays. If no live harness materializes (no Pi surface
+    // mounted, or the native webview failed and the wing is on the legacy
+    // iframe path), fall back to the shared-client native fetch — clearly
+    // flagged `rendered: false` so the tool/model can say so honestly.
     if url == "/browse" && method == Method::Post {
         let mut body = String::new();
         if req.as_reader().read_to_string(&mut body).is_err() {
@@ -149,24 +177,102 @@ fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
             let _ = req.respond(Response::from_string("missing url").with_status_code(400));
             return;
         }
-        // Mirror first: the harness shows the page while the fetch runs.
+        let gen = crate::harness::bump_nav_gen();
+        let bumped_at = std::time::Instant::now();
+        // Old-page ticks are debounced ≥900ms apart; by +600ms the webview has
+        // left the previous page, so a time-qualified snapshot is trustworthy.
+        let min_at = bumped_at + Duration::from_millis(600);
         let _ = app.emit("mesa://browse", target.clone());
-        match crate::browse::browse_fetch_blocking(target) {
-            Ok(page) => {
-                let json = serde_json::to_string(&page).unwrap_or_else(|_| "{}".to_string());
-                let mut resp = Response::from_string(json);
-                if let Ok(h) = "Content-Type: application/json".parse::<tiny_http::Header>() {
-                    resp = resp.with_header(h);
-                }
-                let _ = req.respond(resp);
+        let mut nudged = false;
+        let mut rendered: Option<crate::harness::HarnessSnapshot> = None;
+        while bumped_at.elapsed() < Duration::from_secs(9) {
+            if let Some(snap) = crate::harness::wait_for_snapshot(
+                gen,
+                &target,
+                min_at,
+                Duration::from_millis(450),
+            ) {
+                rendered = Some(snap);
+                break;
             }
-            Err(e) => {
-                let _ = req.respond(Response::from_string(e).with_status_code(502));
+            let live = crate::harness::webview_exists(app);
+            if !live && bumped_at.elapsed() > Duration::from_millis(2500) {
+                break; // no harness anywhere — don't stall the agent
+            }
+            if live && !nudged && bumped_at.elapsed() > Duration::from_millis(2000) {
+                crate::harness::request_report(app);
+                nudged = true;
             }
         }
+        let json = match rendered {
+            Some(snap) => serde_json::json!({
+                "finalUrl": snap.url,
+                "title": snap.title,
+                "status": 200,
+                "contentType": "text/html",
+                "frameBlocked": false,
+                "body": snap.text,
+                "links": snap.links,
+                "rendered": true,
+                "harnessLive": true,
+            })
+            .to_string(),
+            None => match crate::browse::browse_fetch_blocking(target) {
+                Ok(page) => {
+                    let mut v = serde_json::to_value(&page)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("rendered".into(), serde_json::Value::Bool(false));
+                        obj.insert(
+                            "harnessLive".into(),
+                            serde_json::Value::Bool(crate::harness::webview_exists(app)),
+                        );
+                    }
+                    v.to_string()
+                }
+                Err(e) => {
+                    let _ = req.respond(Response::from_string(e).with_status_code(502));
+                    return;
+                }
+            },
+        };
+        json_response(req, json);
+        return;
+    }
+    // Pi's `browse_read` tool: what is the harness showing RIGHT NOW — the
+    // agent's way to look at the page again (or at whatever the user
+    // navigated to by hand) without re-navigating.
+    if url == "/browse/current" && method == Method::Get {
+        crate::harness::request_report(app);
+        let json = match crate::harness::current_snapshot() {
+            Some((snap, age_ms)) => serde_json::json!({
+                "harnessLive": crate::harness::webview_exists(app),
+                "ageMs": age_ms,
+                "snapshot": snap,
+            })
+            .to_string(),
+            None => serde_json::json!({
+                "harnessLive": crate::harness::webview_exists(app),
+                "ageMs": null,
+                "snapshot": null,
+            })
+            .to_string(),
+        };
+        json_response(req, json);
         return;
     }
     let _ = req.respond(Response::from_string("not found").with_status_code(404));
+}
+
+/// Where the harness reporter should POST rendered-DOM snapshots: the running
+/// activity server's loopback port + per-run token. `None` until
+/// `activity_start` has run (harness.rs refuses to create the webview then —
+/// a reporter with nowhere to report would blind the agent).
+pub fn harness_report_target() -> Option<(u16, String)> {
+    let guard = state().lock().ok()?;
+    guard
+        .as_ref()
+        .map(|s| (s.info.port, s.info.token.clone()))
 }
 
 /// Start (or reuse) the loopback activity server and materialize the Pi

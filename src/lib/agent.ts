@@ -151,6 +151,15 @@ export function webSearchUrl(query: string): string {
     : "";
 }
 
+/** Address-bar semantics shared by the harness UI and the Pi mirror path:
+ * full http(s) URLs navigate directly, anything else becomes a web search.
+ * Empty input resolves to "" (the start page). */
+export function resolveNavTarget(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  return /^https?:\/\//i.test(value) ? value : webSearchUrl(value);
+}
+
 export function archiveRelPath(url: string, now = new Date()): string {
   let host = "web";
   let path = "page";

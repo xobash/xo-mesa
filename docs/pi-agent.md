@@ -35,8 +35,29 @@ keystrokes, ANSI output, cursor movement, terminal resizing, paste, selection,
 and provider setup inside the CLI.
 
 Mesa keeps one live Pi PTY/xterm session across the Pi modal, the dedicated
-Pi overlay, and the Steam-style overlay Pi pane. Switching between those Mesa
-surfaces reattaches the same terminal instead of spawning a new Pi process.
+Pi overlay, the Steam-style overlay Pi pane, and the popped-out Pi OS window.
+Switching between the in-window surfaces (modal / overlay / workspace pane)
+reattaches the same xterm instance instead of spawning a new Pi process,
+because they share one JS module singleton within that window.
+
+Popping Pi out into its own OS window is a different kind of transition: a
+Tauri `WebviewWindow` is a separate JS realm, so it can't see that singleton
+at all. To avoid silently orphaning the running `pi` process and starting a
+second, contextless one, Mesa hands the live session id to the new window
+through its launch URL (`openAgentWindow` in `store.ts`); the new window
+probes that the backend session is still alive with a harmless
+`terminal_resize` call and, if so, reattaches its own xterm instance to that
+same session (`adoptSharedPiSession` in `AgentPanel.tsx`) instead of calling
+`terminal_start`. The reattached window prints a short "Reattached to the
+existing Pi session" note since its xterm scrollback starts empty even though
+the underlying `pi` process — and its conversation state — carried over
+untouched. Because Rust's `TerminalState` and the `terminal://output` event
+are already app-global (not per-window), both windows can stay attached to
+the same live session at once if the user keeps both open. The window Pi was
+popped out of is told the moment the popped-out window receives its first
+keystroke (`mesa://pi-input-seen`, broadcast app-wide) so it never mistakes
+that session for untouched and auto-restarts it out from under the user.
+
 The session restarts when Mesa changes vaults or the app itself restarts. If Pi
 started but the user has not typed into it yet, Mesa may also restart it when
 the selected editor/preview file changes so the startup context stays current.
@@ -117,6 +138,28 @@ device — the report never travels beyond loopback. See
 [activity-api.md](activity-api.md) for the wire format and the public LAN
 endpoint used by other external tools.
 
+## Writes made by Pi are not made by Mesa
+
+Pi is a real native process with the vault as its cwd. Its `write`/`edit`
+tools write straight to disk from that external process, whatever the
+provider — this is the one write path in Mesa that `persistVerifiedBytes`
+(`src/lib/verifiedWrite.ts`) never sees, so none of Mesa's own backup/atomic-
+rename/read-back guarantees apply to it. A tool that mishandles a file it
+doesn't understand well — most visibly a binary file like a PDF — can
+overwrite it with no recovery path.
+
+Mesa cannot prevent an external process from writing bad bytes; it makes sure
+that write is always recoverable instead. The same pre-execution `tool_call`
+hook the activity extension already uses (it fires before a `write`/`edit`
+tool runs) also takes a defensive snapshot of the file's current on-disk bytes
+first, so the state right before any Pi write always has a recovery point.
+Full detail — naming/retention contract, the crash-recovery interaction, and
+the restore path — is in [vault-safety.md](vault-safety.md). Short version:
+snapshots are dot-prefixed siblings (invisible to scan/watch/sync, same as
+Mesa's own write artifacts), pruned to the newest 5 per file / 14 days at
+vault open, and never auto-restored — `PdfView` offers a "Restore previous
+version" action when the open PDF turns out not to be valid instead.
+
 ## /goal command
 
 The embedded Pi agent ships with a built-in `/goal` slash command, provided by
@@ -145,55 +188,94 @@ surfaces (a workspace pane or the popped-out Pi OS window, where nothing exists
 beyond the surface edge) the harness opens as an inline sibling pane instead.
 Both variants are resizable by dragging the wing's outer edge.
 
-Page loading is two-tier in the desktop app:
+In the desktop app the harness page surface is a **real native child webview**
+(Tauri multiwebview, `unstable` cargo feature; `src-tauri/src/harness.rs`),
+not an iframe:
 
-1. Mesa fetches the page natively first (Rust `browse_fetch`, reqwest — no
-   CORS) and inspects the response headers. Sites that allow framing load in
-   the iframe directly, full fidelity.
-2. Sites that forbid framing via `X-Frame-Options` / CSP `frame-ancestors`
-   (google.com, github.com, most login pages — previously a silent white
-   rectangle) render in a sandboxed srcdoc **reader mode**: a `<base>` tag
-   resolves the page's own assets and an injected bridge forwards link clicks
-   and GET form submissions back to the harness, so search-and-browse keeps
-   working. Reader frames get no `allow-same-origin`, so page scripts stay
-   isolated from Mesa. The ⧉ button opens the real site in a separate Mesa
-   webview window when full fidelity is needed.
+- Pages render fully — JavaScript, sessions, sign-ins, google.com/youtube.com
+  and every other site that blocks embedding. The old iframe approach hit
+  `X-Frame-Options` / CSP `frame-ancestors` on exactly the sites people use
+  most and fell back to a scriptless "reader mode" that showed no-JS variants
+  and JS-shell skeletons — pages that looked like counterfeit copies of the
+  real site. That failure mode is gone.
+- The frontend owns the webview's rectangle: `BrowserHarness.tsx` measures the
+  wing's page slot every animation frame and pushes changed bounds to Rust
+  (`harness_bounds`), so the webview follows wing slides, pane resizes, and
+  overlay drags. Its visibility follows the wing (`harness_visibility`); the
+  page survives a closed wing and is re-adopted when the wing reopens
+  (`harness_status`).
+- Because the native webview composites above Mesa's DOM, the wing's page area
+  is reserved for it while open; Mesa UI must not rely on floating anything
+  over that rect.
+- If native webview creation fails at runtime, the harness falls back to the
+  legacy two-tier iframe path for the session: `browse_fetch` header check →
+  direct iframe when framing is allowed, sandboxed srcdoc reader mode (no
+  `allow-same-origin`, injected `<base>` + postMessage navigation bridge) when
+  blocked. The browser demo (no Rust) always uses the legacy path.
+
+Address-bar semantics (shared with the Pi mirror path via `resolveNavTarget`):
 
 - search terms open a DuckDuckGo search URL
 - full URLs open directly
-- Archive saves the current page into `Web Archives/` inside the active vault,
-  reusing the natively fetched body so it works even for sites the webview
-  cannot fetch
+- Back/Forward/Reload drive the real webview's history (`harness_history`)
+- Archive saves the current page into `Web Archives/` inside the active vault
+  via a native `browse_fetch` of the current URL
 
-### Pi can browse through the harness
+### Pi uses — and sees — the same harness the user sees
 
-The embedded Pi agent ships with a bundled `browse` tool (`mesa-browser.ts`,
-loaded via `--extension` like the activity and /goal extensions). When Pi
-calls it, Mesa's loopback server fetches the page natively and **mirrors the
-navigation into the visible harness**, popping the wing open — the harness is
-the user's window into what the agent is reading. The tool returns the page's
-text content to the model. Users can drive the same harness by hand; both go
-through the same fetch path.
+Every page in the harness webview gets an injected **reporter**
+(`src-tauri/resources/harness-reporter.js`, top frame only): it snapshots the
+*rendered* DOM (title, visible text, outgoing links) after load, on DOM
+mutations (debounced), and on SPA pushState navigations, and streams the
+snapshots to Mesa. Two transports keep this working on every platform webview:
+a `no-cors` POST to Mesa's loopback activity server (`/harness`), and — where
+https→loopback fetches are blocked as mixed content — a hidden-iframe
+navigation to the `mesa-snap:` scheme that Rust's `on_navigation` handler
+intercepts and cancels. Both carry the per-run bearer token; Mesa verifies it
+before storing a snapshot.
+
+The embedded Pi agent ships with two bundled tools (`mesa-browser.ts`, loaded
+via `--extension` like the activity and /goal extensions):
+
+- `browse(url)` — Mesa mirrors the navigation into the visible harness
+  (popping the wing open), waits for the rendered snapshot belonging to that
+  navigation, and returns the **rendered page text** to the model — exactly
+  what the user is watching, JS included. If no live harness materializes
+  (no Pi surface mounted, or the legacy iframe fallback is active), Mesa
+  answers with a native static fetch instead, and the tool result is
+  explicitly labeled as a fallback the user is *not* seeing, so the agent
+  cannot honestly overclaim.
+- `browse_read()` — returns the harness's *current* rendered snapshot without
+  navigating: how the agent re-checks a slow page or looks at whatever the
+  user opened by hand.
+
+Navigation mirroring also flows the other way: the webview reports real
+navigations and SPA moves back to the harness address bar
+(`mesa://harness-nav`), so the URL the user sees always matches the page.
 
 ### Isolation & sessions
 
 The harness is fully isolated from the user's default browser (Chrome/Safari
-profiles are never touched). Two storage domains exist:
+profiles are never touched):
 
-- Direct-iframe pages and "open webview" windows use the app webview's own
-  cookie storage, which persists across Mesa restarts (platform webview
-  profile) — sign-ins made there stick.
-- Reader-mode and Pi's `browse` fetches share one native HTTP client with an
-  in-memory cookie jar (reqwest's built-in `cookies` feature; no new crates).
-  Sessions established there persist for the whole app run — and are shared
-  between the user's harness and Pi's tool, so Pi keeps working with whatever
-  the user signed into — but the jar is deliberately memory-only and clears
-  when Mesa quits.
+- The native harness webview and "open webview" windows use the app webview's
+  own cookie storage, which persists across Mesa restarts (platform webview
+  profile) — sign-ins made there stick, and because Pi's `browse` reads the
+  rendered DOM of that same webview, the agent sees signed-in pages without
+  any cookie sharing machinery.
+- The static-fallback fetch and legacy reader mode share one native HTTP
+  client with an in-memory cookie jar (reqwest `cookies` feature); that jar is
+  memory-only and clears when Mesa quits.
+- The harness webview's label (`pi-harness`) matches no capability window
+  pattern, so remote pages get **zero** Tauri permissions; the reporter needs
+  none (its transports are plain HTTP-to-loopback and a cancelled navigation).
+  `on_navigation` confines the webview to http(s)/about/blob/data URLs. A
+  contract test (`src/lib/harnessContract.test.ts`) pins all of this.
 
 When no page body can be fetched at all, Mesa still archives a small HTML link
 record with the failure message so the research trail is not lost.
 
-The harness stack is deliberately dependency-free on the npm side: a plain
-iframe, Tauri's `WebviewWindow` API, and the reqwest client already in the
-Rust tree — no browser-automation or scraping npm packages, so it adds no new
-supply-chain surface.
+The harness stack is deliberately dependency-free on the npm side: the native
+webview + reporter, Tauri's `WebviewWindow` API, and the reqwest client
+already in the Rust tree — no browser-automation or scraping npm packages, so
+it adds no new supply-chain surface.

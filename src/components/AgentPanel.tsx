@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
 import {
   buildAgentContext,
@@ -14,6 +14,8 @@ import {
 import { IN_TAURI } from "../lib/vault";
 import { claimKeyboardShortcut, isPlainShiftTab } from "../lib/shortcuts";
 import { shouldAcceptTerminalOutput } from "../lib/terminalOutput";
+import { PI_INPUT_SEEN_EVENT } from "../lib/windowDock";
+import { setPiSessionSnapshot } from "../lib/piSessionBridge";
 import { Modal } from "./Modal";
 import { BrowserHarness } from "./BrowserHarness";
 
@@ -75,6 +77,30 @@ const SHARED_PI_SESSION: SharedPiSessionState = {
   outputGeneration: 0,
 };
 
+// Mirror the identity of the locally-tracked session into a plain lib/
+// module so store.ts (window pop-out) can read it without importing this
+// component module. See src/lib/piSessionBridge.ts.
+function publishPiSessionSnapshot(): void {
+  setPiSessionSnapshot({
+    sessionId: SHARED_PI_SESSION.sessionId,
+    vaultPath: SHARED_PI_SESSION.vaultPath,
+    contextText: SHARED_PI_SESSION.contextText,
+  });
+}
+
+// A *different* Mesa window holding the same session id (typically: the
+// window Pi was popped out FROM) needs to learn the moment the user types
+// into it, or it may later decide — wrongly — that the session is still
+// untouched and safe to silently kill and relaunch on a context change. See
+// the PI_INPUT_SEEN_EVENT doc comment in lib/windowDock.ts.
+if (IN_TAURI) {
+  void listen<{ sessionId: string }>(PI_INPUT_SEEN_EVENT, (event) => {
+    if (event.payload.sessionId === SHARED_PI_SESSION.sessionId) {
+      SHARED_PI_SESSION.userInputSeen = true;
+    }
+  });
+}
+
 let sharedPiFontSize = 16;
 const sharedPiFontSizeListeners = new Set<(size: number) => void>();
 
@@ -92,15 +118,9 @@ function reattachSharedPiTerminal(host: HTMLDivElement): void {
   if (!term?.element) return;
   host.appendChild(term.element);
   try {
+    // fit() → term.onResize → terminal_resize (see getSharedPiTerminal): the
+    // PTY follows automatically whenever the adopting host's size differs.
     SHARED_PI_SESSION.fit?.fit();
-    const id = SHARED_PI_SESSION.sessionId;
-    if (id) {
-      void invoke("terminal_resize", {
-        sessionId: id,
-        cols: term.cols,
-        rows: term.rows,
-      });
-    }
     term.focus();
   } catch {
     /* the adopting host may still be laying out; its own observers catch up */
@@ -195,8 +215,28 @@ function getSharedPiTerminal(): Terminal {
   term.onData((input) => {
     const id = SHARED_PI_SESSION.sessionId;
     if (!id) return;
-    SHARED_PI_SESSION.userInputSeen = true;
+    if (!SHARED_PI_SESSION.userInputSeen) {
+      SHARED_PI_SESSION.userInputSeen = true;
+      // Tell every other Mesa window tracking this same session id (e.g. the
+      // window Pi was popped out of) that it's now live, so none of them
+      // relaunch `pi` out from under the user on a later context change.
+      if (IN_TAURI) void emit(PI_INPUT_SEEN_EVENT, { sessionId: id });
+    }
     void invoke("terminal_write", { sessionId: id, input });
+  });
+  // THE "double text" fix: keep the PTY in lockstep with xterm for EVERY
+  // cols/rows change. Pi's TUI redraws its streaming block with cursor-up +
+  // rewrite arithmetic based on the PTY's size; when that drifts from what
+  // xterm actually renders, logical lines wrap into more physical lines than
+  // Pi accounts for, the cursor-up count falls short, and stale partial lines
+  // survive above the rewritten block — the doubled text. Previously only the
+  // host ResizeObserver propagated size to the PTY, so font-size changes
+  // (Ctrl+±, which refit xterm without resizing the host) desynced the two.
+  // onResize fires on every real dimension change from any path — one
+  // authoritative propagation point.
+  term.onResize(({ cols, rows }) => {
+    const id = SHARED_PI_SESSION.sessionId;
+    if (id) void invoke("terminal_resize", { sessionId: id, cols, rows });
   });
 
   SHARED_PI_SESSION.terminal = term;
@@ -218,6 +258,7 @@ async function stopSharedPiSession(): Promise<void> {
   SHARED_PI_SESSION.vaultPath = null;
   SHARED_PI_SESSION.contextText = null;
   SHARED_PI_SESSION.userInputSeen = false;
+  publishPiSessionSnapshot();
 }
 
 async function disposeSharedPiOutputListener(): Promise<void> {
@@ -231,6 +272,32 @@ async function disposeSharedPiOutputListener(): Promise<void> {
       /* ignore stale listener cleanup failures */
     }
   }
+}
+
+// Replace whatever output listener is currently wired up with a fresh one
+// bound to the session id SHARED_PI_SESSION carries *right now*. Shared by
+// every path that starts pointing the shared terminal at a (new or adopted)
+// backend session, so the accept/reject generation logic in
+// shouldAcceptTerminalOutput only has one implementation to stay correct.
+async function attachSharedPiOutputListener(): Promise<void> {
+  await disposeSharedPiOutputListener();
+  const outputGeneration = SHARED_PI_SESSION.outputGeneration;
+  SHARED_PI_SESSION.outputUnlisten = await listen<TerminalEvent>(
+    "terminal://output",
+    (event) => {
+      if (
+        !shouldAcceptTerminalOutput({
+          eventSessionId: event.payload.sessionId,
+          activeSessionId: SHARED_PI_SESSION.sessionId,
+          eventGeneration: outputGeneration,
+          activeGeneration: SHARED_PI_SESSION.outputGeneration,
+        })
+      ) {
+        return;
+      }
+      SHARED_PI_SESSION.terminal?.write(event.payload.data);
+    }
+  );
 }
 
 async function ensureSharedPiSession(
@@ -314,24 +381,8 @@ async function ensureSharedPiSession(
     SHARED_PI_SESSION.vaultPath = vaultPath;
     SHARED_PI_SESSION.contextText = contextText;
     SHARED_PI_SESSION.userInputSeen = false;
-    await disposeSharedPiOutputListener();
-    const outputGeneration = SHARED_PI_SESSION.outputGeneration;
-    SHARED_PI_SESSION.outputUnlisten = await listen<TerminalEvent>(
-      "terminal://output",
-      (event) => {
-        if (
-          !shouldAcceptTerminalOutput({
-            eventSessionId: event.payload.sessionId,
-            activeSessionId: SHARED_PI_SESSION.sessionId,
-            eventGeneration: outputGeneration,
-            activeGeneration: SHARED_PI_SESSION.outputGeneration,
-          })
-        ) {
-          return;
-        }
-        SHARED_PI_SESSION.terminal?.write(event.payload.data);
-      }
-    );
+    publishPiSessionSnapshot();
+    await attachSharedPiOutputListener();
     return id;
   })();
 
@@ -344,9 +395,55 @@ async function ensureSharedPiSession(
   }
 }
 
+// Reattach to a Pi session that is already running in the Rust backend but
+// unknown to *this* window's SHARED_PI_SESSION module state — the situation
+// every time Pi is popped into its own OS window, since a Tauri
+// WebviewWindow is a separate JS realm and gets a fresh copy of every
+// module-level singleton. `terminal_start` always spawns a brand-new `pi`
+// process, so calling it here (as the pre-fix code effectively did, by
+// having no other option) is exactly what silently orphaned the original
+// session and started a second, contextless one.
+//
+// Instead: probe the session is still alive with a harmless `terminal_resize`
+// (fails if the backend has no such session — e.g. it was independently
+// stopped), then point this window's shared terminal at it, same as the tail
+// of ensureSharedPiSession's spawn path minus the spawn.
+async function adoptSharedPiSession(
+  sessionId: string,
+  vaultPath: string,
+  contextText: string,
+  terminal: Terminal
+): Promise<string> {
+  if (!IN_TAURI) {
+    throw new Error("Browser preview mode: native Pi terminal is unavailable.");
+  }
+  await invoke("terminal_resize", {
+    sessionId,
+    cols: terminal.cols,
+    rows: terminal.rows,
+  });
+
+  SHARED_PI_SESSION.sessionId = sessionId;
+  SHARED_PI_SESSION.vaultPath = vaultPath;
+  SHARED_PI_SESSION.contextText = contextText;
+  // Never assume "untouched" for a session we didn't just launch — treat it
+  // as already live so a later context-text drift in this window can't talk
+  // ensureSharedPiSession into killing a real, in-progress conversation.
+  SHARED_PI_SESSION.userInputSeen = true;
+  publishPiSessionSnapshot();
+  // Tell every other window tracking this id (most importantly: the window
+  // Pi was popped out FROM) that it's spoken for now, so it won't relaunch
+  // `pi` out from under this window on a later context-text change.
+  if (IN_TAURI) void emit(PI_INPUT_SEEN_EVENT, { sessionId });
+  terminal.writeln("\x1b[2m↺ Reattached to the existing Pi session.\x1b[0m");
+  await attachSharedPiOutputListener();
+  return sessionId;
+}
+
 export function AgentSurface({
   embedded = false,
   browserSlideOut = false,
+  attachSessionId = null,
   onPlaceInWorkspace,
   onClose,
 }: {
@@ -357,6 +454,13 @@ export function AgentSurface({
    * popped-out OS window, where nothing exists beyond the surface's edge),
    * the harness opens as an inline sibling instead. */
   browserSlideOut?: boolean;
+  /** A Pi session id carried in from another Mesa window that already had
+   * one running (currently: the window Pi was popped out of — see
+   * `openAgentWindow` in store.ts). Consumed once, on the first session-setup
+   * pass: reattaches to that backend session via `adoptSharedPiSession`
+   * instead of `ensureSharedPiSession` spawning a brand-new `pi` process,
+   * which is what silently dropped the conversation before this existed. */
+  attachSessionId?: string | null;
   onPlaceInWorkspace?: () => void;
   onClose?: () => void;
 }) {
@@ -368,6 +472,10 @@ export function AgentSurface({
   const piBrowse = useAppStore((s) => s.piBrowse);
   const [sessionId, setSessionId] = useState<string | null>(SHARED_PI_SESSION.sessionId);
   const sessionIdRef = useRef<string | null>(SHARED_PI_SESSION.sessionId);
+  // Consumed on the first session-setup pass only — later re-runs (context
+  // text changes as the user navigates files) go through the normal
+  // ensureSharedPiSession reuse/restart logic.
+  const pendingAttachRef = useRef<string | null>(attachSessionId);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
@@ -417,17 +525,10 @@ export function AgentSurface({
 
     const syncSize = () => {
       try {
+        // fit() → term.onResize → terminal_resize: PTY propagation is owned
+        // by the shared onResize hook so no resize path can be missed.
         fitRef.current?.fit();
-        const next = { cols: term.cols, rows: term.rows };
-        setTerminalSize(next);
-        const id = SHARED_PI_SESSION.sessionId;
-        if (id) {
-          void invoke("terminal_resize", {
-            sessionId: id,
-            cols: next.cols,
-            rows: next.rows,
-          });
-        }
+        setTerminalSize({ cols: term.cols, rows: term.rows });
       } catch {
         /* terminal may not be fully mounted yet */
       }
@@ -469,7 +570,20 @@ export function AgentSurface({
     let alive = true;
     void (async () => {
       try {
-        const id = await ensureSharedPiSession(vaultPath, ctx, contextText, term);
+        const toAttach = pendingAttachRef.current;
+        pendingAttachRef.current = null;
+        const id =
+          toAttach && !SHARED_PI_SESSION.sessionId
+            ? await adoptSharedPiSession(toAttach, vaultPath, contextText, term).catch(
+                (e) => {
+                  console.warn(
+                    "[mesa] could not reattach the Pi session handed off from the previous window, starting a new one:",
+                    e
+                  );
+                  return ensureSharedPiSession(vaultPath, ctx, contextText, term);
+                }
+              )
+            : await ensureSharedPiSession(vaultPath, ctx, contextText, term);
         if (!alive) return;
         setSessionId(id);
         if (term === xtermRef.current) {

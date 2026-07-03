@@ -12,7 +12,7 @@ import {
   isTextEntryTarget,
   undoRedoShortcutAction,
 } from "../lib/shortcuts";
-import { urlForPath } from "../lib/vault";
+import { urlForPath, restoreLatestAgentSnapshot } from "../lib/vault";
 import { usePdfEditor } from "./usePdfEditor";
 import {
   rotatePage,
@@ -97,6 +97,9 @@ export function PdfView({ rel }: { rel: string }) {
   } = usePdfEditor(file, {
     enabled: true,
     extractText: mode === "edit" && tool === "edit",
+    // pdf-lib's whole-document parse for form fields only runs once the user
+    // is actually editing — never on the open path.
+    formFields: mode === "edit",
     reloadToken: fileMtime,
   });
 
@@ -143,9 +146,33 @@ export function PdfView({ rel }: { rel: string }) {
       return sniffFileType(bytes);
     }
   }, [bytes]);
+  // Recovery from a corrupting write made outside Mesa's own save path — most
+  // commonly the embedded Pi agent's own read/write/edit tools, which touch
+  // disk directly and bypass persistVerifiedBytes entirely (see
+  // src/lib/agentBackup.ts). Mesa takes a defensive snapshot before every Pi
+  // write/edit tool call; this offers to restore the newest one whenever the
+  // file Mesa has open turns out not to be a valid PDF.
+  const [snapshotStatus, setSnapshotStatus] = useState<string | null>(null);
+  const restoreSnapshot = async () => {
+    if (!file) return;
+    setSnapshotStatus("Looking for a Pi-write safety snapshot…");
+    try {
+      const restored = await restoreLatestAgentSnapshot(file.path);
+      setSnapshotStatus(
+        restored
+          ? "Restored the version from before the last Pi agent write. Reloading…"
+          : "No safety snapshot found for this file."
+      );
+    } catch (e) {
+      setSnapshotStatus(`Restore failed: ${String(e)}`);
+    }
+  };
   const zoomFactor = renderScale > 0 ? scale / renderScale : 1;
   const firstPagePainted = renderedPages.has(0);
-  const showNativeFirstPaint = !!bytes && !renderError && !firstPagePainted;
+  // The webview's native PDF renderer streams straight from disk via the asset
+  // protocol, so it can show the real document immediately — it must not wait
+  // for the editor's full byte read to finish.
+  const showNativeFirstPaint = !loadFailed && !renderError && !firstPagePainted;
 
   useEffect(() => {
     return () => {
@@ -514,6 +541,12 @@ export function PdfView({ rel }: { rel: string }) {
                   ? `This file looks like ${sniffFileType(bytes)} — not a PDF. It may be corrupted, mislabeled with a .pdf name, or an error page that was saved instead of the real document. Try re-downloading the original.`
                   : status || "It doesn't look like a valid PDF file."}
               </div>
+              <div className="pdf-error-actions">
+                <button className="btn ghost" onClick={() => void restoreSnapshot()}>
+                  Restore previous version
+                </button>
+              </div>
+              {snapshotStatus && <div className="pdf-error-msg">{snapshotStatus}</div>}
             </div>
           ) : renderError && bytes && invalidPdfType ? (
             <div className="pdf-error">
@@ -521,6 +554,12 @@ export function PdfView({ rel }: { rel: string }) {
               <div className="pdf-error-msg">
                 {`This file looks like ${invalidPdfType} — not a valid PDF. It may be corrupted, empty, mislabeled with a .pdf name, or an error page that was saved instead of the real document.`}
               </div>
+              <div className="pdf-error-actions">
+                <button className="btn ghost" onClick={() => void restoreSnapshot()}>
+                  Restore previous version
+                </button>
+              </div>
+              {snapshotStatus && <div className="pdf-error-msg">{snapshotStatus}</div>}
             </div>
           ) : renderError && bytes ? (
             <iframe

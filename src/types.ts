@@ -79,6 +79,9 @@ export interface Settings {
   syncDiscovery: boolean;
   /** Sync key required to read/write this device's vault over sync. */
   syncToken: string;
+  /** How this device introduces itself to nearby devices (LocalSend-style
+   *  "Toasty Lemon"; generated once at first launch, user-editable). */
+  syncDeviceName: string;
   /** Automatically sync all peers every N minutes. 0 disables scheduling. */
   syncAutoMinutes: number;
   /** Saved peer devices to sync with. */

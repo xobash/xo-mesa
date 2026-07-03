@@ -15,7 +15,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+# `unstable` enables multiwebview (Window::add_child): the Pi browser harness
+# hosts real pages in a native child webview (src/harness.rs) instead of an
+# embed-blocked iframe. The flag gates that API's availability only.
+tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-fs = { version = "2", features = ["watch"] }
 tauri-plugin-dialog = "2"
 tiny_http = { version = "0.12", features = ["ssl-rustls"] }

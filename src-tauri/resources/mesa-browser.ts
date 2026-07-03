@@ -1,19 +1,26 @@
-// Mesa browse tool — a Pi extension bundled with Mesa's embedded terminal.
+// Mesa browse tools — a Pi extension bundled with Mesa's embedded terminal.
 //
-// Registers a `browse` tool that lets the embedded Pi agent read web pages
-// THROUGH Mesa, not around it. Each call POSTs to Mesa's loopback activity
-// server (/browse), which (1) mirrors the navigation into the visible Pi
-// browser harness so the user can watch the agent browse in real time, and
-// (2) fetches the page natively with the same shared HTTP client + cookie jar
-// the user-driven harness uses, so the agent sees exactly what the user sees
-// (including any session the user signed into via the harness). The tool
-// returns the page's text content to the model.
+// Registers two tools that let the embedded Pi agent use Mesa's Pi browser
+// harness THROUGH Mesa, not around it:
+//
+//   - `browse(url)`  — POSTs to Mesa's loopback activity server (/browse).
+//     Mesa mirrors the navigation into the visible harness (the wing pops
+//     open), drives the NATIVE harness webview to the page, and answers with
+//     the *rendered* DOM text/title/links captured from that live webview —
+//     the agent reads exactly what the user is watching. If no live harness
+//     is available, Mesa falls back to a native static fetch and the result
+//     is clearly flagged so the agent never overclaims what the user can see.
+//
+//   - `browse_read()` — GETs /browse/current: the harness's CURRENT rendered
+//     snapshot without navigating. This is how the agent "looks at" the
+//     harness again — after waiting for a slow page, or after the user
+//     navigated by hand.
 //
 // Safety / boundary notes:
 //   - No-op unless Mesa injected MESA_ACTIVITY_PORT + MESA_ACTIVITY_TOKEN,
-//     so running `pi` outside Mesa never gains this tool.
+//     so running `pi` outside Mesa never gains these tools.
 //   - Talks only to 127.0.0.1 (Mesa's loopback server); Mesa's Rust side does
-//     the actual web fetch (http/https only, 20s timeout, 4 MB body cap).
+//     the navigation/fetch (http/https only, timeouts, body caps).
 //   - `typebox` resolves from Pi's own runtime (extensions load in-process
 //     via jiti) — this adds nothing to Mesa's npm tree.
 
@@ -38,7 +45,7 @@ interface BrowserPi {
     parameters: unknown;
     execute(
       toolCallId: string,
-      params: { url: string },
+      params: Record<string, unknown>,
       signal?: AbortSignal
     ): Promise<ToolTextResult>;
   }): void;
@@ -46,15 +53,35 @@ interface BrowserPi {
 
 interface BrowsePage {
   finalUrl?: string;
+  title?: string;
   status?: number;
   contentType?: string;
   frameBlocked?: boolean;
   body?: string | null;
+  links?: string[];
+  rendered?: boolean;
+  harnessLive?: boolean;
+}
+
+interface HarnessSnapshot {
+  url?: string;
+  title?: string;
+  text?: string;
+  links?: string[];
+  ready?: string;
+}
+
+interface CurrentResponse {
+  harnessLive?: boolean;
+  ageMs?: number | null;
+  snapshot?: HarnessSnapshot | null;
 }
 
 const MAX_TEXT = 18_000;
+const MAX_LINKS = 40;
 
-/** Crude but dependency-free HTML → readable text. */
+/** Crude but dependency-free HTML → readable text (static-fetch fallback
+ * only; rendered snapshots arrive as text already). */
 function htmlToText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -74,21 +101,64 @@ function htmlToText(html: string): string {
     .trim();
 }
 
+function clip(text: string): string {
+  return text.length > MAX_TEXT
+    ? `${text.slice(0, MAX_TEXT)}\n\n[truncated at ${MAX_TEXT} chars]`
+    : text;
+}
+
+function linksBlock(links: string[] | undefined): string {
+  if (!links || links.length === 0) return "";
+  const shown = links.slice(0, MAX_LINKS);
+  return `\n\nLinks on this page (label :: url):\n${shown
+    .map((l) => `- ${l}`)
+    .join("\n")}`;
+}
+
+/** Format a /browse (or /browse/current) result for the model, honest about
+ * whether this is the live rendered harness or a static fallback fetch. */
+export function formatBrowseResult(page: BrowsePage, requestedUrl: string): string {
+  const rendered = page.rendered === true;
+  const text = rendered
+    ? (page.body ?? "").trim()
+    : page.body
+      ? htmlToText(page.body)
+      : `(non-text content: ${page.contentType || "unknown"})`;
+  const view = rendered
+    ? "live harness (rendered DOM — exactly what the user's harness pane shows)"
+    : page.harnessLive
+      ? "static fetch fallback (the harness did not finish rendering in time; raw HTML text, NOT what the user sees — use browse_read to re-check the live view)"
+      : "static fetch fallback (no harness pane is open in Mesa, so the user is NOT seeing this; raw HTML text)";
+  return [
+    `URL: ${page.finalUrl ?? requestedUrl}`,
+    page.title ? `Title: ${page.title}` : null,
+    `Status: ${page.status ?? "?"}`,
+    `View: ${view}`,
+    "",
+    clip(text) || "(page produced no readable text)",
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n") + linksBlock(page.links);
+}
+
 export default function mesaBrowser(pi: BrowserPi): void {
   const port = process.env.MESA_ACTIVITY_PORT;
   const token = process.env.MESA_ACTIVITY_TOKEN;
   if (!port || !token) return; // not running inside Mesa — stay silent.
 
-  const endpoint = `http://127.0.0.1:${port}/browse`;
+  const browseEndpoint = `http://127.0.0.1:${port}/browse`;
+  const currentEndpoint = `http://127.0.0.1:${port}/browse/current`;
+  const authHeaders = { Authorization: `Bearer ${token}` };
 
   pi.registerTool({
     name: "browse",
     label: "Browse",
     description:
-      "Open a URL in Mesa's Pi browser harness and return the page's text. " +
-      "The user watches your browsing live in the harness pane, and your " +
-      "fetches share the harness session (cookies), so pages the user signed " +
-      "into stay signed in. Use full http(s) URLs.",
+      "Open a URL in Mesa's Pi browser harness (a real native webview the " +
+      "user watches live) and return the RENDERED page text — what the page " +
+      "actually shows after JavaScript runs, identical to what the user " +
+      "sees. Sessions the user signed into in the harness stay signed in. " +
+      "Use full http(s) URLs. For slow pages, follow up with browse_read.",
     parameters: Type.Object({
       url: Type.String({ description: "Full http(s) URL to open and read" }),
     }),
@@ -102,12 +172,9 @@ export default function mesaBrowser(pi: BrowserPi): void {
         };
       }
       try {
-        const res = await fetch(endpoint, {
+        const res = await fetch(browseEndpoint, {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
+          headers: { ...authHeaders, "Content-Type": "application/json" },
           body: JSON.stringify({ url }),
           signal,
         });
@@ -124,30 +191,88 @@ export default function mesaBrowser(pi: BrowserPi): void {
           };
         }
         const page = (await res.json()) as BrowsePage;
-        const text = page.body
-          ? htmlToText(page.body)
-          : `(non-text content: ${page.contentType || "unknown"})`;
-        const clipped =
-          text.length > MAX_TEXT
-            ? `${text.slice(0, MAX_TEXT)}\n\n[truncated at ${MAX_TEXT} chars]`
-            : text;
         return {
-          content: [
-            {
-              type: "text",
-              text: `URL: ${page.finalUrl ?? url}\nStatus: ${page.status ?? "?"}\n\n${clipped}`,
-            },
-          ],
+          content: [{ type: "text", text: formatBrowseResult(page, url) }],
           details: {
             url,
             finalUrl: page.finalUrl,
             status: page.status,
-            contentType: page.contentType,
+            rendered: page.rendered === true,
+            harnessLive: page.harnessLive === true,
           },
         };
       } catch (e) {
         return {
           content: [{ type: "text", text: `browse failed: ${String(e)}` }],
+          isError: true,
+        };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "browse_read",
+    label: "Browse: read current page",
+    description:
+      "Read the CURRENT page in Mesa's Pi browser harness without " +
+      "navigating: the rendered text of whatever the harness pane is showing " +
+      "right now. Use it to re-check a slow page after browse, or to see " +
+      "what the user navigated to by hand.",
+    parameters: Type.Object({}),
+
+    async execute(_toolCallId, _params, signal) {
+      try {
+        const res = await fetch(currentEndpoint, {
+          method: "GET",
+          headers: authHeaders,
+          signal,
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => "");
+          return {
+            content: [
+              {
+                type: "text",
+                text: `browse_read failed (HTTP ${res.status}): ${detail || "no detail"}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        const current = (await res.json()) as CurrentResponse;
+        const snap = current.snapshot;
+        if (!snap || !snap.url) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  "The browser harness has no page open yet. Use browse(url) to " +
+                  "open one (the user will see it live in the harness pane).",
+              },
+            ],
+          };
+        }
+        const age =
+          typeof current.ageMs === "number"
+            ? ` (snapshot ${(current.ageMs / 1000).toFixed(1)}s old)`
+            : "";
+        const text = [
+          `URL: ${snap.url}`,
+          snap.title ? `Title: ${snap.title}` : null,
+          `View: live harness (rendered DOM — what the user's harness pane shows)${age}`,
+          "",
+          clip((snap.text ?? "").trim()) || "(page produced no readable text)",
+        ]
+          .filter((line): line is string => line !== null)
+          .join("\n") + linksBlock(snap.links);
+        return {
+          content: [{ type: "text", text }],
+          details: { url: snap.url, harnessLive: current.harnessLive === true },
+        };
+      } catch (e) {
+        return {
+          content: [{ type: "text", text: `browse_read failed: ${String(e)}` }],
           isError: true,
         };
       }

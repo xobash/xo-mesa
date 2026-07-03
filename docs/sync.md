@@ -47,7 +47,10 @@ listening, stops LAN discovery, blocks manual sync, and suppresses scheduled
 sync even if saved peers exist.
 
 **Discovery is metadata-only.** While the Sync menu is open or listening is on,
-Mesa announces its device name, LAN address, port, listening status, and
+Mesa announces its device name — a LocalSend-style name like "Toasty Lemon",
+minted once at first launch (`lib/deviceName.ts`, persisted as
+`settings.syncDeviceName`) and editable in the Receive section, so multiple
+devices are distinguishable at a glance — plus its LAN address, port, listening status, and
 certificate fingerprint over UDP broadcast (port 47887). It never broadcasts the
 vault path, sync key, or file contents. A discovery packet is unauthenticated,
 so the advertised fingerprint is a convenience for first contact — verify it
@@ -117,6 +120,13 @@ A vault with hundreds or thousands of files syncs comfortably:
 The moment a sync starts, an embedded console appears in the Sync window: the
 Rust engine streams structured log lines (manifest timings, the diff summary,
 every transfer, every warning and failure) plus a live progress bar.
+
+The console shows **both directions**. On the device that initiated the sync it
+narrates the whole run; on the device being synced *to*, the embedded server's
+`[serve]` lines (manifest served, each file received, every rejection) fill the
+same console — open the Sync window on the receiving machine to watch an
+incoming sync land. The event bridge registers at vault open, so lines are
+collected even while the window is closed and are waiting when you open it.
 
 **Copy troubleshooting package** copies a single markdown blob designed to be
 pasted at an LLM or into a bug report: app version and environment, vault file

@@ -10,6 +10,21 @@ const PdfView = lazy(() =>
   import("./PdfView").then((m) => ({ default: m.PdfView }))
 );
 
+// Prefetch that lazy chunk (and pdf.js's worker for hover thumbnails) once the
+// app goes idle. The startup bundle stays lean, but the first PDF open/hover no
+// longer pays ~1 MB of module download+parse on the interaction path.
+function prefetchPdfStack(): void {
+  void import("./PdfView");
+  void import("../lib/pdfThumb").then((m) => m.warmPdfEngine());
+}
+if (typeof window !== "undefined") {
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => prefetchPdfStack(), { timeout: 4000 });
+  } else {
+    window.setTimeout(prefetchPdfStack, 2500);
+  }
+}
+
 /** Inline viewer for non-text files (images, video, PDFs) in the main pane. */
 export function MediaView({ rel }: { rel: string }) {
   const fileFor = useAppStore((s) => s.fileFor);
