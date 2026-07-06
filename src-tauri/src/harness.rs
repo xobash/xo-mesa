@@ -357,9 +357,30 @@ pub fn harness_nudge(dx: f64, dy: f64, reset: bool) -> Result<(f64, f64), String
     Ok(*n)
 }
 
+/// `activity_start` normally completes just before Pi's PTY spawns (and thus
+/// before Pi could ever call `browse`), but a user can click the harness
+/// open by hand within milliseconds of the Pi panel mounting — before that
+/// async start has landed. Rather than hard-failing that race and
+/// permanently downgrading the whole session to the legacy iframe path,
+/// wait briefly for it. Zero-cost in the normal case: `harness_report_target`
+/// already returns `Some` on the first check almost always, so this only
+/// ever sleeps during the rare startup race.
+fn wait_for_report_target(timeout: Duration) -> Option<(u16, String)> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(t) = crate::activity::harness_report_target() {
+            return Some(t);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn reporter_script() -> Result<String, String> {
-    let (port, token) =
-        crate::activity::harness_report_target().ok_or("activity server not running")?;
+    let (port, token) = wait_for_report_target(Duration::from_millis(1500))
+        .ok_or("activity server not running")?;
     Ok(REPORTER_SRC
         .replace("__MESA_PORT__", &port.to_string())
         .replace("__MESA_TOKEN__", &token))
@@ -406,6 +427,14 @@ fn create_webview(
 /// wing's page-area rect in CSS pixels, supplied by the frontend, along with
 /// `window.innerHeight` (`viewport_h`) so the placement offset can be
 /// computed as frame height minus DOM viewport height.
+///
+/// Reliability note: a single failed `.navigate()` on an otherwise-healthy
+/// existing webview used to bubble straight up to the frontend, which
+/// permanently downgrades an entire session to the legacy reader-mode path
+/// (fake UA, no JS — see `browse.rs`) over what is usually a one-off
+/// wry/webview-runtime hiccup, not a real capability problem. We just
+/// successfully positioned/showed that same webview above, so recreate it
+/// once from scratch before giving up.
 #[tauri::command]
 pub fn harness_navigate(
     window: tauri::Window,
@@ -429,7 +458,14 @@ pub fn harness_navigate(
             let _ = existing.set_size(LogicalSize::new(w, h));
             let _ = existing.show();
             let mut wv = existing;
-            return wv.navigate(parsed).map_err(|e| e.to_string());
+            match wv.navigate(parsed.clone()) {
+                Ok(()) => return Ok(()),
+                Err(first_err) => {
+                    let _ = wv.close();
+                    return create_webview(&window, &app, parsed, x, y, w, h)
+                        .map_err(|retry_err| format!("{first_err} (retry also failed: {retry_err})"));
+                }
+            }
         }
         // The wing moved to another Mesa window (e.g. popped-out Pi):
         // child webviews cannot re-parent, so recreate there.

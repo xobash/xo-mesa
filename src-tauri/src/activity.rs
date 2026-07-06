@@ -17,7 +17,6 @@
 // The request-handling shape deliberately mirrors sync.rs so the two servers
 // stay easy to reason about together.
 
-use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;

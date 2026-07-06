@@ -1,3 +1,4 @@
+import { emitTo } from "@tauri-apps/api/event";
 import type { PaneView } from "../types";
 
 export const DOCK_WINDOW_EVENT = "mesa://dock-window";
@@ -53,10 +54,9 @@ export function normalizeDockWindowPayload(
 }
 
 export async function dockIntoMainWindow(payload: DockWindowPayload): Promise<void> {
-  const [{ emitTo }, { getCurrentWebviewWindow }] = await Promise.all([
-    import("@tauri-apps/api/event"),
-    import("@tauri-apps/api/webviewWindow"),
-  ]);
+  // webviewWindow stays a dynamic import — it is not in the entry chunk and
+  // only popped-out windows ever call this. event.js is already startup code.
+  const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   await emitTo("main", DOCK_WINDOW_EVENT, payload);
   await getCurrentWebviewWindow().close();
 }

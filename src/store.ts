@@ -71,7 +71,10 @@ import {
   serializeEvents,
   type CalEvent,
 } from "./lib/daily";
+import { listen } from "@tauri-apps/api/event";
+import { stat } from "@tauri-apps/plugin-fs";
 import { planKeyMigration } from "./lib/migrate";
+import { invalidatePdfThumb } from "./lib/pdfThumb";
 import { forgetRecentVault, rememberRecentVault } from "./lib/recentVaults";
 import { updateTaskLine, type TaskLinePatch } from "./lib/tasks";
 import { getPiSessionSnapshot } from "./lib/piSessionBridge";
@@ -474,7 +477,6 @@ export const useAppStore = create<AppState>((set, get) => {
       // no note metadata is needed (only markdown becomes a graph node).
       // Best-effort stat for sort ordering.
       try {
-        const { stat } = await import("@tauri-apps/plugin-fs");
         const s = await stat(path);
         file.size = s.size;
         file.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
@@ -654,11 +656,9 @@ export const useAppStore = create<AppState>((set, get) => {
           // Refresh its stat so sidebar sorting stays accurate.
           if (file.ext === "pdf") {
             // Stale hover thumbnails must not survive an on-disk change.
-            const { invalidatePdfThumb } = await import("./lib/pdfThumb");
             invalidatePdfThumb(file.path);
           }
           try {
-            const { stat } = await import("@tauri-apps/plugin-fs");
             const s = await stat(file.path);
             file.size = s.size;
             file.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
@@ -692,7 +692,6 @@ export const useAppStore = create<AppState>((set, get) => {
     if (activityBridgeReady || !IN_TAURI) return;
     activityBridgeReady = true;
     try {
-      const { listen } = await import("@tauri-apps/api/event");
       await listen<string>("activity", async (ev) => {
         try {
           const raw = ev.payload as unknown;
@@ -770,7 +769,6 @@ export const useAppStore = create<AppState>((set, get) => {
     if (!IN_TAURI) return Promise.resolve();
     if (!syncBridgeReady) {
       syncBridgeReady = (async () => {
-        const { listen } = await import("@tauri-apps/api/event");
         await listen<SyncLogEntry>(SYNC_LOG_EVENT, (ev) => {
           appendSyncLog(ev.payload);
         });

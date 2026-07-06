@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
+import type { Terminal } from "@xterm/xterm";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
@@ -136,8 +136,31 @@ function setSharedPiFontSize(next: number): void {
   SHARED_PI_SESSION.fit?.fit();
 }
 
-function getSharedPiTerminal(): Terminal {
-  if (SHARED_PI_SESSION.terminal) return SHARED_PI_SESSION.terminal;
+// xterm.js is the heaviest npm dependency in the startup path and is only
+// needed once a Pi surface actually mounts, so it loads on demand (same
+// stance as the pdf-lib split in lib/pdfBytes.ts: keep heavyweight engines
+// out of the startup bundle). The in-flight promise is cached because the
+// terminal is a shared singleton — concurrent mounts (overlay + docked pane)
+// must not race two Terminal instances into existence.
+let sharedPiTerminalPromise: Promise<Terminal> | null = null;
+
+function getSharedPiTerminal(): Promise<Terminal> {
+  if (SHARED_PI_SESSION.terminal) return Promise.resolve(SHARED_PI_SESSION.terminal);
+  if (!sharedPiTerminalPromise) {
+    sharedPiTerminalPromise = createSharedPiTerminal();
+  }
+  return sharedPiTerminalPromise;
+}
+
+async function createSharedPiTerminal(): Promise<Terminal> {
+  // NOTE: xterm.css stays statically imported in main.tsx — it must sit
+  // BEFORE styles.css in the cascade (Mesa's .xterm-host overrides win by
+  // order at equal specificity, e.g. viewport overflow-y). Only the JS is
+  // deferred; the stylesheet is ~2 kB gzipped.
+  const [{ Terminal }, { FitAddon }] = await Promise.all([
+    import("@xterm/xterm"),
+    import("@xterm/addon-fit"),
+  ]);
 
   const term = new Terminal({
     allowProposedApi: false,
@@ -478,6 +501,9 @@ export function AgentSurface({
   const pendingAttachRef = useRef<string | null>(attachSessionId);
   const xtermRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Flips once the lazily-loaded shared terminal is attached to this surface;
+  // the session effect keys on it because xtermRef alone can't retrigger it.
+  const [termReady, setTermReady] = useState(false);
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const [terminalSize, setTerminalSize] = useState({ cols: 80, rows: 24 });
   const [fontSize, setFontSize] = useState(sharedPiFontSize);
@@ -509,37 +535,49 @@ export function AgentSurface({
   useEffect(() => {
     const host = terminalHostRef.current;
     if (!host) return;
+    // Push synchronously on mount: PI_HOST_STACK order must stay mount order
+    // even while the xterm chunk is still loading.
     PI_HOST_STACK.push(host);
-    const term = getSharedPiTerminal();
-    term.options.fontSize = sharedPiFontSize;
-    if (!term.element) {
-      term.open(host);
-    } else if (term.element.parentElement !== host) {
-      host.appendChild(term.element);
-    }
-    term.focus();
-    xtermRef.current = term;
-    fitRef.current = SHARED_PI_SESSION.fit;
-    sharedPiFontSizeListeners.add(setFontSize);
-    setFontSize(sharedPiFontSize);
-
-    const syncSize = () => {
-      try {
-        // fit() → term.onResize → terminal_resize: PTY propagation is owned
-        // by the shared onResize hook so no resize path can be missed.
-        fitRef.current?.fit();
-        setTerminalSize({ cols: term.cols, rows: term.rows });
-      } catch {
-        /* terminal may not be fully mounted yet */
+    let alive = true;
+    let disposeSizeSync: (() => void) | null = null;
+    void getSharedPiTerminal().then((term) => {
+      if (!alive) return; // surface unmounted before the xterm chunk arrived
+      term.options.fontSize = sharedPiFontSize;
+      if (!term.element) {
+        term.open(host);
+      } else if (term.element.parentElement !== host) {
+        host.appendChild(term.element);
       }
-    };
-    const resizeObserver = new ResizeObserver(syncSize);
-    resizeObserver.observe(host);
-    const raf = window.requestAnimationFrame(syncSize);
+      term.focus();
+      xtermRef.current = term;
+      fitRef.current = SHARED_PI_SESSION.fit;
+      sharedPiFontSizeListeners.add(setFontSize);
+      setFontSize(sharedPiFontSize);
+
+      const syncSize = () => {
+        try {
+          // fit() → term.onResize → terminal_resize: PTY propagation is owned
+          // by the shared onResize hook so no resize path can be missed.
+          fitRef.current?.fit();
+          setTerminalSize({ cols: term.cols, rows: term.rows });
+        } catch {
+          /* terminal may not be fully mounted yet */
+        }
+      };
+      const resizeObserver = new ResizeObserver(syncSize);
+      resizeObserver.observe(host);
+      const raf = window.requestAnimationFrame(syncSize);
+      disposeSizeSync = () => {
+        window.cancelAnimationFrame(raf);
+        resizeObserver.disconnect();
+      };
+      // Tell the session effect the terminal is attached and ready.
+      setTermReady(true);
+    });
 
     return () => {
-      window.cancelAnimationFrame(raf);
-      resizeObserver.disconnect();
+      alive = false;
+      disposeSizeSync?.();
       sharedPiFontSizeListeners.delete(setFontSize);
       xtermRef.current = null;
       fitRef.current = null;
@@ -605,7 +643,7 @@ export function AgentSurface({
     return () => {
       alive = false;
     };
-  }, [vaultPath, contextText]);
+  }, [termReady, vaultPath, contextText]);
 
   // When the embedded Pi agent uses its `browse` tool, Mesa mirrors the
   // navigation here — pop the wing open so the user can watch the agent work.

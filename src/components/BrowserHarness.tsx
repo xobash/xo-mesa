@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
 import { archiveRelPath, resolveNavTarget, webSearchUrl } from "../lib/agent";
 import { rectsDiffer, rectUsable, roundRect, type HarnessRect } from "../lib/harness";
@@ -167,9 +168,13 @@ export function BrowserHarness({
   const [nativeOk, setNativeOk] = useState<boolean | null>(IN_TAURI ? null : false);
   // Calibration mode: dashed outline on the intended slot rect + a diagnostics
   // row with the native side's numbers and placement nudge buttons. Click the
-  // status line to toggle. TEMPORARILY default-on while the macOS webview
-  // placement offset is being calibrated on a live build.
-  const [debugCal, setDebugCal] = useState(true);
+  // status line to toggle. Off by default — the macOS titlebar-offset
+  // calibration this was added for is confirmed fixed (frame height − DOM
+  // viewport height, see harness.rs `content_y_offset`); leaving it on by
+  // default cost every session a permanent 1Hz `harness_status` IPC poll for
+  // no reason. Still toggleable by clicking the status line if it's ever
+  // needed again.
+  const [debugCal, setDebugCal] = useState(false);
   const [diag, setDiag] = useState<HarnessDiag | null>(null);
   const lastSentRef = useRef<HarnessRect | null>(null);
   const frameLoadedRef = useRef(false);
@@ -178,6 +183,9 @@ export function BrowserHarness({
   const lastPageRef = useRef<BrowsePage | null>(null);
   const loadSeqRef = useRef(0);
   const modeRef = useRef<FrameMode>("start");
+  // Tracks the last "Open webview" window so a repeated click on the same
+  // target focuses it instead of spawning another native OS window/process.
+  const externalWindowRef = useRef<{ label: string; url: string } | null>(null);
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
@@ -246,7 +254,12 @@ export function BrowserHarness({
   };
 
   // --- native webview path (desktop default) -------------------------------
-  const nativeNavigate = async (url: string) => {
+  // One retry before giving up: most `harness_navigate` failures are one-off
+  // hiccups (the activity server was still starting, a transient wry/webview
+  // error), not "this platform can't do multiwebview" — retrying once avoids
+  // permanently downgrading a whole session to the legacy reader path (fake
+  // UA, no JS) over a glitch that would have gone away on its own.
+  const nativeNavigate = async (url: string, attempt = 0): Promise<void> => {
     setLoadError("");
     if (!url) {
       setMode("start");
@@ -260,12 +273,26 @@ export function BrowserHarness({
       setNativeOk(true);
       setMode("native");
     } catch (e) {
-      // Multiwebview unavailable on this platform/build — legacy path for the
-      // rest of the session, and tell the user why fidelity dropped.
+      if (attempt < 1) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+        return nativeNavigate(url, attempt + 1);
+      }
+      // Genuinely unavailable on this platform/build — legacy path for the
+      // rest of the session, and tell the user why fidelity dropped. The
+      // status row offers a one-click way back once native mode recovers.
       setNativeOk(false);
       setLoadError(`native webview unavailable: ${String(e)}`);
       await loadUrl(url);
     }
+  };
+
+  // Manual recovery: native mode downgraded (permanently for this session,
+  // absent this) but the underlying cause — a slow activity-server start, a
+  // transient webview error — may well have cleared by now. Re-arm and try
+  // again instead of forcing a close/reopen of the whole wing.
+  const retryNative = () => {
+    setNativeOk(null);
+    if (browserUrl) void nativeNavigate(browserUrl);
   };
 
   const navigate = (rawValue = "", opts?: { skipHistory?: boolean }) => {
@@ -368,19 +395,35 @@ export function BrowserHarness({
 
   // Native mode: follow the frame slot's on-screen rect every frame (wing
   // slide animation, overlay window drags, pane resizes). Pushes only when
-  // the rounded rect actually changes.
+  // the rounded rect actually changes from the last CONFIRMED position —
+  // `confirmed` only advances once the native side acks the call, so a
+  // dropped/failed `harness_bounds` (a transient IPC hiccup) gets retried on
+  // the very next frame instead of leaving the webview stuck wherever it
+  // last landed. `inFlight` skips issuing a new call while one is still
+  // pending so a slow ack doesn't pile up redundant concurrent IPC round
+  // trips during a slide/resize.
   useEffect(() => {
     if (mode !== "native") return;
     let raf = 0;
-    let last: HarnessRect | null = null;
+    let confirmed: HarnessRect | null = null;
+    let inFlight = false;
     const tick = () => {
       const el = frameSlotRef.current;
-      if (el) {
+      if (el && !inFlight) {
         const rect = roundRect(el.getBoundingClientRect());
-        if (rectUsable(rect) && rectsDiffer(last, rect)) {
-          last = rect;
+        if (rectUsable(rect) && rectsDiffer(confirmed, rect)) {
           lastSentRef.current = rect;
-          void invoke("harness_bounds", { ...rect, viewportH: window.innerHeight }).catch(() => {});
+          inFlight = true;
+          invoke("harness_bounds", { ...rect, viewportH: window.innerHeight })
+            .then(() => {
+              confirmed = rect;
+            })
+            .catch(() => {
+              /* left unconfirmed on purpose — retried next frame */
+            })
+            .finally(() => {
+              inFlight = false;
+            });
         }
       }
       raf = window.requestAnimationFrame(tick);
@@ -398,7 +441,6 @@ export function BrowserHarness({
     let alive = true;
     void (async () => {
       try {
-        const { listen } = await import("@tauri-apps/api/event");
         const un = await listen<{ url?: string }>("mesa://harness-nav", (ev) => {
           const url = ev.payload?.url;
           if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return;
@@ -407,7 +449,7 @@ export function BrowserHarness({
         if (!alive) un();
         else unlisten = un;
       } catch {
-        /* @tauri-apps/api/event unavailable */
+        /* event listener unavailable */
       }
     })();
     return () => {
@@ -528,21 +570,49 @@ export function BrowserHarness({
     setArchiveStatus(`Archived ${rel}`);
   };
 
+  // Reliability note: Tauri's `WebviewWindow` constructor is fire-and-forget
+  // internally — it kicks off `invoke('plugin:webview|create_webview_window')`
+  // and reports outcome later via `tauri://created`/`tauri://error` events, it
+  // never throws synchronously for a real creation failure. The old `try {
+  // new WebviewWindow(...) } catch` here could never actually catch anything;
+  // a failed window silently vanished with the user none the wiser. Listening
+  // for the real events surfaces failures and confirms success.
   const openBrowserExternally = async () => {
     const target = browserUrl || webSearchUrl(browserInput);
     if (!target) return;
     if (IN_TAURI) {
       try {
         const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-        new WebviewWindow(`browser-${Date.now().toString(36)}`, {
+        // Repeated clicks for the SAME page focus the window already open
+        // for it instead of piling up another native OS window/process.
+        const existing = externalWindowRef.current;
+        if (existing && existing.url === target) {
+          const win = await WebviewWindow.getByLabel(existing.label);
+          if (win) {
+            await win.setFocus().catch(() => {});
+            return;
+          }
+          externalWindowRef.current = null;
+        }
+        const label = `pi-ext-browser-${Date.now().toString(36)}`;
+        const win = new WebviewWindow(label, {
           url: target,
           title: "Pi browser",
           width: 1100,
           height: 760,
           resizable: true,
         });
+        externalWindowRef.current = { label, url: target };
+        win.once("tauri://error", (e) => {
+          if (externalWindowRef.current?.label === label) {
+            externalWindowRef.current = null;
+          }
+          setLoadError(`could not open external webview: ${String(e.payload ?? e)}`);
+          window.open(target, "_blank", "noopener,noreferrer");
+        });
         return;
-      } catch {
+      } catch (e) {
+        setLoadError(`could not open external webview: ${String(e)}`);
         /* fallback to browser tab below */
       }
     }
@@ -709,24 +779,45 @@ export function BrowserHarness({
           </button>
         </div>
       )}
-      {(mode === "reader" || mode === "native" || loading || loadError || archiveStatus) && (
+      {(mode === "reader" ||
+        mode === "native" ||
+        (IN_TAURI && nativeOk === false) ||
+        loading ||
+        loadError ||
+        archiveStatus) && (
         <div
           className="agent-browser-status"
           onClick={() => setDebugCal((v) => !v)}
           title="Click to toggle placement calibration"
         >
-          {loading
-            ? "Loading…"
-            : loadError
-              ? `Fetch failed: ${loadError}`
-              : mode === "reader"
-                ? "Reader view — this site blocks embedding; use ⧉ for the full site."
-                : mode === "native"
-                  ? "Live page — real native webview; Pi reads exactly what you see."
-                  : archiveStatus}
-          {(mode === "reader" || mode === "native") && archiveStatus
-            ? ` · ${archiveStatus}`
-            : ""}
+          <span>
+            {loading
+              ? "Loading…"
+              : loadError
+                ? `Fetch failed: ${loadError}`
+                : mode === "reader"
+                  ? "Reader view — this site blocks embedding; use ⧉ for the full site."
+                  : mode === "native"
+                    ? "Live page — real native webview; Pi reads exactly what you see."
+                    : IN_TAURI && nativeOk === false
+                      ? "Legacy view — the native webview isn't active this session."
+                      : archiveStatus}
+            {(mode === "reader" || mode === "native") && archiveStatus
+              ? ` · ${archiveStatus}`
+              : ""}
+          </span>
+          {IN_TAURI && nativeOk === false && browserUrl && (
+            <button
+              className="agent-browser-status-retry"
+              onClick={(e) => {
+                e.stopPropagation();
+                retryNative();
+              }}
+              title="Retry the native webview for this page"
+            >
+              Try live view again
+            </button>
+          )}
         </div>
       )}
       {debugCal && mode === "native" && (

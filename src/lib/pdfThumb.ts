@@ -1,3 +1,4 @@
+import { readFile } from "@tauri-apps/plugin-fs";
 import { IN_TAURI, urlForPath } from "./vault";
 import { sanitizePdfBytes } from "./pdfBytes";
 
@@ -59,7 +60,6 @@ export function warmPdfEngine(): void {
 
 async function loadPdfBytes(path: string): Promise<Uint8Array> {
   if (IN_TAURI) {
-    const { readFile } = await import("@tauri-apps/plugin-fs");
     return readFile(path);
   }
   const response = await fetch(urlForPath(path));

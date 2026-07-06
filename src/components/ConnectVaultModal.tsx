@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
 import {
   fetchRemoteVaultInfo,
@@ -49,7 +50,6 @@ export function ConnectVaultModal({ onClose }: { onClose: () => void }) {
     let unlisten: (() => void) | null = null;
     void (async () => {
       try {
-        const { listen } = await import("@tauri-apps/api/event");
         unlisten = await listen<DiscoveryPacket>("sync://discovered", (event) => {
           const peer = peerFromDiscovery(event.payload);
           if (!peer || !alive || !peer.listening) return; // only devices sharing

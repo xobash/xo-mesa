@@ -4871,11 +4871,35 @@ body,
 }
 .agent-browser-status {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   border-top: 1px solid var(--border);
   padding: 7px 12px;
   color: var(--text-faint);
   font-size: 12px;
   background: var(--bg-1);
+}
+.agent-browser-status span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-browser-status-retry {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  background: var(--bg-3);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.agent-browser-status-retry:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 @media (max-width: 860px) {
   .agent-surface.terminal-first {

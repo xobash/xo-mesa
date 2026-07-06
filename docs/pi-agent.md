@@ -211,7 +211,21 @@ not an iframe:
   legacy two-tier iframe path for the session: `browse_fetch` header check →
   direct iframe when framing is allowed, sandboxed srcdoc reader mode (no
   `allow-same-origin`, injected `<base>` + postMessage navigation bridge) when
-  blocked. The browser demo (no Rust) always uses the legacy path.
+  blocked. The browser demo (no Rust) always uses the legacy path. Reader
+  mode's fetch (`browse.rs`) deliberately sends a bare, generic user agent so
+  UA-sniffing sites serve their simplified/legacy HTML variant (easier for the
+  static parser to reconstruct) — this is why a page that falls into reader
+  mode can visibly look "old" (Google's classic bare-bones layout is the
+  textbook example); it is not a caching or rendering bug, it is that UA.
+- One failed `harness_navigate` used to permanently downgrade the whole wing
+  session to that legacy path over what is usually a one-off hiccup (the
+  loopback activity server was still starting, a transient wry/webview-runtime
+  error) rather than a real platform limitation. `harness_navigate` now waits
+  briefly for the activity server if it isn't up yet and recreates a
+  misbehaving existing webview once before erroring; the frontend also retries
+  once before giving up. If native mode still downgrades, the status row (only
+  shown once nativeOk is confirmed false) offers a one-click "Try live view
+  again" instead of requiring the wing to be closed and reopened.
 
 Address-bar semantics (shared with the Pi mirror path via `resolveNavTarget`):
 

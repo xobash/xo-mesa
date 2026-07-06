@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore, getStore } from "./store";
 import { IN_TAURI, DEMO_ROOT, fileKind, isEditableTextExt } from "./lib/vault";
 import { MediaView } from "./components/MediaView";
@@ -888,7 +889,7 @@ export default function App() {
     let alive = true;
     let unlistenDock: (() => void) | null = null;
     let unlistenAgent: (() => void) | null = null;
-    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+    void (async () => {
       const offDock = await listen(DOCK_WINDOW_EVENT, async (event) => {
         const payload = normalizeDockWindowPayload(event.payload);
         if (!payload) return;
@@ -921,7 +922,7 @@ export default function App() {
         offDock();
         offAgent();
       }
-    });
+    })();
     return () => {
       alive = false;
       unlistenDock?.();

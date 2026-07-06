@@ -345,6 +345,16 @@ export function GraphView() {
   }>({ sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] });
   // Dirty flag: when false and sim is settled, we skip the expensive redraw.
   const needsRedrawRef = useRef(true);
+  // Dirty flag for the idle no-overlap resolver. resolveOverlaps() reads/writes
+  // only LAYOUT x/y; ambient living motion writes renderX/renderY and never
+  // touches x/y, so once the resolver reports moved=false and the sim has
+  // stopped ticking, re-running it every idle frame is a provable no-op (it just
+  // rebuilds a hash-grid Map to confirm nothing moved — ~1ms @650n / ~4ms
+  // @2000n wasted per frame). We freeze here and skip the resolver until layout
+  // x/y can change again. The ONLY force-node x/y writers are sim.tick() (gated
+  // on alpha>0.004) and resolveOverlaps itself; the tick block below clears this
+  // flag whenever the sim ticks, so any real movement re-arms the resolver.
+  const layoutSettledRef = useRef(false);
   const transformRef = useRef<Transform>({ x: 0, y: 0, k: 1 });
   const targetKRef = useRef(1); // for smooth wheel zoom
   const sizeRef = useRef({ w: 800, h: 600 });
@@ -1048,13 +1058,17 @@ export function GraphView() {
         const b = lnow * 0.27 + phase * 1.37;
         const cx = x - sizeRef.current.w / 2;
         const cy = y - sizeRef.current.h / 2;
+        // Distance from viewport center, reused for both the radial breathe
+        // scale and the inward-unit-vector — one hypot per node per frame, not
+        // two (identical value; ~20% off this loop's cost at stress scale).
+        const len = Math.hypot(cx, cy);
         const radial = Math.min(
           1.8,
-          Math.hypot(cx, cy) / Math.max(240, sizeRef.current.w * 0.42)
+          len / Math.max(240, sizeRef.current.w * 0.42)
         );
         const breathe =
           Math.sin(lnow * 0.36 + phase * 0.18) * livingPx * 0.55 * radial;
-        const invLen = 1 / Math.max(1, Math.hypot(cx, cy));
+        const invLen = 1 / Math.max(1, len);
         const mingle = Math.sin(lnow * 0.21 + phase * 0.51) * livingPx * 0.28;
         n.renderX =
           x +
@@ -1714,6 +1728,9 @@ export function GraphView() {
           if (isMovingNode) clampNodeVelocities(dragRef.current.node);
         }
         needsRedrawRef.current = true;
+        // The sim moved layout x/y — re-arm the idle overlap resolver so it
+        // re-settles and re-freezes at the new rest positions.
+        layoutSettledRef.current = false;
       }
       if (zooming) needsRedrawRef.current = true;
 
@@ -1729,9 +1746,14 @@ export function GraphView() {
       // (its original purpose, section EE) to guarantee no overlap at rest.
       // Obsidian/Logseq/Athens have no such hard resolver at all during motion.
       const settling = isNodeDragging || (sim ? sim.alpha() > 0.02 : false);
-      if (!settling && forceNodesRef.current.length > 0) {
+      if (!settling && !layoutSettledRef.current && forceNodesRef.current.length > 0) {
         if (resolveOverlaps(forceNodesRef.current, nodeRadius, OVERLAP_GAP, 2)) {
           needsRedrawRef.current = true;
+        } else {
+          // Fully resolved and the sim isn't ticking (settling is false): layout
+          // x/y are now frozen and overlap-free. Stop rebuilding the grid every
+          // frame until the sim ticks again (which clears this flag).
+          layoutSettledRef.current = true;
         }
       }
 

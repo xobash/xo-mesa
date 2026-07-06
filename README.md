@@ -170,7 +170,7 @@ npm run dev
 ### Build
 
 ```bash
-npm run build         # type-check + bundle the web assets
+npm run build         # bundle the web assets (vite build)
 npm run mesa:build    # package the desktop app (macOS / Windows / Linux)
 ```
 

@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { useAppStore } from "../store";
 import { urlForPath, fileKind } from "../lib/vault";
+import { warmPdfEngine } from "../lib/pdfThumb";
 import { RtfView } from "./RtfView";
 import { HtmlView } from "./HtmlView";
 
@@ -15,7 +16,9 @@ const PdfView = lazy(() =>
 // longer pays ~1 MB of module download+parse on the interaction path.
 function prefetchPdfStack(): void {
   void import("./PdfView");
-  void import("../lib/pdfThumb").then((m) => m.warmPdfEngine());
+  // pdfThumb itself is a tiny always-bundled module (PdfThumb.tsx imports it
+  // statically) — the actual prefetch is warmPdfEngine() starting pdf.js.
+  warmPdfEngine();
 }
 if (typeof window !== "undefined") {
   if (typeof window.requestIdleCallback === "function") {

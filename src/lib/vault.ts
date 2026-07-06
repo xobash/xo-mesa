@@ -8,6 +8,10 @@ import {
   rename,
   mkdir,
   exists,
+  stat,
+  watch,
+  // plugin-dialog owns the plain `open` name above.
+  open as openFsFile,
 } from "@tauri-apps/plugin-fs";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { VaultFile } from "../types";
@@ -198,7 +202,6 @@ export async function scanVault(root: string): Promise<VaultFile[]> {
   out.sort((a, b) => a.relPath.localeCompare(b.relPath));
   // best-effort metadata for sidebar sorting (parallel, never fatal)
   try {
-    const { stat } = await import("@tauri-apps/plugin-fs");
     await Promise.all(
       out.map(async (f) => {
         try {
@@ -269,9 +272,7 @@ export function decodePeekBytes(bytes: Uint8Array): string {
 export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<string> {
   if (isDemo(file.path)) return demoRead(file.relPath);
   try {
-    // plugin-dialog also exports `open`, so pull the fs handle dynamically.
-    const { open: openFile } = await import("@tauri-apps/plugin-fs");
-    const fh = await openFile(file.path, { read: true });
+    const fh = await openFsFile(file.path, { read: true });
     try {
       const buf = new Uint8Array(maxBytes);
       let filled = 0;
@@ -514,7 +515,6 @@ export async function watchVault(
 ): Promise<() => void> {
   if (!IN_TAURI || root.startsWith(DEMO_ROOT)) return () => {};
   try {
-    const { watch } = await import("@tauri-apps/plugin-fs");
     // Coalesce raw events into a batch with a coarse kind. The Tauri fs watcher
     // emits one event per path-change with a structured `type` describing the
     // nature of the change. We reduce this to create/modify/remove so the store
@@ -596,7 +596,6 @@ export async function recoverWriteArtifacts(
     const found: FoundArtifact[] = [];
     await collectArtifacts(root, found);
     if (!found.length) return result;
-    const { stat } = await import("@tauri-apps/plugin-fs");
     await Promise.all(
       found.map(async (a) => {
         try {
@@ -769,7 +768,6 @@ export async function removeFile(absPath: string): Promise<void> {
     return;
   }
   try {
-    const { remove } = await import("@tauri-apps/plugin-fs");
     await remove(absPath);
   } catch {
     /* ignore */
@@ -790,7 +788,6 @@ export async function removeVaultEntry(
     }
     return;
   }
-  const { remove } = await import("@tauri-apps/plugin-fs");
   await remove(joinPath(root, clean), { recursive });
 }
 
