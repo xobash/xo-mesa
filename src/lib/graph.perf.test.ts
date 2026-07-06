@@ -354,6 +354,8 @@ describe("liveness hypot dedup parity (Round 2, 2026-07-03)", () => {
 
 describe("graph perf baseline", () => {
   it("prints baseline numbers", () => {
+    // resolver-settle passes below run into the seconds on CI runners; default
+    // Vitest timeout (5000ms) isn't enough headroom.
     const rows: string[] = [];
     for (const [label, nNotes, lpn] of [
       ["demo-ish 650n", 650, 4],
@@ -423,5 +425,5 @@ describe("graph perf baseline", () => {
 
     // eslint-disable-next-line no-console
     console.log("\n==== GRAPH PERF BASELINE ====\n" + rows.join("\n") + "\n=============================");
-  });
+  }, 20000);
 });
