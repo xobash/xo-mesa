@@ -18,6 +18,7 @@ import type { VaultFile } from "../types";
 import {
   persistVerifiedBytes,
   parseWriteArtifactName,
+  bytesEqual,
   type VerifiedWriteFs,
 } from "./verifiedWrite";
 import {
@@ -219,29 +220,48 @@ export async function scanVault(root: string): Promise<VaultFile[]> {
   return out;
 }
 
+/**
+ * Every `readDir` is an IPC round-trip, so walking one directory at a time made
+ * vault-open latency scale with the directory COUNT. Sibling directories are
+ * listed a level at a time in bounded batches instead; `scanVault` sorts by
+ * `relPath` afterwards, so traversal order never reaches the result.
+ */
+const WALK_BATCH = 16;
+
 async function walk(dir: string, root: string, out: VaultFile[]): Promise<void> {
-  let entries;
-  try {
-    entries = await readDir(dir);
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    if (!e.name || e.name.startsWith(".")) continue;
-    const full = joinPath(dir, e.name);
-    if (e.isDirectory) {
-      if (e.name === "node_modules" || e.name === ".git") continue;
-      await walk(full, root, out);
-    } else if (e.isFile) {
-      const ext = extOf(e.name);
-      out.push({
-        path: full,
-        relPath: toRel(root, full),
-        name: stripExt(e.name),
-        ext,
-        isMarkdown: ext === "md" || ext === "markdown",
-      });
+  let level = [dir];
+  while (level.length) {
+    const next: string[] = [];
+    for (let i = 0; i < level.length; i += WALK_BATCH) {
+      await Promise.all(
+        level.slice(i, i + WALK_BATCH).map(async (current) => {
+          let entries;
+          try {
+            entries = await readDir(current);
+          } catch {
+            return;
+          }
+          for (const e of entries) {
+            if (!e.name || e.name.startsWith(".")) continue;
+            const full = joinPath(current, e.name);
+            if (e.isDirectory) {
+              if (e.name === "node_modules" || e.name === ".git") continue;
+              next.push(full);
+            } else if (e.isFile) {
+              const ext = extOf(e.name);
+              out.push({
+                path: full,
+                relPath: toRel(root, full),
+                name: stripExt(e.name),
+                ext,
+                isMarkdown: ext === "md" || ext === "markdown",
+              });
+            }
+          }
+        })
+      );
     }
+    level = next;
   }
 }
 
@@ -291,19 +311,29 @@ export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<strin
   }
 }
 
-export async function writeNote(file: VaultFile, content: string): Promise<void> {
+export async function writeNote(
+  file: VaultFile,
+  content: string,
+  expectedCurrentContent?: string
+): Promise<void> {
   if (isDemo(file.path)) {
     demoWrite(file.relPath, content);
     return;
   }
   const bytes = new TextEncoder().encode(content);
-  await persistVerifiedBytes(file.path, bytes, VAULT_FS);
+  await persistVerifiedBytes(file.path, bytes, VAULT_FS, {
+    expectedCurrentBytes:
+      expectedCurrentContent === undefined
+        ? undefined
+        : new TextEncoder().encode(expectedCurrentContent),
+  });
 }
 
 export async function createNote(
   root: string,
   relPath: string,
-  content = ""
+  content = "",
+  expectedMissing = false
 ): Promise<VaultFile> {
   const full = joinPath(root, relPath);
   const name = baseName(relPath);
@@ -319,7 +349,9 @@ export async function createNote(
   } else {
     await ensureDir(parentDir(full)); // create the folder (e.g. Daily/) if needed
     const bytes = new TextEncoder().encode(content);
-    await persistVerifiedBytes(full, bytes, VAULT_FS);
+    await persistVerifiedBytes(full, bytes, VAULT_FS, {
+      expectedCurrentBytes: expectedMissing ? null : undefined,
+    });
   }
   return file;
 }
@@ -442,12 +474,6 @@ export async function importDroppedPaths(
     }
   }
   return created;
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
 }
 
 /**
@@ -594,7 +620,7 @@ export async function recoverWriteArtifacts(
   if (!IN_TAURI || isDemo(root)) return result;
   try {
     const found: FoundArtifact[] = [];
-    await collectArtifacts(root, found);
+    await collectFilesMatching(root, isMesaWriteArtifactName, found);
     if (!found.length) return result;
     await Promise.all(
       found.map(async (a) => {
@@ -638,7 +664,17 @@ export async function recoverWriteArtifacts(
   return result;
 }
 
-async function collectArtifacts(dir: string, out: FoundArtifact[]): Promise<void> {
+/**
+ * Recursively collect `{dir, name}` entries for files whose basename passes
+ * `matches`, using the same directory skip rules as the scan walk
+ * (dot-prefixed, node_modules). Shared by the write-artifact recovery and
+ * agent-snapshot prune sweeps.
+ */
+async function collectFilesMatching(
+  dir: string,
+  matches: (name: string) => boolean,
+  out: { dir: string; name: string }[]
+): Promise<void> {
   let entries;
   try {
     entries = await readDir(dir);
@@ -648,10 +684,9 @@ async function collectArtifacts(dir: string, out: FoundArtifact[]): Promise<void
   for (const e of entries) {
     if (!e.name) continue;
     if (e.isDirectory) {
-      // Same skip rules as the scan walk.
       if (e.name.startsWith(".") || e.name === "node_modules") continue;
-      await collectArtifacts(joinPath(dir, e.name), out);
-    } else if (e.isFile && isMesaWriteArtifactName(e.name)) {
+      await collectFilesMatching(joinPath(dir, e.name), matches, out);
+    } else if (e.isFile && matches(e.name)) {
       out.push({ dir, name: e.name });
     }
   }
@@ -676,7 +711,7 @@ export async function pruneAgentSnapshots(
   if (!IN_TAURI || isDemo(root)) return result;
   try {
     const found: FoundAgentSnapshot[] = [];
-    await collectAgentSnapshots(root, found);
+    await collectFilesMatching(root, isAgentSnapshotName, found);
     if (!found.length) return result;
     for (const action of planAgentSnapshotPrune(found, Date.now())) {
       const artifactAbs = joinPath(action.dir, action.name);
@@ -691,28 +726,6 @@ export async function pruneAgentSnapshots(
     console.error("[mesa] agent-snapshot prune sweep failed:", e);
   }
   return result;
-}
-
-async function collectAgentSnapshots(
-  dir: string,
-  out: FoundAgentSnapshot[]
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readDir(dir);
-  } catch {
-    return;
-  }
-  for (const e of entries) {
-    if (!e.name) continue;
-    if (e.isDirectory) {
-      // Same skip rules as the write-artifact and scan walks.
-      if (e.name.startsWith(".") || e.name === "node_modules") continue;
-      await collectAgentSnapshots(joinPath(dir, e.name), out);
-    } else if (e.isFile && isAgentSnapshotName(e.name)) {
-      out.push({ dir, name: e.name });
-    }
-  }
 }
 
 /**

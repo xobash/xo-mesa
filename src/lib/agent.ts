@@ -91,6 +91,7 @@ export interface ActivityInfo {
   extensionPath: string;
   goalExtensionPath?: string;
   browserExtensionPath?: string;
+  deepResearchExtensionPath?: string;
 }
 
 /**
@@ -141,6 +142,27 @@ export function piActivityLaunch(info: ActivityInfo | null | undefined): {
       MESA_ACTIVITY_TOKEN: info.token,
     },
     args,
+  };
+}
+
+/**
+ * The Deep Research launch additions: load the deep-research extension (its
+ * progress/finish tools and its fail-safe write/edit block) and mark the run
+ * active so the block engages. These merge on top of `piActivityLaunch` —
+ * Mesa starts the shared Pi session with them only while a Deep Research run
+ * is active, so a normal Pi session never blocks writes.
+ */
+export function piDeepResearchLaunch(
+  info: ActivityInfo | null | undefined,
+  runId: string
+): { env: Record<string, string>; args: string[] } {
+  if (!info?.deepResearchExtensionPath) return { env: {}, args: [] };
+  return {
+    env: {
+      MESA_DEEP_RESEARCH: "1",
+      MESA_DEEP_RESEARCH_RUN_ID: runId,
+    },
+    args: ["--extension", info.deepResearchExtensionPath],
   };
 }
 

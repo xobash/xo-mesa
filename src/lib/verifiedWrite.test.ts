@@ -40,6 +40,30 @@ describe("persistVerifiedBytes", () => {
     expect([...files.keys()]).toEqual(["/vault/test.bin"]);
   });
 
+  it("checks expected current bytes before touching backup, temp, or target", async () => {
+    const original = new Uint8Array([1, 2, 3]);
+    const { fs, files } = makeFs(original);
+    await expect(
+      persistVerifiedBytes("/vault/test.bin", new Uint8Array([9]), fs, {
+        expectedCurrentBytes: new Uint8Array([1, 2, 4]),
+      })
+    ).rejects.toThrow(/changed before the verified write/i);
+    expect(files.get("/vault/test.bin")).toEqual(original);
+    expect([...files.keys()]).toEqual(["/vault/test.bin"]);
+  });
+
+  it("can require a missing target so a late create collision is never overwritten", async () => {
+    const original = new Uint8Array([1, 2, 3]);
+    const { fs, files } = makeFs(original);
+    await expect(
+      persistVerifiedBytes("/vault/test.bin", new Uint8Array([9]), fs, {
+        expectedCurrentBytes: null,
+      })
+    ).rejects.toThrow(/expected missing state/i);
+    expect(files.get("/vault/test.bin")).toEqual(original);
+    expect([...files.keys()]).toEqual(["/vault/test.bin"]);
+  });
+
   it("restores the original bytes when the final write reads back truncated", async () => {
     const original = new Uint8Array([1, 2, 3]);
     const next = new Uint8Array([4, 5, 6, 7]);

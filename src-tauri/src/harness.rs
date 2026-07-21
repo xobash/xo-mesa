@@ -435,6 +435,10 @@ fn create_webview(
 /// wry/webview-runtime hiccup, not a real capability problem. We just
 /// successfully positioned/showed that same webview above, so recreate it
 /// once from scratch before giving up.
+// The parameter list is the IPC contract with BrowserHarness.tsx — every
+// argument arrives as a named field from `invoke`, so bundling them into a
+// struct would only obscure the wire shape.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn harness_navigate(
     window: tauri::Window,
@@ -457,7 +461,7 @@ pub fn harness_navigate(
             let _ = existing.set_position(LogicalPosition::new(x + dx, y + dy));
             let _ = existing.set_size(LogicalSize::new(w, h));
             let _ = existing.show();
-            let mut wv = existing;
+            let wv = existing;
             match wv.navigate(parsed.clone()) {
                 Ok(()) => return Ok(()),
                 Err(first_err) => {

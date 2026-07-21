@@ -17,7 +17,8 @@
  */
 import { describe, it, expect } from "vitest";
 import type { GraphNode, VaultFile } from "../types";
-import { buildNotes, buildGraph, buildNeighbors } from "./graph";
+import { buildNotes, buildGraph, buildNeighbors, backlinksFor } from "./graph";
+import type { NoteMeta } from "../types";
 import { bumpActivityAmount, decayActivity, activeRecords } from "./activity";
 
 // ---- deterministic PRNG so runs are comparable --------------------------
@@ -263,6 +264,47 @@ function idleLinkScans(lc: number, sId: string[], tId: string[], actMap: Map<str
   return work;
 }
 
+// makeResolver — verbatim equivalent of the module-private graph.ts:67-85
+// (needed so the pre-index backlinksFor reference below has the original's
+// cost profile: one resolver build per call, one resolve per rawLink).
+function makeResolverEquiv(
+  notes: Record<string, NoteMeta>
+): (t: string) => string | null {
+  const byTitle = new Map<string, string>();
+  const byRel = new Map<string, string>();
+  for (const id of Object.keys(notes)) {
+    byRel.set(id.toLowerCase(), id);
+    byRel.set(id.toLowerCase().replace(/\.md$/, ""), id);
+    const tl = notes[id].title.toLowerCase();
+    if (!byTitle.has(tl)) byTitle.set(tl, id);
+    for (const alias of notes[id].aliases) {
+      const al = alias.toLowerCase();
+      if (!byTitle.has(al)) byTitle.set(al, id);
+    }
+  }
+  return (target: string): string | null => {
+    const t = target.trim().replace(/\\/g, "/").toLowerCase().replace(/\.md$/, "");
+    const base = t.split("/").pop() ?? t;
+    return byTitle.get(t) ?? byRel.get(t) ?? byTitle.get(base) ?? byRel.get(base) ?? null;
+  };
+}
+
+// backlinksFor — verbatim pre-index implementation (graph.ts before Round 4):
+// full resolver build + resolve of every rawLink, per call. A/B'd against the
+// cached inverted index below.
+function backlinksForUncached(
+  notes: Record<string, NoteMeta>,
+  targetId: string
+): string[] {
+  const resolve = makeResolverEquiv(notes);
+  const out: string[] = [];
+  for (const id of Object.keys(notes)) {
+    if (id === targetId) continue;
+    if (notes[id].rawLinks.some((r) => resolve(r) === targetId)) out.push(id);
+  }
+  return out.sort();
+}
+
 // ---- position seeding ------------------------------------------------------
 function scatter(nodes: GraphNode[], spread: number, seed = 7) {
   const rnd = mulberry32(seed);
@@ -396,6 +438,20 @@ describe("graph perf baseline", () => {
       const actMap = new Map<string, unknown>();
       const tIdleLinks = bench(15, () => idleLinkScans(lc, sId, tIdArr, actMap));
 
+      // A/B backlinksFor (Round 4): old per-call vault scan vs the cached
+      // inverted index. Cold = fresh notes identity per call (forces a
+      // rebuild, the ≤2Hz typing-trigger cost); warm = the Map hit every
+      // additional consumer/file-switch pays.
+      const targetId = files[3].relPath; // an early note = likely hub
+      const tBacklinksOld = bench(9, () => backlinksForUncached(notes, targetId));
+      // Fresh identities pre-allocated outside the timed region (the store's
+      // update already made the new object by the time the index rebuilds).
+      const coldCopies: Record<string, NoteMeta>[] = [];
+      for (let i = 0; i < 5 + 9; i++) coldCopies.push({ ...notes }); // bench = 5 warm-up + 9 timed
+      let cold = 0;
+      const tBacklinksCold = bench(9, () => backlinksFor(coldCopies[cold++], targetId));
+      const tBacklinksWarm = bench(9, () => backlinksFor(notes, targetId));
+
       rows.push(
         `${label}: nodes=${nodes.length} links=${links.length}\n` +
           `  buildNotes      ${fmt(tBuildNotes)} ms\n` +
@@ -407,7 +463,10 @@ describe("graph perf baseline", () => {
           `  graphBounds     ${fmt(tBounds)} ms   PER FRAME (bloom, GraphView.tsx:1098)\n` +
           `  livenessLoop    ${fmt(tLiveness)} ms   PER FRAME (GraphView.tsx:1028)\n` +
           `  livenessDedup   ${fmt(tLivenessDedup)} ms   PER FRAME (single hypot, Round 2)\n` +
-          `  idleLinkScans   ${fmt(tIdleLinks)} ms   PER FRAME (batch2+3 no-op scans)\n`
+          `  idleLinkScans   ${fmt(tIdleLinks)} ms   PER FRAME (batch2+3 no-op scans)\n` +
+          `  backlinks old   ${fmt(tBacklinksOld)} ms   PER CALL pre-Round-4 (each consumer, each file switch)\n` +
+          `  backlinks cold  ${fmt(tBacklinksCold)} ms   PER NOTES CHANGE (index rebuild, Round 4)\n` +
+          `  backlinks warm  ${fmt(tBacklinksWarm)} ms   PER CALL after index (Map hit, Round 4)\n`
       );
     }
 

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore, getStore } from "./store";
 import { IN_TAURI, DEMO_ROOT, fileKind, isEditableTextExt } from "./lib/vault";
@@ -8,7 +8,6 @@ import { TopBar } from "./components/TopBar";
 import { FileTree } from "./components/FileTree";
 import { TagList } from "./components/TagList";
 import { BookmarksList } from "./components/BookmarksList";
-import { Editor } from "./components/Editor";
 import { Preview } from "./components/Preview";
 import { GraphView } from "./components/GraphView";
 import { StatusBar } from "./components/StatusBar";
@@ -25,6 +24,7 @@ import { DocumentView, DocPopoutModal } from "./components/DocumentView";
 import { DropOverlay } from "./components/DropOverlay";
 import { PreviewCard } from "./components/PreviewCard";
 import { startViewDrag } from "./components/panelDrag";
+import { useApplyTheme } from "./components/useApplyTheme";
 import { SORT_LABELS } from "./lib/sort";
 import {
   adjacentPath,
@@ -38,14 +38,45 @@ import {
   GLOBAL_AGENT_EVENT,
   closeCurrentPopoutWindow,
   dockIntoMainWindow,
+  installNativeDragDock,
   normalizeDockWindowPayload,
+  startDraggingCurrentWindow,
 } from "./lib/windowDock";
 import {
   claimKeyboardShortcut,
   isPlainShiftTab,
   isTextEntryTarget,
 } from "./lib/shortcuts";
-import type { SortMode, RightPanel, WorkspaceView, PaneView } from "./types";
+import type { SortMode, RightPanel, WorkspaceView } from "./types";
+import { consumeGraphWindowBootstrap } from "./lib/graphWindowBootstrap";
+
+// The CodeMirror editor stack (~590 kB min across codemirror + @lezer) is the
+// entry chunk's largest resident, and only the main window's DocPane ever
+// renders it — popout windows (?doc / ?panel / ?agent) boot the same entry
+// chunk and never mount the editor. Load it lazily so the shell (and every
+// popout) parses half as much JS; same stance as the pdf-lib and xterm splits.
+const Editor = lazy(() =>
+  import("./components/Editor").then((m) => ({ default: m.Editor }))
+);
+
+const initialRouteParams = new URLSearchParams(location.search);
+let graphWindowBootstrapped = false;
+if (initialRouteParams.get("panel") === "graph") {
+  const bootstrapKey = initialRouteParams.get("graphBootstrap");
+  const snapshot = bootstrapKey ? consumeGraphWindowBootstrap(bootstrapKey) : null;
+  if (snapshot) {
+    useAppStore.setState((state) => ({
+      vaultPath: snapshot.vaultPath,
+      vaultName: snapshot.vaultName,
+      files: snapshot.files,
+      notes: snapshot.notes,
+      settings: { ...state.settings, ...snapshot.settings },
+      loading: false,
+      status: `${Object.keys(snapshot.notes).length} notes`,
+    }));
+    graphWindowBootstrapped = true;
+  }
+}
 
 /** The document editor stack (tabs + editor / code / media), usable in either
  *  layout region so the editor can be swapped between center and right. */
@@ -62,7 +93,11 @@ function DocPane() {
       <Tabs />
       {kind === "text" ? (
         editable ? (
-          <Editor />
+          // The fallback mirrors the editor's wrapper so the pane doesn't
+          // jump during the (local, ~ms) lazy-chunk load.
+          <Suspense fallback={<div className="editor-wrap" />}>
+            <Editor />
+          </Suspense>
         ) : (
           <CodeView rel={activePath!} />
         )
@@ -104,7 +139,7 @@ const VIEW_LABEL: Record<WorkspaceView, string> = {
 };
 
 /** The right region: a vertical stack of panels (any number visible at once),
- *  each with a header (drag to reorder / pop out, × to close) and resizable
+ *  each with a header (drag to reorder / edge-tear-off, × to close) and resizable
  *  dividers. Panels are added/removed from the top bar or by dragging here. */
 function RightStack() {
   const stack = useAppStore((s) => s.settings.rightStack);
@@ -112,28 +147,8 @@ function RightStack() {
   const draggingFile = useAppStore((s) => s.draggingFile);
   const keyboardFocus = useAppStore((s) => s.keyboardFocus);
   const removeViewFromWorkspace = useAppStore((s) => s.removeViewFromWorkspace);
-  const openPanelWindow = useAppStore((s) => s.openPanelWindow);
-  const openDocWindow = useAppStore((s) => s.openDocWindow);
-  const openAgentWindow = useAppStore((s) => s.openAgentWindow);
-  const activePath = useAppStore((s) => s.activePath);
   const ref = useRef<HTMLElement | null>(null);
   const [weights, setWeights] = useState<Record<string, number>>({});
-
-  const popOutView = (view: PaneView) => {
-    if (view === "doc") {
-      if (!activePath) return;
-      void openDocWindow(activePath);
-      removeViewFromWorkspace("doc");
-      return;
-    }
-    if (view === "agent") {
-      void openAgentWindow();
-      removeViewFromWorkspace("agent");
-      return;
-    }
-    void openPanelWindow(view);
-    removeViewFromWorkspace(view);
-  };
 
   const startStackResize = (i: number, e: React.PointerEvent) => {
     e.preventDefault();
@@ -204,46 +219,14 @@ function RightStack() {
                 ⠿
               </span>
               <span className="stack-title">{VIEW_LABEL[p]}</span>
-              {p === "doc" ? (
-                <>
-                  <button
-                    className="stack-btn"
-                    disabled={!activePath}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() => popOutView("doc")}
-                    title="Open the active document in a new window"
-                  >
-                    ⤢
-                  </button>
-                  <button
-                    className="stack-btn"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() => removeViewFromWorkspace("doc")}
-                    title="Close editor"
-                  >
-                    ×
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    className="stack-btn"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() => popOutView(p)}
-                    title="Open in a new window"
-                  >
-                    ⤢
-                  </button>
-                  <button
-                    className="stack-btn"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={() => removeViewFromWorkspace(p)}
-                    title="Close"
-                  >
-                    ×
-                  </button>
-                </>
-              )}
+              <button
+                className="stack-btn"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => removeViewFromWorkspace(p)}
+                title={p === "doc" ? "Close editor" : "Close"}
+              >
+                ×
+              </button>
             </div>
             <div className="stack-body">{viewContent(p)}</div>
           </div>
@@ -313,40 +296,40 @@ function CenterRegion() {
 
 /** A panel rendered standalone in its own OS window (?panel=…). */
 function PanelWindow({ kind }: { kind: RightPanel }) {
+  const routeParams = useMemo(() => new URLSearchParams(location.search), []);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const activePath = useAppStore((s) => s.activePath);
   const selectFile = useAppStore((s) => s.selectFile);
+  const openVault = useAppStore((s) => s.openVault);
   // The note this panel should follow (so a popped-out Preview shows the SAME
   // document as the pane it came from), passed as ?sel= in the URL.
-  const sel = useMemo(() => new URLSearchParams(location.search).get("sel"), []);
+  const sel = routeParams.get("sel");
+  const requestedVault = routeParams.get("vault");
   useEffect(() => {
     if (vaultPath && sel) void selectFile(sel);
   }, [vaultPath, sel, selectFile]);
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void installNativeDragDock({
+      kind: "panel",
+      view: kind,
+      relPath: activePath ?? sel,
+    })
+      .then((cleanup) => (dispose = cleanup))
+      .catch((error) => console.warn("[mesa] native panel docking unavailable:", error));
+    return () => dispose?.();
+  }, [kind, activePath, sel]);
+  useEffect(() => {
+    if (!graphWindowBootstrapped || !requestedVault) return;
+    const refresh = () => void openVault(requestedVault);
+    const id = window.setTimeout(refresh, 1200);
+    return () => window.clearTimeout(id);
+  }, [requestedVault, openVault]);
 
-  // Graph view gets a chromeless window: no header bar, just a floating dock
-  // icon button so the graph fills the entire window.
+  // Graph fills the native window. Drag its OS title bar over Mesa to dock it.
   if (kind === "graph") {
     return (
       <div className="panel-window panel-window-chromeless">
-        <button
-          className="popout-dock-btn"
-          onClick={() =>
-            void dockIntoMainWindow({
-              kind: "panel",
-              view: "graph",
-              relPath: activePath ?? sel,
-            })
-          }
-          title="Dock into main workspace"
-          aria-label="Dock into main workspace"
-        >
-          {/* "dock" / "bring back" icon */}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <rect x="1.5" y="1.5" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="1.4"/>
-            <rect x="1.5" y="11" width="13" height="3.5" rx="1.5" fill="currentColor"/>
-            <path d="M8 2.5v6M5.5 6L8 8.5L10.5 6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
         <div className="panel-window-body">
           {vaultPath ? panelContent(kind) : <div className="editor-empty">Loading…</div>}
         </div>
@@ -406,28 +389,27 @@ function AgentWindow() {
   useEffect(() => {
     if (vaultPath && sel) void selectFile(sel);
   }, [vaultPath, sel, selectFile]);
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void installNativeDragDock({ kind: "agent" })
+      .then((cleanup) => (dispose = cleanup))
+      .catch((error) => console.warn("[mesa] native Pi docking unavailable:", error));
+    return () => dispose?.();
+  }, []);
 
   return (
     <div className="agent-window">
-      <header className="doc-window-bar">
-        <span>Pi agent</span>
-        <div className="dock-actions">
-          <button
-            className="dock-btn"
-            onClick={() => void dockIntoMainWindow({ kind: "agent" })}
-          >
-            Dock
-          </button>
-          <button
-            className="icon-btn"
-            onClick={() => void closeCurrentPopoutWindow()}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </div>
-      </header>
-      <AgentSurface embedded attachSessionId={attachSessionId} />
+      {vaultPath ? (
+        <AgentSurface
+          embedded
+          attachSessionId={attachSessionId}
+          windowTitle="Pi agent"
+          onTitleBarPointerDown={() => void startDraggingCurrentWindow()}
+          onClose={() => void closeCurrentPopoutWindow()}
+        />
+      ) : (
+        <div className="editor-empty">Loading Pi session…</div>
+      )}
     </div>
   );
 }
@@ -781,26 +763,7 @@ export default function App() {
   const vimPrefixRef = useRef<"g" | "window" | null>(null);
   const leftShiftDownRef = useRef(false);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    const apply = () => {
-      root.dataset.theme = theme;
-      if (theme === "system") {
-        // System has its OWN neutral palette that follows the OS via data-mode,
-        // rather than aliasing to another theme.
-        const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        root.dataset.mode = dark ? "dark" : "light";
-      } else {
-        delete root.dataset.mode;
-      }
-    };
-    apply();
-    if (theme === "system") {
-      const mq = window.matchMedia("(prefers-color-scheme: dark)");
-      mq.addEventListener("change", apply);
-      return () => mq.removeEventListener("change", apply);
-    }
-  }, [theme]);
+  useApplyTheme(theme);
   useEffect(() => {
     document.documentElement.dataset.anim = animations ? "on" : "off";
   }, [animations]);
@@ -1214,6 +1177,7 @@ export default function App() {
       if (side === "left") {
         const w = Math.max(160, Math.min(520, startW + dx));
         el.style.setProperty("--sidebar-w", w + "px");
+        el.style.setProperty("--sidebar-slot-w", w + "px");
         el.dataset.dragS = String(w);
       } else {
         // Dock resize: the splitter sits on the dock's outer edge, so the drag
@@ -1259,7 +1223,8 @@ export default function App() {
           ref={layoutRef}
           style={
             {
-              "--sidebar-w": sidebarOpen ? sidebarWidth + "px" : "0px",
+              "--sidebar-w": sidebarWidth + "px",
+              "--sidebar-slot-w": sidebarOpen && !sidebarAutoHide ? sidebarWidth + "px" : "0px",
               "--right-w": rightWidth + "px",
             } as React.CSSProperties
           }

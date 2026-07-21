@@ -15,6 +15,7 @@ import { closeCurrentPopoutWindow, dockIntoMainWindow } from "../lib/windowDock"
 import { MarkdownView } from "./MarkdownView";
 import { Modal } from "./Modal";
 import { useAppStore, getStore, type ThemeId } from "../store";
+import { useApplyTheme } from "./useApplyTheme";
 
 /**
  * Standalone document window (Tauri). Spawned with ?doc, ?vault, ?theme in the
@@ -31,24 +32,7 @@ export function DocumentView() {
   const [content, setContent] = useState("");
   const [title, setTitle] = useState(initial);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    const apply = () => {
-      root.dataset.theme = theme;
-      if (theme === "system") {
-        const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        root.dataset.mode = dark ? "dark" : "light";
-      } else {
-        delete root.dataset.mode;
-      }
-    };
-    apply();
-    if (theme === "system") {
-      const mq = window.matchMedia("(prefers-color-scheme: dark)");
-      mq.addEventListener("change", apply);
-      return () => mq.removeEventListener("change", apply);
-    }
-  }, [theme]);
+  useApplyTheme(theme);
 
   useEffect(() => {
     let alive = true;

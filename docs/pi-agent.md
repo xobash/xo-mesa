@@ -2,8 +2,9 @@
 
 Pi is Mesa's lightweight agent harness. Press `Cmd/Ctrl + Left Shift + Space`
 to open the dedicated Pi overlay. Pi is still available from the Shift+Tab
-overlay dock, and it can be placed into the main workspace or popped out as its
-own window. The surface launches the actual `pi` CLI in a PTY, not a custom Mesa
+overlay dock, and it can be placed into the main workspace or torn into its own
+native window by dragging its `Pi agent` title bar to a workspace edge and
+releasing. The surface launches the actual `pi` CLI in a PTY, not a custom Mesa
 chat interface.
 
 ## Token Boundary
@@ -34,11 +35,16 @@ The frontend renders that terminal protocol with xterm.js, so Pi receives raw
 keystrokes, ANSI output, cursor movement, terminal resizing, paste, selection,
 and provider setup inside the CLI.
 
-Mesa keeps one live Pi PTY/xterm session across the Pi modal, the dedicated
-Pi overlay, the Steam-style overlay Pi pane, and the popped-out Pi OS window.
-Switching between the in-window surfaces (modal / overlay / workspace pane)
-reattaches the same xterm instance instead of spawning a new Pi process,
-because they share one JS module singleton within that window.
+Mesa keeps one live Pi PTY/xterm session across every Pi surface: the
+floating Pi window (opened by the dedicated shortcut, and reused as the
+fallback surface when a feature needs Pi or a native pop-out fails), the
+Steam-style overlay Pi window, the workspace pane, and the popped-out Pi OS
+window. All in-window floating Pi surfaces render one shared floating-window
+implementation with the same combined title bar (Pi label, terminal status,
+research/workspace/browser/close tools), drag-to-move, drag-to-edge tear-off,
+and corner resize — they cannot drift apart. Switching between the in-window
+surfaces reattaches the same xterm instance instead of spawning a new Pi
+process, because they share one JS module singleton within that window.
 
 Popping Pi out into its own OS window is a different kind of transition: a
 Tauri `WebviewWindow` is a separate JS realm, so it can't see that singleton
@@ -48,24 +54,26 @@ through its launch URL (`openAgentWindow` in `store.ts`); the new window
 probes that the backend session is still alive with a harmless
 `terminal_resize` call and, if so, reattaches its own xterm instance to that
 same session (`adoptSharedPiSession` in `AgentPanel.tsx`) instead of calling
-`terminal_start`. The reattached window prints a short "Reattached to the
-existing Pi session" note since its xterm scrollback starts empty even though
-the underlying `pi` process — and its conversation state — carried over
-untouched. Because Rust's `TerminalState` and the `terminal://output` event
-are already app-global (not per-window), both windows can stay attached to
-the same live session at once if the user keeps both open. The window Pi was
-popped out of is told the moment the popped-out window receives its first
-keystroke (`mesa://pi-input-seen`, broadcast app-wide) so it never mistakes
-that session for untouched and auto-restarts it out from under the user.
+`terminal_start`. Rust retains a bounded output history for each PTY. The new
+window subscribes to live output first, requests `terminal_snapshot`, replays
+it, then drains only events with a newer sequence number. This preserves the
+visible conversation without losing or duplicating bytes during the handoff.
+Because Rust's `TerminalState` and the `terminal://output` event are app-global
+(not per-window), both windows can stay attached to the same live session at
+once if the user keeps both open.
 
-The session restarts when Mesa changes vaults or the app itself restarts. If Pi
-started but the user has not typed into it yet, Mesa may also restart it when
-the selected editor/preview file changes so the startup context stays current.
+A live Pi session is never silently restarted just because the injected
+startup context drifted (the user switched files) — relaunching would drop the
+conversation and shed any session-scoped launch env a feature injected at
+spawn (e.g. Deep Research's read-only write-block). A fresh context is only
+used when a brand-new session spawns; the session restarts only on an explicit
+feature request (the shared-session restart bridge in `lib/piSessionBridge.ts`),
+a vault change, or an app restart.
 Mesa serializes Pi startup, awaits the previous Tauri output listener cleanup,
 and accepts terminal output only when both the session id and listener
 generation match the active shared session. That prevents stale PTY output from
-rendering twice into the shared xterm during overlay/modal/workspace switches
-or pre-input context restarts.
+rendering twice into the shared xterm during overlay/workspace switches or
+feature-requested restarts.
 
 Mesa caches the resolved Pi executable after the first successful launch and
 starts the PTY at the terminal's current columns/rows to avoid a visible resize
@@ -101,8 +109,13 @@ When Pi is popped into its own OS window, Mesa carries that selected file in the
 window URL before starting the PTY so the injected context still matches the
 main workspace.
 
-The terminal can be popped out into its own OS window, and the popout window can
-be docked back into the main Mesa workspace.
+The dedicated shortcut overlay uses one title bar for its title, terminal
+status, and controls. While that bar is dragged to a workspace edge Mesa shows
+`Release to move outside Mesa`; releasing there opens the native window under
+the same grabbed point on the desktop and hands off the live Pi session. No
+separate pop-out button is required. The native Pi window is undecorated so
+this same combined bar remains its only title bar. Drag that title bar over
+the main Mesa window and release to dock it; there is no permanent Dock button.
 
 Provider setup belongs inside the terminal workflow the user chooses to run.
 Mesa no longer maintains a separate provider panel for Pi.

@@ -5,10 +5,12 @@ import {
   buildAgentContext,
   contextPrompt,
   piActivityLaunch,
+  piDeepResearchLaunch,
   piStartupArgs,
   resolveNavTarget,
   vaultFilePath,
   webSearchUrl,
+  type ActivityInfo,
 } from "./agent";
 import type { Settings } from "../types";
 
@@ -31,6 +33,8 @@ const settings: Settings = {
   dailyFolder: "Daily",
   templatesFolder: "Templates",
   tasksFile: "Tasks.md",
+  researchFolder: "Research",
+  researchDepth: "standard",
   sidebarOpen: true,
   sidebarWidth: 240,
   rightWidth: 380,
@@ -171,5 +175,31 @@ describe("Pi activity reporting", () => {
     expect(
       piActivityLaunch({ port: 0, token: "", extensionPath: "", goalExtensionPath: "" })
     ).toEqual({ env: {}, args: [] });
+  });
+});
+
+describe("piDeepResearchLaunch", () => {
+  const info: ActivityInfo = {
+    port: 8788,
+    token: "abc123",
+    extensionPath: "/tmp/mesa-pi/mesa-activity.ts",
+    deepResearchExtensionPath: "/tmp/mesa-pi/mesa-deep-research.ts",
+  };
+
+  it("adds the deep-research extension + active-run env", () => {
+    const launch = piDeepResearchLaunch(info, "dr-test-1");
+    expect(launch.args).toEqual(["--extension", "/tmp/mesa-pi/mesa-deep-research.ts"]);
+    expect(launch.env).toEqual({
+      MESA_DEEP_RESEARCH: "1",
+      MESA_DEEP_RESEARCH_RUN_ID: "dr-test-1",
+    });
+  });
+
+  it("stays inert without the extension path", () => {
+    expect(piDeepResearchLaunch(null, "x")).toEqual({ env: {}, args: [] });
+    expect(piDeepResearchLaunch({ port: 8788, token: "t", extensionPath: "/a.ts" }, "x")).toEqual({
+      env: {},
+      args: [],
+    });
   });
 });

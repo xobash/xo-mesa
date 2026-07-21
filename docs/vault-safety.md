@@ -35,6 +35,11 @@ never leave a half-written file where a note or PDF used to be.
 - Stale-overwrite protection: saving a PDF that another tool has rewritten
   since Mesa opened it is refused with an explanation instead of silently
   destroying the newer on-disk version. The unsaved edits stay in the editor.
+- `persistVerifiedBytes` supports an optimistic-concurrency precondition checked
+  before it writes a backup, temp, or target: exact expected current bytes for
+  an update, or an expected-missing target for a create. Deep Research uses
+  this on every reviewed operation, so a stale store cache or a file created
+  after review cannot authorize an overwrite.
 - Device sync writes on the Rust side are atomic too: sibling temp file +
   rename (`sync_core.rs::atomic_write`), so a dropped connection cannot
   truncate a note.

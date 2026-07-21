@@ -6,6 +6,7 @@ import {
   buildNeighbors,
   resolveTarget,
   backlinksFor,
+  refreshedNoteMeta,
   resolveAssetPath,
 } from "./graph";
 
@@ -272,6 +273,94 @@ describe("backlinksFor", () => {
       "C.md": "unrelated",
     });
     expect(backlinksFor(notes, "Target.md")).toEqual(["A.md", "B.md"]);
+  });
+
+  it("excludes a note's link to itself", () => {
+    const { notes } = makeVault({
+      "Loop.md": "[[Loop]] links to itself, and to [[Other]]",
+      "Other.md": "[[Loop]]",
+    });
+    expect(backlinksFor(notes, "Loop.md")).toEqual(["Other.md"]);
+    expect(backlinksFor(notes, "Other.md")).toEqual(["Loop.md"]);
+  });
+
+  it("cached index parity: matches the per-call scan on every note", () => {
+    // Verbatim pre-index implementation (graph.ts before Round 4) as the
+    // reference: the cached inverted index must answer identically for every
+    // note id in the vault, including notes with no backlinks.
+    const reference = (
+      notes: ReturnType<typeof makeVault>["notes"],
+      targetId: string
+    ): string[] => {
+      const out: string[] = [];
+      for (const id of Object.keys(notes)) {
+        if (id === targetId) continue;
+        if (
+          notes[id].rawLinks.some((r) => resolveTarget(notes, r) === targetId)
+        )
+          out.push(id);
+      }
+      return out.sort();
+    };
+    const { notes } = makeVault({
+      "Hub.md": "[[A]] [[B]] [[sub/Deep]] [[Missing]]",
+      "A.md": "[[Hub]] [[B|alias to b]] [[A]]",
+      "B.md": "[[hub]] case-insensitive [[SUB/DEEP]]",
+      "sub/Deep.md": "[[Hub]] [[A.md]]",
+      "Lonely.md": "no links",
+    });
+    for (const id of Object.keys(notes)) {
+      expect(backlinksFor(notes, id)).toEqual(reference(notes, id));
+    }
+  });
+
+  it("index is keyed by notes identity: a replaced notes object re-indexes", () => {
+    const first = makeVault({ "A.md": "[[Target]]", "Target.md": "" }).notes;
+    expect(backlinksFor(first, "Target.md")).toEqual(["A.md"]);
+    // Same shape the store produces: a fresh object with changed metadata.
+    const second = makeVault({
+      "A.md": "link removed",
+      "B.md": "[[Target]]",
+      "Target.md": "",
+    }).notes;
+    expect(backlinksFor(second, "Target.md")).toEqual(["B.md"]);
+    // The first object's cached answer is untouched.
+    expect(backlinksFor(first, "Target.md")).toEqual(["A.md"]);
+  });
+});
+
+describe("refreshedNoteMeta", () => {
+  const SRC = "---\naliases: [Alt Name]\n---\n# A\n\nSee [[B]] and [[C]]. #topic";
+  const meta = () => makeVault({ "A.md": SRC, "B.md": "", "C.md": "" }).notes["A.md"];
+
+  it("returns null when links, tags, and aliases are all unchanged", () => {
+    // Prose-only edit: same metadata extracted from different text.
+    const edited = SRC + "\n\nMore prose, no new links or tags.";
+    expect(refreshedNoteMeta(meta(), edited)).toBeNull();
+    // Identical text is trivially unchanged too.
+    expect(refreshedNoteMeta(meta(), SRC)).toBeNull();
+  });
+
+  it("returns refreshed meta when a link is added, preserving other fields", () => {
+    const cur = meta();
+    const next = refreshedNoteMeta(cur, SRC + "\n\nAlso [[D]].");
+    expect(next).not.toBeNull();
+    expect(next!.rawLinks).toEqual(["B", "C", "D"]);
+    // Untouched fields carry over — including title and relPath.
+    expect(next!.title).toBe(cur.title);
+    expect(next!.relPath).toBe(cur.relPath);
+    expect(next!.tags).toEqual(cur.tags);
+    expect(next!.aliases).toEqual(cur.aliases);
+  });
+
+  it("detects tag and alias changes", () => {
+    expect(refreshedNoteMeta(meta(), SRC + " #another")).not.toBeNull();
+    const aliasEdit = SRC.replace("[Alt Name]", "[Alt Name, Second]");
+    expect(refreshedNoteMeta(meta(), aliasEdit)).not.toBeNull();
+  });
+
+  it("a removed link is a change (shorter arrays compare unequal)", () => {
+    expect(refreshedNoteMeta(meta(), SRC.replace(" and [[C]]", ""))).not.toBeNull();
   });
 });
 

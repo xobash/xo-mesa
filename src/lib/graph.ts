@@ -46,6 +46,35 @@ export function buildNotes(
   return notes;
 }
 
+function sameStrings(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Re-extract link/tag/alias metadata from `src` against an existing meta.
+ * Returns the refreshed meta, or `null` when nothing changed so callers can
+ * keep the current `notes` object — its identity churn is what triggers the
+ * graph rebuild, the backlink re-index, and every notes subscriber, and typing
+ * prose leaves all three arrays untouched on most saves. Deliberately does NOT
+ * refresh `firstImagePath` (the debounced save path never did; thumbnails
+ * update on rescan). (Numbers: docs/graph-and-preview-optimizations.md,
+ * Round 6.)
+ */
+export function refreshedNoteMeta(cur: NoteMeta, src: string): NoteMeta | null {
+  const rawLinks = extractLinks(src);
+  const tags = extractTags(src);
+  const aliases = extractAliases(src);
+  if (
+    sameStrings(cur.rawLinks, rawLinks) &&
+    sameStrings(cur.tags, tags) &&
+    sameStrings(cur.aliases, aliases)
+  )
+    return null;
+  return { ...cur, rawLinks, tags, aliases };
+}
+
 function resolveFile(
   target: string,
   byName: Map<string, VaultFile>,
@@ -156,6 +185,21 @@ export function buildGraph(
 } {
   const ids = Object.keys(notes);
   const resolve = makeResolver(notes);
+  // Both link passes below resolve every rawLink (pass 1 builds note→note
+  // edges; pass 2 re-resolves the SAME raw to decide attachment/phantom
+  // fallback), and hub targets repeat across many notes. Resolution is a pure
+  // function of the raw string for fixed notes, so memoize per buildGraph
+  // call: each unique raw is normalized once, every other lookup is a Map hit.
+  // (Numbers: docs/graph-and-preview-optimizations.md, Round 3.)
+  const resolveMemo = new Map<string, string | null>();
+  const resolveCached = (raw: string): string | null => {
+    let v = resolveMemo.get(raw);
+    if (v === undefined) {
+      v = resolve(raw);
+      resolveMemo.set(raw, v);
+    }
+    return v;
+  };
   const degree: Record<string, number> = {};
   const links: GraphLink[] = [];
   const seen = new Set<string>();
@@ -196,7 +240,7 @@ export function buildGraph(
 
   for (const id of ids) {
     for (const raw of notes[id].rawLinks) {
-      const tgt = resolve(raw);
+      const tgt = resolveCached(raw);
       if (!tgt || tgt === id) continue;
       const key = `${id}\u0000${tgt}`;
       if (seen.has(key)) continue;
@@ -211,7 +255,7 @@ export function buildGraph(
   // Resolved note→note edges were added above.
   for (const id of ids) {
     for (const raw of notes[id].rawLinks) {
-      if (resolve(raw)) continue; // resolved — already a note→note edge
+      if (resolveCached(raw)) continue; // resolved — already a note→note edge
       const att = resolveAttachment(raw);
       if (att) {
         // The target is a real non-markdown file: link it when attachments
@@ -351,16 +395,53 @@ export function resolveAssetPath(files: VaultFile[], target: string): string | n
   return null;
 }
 
-/** Notes that link *to* the given note. */
+/** target id → sorted source ids, cached per notes-object identity. The store
+ * replaces `notes` immutably on every mutation (spread copies in store.ts), so
+ * an unchanged object identity means unchanged link topology and the index can
+ * never go stale; the WeakMap frees it when the notes object is replaced. One
+ * pass builds the whole index at the cost of a single uncached backlinksFor
+ * call (with the same per-unique-raw resolve memo as buildGraph), so the
+ * status bar count, the Backlinks panel, and repeated file switches all share
+ * one compute per notes change instead of one full vault scan each.
+ * (Numbers: docs/graph-and-preview-optimizations.md, Round 4.) */
+const backlinkIndexCache = new WeakMap<
+  Record<string, NoteMeta>,
+  Map<string, string[]>
+>();
+
+function backlinkIndex(notes: Record<string, NoteMeta>): Map<string, string[]> {
+  const hit = backlinkIndexCache.get(notes);
+  if (hit) return hit;
+  const idx = new Map<string, string[]>();
+  const resolve = makeResolver(notes);
+  const resolveMemo = new Map<string, string | null>();
+  for (const id of Object.keys(notes)) {
+    let seen: Set<string> | null = null; // most notes link to few targets
+    for (const raw of notes[id].rawLinks) {
+      let tgt = resolveMemo.get(raw);
+      if (tgt === undefined) {
+        tgt = resolve(raw);
+        resolveMemo.set(raw, tgt);
+      }
+      // A note linking to itself is not a backlink (matches the pre-index
+      // behavior of skipping id === targetId).
+      if (!tgt || tgt === id || seen?.has(tgt)) continue;
+      (seen ??= new Set()).add(tgt);
+      const list = idx.get(tgt);
+      if (list) list.push(id);
+      else idx.set(tgt, [id]);
+    }
+  }
+  for (const list of idx.values()) list.sort();
+  backlinkIndexCache.set(notes, idx);
+  return idx;
+}
+
+/** Notes that link *to* the given note. Treat the result as read-only — for a
+ * cached notes object the same array is returned to every caller. */
 export function backlinksFor(
   notes: Record<string, NoteMeta>,
   targetId: string
 ): string[] {
-  const resolve = makeResolver(notes);
-  const out: string[] = [];
-  for (const id of Object.keys(notes)) {
-    if (id === targetId) continue;
-    if (notes[id].rawLinks.some((r) => resolve(r) === targetId)) out.push(id);
-  }
-  return out.sort();
+  return backlinkIndex(notes).get(targetId) ?? [];
 }

@@ -3,22 +3,53 @@ import type { PaneView } from "../types";
 
 export const DOCK_WINDOW_EVENT = "mesa://dock-window";
 export const GLOBAL_AGENT_EVENT = "mesa://global-agent";
-// Broadcast (all windows) the instant a Pi terminal session receives its
-// first real keystroke. Every Mesa surface that can host the shared Pi
-// session — main-window modal/overlay/workspace pane, and any popped-out Pi
-// OS window that reattached to the same backend session — tracks its own
-// local "has this session been talked to yet" flag so it knows whether it's
-// safe to silently relaunch `pi` on a startup-context change. That flag only
-// updates from `onData` in whichever window the user is actually typing
-// into, so without this broadcast a *different* window holding the same
-// session id could still think it's untouched and kill the live process out
-// from under the user (e.g. type in the popped-out window, then dock back).
-export const PI_INPUT_SEEN_EVENT = "mesa://pi-input-seen";
 
 export type DockWindowPayload =
   | { kind: "doc"; relPath: string }
   | { kind: "panel"; view: PaneView; relPath?: string | null }
   | { kind: "agent" };
+
+interface PhysicalPoint {
+  x: number;
+  y: number;
+}
+
+interface PhysicalRect extends PhysicalPoint {
+  width: number;
+  height: number;
+}
+
+const NATIVE_DOCK_MOVE_THRESHOLD = 24;
+const NATIVE_DOCK_RELEASE_DELAY_MS = 180;
+
+function pointInsidePhysicalRect(point: PhysicalPoint, rect: PhysicalRect): boolean {
+  return (
+    point.x >= rect.x &&
+    point.x <= rect.x + rect.width &&
+    point.y >= rect.y &&
+    point.y <= rect.y + rect.height
+  );
+}
+
+export function shouldDockNativeWindow({
+  initial,
+  current,
+  cursor,
+  main,
+  pointerWasOutsideMain = true,
+}: {
+  initial: PhysicalPoint;
+  current: PhysicalPoint;
+  cursor: PhysicalPoint;
+  main: PhysicalRect;
+  pointerWasOutsideMain?: boolean;
+}): boolean {
+  if (!pointerWasOutsideMain) return false;
+  if (Math.hypot(current.x - initial.x, current.y - initial.y) < NATIVE_DOCK_MOVE_THRESHOLD) {
+    return false;
+  }
+  return pointInsidePhysicalRect(cursor, main);
+}
 
 export function isDockableView(value: unknown): value is PaneView {
   return (
@@ -59,6 +90,88 @@ export async function dockIntoMainWindow(payload: DockWindowPayload): Promise<vo
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
   await emitTo("main", DOCK_WINDOW_EVENT, payload);
   await getCurrentWebviewWindow().close();
+}
+
+/** Dock after a deliberate native-title-bar drag is released over Mesa. */
+export async function installNativeDragDock(
+  payload: DockWindowPayload
+): Promise<() => void> {
+  const [{ getCurrentWindow, cursorPosition }, { WebviewWindow }] = await Promise.all([
+    import("@tauri-apps/api/window"),
+    import("@tauri-apps/api/webviewWindow"),
+  ]);
+  const currentWindow = getCurrentWindow();
+  const initial = await currentWindow.outerPosition();
+  const initialMainWindow = await WebviewWindow.getByLabel("main");
+  const [initialMainPosition, initialMainSize, initialCursor] = initialMainWindow
+    ? await Promise.all([
+        initialMainWindow.outerPosition(),
+        initialMainWindow.outerSize(),
+        cursorPosition(),
+      ])
+    : [null, null, null];
+  let pointerWasOutsideMain =
+    !!initialMainPosition &&
+    !!initialMainSize &&
+    !!initialCursor &&
+    !pointInsidePhysicalRect(initialCursor, {
+      ...initialMainPosition,
+      ...initialMainSize,
+    });
+  let latest = initial;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let finished = false;
+
+  const evaluate = async () => {
+    if (finished) return;
+    const mainWindow = await WebviewWindow.getByLabel("main");
+    if (!mainWindow) return;
+    const [mainPosition, mainSize, cursor] = await Promise.all([
+      mainWindow.outerPosition(),
+      mainWindow.outerSize(),
+      cursorPosition(),
+    ]);
+    if (
+      shouldDockNativeWindow({
+        initial,
+        current: latest,
+        cursor,
+        main: { ...mainPosition, ...mainSize },
+        pointerWasOutsideMain,
+      })
+    ) {
+      finished = true;
+      await dockIntoMainWindow(payload);
+    }
+  };
+
+  const unlisten = await currentWindow.onMoved(({ payload: position }) => {
+    latest = position;
+    void (async () => {
+      const mainWindow = await WebviewWindow.getByLabel("main");
+      if (!mainWindow || pointerWasOutsideMain) return;
+      const [mainPosition, mainSize, cursor] = await Promise.all([
+        mainWindow.outerPosition(),
+        mainWindow.outerSize(),
+        cursorPosition(),
+      ]);
+      const inside = pointInsidePhysicalRect(cursor, { ...mainPosition, ...mainSize });
+      if (!inside) pointerWasOutsideMain = true;
+    })();
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void evaluate(), NATIVE_DOCK_RELEASE_DELAY_MS);
+  });
+
+  return () => {
+    finished = true;
+    if (timer) clearTimeout(timer);
+    unlisten();
+  };
+}
+
+export async function startDraggingCurrentWindow(): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().startDragging();
 }
 
 export async function closeCurrentPopoutWindow(): Promise<void> {

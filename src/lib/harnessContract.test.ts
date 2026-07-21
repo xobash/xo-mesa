@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 // tests read those exact sources so a refactor cannot silently break the
 // agent-side browse tools, the snapshot transports, or the security gates.
 import browserExt from "../../src-tauri/resources/mesa-browser.ts?raw";
+import deepResearchExt from "../../src-tauri/resources/mesa-deep-research.ts?raw";
 import reporter from "../../src-tauri/resources/harness-reporter.js?raw";
 import harnessRs from "../../src-tauri/src/harness.rs?raw";
 import activityRs from "../../src-tauri/src/activity.rs?raw";
@@ -116,5 +117,52 @@ describe("harness.rs ↔ activity.rs ↔ capabilities security contract", () => 
     const headerAuth = activityRs.indexOf("if !auth_ok(&req, token)");
     const currentRoute = activityRs.indexOf('url == "/browse/current"');
     expect(currentRoute).toBeGreaterThan(headerAuth);
+  });
+});
+
+describe("mesa-deep-research.ts Pi extension contract", () => {
+  it("registers both Deep Research tools", () => {
+    expect(deepResearchExt).toContain('name: "deep_research_progress"');
+    expect(deepResearchExt).toContain('name: "deep_research_finish"');
+  });
+
+  it("stays inert outside Mesa (env gate before any registration)", () => {
+    const gate = deepResearchExt.indexOf("if (!port || !token) return;");
+    const register = deepResearchExt.indexOf("pi.registerTool");
+    expect(gate).toBeGreaterThan(-1);
+    expect(register).toBeGreaterThan(gate);
+  });
+
+  it("talks only to the loopback deep-research route", () => {
+    expect(deepResearchExt).toContain("http://127.0.0.1:${port}/deep-research");
+    const urls = deepResearchExt.match(/https?:\/\/(?!127\.0\.0\.1)[^"'` )]+/g) ?? [];
+    expect(urls).toEqual([]);
+  });
+
+  it("imports only Pi-runtime modules (never Mesa's npm tree)", () => {
+    const imports = [...deepResearchExt.matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
+    expect(imports).toEqual(["typebox"]);
+  });
+
+  it("blocks Pi's mutation-capable tools only while a run is active (fail-safe read-only)", () => {
+    expect(deepResearchExt).toContain('process.env.MESA_DEEP_RESEARCH === "1"');
+    expect(deepResearchExt).toContain('pi.on("tool_call"');
+    expect(deepResearchExt).toContain("block: true");
+    expect(deepResearchExt).toContain('["write", "edit", "apply_patch", "bash", "shell", "exec"]');
+    // The block must be gated on `active` so a normal session is unaffected.
+    expect(deepResearchExt).toMatch(/if \(!active\) return undefined;/);
+  });
+
+  it("carries rounds and live report snapshots through the progress tool", () => {
+    expect(deepResearchExt).toContain("round: Type.Optional(Type.Number");
+    expect(deepResearchExt).toContain("draftMarkdown: Type.Optional(Type.String");
+    expect(deepResearchExt).toContain("draftMarkdown: params?.draftMarkdown");
+  });
+
+  it("is wired into the Rust loopback server (route + emit + extension path)", () => {
+    expect(activityRs).toContain('url == "/deep-research"');
+    expect(activityRs).toContain('app.emit("mesa://deep-research", body)');
+    expect(activityRs).toContain("deep_research_extension_path");
+    expect(activityRs).toContain("DEEP_RESEARCH_EXTENSION_SRC");
   });
 });

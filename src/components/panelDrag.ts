@@ -2,6 +2,7 @@ import { getStore } from "../store";
 import { IN_TAURI } from "../lib/vault";
 import type { PaneView } from "../types";
 import { hitWorkspaceRegion, type DragFrom } from "../lib/panes";
+import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
 
 const VIEW_LABEL: Record<PaneView, string> = {
   doc: "Editor",
@@ -37,6 +38,10 @@ export function startViewDrag(
   document.body.classList.add("is-dragging");
   window.getSelection()?.removeAllRanges();
   const start = { x: e.clientX, y: e.clientY };
+  const sourceSurface = e.currentTarget.closest(".stack-pane, .center") as HTMLElement | null;
+  const sourceRect = sourceSurface?.getBoundingClientRect();
+  const grabOffsetX = sourceRect ? e.clientX - sourceRect.left : 56;
+  const grabOffsetY = sourceRect ? e.clientY - sourceRect.top : 18;
   let moved = false;
   let last = start;
   let raf = 0;
@@ -48,7 +53,9 @@ export function startViewDrag(
       raf = 0;
       getStore().setDragGhost({
         kind: "view",
-        label: VIEW_LABEL[view],
+        label: isWindowTearOffPoint(x, y, window.innerWidth, window.innerHeight)
+          ? `${VIEW_LABEL[view]} · release to pop out`
+          : VIEW_LABEL[view],
         x: last.x,
         y: last.y,
       });
@@ -85,22 +92,31 @@ export function startViewDrag(
       onClick?.();
       return;
     }
-    const outside =
-      ev.clientX < 0 ||
-      ev.clientY < 0 ||
-      ev.clientX > window.innerWidth ||
-      ev.clientY > window.innerHeight;
-    if (outside) {
+    const tearOff = isWindowTearOffPoint(
+      ev.clientX,
+      ev.clientY,
+      window.innerWidth,
+      window.innerHeight
+    );
+    if (tearOff) {
       if (IN_TAURI) {
+        const placement = detachedWindowPlacement({
+          screenX: ev.screenX,
+          screenY: ev.screenY,
+          grabOffsetX,
+          grabOffsetY,
+          width: sourceRect?.width,
+          height: sourceRect?.height,
+        });
         if (view === "doc") {
           const active = getStore().activePath;
           if (active) void getStore().openDocWindow(active);
           if (from !== "handle") getStore().removeViewFromWorkspace("doc");
         } else if (view === "agent") {
-          void getStore().openAgentWindow();
+          void getStore().openAgentWindow(placement);
           if (from !== "handle") getStore().removeViewFromWorkspace("agent");
         } else {
-          void getStore().openPanelWindow(view);
+          void getStore().openPanelWindow(view, placement);
           if (from !== "handle") getStore().removeViewFromWorkspace(view);
         }
       }

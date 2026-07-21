@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -112,6 +113,14 @@ export function PdfView({ rel }: { rel: string }) {
   const [replaceValue, setReplaceValue] = useState("");
   const drag = useRef<{ page: number; x0: number; y0: number } | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const pagesRef = useRef<HTMLDivElement | null>(null);
+  const pagesInnerRef = useRef<HTMLDivElement | null>(null);
+  const scaleRef = useRef(scale);
+  const zoomAnchorRef = useRef<{
+    x: number;
+    y: number;
+    prevRect: DOMRect;
+  } | null>(null);
   const [dragBox, setDragBox] = useState<{
     page: number;
     left: number;
@@ -169,6 +178,9 @@ export function PdfView({ rel }: { rel: string }) {
   };
   const zoomFactor = renderScale > 0 ? scale / renderScale : 1;
   const firstPagePainted = renderedPages.has(0);
+  useEffect(() => {
+    scaleRef.current = scale;
+  }, [scale]);
   // The webview's native PDF renderer streams straight from disk via the asset
   // protocol, so it can show the real document immediately — it must not wait
   // for the editor's full byte read to finish.
@@ -224,6 +236,61 @@ export function PdfView({ rel }: { rel: string }) {
     setShowForm(false);
   }, [file?.path]);
 
+  const zoomTo = useCallback(
+    (nextScale: number, anchor?: { x: number; y: number }) => {
+      const clamped = Math.min(3, Math.max(0.5, nextScale));
+      const pagesEl = pagesRef.current;
+      const innerEl = pagesInnerRef.current;
+      const viewport = pagesEl?.getBoundingClientRect();
+      const focus =
+        anchor && viewport &&
+        anchor.x >= viewport.left &&
+        anchor.x <= viewport.right &&
+        anchor.y >= viewport.top &&
+        anchor.y <= viewport.bottom
+          ? anchor
+          : viewport
+          ? { x: viewport.left + viewport.width / 2, y: viewport.top + viewport.height / 2 }
+          : null;
+      if (pagesEl && innerEl && focus) {
+        const prevRect = innerEl.getBoundingClientRect();
+        if (prevRect.width > 0 && prevRect.height > 0) {
+          zoomAnchorRef.current = { x: focus.x, y: focus.y, prevRect };
+        } else {
+          zoomAnchorRef.current = null;
+        }
+      } else {
+        zoomAnchorRef.current = null;
+      }
+      scaleRef.current = clamped;
+      setScale(clamped);
+    },
+    [setScale]
+  );
+
+  useLayoutEffect(() => {
+    const pending = zoomAnchorRef.current;
+    if (!pending) return;
+    const pagesEl = pagesRef.current;
+    const innerEl = pagesInnerRef.current;
+    if (!pagesEl || !innerEl) {
+      zoomAnchorRef.current = null;
+      return;
+    }
+    const nextRect = innerEl.getBoundingClientRect();
+    if (nextRect.width <= 0 || nextRect.height <= 0) {
+      zoomAnchorRef.current = null;
+      return;
+    }
+    const fx = (pending.x - pending.prevRect.left) / pending.prevRect.width;
+    const fy = (pending.y - pending.prevRect.top) / pending.prevRect.height;
+    const targetX = nextRect.left + fx * nextRect.width;
+    const targetY = nextRect.top + fy * nextRect.height;
+    pagesEl.scrollLeft += targetX - pending.x;
+    pagesEl.scrollTop += targetY - pending.y;
+    zoomAnchorRef.current = null;
+  }, [scale]);
+
   // Trackpad pinch-to-zoom: a pinch gesture arrives as a wheel event with
   // ctrlKey set. Handle it non-passively so we can preventDefault (otherwise the
   // browser zooms the whole page) and drive the PDF scale instead.
@@ -233,11 +300,11 @@ export function PdfView({ rel }: { rel: string }) {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return; // ordinary scroll → let it through
       e.preventDefault();
-      setScale((s) => Math.min(3, Math.max(0.5, s - e.deltaY * 0.01)));
+      zoomTo(scaleRef.current - e.deltaY * 0.01, { x: e.clientX, y: e.clientY });
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [setScale]);
+  }, [zoomTo]);
 
   if (!file) return <div className="editor-empty">File not found.</div>;
 
@@ -473,11 +540,11 @@ export function PdfView({ rel }: { rel: string }) {
           </>
         )}
         <div className="spacer" />
-        <button className="icon-btn" onClick={() => setScale((s) => Math.max(0.5, s - 0.2))} title="Zoom out">
+        <button className="icon-btn" onClick={() => zoomTo(scaleRef.current - 0.2)} title="Zoom out">
           −
         </button>
         <span className="pdf-zoom">{Math.round(scale * 100)}%</span>
-        <button className="icon-btn" onClick={() => setScale((s) => Math.min(3, s + 0.2))} title="Zoom in">
+        <button className="icon-btn" onClick={() => zoomTo(scaleRef.current + 0.2)} title="Zoom in">
           +
         </button>
         {mode === "edit" ? (
@@ -532,7 +599,10 @@ export function PdfView({ rel }: { rel: string }) {
       {status && !loadFailed && <div className="pdf-status">{status}</div>}
 
       <div className="pdf-body" ref={bodyRef}>
-        <div className={"pdf-pages tool-" + tool + (mode === "view" ? " native-view" : "")}>
+        <div
+          className={"pdf-pages tool-" + tool + (mode === "view" ? " native-view" : "")}
+          ref={pagesRef}
+        >
           {loadFailed ? (
             <div className="pdf-error">
               <div className="pdf-error-title">Couldn't open this PDF</div>
@@ -580,6 +650,7 @@ export function PdfView({ rel }: { rel: string }) {
                 className={
                   "pdf-pages-inner" + (showNativeFirstPaint ? " warming" : "")
                 }
+                ref={pagesInnerRef}
                 style={{ "--pdf-zoom": zoomFactor } as CSSProperties}
                 aria-hidden={showNativeFirstPaint ? true : undefined}
               >

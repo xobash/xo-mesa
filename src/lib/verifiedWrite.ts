@@ -15,6 +15,13 @@ export type VerifiedWriteStage = "Backup" | "Temporary" | "Final" | "Restore";
 export interface VerifiedWriteOptions {
   kind?: string;
   validate?: (bytes: Uint8Array, stage: VerifiedWriteStage) => Promise<void>;
+  /**
+   * Optional optimistic-concurrency precondition checked from disk inside the
+   * verified-write transaction before any backup/temp/target write occurs.
+   * `null` requires a missing target; bytes require an exact existing match;
+   * `undefined` preserves the normal unconditional-write behavior.
+   */
+  expectedCurrentBytes?: Uint8Array | null;
 }
 
 export type WriteArtifactLabel = "save" | "backup";
@@ -123,6 +130,14 @@ export async function persistVerifiedBytes(
   let backupWritten = false;
 
   try {
+    if (options.expectedCurrentBytes === null && hadOriginal) {
+      throw new Error(`Current ${options.kind ?? "file"} no longer matches the expected missing state.`);
+    }
+    if (options.expectedCurrentBytes instanceof Uint8Array) {
+      if (!original || !bytesEqual(original, options.expectedCurrentBytes)) {
+        throw new Error(`Current ${options.kind ?? "file"} bytes changed before the verified write.`);
+      }
+    }
     if (original) {
       await fs.writeFile(backupPath, original);
       backupWritten = true;

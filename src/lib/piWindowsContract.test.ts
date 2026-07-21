@@ -21,4 +21,10 @@ describe("Windows Pi launcher contract", () => {
     expect(terminalSrc).toContain('cmd.arg("/s")');
     expect(terminalSrc).toContain('cmd.arg("/c")');
   });
+
+  it("keeps replayable sequenced output for cross-window Pi handoff", () => {
+    expect(terminalSrc).toContain("TerminalHistory");
+    expect(terminalSrc).toContain("pub fn terminal_snapshot");
+    expect(terminalSrc).toContain("seq: u64");
+  });
 });

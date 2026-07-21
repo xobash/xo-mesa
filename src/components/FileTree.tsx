@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { VaultFile, NoteMeta, SortMode } from "../types";
-import { useAppStore } from "../store";
+import { getStore, useAppStore } from "../store";
 import { fileComparator, folderComparator, type FolderAgg } from "../lib/sort";
 import { clampFloatingMenuPosition } from "../lib/menuPosition";
 import { ancestorFolders } from "../lib/fsnames";
@@ -18,6 +18,9 @@ interface TreeNode {
 }
 
 type NodeCmp = (a: TreeNode, b: TreeNode) => number;
+
+/** Stable stand-in subscribed when note metadata cannot affect the tree. */
+const EMPTY_NOTES: Record<string, NoteMeta> = {};
 
 /** Ensure a folder node exists for `path` (creating intermediates), returning it. */
 function ensureFolderPath(root: TreeNode, path: string): TreeNode {
@@ -321,7 +324,15 @@ function TreeItem({
 
 export function FileTree() {
   const files = useAppStore((s) => s.files);
-  const notes = useAppStore((s) => s.notes);
+  // Note metadata reaches the rendered tree ONLY through the "links" sort mode
+  // (rawLinks counts feed the file comparator and folder aggregates). In every
+  // other mode, subscribe to a stable empty map instead: the notes identity
+  // churns on each debounced editor save (≤2 Hz while typing), and without
+  // this pin that churn re-rendered and re-sorted the entire sidebar tree.
+  // Event handlers that need real note titles read getStore() at event time.
+  const notes = useAppStore((s) =>
+    s.settings.sortMode === "links" ? s.notes : EMPTY_NOTES
+  );
   const emptyFolders = useAppStore((s) => s.emptyFolders);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const activePath = useAppStore((s) => s.activePath);
@@ -448,7 +459,8 @@ export function FileTree() {
           onContext={(rel, kind, name, x, y) => setMenu({ rel, kind, name, x, y })}
           onCommitRename={(rel, name) => {
             setRenaming(null);
-            if (name && name !== notes[rel]?.title) void renameNote(rel, name);
+            if (name && name !== getStore().notes[rel]?.title)
+              void renameNote(rel, name);
           }}
           onCancelRename={() => setRenaming(null)}
         />
@@ -567,7 +579,10 @@ export function FileTree() {
           <button
             className="context-item danger"
             onClick={() => {
-              const title = menu.kind === "file" ? notes[menu.rel]?.title ?? menu.name : menu.name;
+              const title =
+                menu.kind === "file"
+                  ? getStore().notes[menu.rel]?.title ?? menu.name
+                  : menu.name;
               const detail =
                 menu.kind === "folder"
                   ? `Delete folder "${title}" and everything inside it? This cannot be undone.`

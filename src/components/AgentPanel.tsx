@@ -2,27 +2,34 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
 import {
   buildAgentContext,
   contextPrompt,
   piActivityLaunch,
+  piDeepResearchLaunch,
   piStartupArgs,
   type ActivityInfo,
 } from "../lib/agent";
 import { IN_TAURI } from "../lib/vault";
 import { claimKeyboardShortcut, isPlainShiftTab } from "../lib/shortcuts";
 import { shouldAcceptTerminalOutput } from "../lib/terminalOutput";
-import { PI_INPUT_SEEN_EVENT } from "../lib/windowDock";
-import { setPiSessionSnapshot } from "../lib/piSessionBridge";
-import { Modal } from "./Modal";
+import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
+import { setPiSessionSnapshot, registerSharedPiRestart, onSharedPiRestart } from "../lib/piSessionBridge";
 import { BrowserHarness } from "./BrowserHarness";
+import { DeepResearchPanel, DeepResearchPhaseChip } from "./DeepResearchPanel";
 
 interface TerminalEvent {
   sessionId: string;
   stream: "stdout" | "stderr";
   data: string;
+  seq: number;
+}
+
+interface TerminalSnapshot {
+  data: string;
+  seq: number;
 }
 
 interface SharedPiSessionState {
@@ -35,8 +42,8 @@ interface SharedPiSessionState {
   startingVaultPath: string | null;
   startingContextText: string | null;
   contextText: string | null;
-  userInputSeen: boolean;
   outputGeneration: number;
+  lastOutputSeq: number;
 }
 
 const SHARED_PI_THEME = {
@@ -73,8 +80,8 @@ const SHARED_PI_SESSION: SharedPiSessionState = {
   startingVaultPath: null,
   startingContextText: null,
   contextText: null,
-  userInputSeen: false,
   outputGeneration: 0,
+  lastOutputSeq: 0,
 };
 
 // Mirror the identity of the locally-tracked session into a plain lib/
@@ -85,19 +92,6 @@ function publishPiSessionSnapshot(): void {
     sessionId: SHARED_PI_SESSION.sessionId,
     vaultPath: SHARED_PI_SESSION.vaultPath,
     contextText: SHARED_PI_SESSION.contextText,
-  });
-}
-
-// A *different* Mesa window holding the same session id (typically: the
-// window Pi was popped out FROM) needs to learn the moment the user types
-// into it, or it may later decide — wrongly — that the session is still
-// untouched and safe to silently kill and relaunch on a context change. See
-// the PI_INPUT_SEEN_EVENT doc comment in lib/windowDock.ts.
-if (IN_TAURI) {
-  void listen<{ sessionId: string }>(PI_INPUT_SEEN_EVENT, (event) => {
-    if (event.payload.sessionId === SHARED_PI_SESSION.sessionId) {
-      SHARED_PI_SESSION.userInputSeen = true;
-    }
   });
 }
 
@@ -238,13 +232,6 @@ async function createSharedPiTerminal(): Promise<Terminal> {
   term.onData((input) => {
     const id = SHARED_PI_SESSION.sessionId;
     if (!id) return;
-    if (!SHARED_PI_SESSION.userInputSeen) {
-      SHARED_PI_SESSION.userInputSeen = true;
-      // Tell every other Mesa window tracking this same session id (e.g. the
-      // window Pi was popped out of) that it's now live, so none of them
-      // relaunch `pi` out from under the user on a later context change.
-      if (IN_TAURI) void emit(PI_INPUT_SEEN_EVENT, { sessionId: id });
-    }
     void invoke("terminal_write", { sessionId: id, input });
   });
   // THE "double text" fix: keep the PTY in lockstep with xterm for EVERY
@@ -280,9 +267,20 @@ async function stopSharedPiSession(): Promise<void> {
   SHARED_PI_SESSION.sessionId = null;
   SHARED_PI_SESSION.vaultPath = null;
   SHARED_PI_SESSION.contextText = null;
-  SHARED_PI_SESSION.userInputSeen = false;
+  SHARED_PI_SESSION.lastOutputSeq = 0;
   publishPiSessionSnapshot();
 }
+
+// Deep Research (and any future feature that changes Pi's launch config) asks
+// the store to restart the shared session so it respawns with the new
+// extension/env. We stop the live session; the next mounted Pi surface's
+// session effect respawns it via ensureSharedPiSession, which reads the
+// current store state (including an active Deep Research run) for env/args.
+registerSharedPiRestart(async () => {
+  if (!SHARED_PI_SESSION.sessionId) return false;
+  await stopSharedPiSession();
+  return true;
+});
 
 async function disposeSharedPiOutputListener(): Promise<void> {
   SHARED_PI_SESSION.outputGeneration += 1;
@@ -305,6 +303,8 @@ async function disposeSharedPiOutputListener(): Promise<void> {
 async function attachSharedPiOutputListener(): Promise<void> {
   await disposeSharedPiOutputListener();
   const outputGeneration = SHARED_PI_SESSION.outputGeneration;
+  const pending: TerminalEvent[] = [];
+  let replaying = true;
   SHARED_PI_SESSION.outputUnlisten = await listen<TerminalEvent>(
     "terminal://output",
     (event) => {
@@ -318,9 +318,34 @@ async function attachSharedPiOutputListener(): Promise<void> {
       ) {
         return;
       }
+      if (event.payload.seq <= SHARED_PI_SESSION.lastOutputSeq) return;
+      if (replaying) {
+        pending.push(event.payload);
+        return;
+      }
+      SHARED_PI_SESSION.lastOutputSeq = event.payload.seq;
       SHARED_PI_SESSION.terminal?.write(event.payload.data);
     }
   );
+
+  const sessionId = SHARED_PI_SESSION.sessionId;
+  if (sessionId) {
+    try {
+      const snapshot = await invoke<TerminalSnapshot>("terminal_snapshot", { sessionId });
+      SHARED_PI_SESSION.terminal?.reset();
+      SHARED_PI_SESSION.terminal?.write(snapshot.data);
+      SHARED_PI_SESSION.lastOutputSeq = snapshot.seq;
+    } catch {
+      // If the session disappears between attach and replay, draining the
+      // already-buffered live events still preserves the best available view.
+    }
+  }
+  replaying = false;
+  for (const event of pending) {
+    if (event.seq <= SHARED_PI_SESSION.lastOutputSeq) continue;
+    SHARED_PI_SESSION.lastOutputSeq = event.seq;
+    SHARED_PI_SESSION.terminal?.write(event.data);
+  }
 }
 
 async function ensureSharedPiSession(
@@ -348,15 +373,13 @@ async function ensureSharedPiSession(
     return ensureSharedPiSession(vaultPath, ctx, contextText, terminal);
   }
 
-  if (
-    SHARED_PI_SESSION.sessionId &&
-    SHARED_PI_SESSION.vaultPath === vaultPath &&
-    SHARED_PI_SESSION.contextText !== contextText &&
-    !SHARED_PI_SESSION.userInputSeen
-  ) {
-    await stopSharedPiSession();
-  }
-
+  // Never silently kill a live Pi session just because the context text
+  // drifted (the user switched files). Relaunching here would (a) drop the
+  // whole conversation the moment the user clicks another note, and (b) shed
+  // any session-scoped env a feature injected at launch — e.g. Deep
+  // Research's read-only write-block would silently turn off mid-run. The
+  // live session keeps the context it started with until the user explicitly
+  // restarts Pi; a fresh context is only used when a brand-new session spawns.
   if (SHARED_PI_SESSION.sessionId && SHARED_PI_SESSION.vaultPath === vaultPath) {
     return SHARED_PI_SESSION.sessionId;
   }
@@ -380,6 +403,16 @@ async function ensureSharedPiSession(
       activity = null;
     }
     const { env: activityEnv, args: activityArgs } = piActivityLaunch(activity);
+    // Deep Research: while a run is active, ALSO load the deep-research
+    // extension + mark the run so its fail-safe write/edit block engages for
+    // the whole session. Read from the store (not props) so every Pi surface
+    // sees the same active run.
+    const dr = useAppStore.getState().deepResearch;
+    const drActive =
+      dr && (dr.phase === "planning" || dr.phase === "researching" || dr.phase === "synthesizing")
+        ? dr
+        : null;
+    const { env: drEnv, args: drArgs } = piDeepResearchLaunch(activity, drActive?.runId ?? "");
     const envs = {
       MESA_VAULT_NAME: ctx.vaultName,
       MESA_VAULT_PATH: ctx.vaultPath ?? "",
@@ -391,11 +424,12 @@ async function ensureSharedPiSession(
       MESA_RIGHT_VIEWS: ctx.rightViews.join(","),
       MESA_CONTEXT: contextText,
       ...activityEnv,
+      ...drEnv,
     };
     const id = await invoke<string>("terminal_start", {
       cwd: vaultPath,
       program: "pi",
-      args: [...piStartupArgs(contextText), ...activityArgs],
+      args: [...piStartupArgs(contextText), ...activityArgs, ...drArgs],
       envs,
       rows: terminal.rows,
       cols: terminal.cols,
@@ -403,7 +437,7 @@ async function ensureSharedPiSession(
     SHARED_PI_SESSION.sessionId = id;
     SHARED_PI_SESSION.vaultPath = vaultPath;
     SHARED_PI_SESSION.contextText = contextText;
-    SHARED_PI_SESSION.userInputSeen = false;
+    SHARED_PI_SESSION.lastOutputSeq = 0;
     publishPiSessionSnapshot();
     await attachSharedPiOutputListener();
     return id;
@@ -449,16 +483,8 @@ async function adoptSharedPiSession(
   SHARED_PI_SESSION.sessionId = sessionId;
   SHARED_PI_SESSION.vaultPath = vaultPath;
   SHARED_PI_SESSION.contextText = contextText;
-  // Never assume "untouched" for a session we didn't just launch — treat it
-  // as already live so a later context-text drift in this window can't talk
-  // ensureSharedPiSession into killing a real, in-progress conversation.
-  SHARED_PI_SESSION.userInputSeen = true;
+  SHARED_PI_SESSION.lastOutputSeq = 0;
   publishPiSessionSnapshot();
-  // Tell every other window tracking this id (most importantly: the window
-  // Pi was popped out FROM) that it's spoken for now, so it won't relaunch
-  // `pi` out from under this window on a later context-text change.
-  if (IN_TAURI) void emit(PI_INPUT_SEEN_EVENT, { sessionId });
-  terminal.writeln("\x1b[2m↺ Reattached to the existing Pi session.\x1b[0m");
   await attachSharedPiOutputListener();
   return sessionId;
 }
@@ -467,6 +493,8 @@ export function AgentSurface({
   embedded = false,
   browserSlideOut = false,
   attachSessionId = null,
+  windowTitle,
+  onTitleBarPointerDown,
   onPlaceInWorkspace,
   onClose,
 }: {
@@ -484,6 +512,10 @@ export function AgentSurface({
    * instead of `ensureSharedPiSession` spawning a brand-new `pi` process,
    * which is what silently dropped the conversation before this existed. */
   attachSessionId?: string | null;
+  /** Optional outer-window title. When supplied, the terminal status and Pi
+   * tools become the actual title bar instead of a second toolbar beneath it. */
+  windowTitle?: string;
+  onTitleBarPointerDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPlaceInWorkspace?: () => void;
   onClose?: () => void;
 }) {
@@ -507,6 +539,11 @@ export function AgentSurface({
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const [terminalSize, setTerminalSize] = useState({ cols: 80, rows: 24 });
   const [fontSize, setFontSize] = useState(sharedPiFontSize);
+  // Bumped when the store asks the shared session to restart (Deep Research),
+  // so the session effect below re-runs and respawns Pi with the new launch
+  // config instead of leaving the session stopped.
+  const [restartTick, setRestartTick] = useState(0);
+  useEffect(() => onSharedPiRestart(() => setRestartTick((t) => t + 1)), []);
   // Browser harness wing: slides out from behind the Pi window (slide-out
   // contexts) or opens as an inline sibling (workspace / popped-out window).
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -514,6 +551,13 @@ export function AgentSurface({
   const browserResizeRef = useRef<{ startX: number; startW: number; sign: 1 | -1 } | null>(
     null
   );
+  // Deep Research wing: slides out from behind the Pi window exactly like the
+  // browser harness wing (it was "hidden behind" the Pi window). The ⌬ tool
+  // toggles it; it drives the same shared `deepResearch` run as the overlay's
+  // Research window.
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [researchWingWidth, setResearchWingWidth] = useState(520);
+  const researchResizeRef = useRef<{ startX: number; startW: number; sign: 1 | -1 } | null>(null);
 
   const ctx = useMemo(
     () =>
@@ -643,7 +687,7 @@ export function AgentSurface({
     return () => {
       alive = false;
     };
-  }, [termReady, vaultPath, contextText]);
+  }, [termReady, vaultPath, contextText, restartTick]);
 
   // When the embedded Pi agent uses its `browse` tool, Mesa mirrors the
   // navigation here — pop the wing open so the user can watch the agent work.
@@ -680,12 +724,63 @@ export function AgentSurface({
     browserResizeRef.current = { startX: e.clientX, startW: browserWidth, sign };
   };
 
+  useEffect(() => {
+    if (!researchOpen) return;
+    const onMove = (e: MouseEvent) => {
+      const rs = researchResizeRef.current;
+      if (!rs) return;
+      e.preventDefault();
+      const dx = (e.clientX - rs.startX) * rs.sign;
+      setResearchWingWidth(Math.max(380, Math.min(960, rs.startW + dx)));
+    };
+    const onUp = () => {
+      researchResizeRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [researchOpen]);
+
+  const startResearchResize = (sign: 1 | -1) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    researchResizeRef.current = { startX: e.clientX, startW: researchWingWidth, sign };
+  };
+
   return (
     <div className={"agent-surface terminal-first" + (embedded ? " embedded" : "")}>
       <section className="agent-terminal-pane">
-        <div className="pi-terminal-chrome">
-          <div className="pi-terminal-title">Pi terminal · {terminalSize.cols}×{terminalSize.rows} · {fontSize}px</div>
+        <div
+          className={"pi-terminal-chrome" + (windowTitle ? " window-titlebar" : "")}
+          onPointerDown={(event) => {
+            if ((event.target as HTMLElement).closest("button")) return;
+            onTitleBarPointerDown?.(event);
+          }}
+        >
+          <div className="pi-terminal-heading">
+            {windowTitle && <span className="pi-terminal-window-title">{windowTitle}</span>}
+            <span className="pi-terminal-title">
+              {windowTitle ? "Terminal · " : "Pi terminal · "}
+              {terminalSize.cols}×{terminalSize.rows} · {fontSize}px
+            </span>
+          </div>
           <div className="agent-actions pi-tools">
+            <button
+              className={"pi-tool" + (researchOpen ? " on" : "")}
+              onClick={() => {
+                // Prepare the one shared run without opening a duplicate
+                // Steam-overlay research window; this button owns the wing.
+                useAppStore.getState().openDeepResearch(false);
+                setResearchOpen((v) => !v);
+              }}
+              title="Deep Research"
+              aria-label="Deep Research"
+            >
+              ⌬
+            </button>
             {onPlaceInWorkspace && (
               <button
                 className="pi-tool"
@@ -757,43 +852,57 @@ export function AgentSurface({
           )}
         </div>
       )}
+
+      {researchOpen && (
+        <div
+          className={"dr-wing" + (browserSlideOut ? " slide" : " inline")}
+          style={browserSlideOut ? { width: researchWingWidth, left: `calc(100% + ${browserOpen ? browserWidth : 0}px)` } : { width: researchWingWidth }}
+        >
+          {!browserSlideOut && (
+            <div
+              className="agent-browser-wing-resize left"
+              onMouseDown={startResearchResize(-1)}
+              aria-hidden="true"
+            />
+          )}
+          <div className="dr-wing-bar">
+            <span className="dr-wing-title">Deep Research</span>
+            <DeepResearchPhaseChip />
+            <button className="pi-tool" onClick={() => setResearchOpen(false)} aria-label="Close Deep Research">
+              ×
+            </button>
+          </div>
+          <DeepResearchPanel piSurfaceAvailable />
+          {browserSlideOut && (
+            <div
+              className="agent-browser-wing-resize right"
+              onMouseDown={startResearchResize(1)}
+              aria-hidden="true"
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-export function AgentPanel() {
-  const open = useAppStore((s) => s.agentOpen);
-  const setOpen = useAppStore((s) => s.setAgentOpen);
+/**
+ * The one floating Pi window implementation. Every in-window floating Pi
+ * surface (the dedicated Ctrl/Cmd+Left Shift+Space overlay AND the fallback
+ * window `agentOpen` opens, e.g. when Deep Research needs a Pi surface or a
+ * native pop-out fails) renders THIS component, so they cannot drift apart:
+ * one combined title bar (Pi label, terminal status, research/workspace/
+ * browser/close tools), drag to move, drag to a workspace edge to tear off
+ * into a native OS window, resize from the corner. Mounted only while open.
+ */
+function PiFloatingWindow({
+  onClose,
+  onPlaceInWorkspace,
+}: {
+  onClose: () => void;
+  onPlaceInWorkspace: () => void;
+}) {
   const openAgentWindow = useAppStore((s) => s.openAgentWindow);
-  if (!open) return null;
-  return (
-    <Modal onClose={() => setOpen(false)} className="agent-modal">
-      <header className="modal-head">
-        <span>Pi agent</span>
-        <div className="dock-actions">
-          <button
-            className="dock-btn"
-            onClick={() => {
-              setOpen(false);
-              void openAgentWindow();
-            }}
-          >
-            Pop out
-          </button>
-          <button className="icon-btn" onClick={() => setOpen(false)} aria-label="Close">
-            ×
-          </button>
-        </div>
-      </header>
-      <AgentSurface browserSlideOut />
-    </Modal>
-  );
-}
-
-export function AgentOverlay() {
-  const open = useAppStore((s) => s.piOverlayOpen);
-  const setOpen = useAppStore((s) => s.setPiOverlayOpen);
-  const moveViewToRight = useAppStore((s) => s.moveViewToRight);
 
   // --- draggable + resizable floating window state -----------------------
   const [win, setWin] = useState({
@@ -803,6 +912,7 @@ export function AgentOverlay() {
     h: 0,
   });
   const [initialized, setInitialized] = useState(false);
+  const [tearOffArmed, setTearOffArmed] = useState(false);
   const dragState = useRef<{
     mode: "move" | "resize" | null;
     startX: number;
@@ -811,11 +921,24 @@ export function AgentOverlay() {
     origY: number;
     origW: number;
     origH: number;
-  }>({ mode: null, startX: 0, startY: 0, origX: 0, origY: 0, origW: 0, origH: 0 });
+    grabOffsetX: number;
+    grabOffsetY: number;
+  }>({
+    mode: null,
+    startX: 0,
+    startY: 0,
+    origX: 0,
+    origY: 0,
+    origW: 0,
+    origH: 0,
+    grabOffsetX: 0,
+    grabOffsetY: 0,
+  });
 
-  // Center the window on first open.
+  // Center the window on mount (the component only exists while open, so a
+  // reopened window re-centers naturally).
   useEffect(() => {
-    if (!open || initialized) return;
+    if (initialized) return;
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const w = Math.min(720, Math.floor(vw * 0.8));
@@ -827,29 +950,23 @@ export function AgentOverlay() {
       h,
     });
     setInitialized(true);
-  }, [open, initialized]);
-
-  // Reset position when the overlay is closed so it re-centers next time.
-  useEffect(() => {
-    if (!open) setInitialized(false);
-  }, [open]);
+  }, [initialized]);
 
   useEffect(() => {
-    if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        setOpen(false);
+        onClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, setOpen]);
+  }, [onClose]);
 
-  // Global mousemove/up for dragging and resizing.
+  // Pointer capture keeps the drag alive as it crosses the webview edge, which
+  // is what makes release-to-native-window tear-off possible.
   useEffect(() => {
-    if (!open) return;
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       const ds = dragState.current;
       if (!ds.mode) return;
       e.preventDefault();
@@ -858,6 +975,7 @@ export function AgentOverlay() {
       if (ds.mode === "move") {
         const vw = window.innerWidth;
         const vh = window.innerHeight;
+        setTearOffArmed(isWindowTearOffPoint(e.clientX, e.clientY, vw, vh));
         const nx = Math.max(-ds.origW + 80, Math.min(vw - 80, ds.origX + dx));
         const ny = Math.max(0, Math.min(vh - 48, ds.origY + dy));
         setWin((w) => ({ ...w, x: nx, y: ny }));
@@ -869,20 +987,51 @@ export function AgentOverlay() {
         setWin((w) => ({ ...w, w: nw, h: nh }));
       }
     };
-    const onUp = () => {
+    const onUp = (e: PointerEvent) => {
+      const ds = dragState.current;
+      const detach =
+        ds.mode === "move" &&
+        isWindowTearOffPoint(e.clientX, e.clientY, window.innerWidth, window.innerHeight);
       dragState.current.mode = null;
+      setTearOffArmed(false);
+      if (detach) {
+        onClose();
+        void openAgentWindow(
+          detachedWindowPlacement({
+            screenX: e.screenX,
+            screenY: e.screenY,
+            grabOffsetX: ds.grabOffsetX,
+            grabOffsetY: ds.grabOffsetY,
+            width: ds.origW,
+            height: ds.origH,
+          })
+        );
+      }
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    const onCancel = () => {
+      dragState.current.mode = null;
+      setTearOffArmed(false);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
     };
-  }, [open]);
+  }, [openAgentWindow, onClose]);
 
-  const startMove = (e: React.MouseEvent) => {
+  const startMove = (e: React.PointerEvent<HTMLDivElement>) => {
     // Don't start dragging if clicking on a button.
     if ((e.target as HTMLElement).closest("button")) return;
+    if (e.button !== 0) return;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* best-effort across system webviews */
+    }
+    setTearOffArmed(false);
     dragState.current = {
       mode: "move",
       startX: e.clientX,
@@ -891,10 +1040,12 @@ export function AgentOverlay() {
       origY: win.y,
       origW: win.w,
       origH: win.h,
+      grabOffsetX: e.clientX - win.x,
+      grabOffsetY: e.clientY - win.y,
     };
   };
 
-  const startResize = (e: React.MouseEvent) => {
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.stopPropagation();
     dragState.current = {
       mode: "resize",
@@ -904,14 +1055,15 @@ export function AgentOverlay() {
       origY: win.y,
       origW: win.w,
       origH: win.h,
+      grabOffsetX: 0,
+      grabOffsetY: 0,
     };
   };
 
-  if (!open) return null;
   return (
     <div className="pi-overlay">
       <div
-        className="pi-overlay-window"
+        className={"pi-overlay-window" + (tearOffArmed ? " tear-off-armed" : "")}
         style={
           initialized
             ? {
@@ -924,20 +1076,60 @@ export function AgentOverlay() {
             : undefined
         }
       >
-        <div className="pi-overlay-drag" onMouseDown={startMove}>
-          <span className="pi-overlay-drag-title">Pi Agent</span>
-        </div>
         <AgentSurface
           embedded
           browserSlideOut
-          onClose={() => setOpen(false)}
-          onPlaceInWorkspace={() => {
-            moveViewToRight("agent");
-            setOpen(false);
-          }}
+          windowTitle="Pi agent"
+          onTitleBarPointerDown={startMove}
+          onClose={onClose}
+          onPlaceInWorkspace={onPlaceInWorkspace}
         />
-        <div className="pi-overlay-resize" onMouseDown={startResize} />
+        <div className="pi-overlay-resize" onPointerDown={startResize} />
       </div>
     </div>
+  );
+}
+
+/**
+ * Fallback floating Pi window (`agentOpen`): opened when a feature needs a
+ * mounted Pi surface in this window (Deep Research without one, a failed
+ * native pop-out). Renders the exact same PiFloatingWindow as the dedicated
+ * overlay; when the dedicated overlay is (or becomes) open it yields to it so
+ * there is never a second identical window.
+ */
+export function AgentPanel() {
+  const open = useAppStore((s) => s.agentOpen);
+  const piOverlayOpen = useAppStore((s) => s.piOverlayOpen);
+  const setOpen = useAppStore((s) => s.setAgentOpen);
+  const moveViewToRight = useAppStore((s) => s.moveViewToRight);
+  useEffect(() => {
+    if (open && piOverlayOpen) setOpen(false);
+  }, [open, piOverlayOpen, setOpen]);
+  if (!open || piOverlayOpen) return null;
+  return (
+    <PiFloatingWindow
+      onClose={() => setOpen(false)}
+      onPlaceInWorkspace={() => {
+        moveViewToRight("agent");
+        setOpen(false);
+      }}
+    />
+  );
+}
+
+/** The dedicated Ctrl/Cmd+Left Shift+Space Pi overlay. */
+export function AgentOverlay() {
+  const open = useAppStore((s) => s.piOverlayOpen);
+  const setOpen = useAppStore((s) => s.setPiOverlayOpen);
+  const moveViewToRight = useAppStore((s) => s.moveViewToRight);
+  if (!open) return null;
+  return (
+    <PiFloatingWindow
+      onClose={() => setOpen(false)}
+      onPlaceInWorkspace={() => {
+        moveViewToRight("agent");
+        setOpen(false);
+      }}
+    />
   );
 }

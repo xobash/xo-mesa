@@ -34,6 +34,23 @@ async function makePdf(n: number): Promise<Uint8Array> {
   return doc.save();
 }
 
+/**
+ * A PDF whose trailer carries a standard-security-handler /Encrypt dictionary,
+ * which is exactly what `PDFDocument.isEncrypted` (and Mesa's edit guard) key
+ * off. pdf-lib serializes `trailerInfo.Encrypt` verbatim, so this round-trips
+ * as an encrypted-flagged document without needing a real cipher pass.
+ */
+async function makeEncryptedPdf(n = 2): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(await makePdf(n));
+  doc.context.trailerInfo.Encrypt = doc.context.obj({
+    Filter: "Standard",
+    V: 1,
+    R: 2,
+    P: -44,
+  });
+  return doc.save();
+}
+
 describe("pdf editing core", () => {
   it("reads page geometry", async () => {
     const info = await readPdfPages(await makePdf(3));
@@ -188,6 +205,82 @@ describe("pdf editing core", () => {
     expect(sniffFileType(new Uint8Array([0x50, 0x4b, 0x03, 0x04]))).toMatch(/ZIP/i);
     expect(sniffFileType(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toMatch(/PNG/i);
     expect(sniffFileType(new Uint8Array([0x25, 0x50, 0x44, 0x46]))).toMatch(/PDF/i);
+  });
+
+  it("refuses to edit encrypted PDFs instead of corrupting them", async () => {
+    // pdf-lib cannot decrypt; re-saving an encrypted document emits unreadable
+    // garbage that still parses under ignoreEncryption, so Mesa's own
+    // validation cannot catch it after the fact. Every mutating transform must
+    // fail closed. (Verified against a real pypdf AES-128 fixture: every
+    // pre-guard edit output was rejected by an independent reader with
+    // "Cannot find Root object in pdf".)
+    const enc = await makeEncryptedPdf(2);
+    const guard = /encrypted/i;
+    await expect(rotatePage(enc, 0, 90)).rejects.toThrow(guard);
+    await expect(deletePage(enc, 0)).rejects.toThrow(guard);
+    await expect(movePage(enc, 0, 1)).rejects.toThrow(guard);
+    await expect(reorderPages(enc, [1, 0])).rejects.toThrow(guard);
+    await expect(
+      addText(enc, { page: 0, x: 10, y: 10, text: "x" })
+    ).rejects.toThrow(guard);
+    await expect(
+      replaceText(enc, { page: 0, x: 10, y: 10, width: 40, height: 12, text: "x" })
+    ).rejects.toThrow(guard);
+    await expect(
+      addHighlight(enc, { page: 0, x: 10, y: 10, width: 40, height: 12 })
+    ).rejects.toThrow(guard);
+    await expect(
+      addInkStroke(enc, { page: 0, points: [{ x: 1, y: 1 }, { x: 2, y: 2 }] })
+    ).rejects.toThrow(guard);
+    await expect(addBlankPage(enc)).rejects.toThrow(guard);
+    await expect(setFormField(enc, "any", "v")).rejects.toThrow(guard);
+
+    // Viewing stays tolerant: read-only helpers must keep working.
+    expect(await readPdfPages(enc)).toHaveLength(2);
+    await expect(assertValidPdfBytes(enc)).resolves.toBeUndefined();
+  });
+
+  it("preserves form fields and metadata across page moves", async () => {
+    // reorderPages used to copy pages into a fresh document, silently dropping
+    // the AcroForm (every form field), title/author metadata, and outlines.
+    const doc = await PDFDocument.create();
+    doc.setTitle("Move Fixture");
+    doc.setAuthor("Mesa");
+    const p1 = doc.addPage([300, 300]);
+    doc.addPage([300, 300]);
+    const form = doc.getForm();
+    const tf = form.createTextField("keep.me");
+    tf.setText("value survives");
+    tf.addToPage(p1, { x: 20, y: 200, width: 160, height: 20 });
+    const start = await doc.save();
+
+    const moved = await movePage(start, 0, 1);
+    const fields = await getFormFields(moved);
+    expect(fields.map((f) => [f.name, f.value])).toEqual([
+      ["keep.me", "value survives"],
+    ]);
+    const reloaded = await PDFDocument.load(moved);
+    expect(reloaded.getTitle()).toBe("Move Fixture");
+    expect(reloaded.getAuthor()).toBe("Mesa");
+    expect(reloaded.getPageCount()).toBe(2);
+  });
+
+  it("treats no-op page operations as byte-identical no-ops", async () => {
+    // A "no-op" that re-serializes the document still rewrites every object,
+    // which shows up as a phantom edit (dirty flag + undo entry) and a full
+    // on-disk rewrite. No-ops must return the input bytes untouched.
+    const one = await makePdf(1);
+    expect(pdfBytesEqual(await deletePage(one, 0), one)).toBe(true);
+    const three = await makePdf(3);
+    expect(pdfBytesEqual(await movePage(three, 1, 1), three)).toBe(true);
+    expect(pdfBytesEqual(await movePage(three, 5, 0), three)).toBe(true);
+  });
+
+  it("rejects a non-permutation page order", async () => {
+    const three = await makePdf(3);
+    await expect(reorderPages(three, [0, 0, 1])).rejects.toThrow(/permutation/i);
+    await expect(reorderPages(three, [0, 1])).rejects.toThrow(/permutation/i);
+    await expect(reorderPages(three, [0, 1, 3])).rejects.toThrow(/permutation/i);
   });
 
   it("detects blank pdf.js paint output", () => {

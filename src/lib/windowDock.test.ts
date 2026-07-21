@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isDockableView,
   normalizeDockWindowPayload,
+  shouldDockNativeWindow,
 } from "./windowDock";
 
 describe("window dock payloads", () => {
@@ -36,5 +37,13 @@ describe("window dock payloads", () => {
   it("recognizes every workspace view that can be docked", () => {
     expect(["doc", "preview", "graph", "tasks"].every(isDockableView)).toBe(true);
     expect(isDockableView("calendar")).toBe(false);
+  });
+
+  it("requires a deliberate move released over the main window", () => {
+    const main = { x: 100, y: 80, width: 1200, height: 800 };
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 700, y: 100 }, main })).toBe(true);
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 410, y: 205 }, cursor: { x: 700, y: 100 }, main })).toBe(false);
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 40, y: 40 }, main })).toBe(false);
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 700, y: 100 }, main, pointerWasOutsideMain: false })).toBe(false);
   });
 });

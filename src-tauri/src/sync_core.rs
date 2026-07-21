@@ -253,7 +253,7 @@ pub fn host_of_base(base: &str) -> String {
         .or_else(|| base.strip_prefix("http://"))
         .unwrap_or(base);
     let end = no_scheme
-        .find(|c| c == ':' || c == '/')
+        .find([':', '/'])
         .unwrap_or(no_scheme.len());
     no_scheme[..end].to_string()
 }

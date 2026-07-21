@@ -8,13 +8,16 @@ import {
   holidaysForYear,
   type CalEvent,
 } from "../lib/daily";
-import { isImageExt, urlForPath } from "../lib/vault";
+import { IN_TAURI, isImageExt, urlForPath } from "../lib/vault";
 import {
   claimKeyboardShortcut,
   isPlainShiftTab,
   isTextEntryTarget,
 } from "../lib/shortcuts";
+import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
 import { AgentSurface } from "./AgentPanel";
+import { DeepResearchPanel, DeepResearchPhaseChip } from "./DeepResearchPanel";
+import { fitWin, mergeStoredWins, type OverlayWinRec } from "../lib/overlayWins";
 import { SearchSurface } from "./SearchSurface";
 import { TasksPanel } from "./TasksModal";
 import { parseTasks, type TaskItem } from "../lib/tasks";
@@ -30,6 +33,7 @@ type WinId =
   | "calendar"
   | "search"
   | "agent"
+  | "research"
   | "tasks"
   | "scratch"
   | "whiteboard"
@@ -37,19 +41,14 @@ type WinId =
   | "settings";
 type CalView = "day" | "week" | "month" | "year";
 
-interface WinRec {
-  open: boolean;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+type WinRec = OverlayWinRec;
 type Wins = Record<WinId, WinRec>;
 
 const DEFAULT_WINS: Wins = {
   calendar: { open: true, x: 90, y: 76, w: 760, h: 640 },
   search: { open: false, x: 140, y: 96, w: 900, h: 560 },
   agent: { open: false, x: 150, y: 86, w: 720, h: 680 },
+  research: { open: false, x: 170, y: 92, w: 780, h: 640 },
   tasks: { open: false, x: 180, y: 96, w: 860, h: 600 },
   scratch: { open: false, x: 820, y: 100, w: 340, h: 400 },
   whiteboard: { open: false, x: 220, y: 130, w: 640, h: 460 },
@@ -61,6 +60,7 @@ const DOCK: { id: WinId; label: string; icon: string }[] = [
   { id: "calendar", label: "Calendar", icon: "▦" },
   { id: "search", label: "Search", icon: "⌕" },
   { id: "agent", label: "Pi", icon: "π" },
+  { id: "research", label: "Research", icon: "⌬" },
   { id: "tasks", label: "Tasks", icon: "☑" },
   { id: "scratch", label: "Scratchpad", icon: "✎" },
   { id: "whiteboard", label: "Whiteboard", icon: "▭" },
@@ -69,22 +69,13 @@ const DOCK: { id: WinId; label: string; icon: string }[] = [
 ];
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-function fitWin(rec: WinRec): WinRec {
+/** Render-time projection into the current viewport. NEVER write the result
+ *  back into `wins` — the stored geometry is the user's intent, and a
+ *  transiently tiny viewport (0×0 during startup, a briefly shrunken OS
+ *  window) must not permanently squash the remembered layout. */
+function fitToViewport(rec: WinRec): WinRec {
   if (typeof window === "undefined") return rec;
-  const pad = 12;
-  const top = 56;
-  const bottom = 96;
-  const maxW = Math.max(280, window.innerWidth - pad * 2);
-  const maxH = Math.max(220, window.innerHeight - top - bottom);
-  const w = clamp(rec.w, Math.min(280, maxW), maxW);
-  const h = clamp(rec.h, Math.min(220, maxH), maxH);
-  return {
-    ...rec,
-    w,
-    h,
-    x: clamp(rec.x, pad, Math.max(pad, window.innerWidth - w - pad)),
-    y: clamp(rec.y, top, Math.max(top, window.innerHeight - h - bottom)),
-  };
+  return fitWin(rec, { width: window.innerWidth, height: window.innerHeight });
 }
 function lsGet(key: string): string {
   try {
@@ -102,17 +93,9 @@ function lsSet(key: string, val: string): void {
 }
 function loadWins(): Wins {
   try {
-    const raw = JSON.parse(lsGet(WINS_KEY) || "{}");
-    const out = { ...DEFAULT_WINS };
-    for (const id of Object.keys(DEFAULT_WINS) as WinId[]) {
-      if (raw[id]) out[id] = fitWin({ ...DEFAULT_WINS[id], ...raw[id] });
-      else out[id] = fitWin(out[id]);
-    }
-    return out;
+    return mergeStoredWins(DEFAULT_WINS, JSON.parse(lsGet(WINS_KEY) || "{}"));
   } catch {
-    const out = { ...DEFAULT_WINS };
-    for (const id of Object.keys(out) as WinId[]) out[id] = fitWin(out[id]);
-    return out;
+    return mergeStoredWins(DEFAULT_WINS, {});
   }
 }
 function dateParts(iso: string): [number, number, number] {
@@ -153,9 +136,155 @@ function Clock() {
   );
 }
 
+/**
+ * The Steam-overlay Pi window. Unlike the other overlay windows it does NOT
+ * use the generic FloatingWindow chrome: Pi's combined title bar (label,
+ * terminal status, research/workspace/browser/close tools) IS the window bar,
+ * exactly like the dedicated Pi overlay and the popped-out Pi OS window — so
+ * every floating Pi surface looks and behaves the same. Dragging that bar
+ * moves the window; dragging it to a workspace edge and releasing tears Pi
+ * into a native OS window (same gesture as everywhere else). Position/size
+ * persist with the other overlay windows.
+ */
+/**
+ * Shared bottom-right resize gesture for overlay windows. Grows the window
+ * from its current size, clamped to `minW`/`minH` and the viewport, with
+ * text selection suppressed for the drag duration.
+ */
+function startOverlayResize(
+  e: React.PointerEvent,
+  rec: WinRec,
+  minW: number,
+  minH: number,
+  onChange: (patch: Partial<WinRec>) => void,
+  onFocus: () => void
+): void {
+  e.stopPropagation();
+  e.preventDefault();
+  onFocus();
+  const sx = e.clientX;
+  const sy = e.clientY;
+  const sw = rec.w;
+  const sh = rec.h;
+  const prevUserSelect = document.body.style.userSelect;
+  document.body.style.userSelect = "none";
+  const move = (ev: PointerEvent) => {
+    onChange({
+      w: clamp(sw + (ev.clientX - sx), minW, window.innerWidth - rec.x - 8),
+      h: clamp(sh + (ev.clientY - sy), minH, window.innerHeight - rec.y - 8),
+    });
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    document.body.style.userSelect = prevUserSelect;
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+function PiOverlayWindow({
+  rec,
+  z,
+  onChange,
+  onClose,
+  onFocus,
+  onPlaceInWorkspace,
+}: {
+  rec: WinRec;
+  z: number;
+  onChange: (patch: Partial<WinRec>) => void;
+  onClose: () => void;
+  onFocus: () => void;
+  onPlaceInWorkspace: () => void;
+}) {
+  const openAgentWindow = useAppStore((s) => s.openAgentWindow);
+  const [tearOffArmed, setTearOffArmed] = useState(false);
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    onFocus();
+    // Pointer capture keeps the drag alive as it crosses the webview edge,
+    // which is what makes release-to-native-window tear-off possible.
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* best-effort across system webviews */
+    }
+    const ox = e.clientX - rec.x;
+    const oy = e.clientY - rec.y;
+    const w = rec.w;
+    const h = rec.h;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    const move = (ev: PointerEvent) => {
+      setTearOffArmed(
+        isWindowTearOffPoint(ev.clientX, ev.clientY, window.innerWidth, window.innerHeight)
+      );
+      onChange({
+        x: clamp(ev.clientX - ox, 4, window.innerWidth - 80),
+        y: clamp(ev.clientY - oy, 56, window.innerHeight - 96),
+      });
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      document.body.style.userSelect = prevUserSelect;
+      setTearOffArmed(false);
+      if (
+        IN_TAURI &&
+        isWindowTearOffPoint(ev.clientX, ev.clientY, window.innerWidth, window.innerHeight)
+      ) {
+        onClose();
+        void openAgentWindow(
+          detachedWindowPlacement({
+            screenX: ev.screenX,
+            screenY: ev.screenY,
+            grabOffsetX: ox,
+            grabOffsetY: oy,
+            width: w,
+            height: h,
+          })
+        );
+      }
+    };
+    const cancel = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      document.body.style.userSelect = prevUserSelect;
+      setTearOffArmed(false);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  };
+  const startResize = (e: React.PointerEvent) =>
+    startOverlayResize(e, rec, 420, 320, onChange, onFocus);
+  return (
+    <div
+      className={"ov-win pi-ov-win" + (tearOffArmed ? " tear-off-armed" : "")}
+      style={{ left: rec.x, top: rec.y, width: rec.w, height: rec.h, zIndex: z }}
+      onPointerDown={onFocus}
+    >
+      <AgentSurface
+        embedded
+        browserSlideOut
+        windowTitle="Pi agent"
+        onTitleBarPointerDown={startDrag}
+        onClose={onClose}
+        onPlaceInWorkspace={onPlaceInWorkspace}
+      />
+      <div className="ov-win-resize" onPointerDown={startResize} aria-hidden="true" />
+    </div>
+  );
+}
+
 /** A draggable, resizable, closable floating window inside the overlay. */
 function FloatingWindow({
   title,
+  accessory,
   rec,
   z,
   onChange,
@@ -164,6 +293,9 @@ function FloatingWindow({
   children,
 }: {
   title: string;
+  /** Optional live status rendered in the ONE window bar (e.g. the Deep
+   *  Research phase chip) — panels must not stack a second in-body header. */
+  accessory?: React.ReactNode;
   rec: WinRec;
   z: number;
   onChange: (patch: Partial<WinRec>) => void;
@@ -196,30 +328,8 @@ function FloatingWindow({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
-  const startResize = (e: React.PointerEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    onFocus();
-    const sx = e.clientX;
-    const sy = e.clientY;
-    const sw = rec.w;
-    const sh = rec.h;
-    const prevUserSelect = document.body.style.userSelect;
-    document.body.style.userSelect = "none";
-    const move = (ev: PointerEvent) => {
-      onChange({
-        w: clamp(sw + (ev.clientX - sx), 280, window.innerWidth - rec.x - 8),
-        h: clamp(sh + (ev.clientY - sy), 180, window.innerHeight - rec.y - 8),
-      });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      document.body.style.userSelect = prevUserSelect;
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
+  const startResize = (e: React.PointerEvent) =>
+    startOverlayResize(e, rec, 280, 180, onChange, onFocus);
   return (
     <div
       className="ov-win"
@@ -228,6 +338,7 @@ function FloatingWindow({
     >
       <div className="ov-win-bar" onPointerDown={startDrag}>
         <span className="ov-win-title">{title}</span>
+        {accessory}
         <button className="ov-win-close" onClick={onClose} aria-label="Close">
           ×
         </button>
@@ -795,7 +906,7 @@ const OVERLAY_TOUR_STEPS = [
   {
     title: "Move panes like windows",
     body:
-      "Drag any view header to move it. Drop on the workspace to snap it, drag outside the app to pop it out, or dock it back from the popout.",
+      "Drag any view header to move it. Drop on the workspace to snap it, or drag to a workspace edge and release to tear it into a native window.",
     detail:
       "The goal is spatial memory: document, Preview, Graph, Tasks, and Pi are all views that can move rather than fixed app furniture.",
   },
@@ -983,6 +1094,7 @@ const WIN_TITLE: Record<WinId, string> = {
   calendar: "Calendar",
   search: "Search",
   agent: "Pi agent",
+  research: "Deep Research",
   tasks: "Tasks",
   scratch: "Scratchpad",
   whiteboard: "Whiteboard",
@@ -997,6 +1109,8 @@ export function Overlay() {
   const setOpen = useAppStore((s) => s.setOverlayOpen);
   const toggleOverlay = useAppStore((s) => s.toggleOverlay);
   const moveViewToRight = useAppStore((s) => s.moveViewToRight);
+  const deepResearchOpenToken = useAppStore((s) => s.deepResearchOpenToken);
+  const openDeepResearch = useAppStore((s) => s.openDeepResearch);
   const [wins, setWins] = useState<Wins>(() => loadWins());
   const [order, setOrder] = useState<WinId[]>([
     "scratch",
@@ -1009,6 +1123,7 @@ export function Overlay() {
     "calendar",
   ]);
   const [renderOverlay, setRenderOverlay] = useState(open);
+  const [, setViewportTick] = useState(0);
   const [visible, setVisible] = useState(open);
   const [showTour, setShowTour] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -1040,20 +1155,23 @@ export function Overlay() {
   useEffect(() => {
     if (open && !lsGet(OVERLAY_TOURED_KEY)) setShowTour(true);
   }, [open]);
+  // Store-level callers can bump deepResearchOpenToken to open + focus the
+  // Steam-overlay research window. Pi's launcher owns a separate slide-out
+  // wing and deliberately initializes the shared run without bumping it.
+  useEffect(() => {
+    if (!deepResearchOpenToken) return;
+    setOpen(true);
+    setWins((w) => ({ ...w, research: { ...w.research, open: true } }));
+    setOrder((o) => [...o.filter((x) => x !== "research"), "research"]);
+  }, [deepResearchOpenToken, setOpen]);
+  useEffect(() => {
+    if (wins.research.open) openDeepResearch(false);
+  }, [wins.research.open, openDeepResearch]);
   useEffect(() => {
     if (!open) return;
-    setWins((current) => {
-      const next = { ...current };
-      for (const id of Object.keys(next) as WinId[]) next[id] = fitWin(next[id]);
-      return next;
-    });
-    const onResize = () => {
-      setWins((current) => {
-        const next = { ...current };
-        for (const id of Object.keys(next) as WinId[]) next[id] = fitWin(next[id]);
-        return next;
-      });
-    };
+    // Re-render on viewport changes so the render-time fitToViewport
+    // projection tracks the new size; the stored geometry is left alone.
+    const onResize = () => setViewportTick((t) => t + 1);
     window.addEventListener("resize", onResize);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -1082,19 +1200,17 @@ export function Overlay() {
 
   const focus = (id: WinId) => setOrder((o) => [...o.filter((x) => x !== id), id]);
   const patch = (id: WinId, p: Partial<WinRec>) =>
-    setWins((w) => ({ ...w, [id]: fitWin({ ...w[id], ...p }) }));
+    setWins((w) => ({ ...w, [id]: { ...w[id], ...p } }));
   const toggle = (id: WinId) => {
-    setWins((w) => ({ ...w, [id]: fitWin({ ...w[id], open: !w[id].open }) }));
+    setWins((w) => ({ ...w, [id]: { ...w[id], open: !w[id].open } }));
     focus(id);
   };
   const openWindow = (id: WinId) => {
-    setWins((w) => ({ ...w, [id]: fitWin({ ...w[id], open: true }) }));
+    setWins((w) => ({ ...w, [id]: { ...w[id], open: true } }));
     focus(id);
   };
   const resetOverlayLayout = () => {
-    const next = { ...DEFAULT_WINS };
-    for (const id of Object.keys(next) as WinId[]) next[id] = fitWin(next[id]);
-    setWins(next);
+    setWins(mergeStoredWins(DEFAULT_WINS, {}));
     setOrder(["scratch", "whiteboard", "gallery", "settings", "search", "agent", "tasks", "calendar"]);
   };
   const content = (id: WinId) =>
@@ -1105,15 +1221,8 @@ export function Overlay() {
         onClose={() => setOpen(false)}
         onAgent={() => openWindow("agent")}
       />
-    ) : id === "agent" ? (
-      <AgentSurface
-        embedded
-        browserSlideOut
-        onPlaceInWorkspace={() => {
-          moveViewToRight("agent");
-          setOpen(false);
-        }}
-      />
+    ) : id === "research" ? (
+      <DeepResearchPanel />
     ) : id === "tasks" ? (
       <TasksPanel onPick={() => setOpen(false)} />
     ) : id === "scratch" ? (
@@ -1139,11 +1248,25 @@ export function Overlay() {
       </header>
 
       {(Object.keys(wins) as WinId[]).map((id) =>
-        wins[id].open ? (
+        !wins[id].open ? null : id === "agent" ? (
+          <PiOverlayWindow
+            key={id}
+            rec={fitToViewport(wins[id])}
+            z={10 + order.indexOf(id)}
+            onChange={(p) => patch(id, p)}
+            onClose={() => toggle(id)}
+            onFocus={() => focus(id)}
+            onPlaceInWorkspace={() => {
+              moveViewToRight("agent");
+              setOpen(false);
+            }}
+          />
+        ) : (
           <FloatingWindow
             key={id}
             title={WIN_TITLE[id]}
-            rec={wins[id]}
+            accessory={id === "research" ? <DeepResearchPhaseChip /> : undefined}
+            rec={fitToViewport(wins[id])}
             z={10 + order.indexOf(id)}
             onChange={(p) => patch(id, p)}
             onClose={() => toggle(id)}
@@ -1151,7 +1274,7 @@ export function Overlay() {
           >
             {content(id)}
           </FloatingWindow>
-        ) : null
+        )
       )}
 
       <div className="ov-dock">
@@ -1159,7 +1282,10 @@ export function Overlay() {
           <button
             key={d.id}
             className={"ov-dock-btn" + (wins[d.id].open ? " on" : "")}
-            onClick={() => toggle(d.id)}
+            onClick={() => {
+              if (d.id === "research") openDeepResearch(false);
+              toggle(d.id);
+            }}
             title={d.label}
           >
             <span className="ov-dock-icon">{d.icon}</span>

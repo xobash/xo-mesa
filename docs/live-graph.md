@@ -5,6 +5,18 @@ represents markdown notes only. Non-markdown vault files stay available in the
 sidebar, search, viewers, previews, and embedded-asset resolution, but they do
 not appear as graph nodes.
 
+## Native Window
+
+Drag the Graph view header to a workspace edge and release to tear it into a
+native window. Drag that native OS title bar back over the main Mesa window and
+release to dock it again; Graph has no separate pop-out or Dock buttons.
+
+For fast first paint, the main window hands the new graph window a one-use
+metadata snapshot containing files, parsed note links, and graph settings.
+The graph renders from that snapshot immediately, then refreshes the vault from
+disk in the background so the native window converges on current filesystem
+state without showing an empty canvas during the initial scan.
+
 All markdown nodes participate in the same `d3-force` simulation. Linked notes
 are pulled together by links; unlinked notes have no links, so they settle as
 force-directed orphan nodes under the same charge, centering, collision, zoom,

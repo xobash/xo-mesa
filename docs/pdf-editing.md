@@ -38,10 +38,36 @@ error instead of a blank white pane.
 
 Zoom and edit rerenders keep the last painted page visible until the refreshed
 page image is ready, so the canvas does not flash white between scales or after
-byte updates. Annotation edits (text, replacement, highlight, and pencil) repaint
+byte updates. Zoom is anchored: pinch (ctrl+wheel) keeps the document point
+under the pointer fixed, and the ± toolbar buttons keep the viewport center
+fixed. `PdfView.zoomTo` captures the pre-zoom content rect, and a layout effect
+re-measures after the scale commit — the forced synchronous layout there reads
+the final post-zoom geometry before the 140 ms transform transition starts, so
+the scroll correction targets the settled state exactly and the ease animates on
+top of it. The zoom range stays clamped to 50–300%. Annotation edits (text, replacement, highlight, and pencil) repaint
 only the touched page; structural page edits repaint the document. Large-document
 rendering yields between page paints, and text-run extraction only starts when
 the `Edit text` tool is active.
+
+## Encrypted PDFs
+
+Encrypted (password-protected) PDFs are strictly read-only. pdf.js can decrypt
+and display documents with an empty user password (a common "protected but
+viewable" case), but Mesa's editing core (pdf-lib) cannot decrypt at all —
+re-serializing an encrypted document produces unreadable output that even
+post-save validation cannot distinguish from a healthy file. Every editing
+tool therefore fails closed on an encrypted document with a clear
+"Mesa keeps it read-only" message before any bytes are touched. Viewing,
+zooming, and page geometry are unaffected.
+
+## Page Moves Preserve the Rest of the Document
+
+Moving or reordering pages re-attaches the existing page objects inside the
+same document. Form fields (the AcroForm), title/author metadata, outlines,
+and named destinations survive page moves unchanged. No-op page operations
+(moving a page onto itself, deleting the only page, out-of-range moves) return
+the original bytes untouched instead of re-serializing the document, so they
+never register as phantom edits.
 
 Edits, undo/redo, and Save are serialized through one PDF byte queue. Each edit
 runs against the latest committed bytes, not a stale snapshot captured when the

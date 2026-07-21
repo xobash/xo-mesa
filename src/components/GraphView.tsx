@@ -826,6 +826,15 @@ export function GraphView() {
       canvas.height = Math.max(1, Math.floor(rect.height * dpr));
       canvas.style.width = rect.width + "px";
       canvas.style.height = rect.height + "px";
+      // Paint the reallocated backing store immediately. Setting width/height
+      // resets it to transparent per spec, but an explicit clear marks the new
+      // surface dirty for the compositor so it can never be presented holding
+      // stale/uninitialized rows before the next rAF draw lands.
+      const ctx = ctxRef.current;
+      if (ctx) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
       fitPendingRef.current = true; // re-fit when the pane resizes
       fastDrawUntilRef.current = performance.now() + 700;
       needsRedrawRef.current = true;
@@ -837,6 +846,24 @@ export function GraphView() {
       canvas.style.width = rect.width + "px";
       canvas.style.height = rect.height + "px";
       if (resizeTimer != null) clearTimeout(resizeTimer);
+      // The CSS stretch is only visually safe for SMALL deltas (its purpose:
+      // the sidebar open/close animation nudging the pane width per frame).
+      // A large growth jump — this pane just opened into the stack and went
+      // from its tiny first-layout box to full size, or a torn-off window got
+      // resized — would smear the old few-pixel bitmap into full-width bands
+      // for the whole debounce window (the "striped graph on open" bug, every
+      // theme's bloom colors). Realloc + redraw immediately for big jumps; a
+      // handful of reallocs during a 0.2s open is nowhere near the per-frame
+      // realloc cost the debounce exists to avoid.
+      const dpr = window.devicePixelRatio || 1;
+      const grewALot =
+        rect.width * dpr > canvas.width * 1.2 + 2 ||
+        rect.height * dpr > canvas.height * 1.2 + 2;
+      if (grewALot) {
+        resizeTimer = null;
+        applyResize();
+        return;
+      }
       resizeTimer = window.setTimeout(applyResize, 90);
     });
     applyResize(); // size correctly on mount without waiting for the debounce
@@ -1661,7 +1688,7 @@ export function GraphView() {
       }
     };
 
-    const loop = () => {
+    const frame = () => {
       const now = performance.now();
       const animationsOn = getStore().settings.animations;
       const currentWindowPos = {
@@ -1779,6 +1806,25 @@ export function GraphView() {
         updateHover(now);
       }
       updateActivityCards(now, activeItems);
+    };
+
+    // One bad frame must never kill the graph. If `frame` threw and the rAF
+    // chain stopped, the canvas would stay frozen on whatever the backing
+    // store last held — after a resize realloc that is a never-painted
+    // surface, which the compositor shows as stale striped garbage. Keep the
+    // loop alive, log (throttled) for diagnosis, and force a clean redraw.
+    let lastFrameErrorAt = 0;
+    const loop = () => {
+      try {
+        frame();
+      } catch (e) {
+        const now = performance.now();
+        if (now - lastFrameErrorAt > 5000) {
+          lastFrameErrorAt = now;
+          console.error("[mesa] graph frame failed:", e);
+        }
+        needsRedrawRef.current = true;
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);

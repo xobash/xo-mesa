@@ -99,6 +99,25 @@ async function load(bytes: Uint8Array): Promise<PDFDocument> {
   return PDFDocument.load(sanitizePdfBytes(bytes), { ignoreEncryption: true });
 }
 
+/**
+ * Load for a MUTATING transform. pdf-lib cannot decrypt: `ignoreEncryption`
+ * lets it parse an encrypted document, but re-serializing one emits unreadable
+ * garbage (still-encrypted streams under a rewritten xref) that other readers
+ * reject — and that our own pdf-lib-based validation cannot catch. Every edit
+ * of an encrypted PDF must therefore fail closed before touching the bytes;
+ * viewing stays read-only and unaffected (pdf.js decrypts empty-user-password
+ * documents on its own).
+ */
+async function loadForEdit(bytes: Uint8Array): Promise<PDFDocument> {
+  const doc = await load(bytes);
+  if (doc.isEncrypted) {
+    throw new Error(
+      "This PDF is encrypted (password-protected). Editing it would corrupt the file, so Mesa keeps it read-only."
+    );
+  }
+  return doc;
+}
+
 export async function assertValidPdfBytes(bytes: Uint8Array): Promise<void> {
   const clean = sanitizePdfBytes(bytes);
   if (!hasPdfEofMarker(clean)) {
@@ -127,7 +146,7 @@ export async function rotatePage(
   index: number,
   deltaDeg: number
 ): Promise<Uint8Array> {
-  const doc = await load(bytes);
+  const doc = await loadForEdit(bytes);
   const page = doc.getPage(index);
   const next = (((page.getRotation().angle + deltaDeg) % 360) + 360) % 360;
   page.setRotation(degrees(next));
@@ -136,40 +155,57 @@ export async function rotatePage(
 
 /** Remove a page (no-op if it's the only page). */
 export async function deletePage(bytes: Uint8Array, index: number): Promise<Uint8Array> {
-  const doc = await load(bytes);
-  if (doc.getPageCount() <= 1) return doc.save();
+  const doc = await loadForEdit(bytes);
+  if (doc.getPageCount() <= 1) return bytes;
   doc.removePage(index);
   return doc.save();
 }
 
-/** Reorder pages to the given permutation of indices. */
+/**
+ * Reorder pages to the given permutation of indices — inside the SAME
+ * document. Copying pages into a fresh `PDFDocument.create()` (the previous
+ * implementation) silently dropped everything hanging off the catalog that
+ * isn't reachable from a page: the AcroForm (all form fields), document
+ * metadata, outlines, and named destinations. Detaching and re-attaching the
+ * existing page leaves the rest of the document untouched.
+ */
 export async function reorderPages(
   bytes: Uint8Array,
   order: number[]
 ): Promise<Uint8Array> {
-  const src = await load(bytes);
-  const out = await PDFDocument.create();
-  const copied = await out.copyPages(src, order);
-  copied.forEach((p) => out.addPage(p));
-  return out.save();
+  const doc = await loadForEdit(bytes);
+  const n = doc.getPageCount();
+  const isPermutation =
+    order.length === n &&
+    new Set(order).size === n &&
+    order.every((i) => Number.isInteger(i) && i >= 0 && i < n);
+  if (!isPermutation) {
+    throw new Error(`Page order must be a permutation of 0..${n - 1}.`);
+  }
+  const pages = doc.getPages();
+  for (let i = n - 1; i >= 0; i--) doc.removePage(i);
+  for (const i of order) doc.addPage(pages[i]);
+  return doc.save();
 }
 
-/** Move a page from one position to another. */
+/** Move a page from one position to another (same-document reattach). */
 export async function movePage(
   bytes: Uint8Array,
   from: number,
   to: number
 ): Promise<Uint8Array> {
-  const n = (await load(bytes)).getPageCount();
-  const order = Array.from({ length: n }, (_, i) => i);
-  if (from < 0 || from >= n || to < 0 || to >= n) return bytes;
-  order.splice(to, 0, order.splice(from, 1)[0]);
-  return reorderPages(bytes, order);
+  const doc = await loadForEdit(bytes);
+  const n = doc.getPageCount();
+  if (from < 0 || from >= n || to < 0 || to >= n || from === to) return bytes;
+  const page = doc.getPage(from);
+  doc.removePage(from);
+  doc.insertPage(to, page);
+  return doc.save();
 }
 
 /** Stamp text onto a page at PDF coordinates (bottom-left origin). */
 export async function addText(bytes: Uint8Array, s: TextStamp): Promise<Uint8Array> {
-  const doc = await load(bytes);
+  const doc = await loadForEdit(bytes);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const page = doc.getPage(s.page);
   page.drawText(s.text, {
@@ -192,7 +228,7 @@ export async function replaceText(
   bytes: Uint8Array,
   s: TextReplacement
 ): Promise<Uint8Array> {
-  const doc = await load(bytes);
+  const doc = await loadForEdit(bytes);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const page = doc.getPage(s.page);
   const pad = Math.max(1.5, (s.size ?? s.height) * 0.12);
@@ -217,7 +253,7 @@ export async function replaceText(
 
 /** Draw a translucent rectangle — a highlight / redaction marker. */
 export async function addHighlight(bytes: Uint8Array, h: Highlight): Promise<Uint8Array> {
-  const doc = await load(bytes);
+  const doc = await loadForEdit(bytes);
   const page = doc.getPage(h.page);
   page.drawRectangle({
     x: h.x,
@@ -237,7 +273,7 @@ export async function addInkStroke(bytes: Uint8Array, s: InkStroke): Promise<Uin
   );
   if (!points.length) return bytes;
 
-  const doc = await load(bytes);
+  const doc = await loadForEdit(bytes);
   const page = doc.getPage(s.page);
   const color = toRgb(s.color);
   const thickness = Math.max(0.5, s.thickness ?? 2);
@@ -287,7 +323,7 @@ export async function addBlankPage(
   width = 612,
   height = 792
 ): Promise<Uint8Array> {
-  const doc = await load(bytes);
+  const doc = await loadForEdit(bytes);
   doc.addPage([width, height]);
   return doc.save();
 }
@@ -327,7 +363,7 @@ export async function setFormField(
   name: string,
   value: string
 ): Promise<Uint8Array> {
-  const doc = await load(bytes);
+  const doc = await loadForEdit(bytes);
   const form = doc.getForm();
   const f = form.getFieldMaybe(name);
   if (!f) return bytes;

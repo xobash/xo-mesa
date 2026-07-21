@@ -70,6 +70,7 @@ pub fn run() {
             harness::harness_status,
             harness::harness_nudge,
             terminal::terminal_start,
+            terminal::terminal_snapshot,
             terminal::terminal_resize,
             terminal::terminal_write,
             terminal::terminal_stop

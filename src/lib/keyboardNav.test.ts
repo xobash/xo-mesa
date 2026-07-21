@@ -27,6 +27,8 @@ const baseSettings: Settings = {
   dailyFolder: "Daily",
   templatesFolder: "Templates",
   tasksFile: "Tasks.md",
+  researchFolder: "Research",
+  researchDepth: "standard",
   sidebarOpen: true,
   sidebarWidth: 240,
   rightWidth: 380,

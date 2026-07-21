@@ -41,7 +41,7 @@ import {
   IN_TAURI,
   type VaultWatchEvent,
 } from "./lib/vault";
-import { buildNotes, resolveTarget } from "./lib/graph";
+import { buildNotes, refreshedNoteMeta, resolveTarget } from "./lib/graph";
 import { childRelPath, duplicateRelPath, ancestorFolders, safeBaseName } from "./lib/fsnames";
 import { extractLinks, extractTags, extractAliases } from "./lib/markdown";
 import {
@@ -65,7 +65,6 @@ import { generateDeviceName } from "./lib/deviceName";
 import type { KeyboardFocus } from "./lib/keyboardNav";
 import {
   applyTemplate,
-  localISO,
   localTime,
   parseEvents,
   serializeEvents,
@@ -77,7 +76,40 @@ import { planKeyMigration } from "./lib/migrate";
 import { invalidatePdfThumb } from "./lib/pdfThumb";
 import { forgetRecentVault, rememberRecentVault } from "./lib/recentVaults";
 import { updateTaskLine, type TaskLinePatch } from "./lib/tasks";
-import { getPiSessionSnapshot } from "./lib/piSessionBridge";
+import { getPiSessionSnapshot, requestSharedPiRestart } from "./lib/piSessionBridge";
+import type { DetachedWindowPlacement } from "./lib/windowTearOff";
+import {
+  discardGraphWindowBootstrap,
+  saveGraphWindowBootstrap,
+} from "./lib/graphWindowBootstrap";
+import {
+  DEFAULT_DEEP_RESEARCH_LIMITS,
+  RESEARCH_DEPTH_PRESETS,
+  clampDepth,
+  limitsForDepth,
+  buildResearchContext,
+  buildResearchPrompt,
+  buildChangeSet,
+  createRunId,
+  validateResearchResult,
+  researchReportQualityIssues,
+  canonicalizeSourceUrl,
+  truncateUtf8,
+  type DeepResearchPhase,
+  type DeepResearchResult,
+  type DeepResearchContext,
+  type ResearchChangeSet,
+  type ResearchDepth,
+  type ResearchActivity,
+} from "./lib/deepResearch";
+import {
+  currentPiSessionId,
+  sendToPi,
+  interruptPi,
+  listenDeepResearch,
+  applyChangeSet,
+  resolveApplyPlan,
+} from "./lib/deepResearchRun";
 
 const CALENDAR_FILE = "calendar.json";
 
@@ -92,6 +124,40 @@ interface DragGhost {
   label: string;
   x: number;
   y: number;
+}
+
+/** The live state of one Deep Research run. Both Deep Research surfaces read
+ *  and drive this single object; only one run exists at a time. */
+export interface DeepResearchRunState {
+  runId: string;
+  query: string;
+  phase: DeepResearchPhase;
+  /** The thoroughness the run was started with. */
+  depth: ResearchDepth;
+  /** The deterministic context snapshot the run was started with. */
+  context: DeepResearchContext | null;
+  /** Live activity feed (newest last) — what the agent is doing, visible to the user. */
+  activity: ResearchActivity[];
+  /** Sub-questions announced by the plan (or in the final result). */
+  subQuestions: string[];
+  /** One-based live research round, or 0 before the first round starts. */
+  currentRound: number;
+  /** The sub-question currently being researched. */
+  currentSubQuestion: string | null;
+  /** Sources seen so far, with live status. */
+  sources: { url: string; title?: string; status: "reading" | "done" }[];
+  /** Latest report snapshot sent while Pi is assembling the deliverable. */
+  reportDraft: string;
+  /** The validated, normalized result once the model finishes. */
+  result: DeepResearchResult | null;
+  /** The deterministic change set built from the result (review phase). */
+  changeSet: ResearchChangeSet | null;
+  /** A clear, actionable error for the error phase. */
+  error: string | null;
+  /** RelPaths written by a successful apply (for the done phase + refresh). */
+  appliedRelPaths: string[];
+  /** Monotonic id so a stale event from a previous run is ignored. */
+  seq: number;
 }
 
 function initialRecents(): string[] {
@@ -166,6 +232,8 @@ const DEFAULT_SETTINGS: Settings = {
   dailyFolder: "Daily",
   templatesFolder: "Templates",
   tasksFile: "Tasks.md",
+  researchFolder: "Research",
+  researchDepth: "standard",
   sidebarOpen: true,
   sidebarWidth: 240,
   rightWidth: 380,
@@ -293,6 +361,15 @@ interface AppState {
    *  user monitors the agent's browsing live. `seq` bumps per request so the
    *  same URL twice still re-navigates. */
   piBrowse: { url: string; seq: number } | null;
+  /** The single active Deep Research run (null when idle). Shared by every
+   *  Deep Research surface — the Steam-overlay window and the Pi panel button
+   *  both read and drive this one run, never separate state machines. */
+  deepResearch: DeepResearchRunState | null;
+  /** Set by `openDeepResearch` to tell the Steam overlay to open and focus
+   *  the Deep Research window (a monotonic token; the overlay watches it).
+   *  Pi's own launcher passes `false` and opens its local slide-out wing
+   *  instead, so the two entry points never create duplicate windows. */
+  deepResearchOpenToken: number;
   /** Floating preview card shown on sidebar / tag hover (graph manages its own). */
   hoverPreview: { target: PreviewTarget; x: number; y: number } | null;
   /** A view (panel or the editor) being dragged between regions / from a handle. */
@@ -325,10 +402,20 @@ interface AppState {
   toggleOverlay: () => void;
   setPiOverlayOpen: (open: boolean) => void;
   setAgentOpen: (open: boolean) => void;
+  /** Open/refresh the shared Deep Research surface state. Both launchers (the
+   *  Steam-overlay dock and the Pi panel button) call this one opener so they
+   *  always drive the same active run. */
+  openDeepResearch: (openOverlay?: boolean) => void;
+  startDeepResearch: (
+    query: string,
+    opts?: { selectedPaths?: string[]; depth?: ResearchDepth; piSurfaceAvailable?: boolean }
+  ) => Promise<void>;
+  cancelDeepResearch: () => Promise<void>;
+  applyDeepResearch: () => Promise<void>;
+  discardDeepResearch: () => void;
   openDailyNote: (dateISO: string) => Promise<void>;
   addCalendarEvent: (date: string, title: string) => Promise<void>;
   removeCalendarEvent: (date: string, title: string) => Promise<void>;
-  newFromTemplate: (templateRel: string) => Promise<void>;
   addPersonalTask: (text: string) => Promise<void>;
   updateTask: (relPath: string, line: number, patch: TaskLinePatch) => Promise<void>;
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
@@ -366,7 +453,7 @@ interface AppState {
     fingerprint: string;
   } | null>;
   openDocWindow: (relPath: string) => Promise<void>;
-  openAgentWindow: () => Promise<void>;
+  openAgentWindow: (placement?: DetachedWindowPlacement) => Promise<void>;
   openVault: (path?: string) => Promise<void>;
   removeRecentVault: (path: string) => void;
   selectFile: (relPath: string) => Promise<void>;
@@ -380,12 +467,10 @@ interface AppState {
   duplicateEntry: (relPath: string) => Promise<void>;
   toggleBookmark: (relPath: string) => void;
   importDropped: (paths: string[]) => Promise<void>;
-  deleteNote: (relPath: string) => Promise<void>;
   deleteEntry: (relPath: string) => Promise<void>;
   renameNote: (relPath: string, newBaseName: string) => Promise<void>;
   closeTab: (relPath: string) => void;
   togglePanel: (panel: RightPanel) => void;
-  removePanel: (panel: RightPanel) => void;
   removeViewFromWorkspace: (view: PaneView) => void;
   dropViewInCenter: () => void;
   dropViewAt: (index: number) => void;
@@ -393,7 +478,7 @@ interface AppState {
   moveViewToCenter: (view: PaneView) => void;
   moveViewToRight: (view: PaneView, index?: number) => void;
   flipDockSide: () => void;
-  openPanelWindow: (panel: RightPanel) => Promise<void>;
+  openPanelWindow: (panel: RightPanel, placement?: DetachedWindowPlacement) => Promise<void>;
   toggleGraphFull: () => void;
   ensureContent: (relPath: string) => Promise<string>;
   /** Fast preview read: full cached content when available, otherwise a
@@ -420,6 +505,170 @@ export const useAppStore = create<AppState>((set, get) => {
   // refuse to stay open. This coalesces toggles within TOGGLE_DEBOUNCE_MS.
   let lastOverlayToggleAt = 0;
   const TOGGLE_DEBOUNCE_MS = 300;
+
+  // --- Deep Research run bookkeeping (module-scope, not React state). -------
+  let drSeq = 0;
+  let drUnlisten: (() => void) | null = null;
+  let drTimeout: ReturnType<typeof setTimeout> | undefined;
+  const DR_TIMEOUT_MS = 6 * 60 * 1000;
+
+  const drPatch = (patch: Partial<DeepResearchRunState>) => {
+    const cur = get().deepResearch;
+    if (cur) set({ deepResearch: { ...cur, ...patch } });
+  };
+
+  async function drStopListening() {
+    if (drTimeout) clearTimeout(drTimeout);
+    drTimeout = undefined;
+    const un = drUnlisten;
+    drUnlisten = null;
+    if (un) {
+      try {
+        un();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** Finalize a run from the Pi extension's finish payload: validate the
+   *  structured result (the trust boundary — model output is data), build the
+   *  deterministic change set, and move to the review phase. */
+  function drFinish(runId: string, rawResult: unknown) {
+    const cur = get().deepResearch;
+    if (!cur || cur.runId !== runId) return;
+    if (!rawResult || typeof rawResult !== "object") {
+      drPatch({ phase: "error", error: "Pi returned a malformed research result. Run Deep Research again." });
+      return;
+    }
+    const limits = limitsForDepth(DEFAULT_DEEP_RESEARCH_LIMITS, cur.depth);
+    const result = validateResearchResult(rawResult as DeepResearchResult, limits);
+    if (!result.report.markdown.trim()) {
+      drPatch({ phase: "error", error: "Pi returned an empty research report. Run Deep Research again." });
+      return;
+    }
+    const qualityIssues = researchReportQualityIssues(result, cur.depth);
+    if (qualityIssues.length) {
+      void drStopListening();
+      drPatch({
+        phase: "error",
+        error:
+          "Pi's report did not meet the thesis-grade research contract: " +
+          qualityIssues.join("; ") +
+          ". Run again or increase the depth.",
+      });
+      return;
+    }
+    const folder = get().settings.researchFolder || "Research";
+    const changeSet = buildChangeSet({
+      runId,
+      result,
+      folder,
+      existingFiles: get().files,
+      notes: get().notes,
+      content: get().contentCache,
+      now: new Date(),
+      limits,
+    });
+    void drStopListening();
+    drPatch({
+      phase: "review",
+      result,
+      changeSet,
+      subQuestions: result.subQuestions && result.subQuestions.length ? result.subQuestions : cur.subQuestions,
+      currentSubQuestion: null,
+      currentRound: cur.depth.rounds,
+      reportDraft: result.report.markdown,
+    });
+  }
+
+  async function drStartListening(runId: string) {
+    await drStopListening();
+    drUnlisten = await listenDeepResearch((evt) => {
+      const cur = get().deepResearch;
+      if (!cur || cur.runId !== runId || evt.runId !== runId) return;
+      if (evt.kind === "progress") {
+        const phase = evt.phase ?? "researching";
+        const message = (evt.message ?? "").slice(0, 800);
+        const allowedKinds: ResearchActivity["kind"][] = [
+          "plan", "round", "subquestion", "source", "note", "synthesize", "status",
+        ];
+        const kind = allowedKinds.includes(evt.activityKind as ResearchActivity["kind"])
+          ? (evt.activityKind as ResearchActivity["kind"])
+          : "status";
+        const round = typeof evt.round === "number"
+          ? Math.max(1, Math.min(cur.depth.rounds, Math.round(evt.round)))
+          : undefined;
+        const sourceUrl = evt.sourceUrl ? canonicalizeSourceUrl(evt.sourceUrl) ?? undefined : undefined;
+        const activity: ResearchActivity = {
+          kind,
+          message,
+          subQuestion: evt.subQuestion,
+          round,
+          sourceUrl,
+          sourceTitle: evt.sourceTitle,
+          at: Date.now(),
+        };
+        // Maintain the structured run view: sub-question plan, current
+        // sub-question, and per-source reading/done status.
+        let subQuestions = cur.subQuestions;
+        if (kind === "plan" && message) {
+          subQuestions = message
+            .split(/\r?\n|;\s*/)
+            .map((s) => s.replace(/^[-*\d.\s]+/, "").trim())
+            .filter(Boolean)
+            .slice(0, cur.depth.subQuestions);
+        }
+        const currentSubQuestion =
+          kind === "subquestion" && evt.subQuestion ? evt.subQuestion : cur.currentSubQuestion;
+        const currentRound = kind === "round" && round ? round : cur.currentRound;
+        let sources = cur.sources;
+        if (sourceUrl) {
+          const existing = sources.find((s) => s.url === sourceUrl);
+          if (kind === "source") {
+            sources = existing
+              ? sources.map((s) => (s.url === sourceUrl ? { ...s, status: "reading", title: evt.sourceTitle ?? s.title } : s))
+              : [...sources, { url: sourceUrl, title: evt.sourceTitle, status: "reading" }];
+          } else if (kind === "note") {
+            sources = existing
+              ? sources.map((s) => (s.url === sourceUrl ? { ...s, status: "done", title: evt.sourceTitle ?? s.title } : s))
+              : [...sources, { url: sourceUrl, title: evt.sourceTitle, status: "done" }];
+          }
+        }
+        sources = sources.slice(0, cur.depth.maxSources);
+        set({
+          deepResearch: {
+            ...cur,
+            phase: phase === "planning" || phase === "synthesizing" ? phase : "researching",
+            activity: [...cur.activity, activity].slice(-300),
+            subQuestions,
+            currentSubQuestion,
+            currentRound,
+            sources,
+            reportDraft:
+              typeof evt.draftMarkdown === "string"
+                ? truncateUtf8(evt.draftMarkdown, DEFAULT_DEEP_RESEARCH_LIMITS.maxReportBytes)
+                : cur.reportDraft,
+          },
+        });
+      } else if (evt.kind === "finish") {
+        drFinish(runId, evt.result);
+      }
+    });
+    drTimeout = setTimeout(() => {
+      const cur = get().deepResearch;
+      if (!cur || cur.runId !== runId) return;
+      if (cur.phase === "review" || cur.phase === "done" || cur.phase === "error") return;
+      const sid = currentPiSessionId();
+      if (sid) void interruptPi(sid);
+      void drStopListening();
+      drPatch({
+        phase: "error",
+        error: "Deep Research timed out. Pi may be stuck or the provider is unresponsive — try again.",
+      });
+      if (sid) void requestSharedPiRestart();
+    }, DR_TIMEOUT_MS);
+  }
 
   function commitSettings(settings: Settings): void {
     try {
@@ -863,6 +1112,8 @@ export const useAppStore = create<AppState>((set, get) => {
     overlayOpen: false,
     piOverlayOpen: false,
     piBrowse: null,
+    deepResearch: null,
+    deepResearchOpenToken: 0,
     agentOpen: false,
     hoverPreview: null,
     dragView: null,
@@ -1162,7 +1413,7 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ popoutDoc: relPath });
     },
 
-    openAgentWindow: async () => {
+    openAgentWindow: async (placement) => {
       if (IN_TAURI) {
         try {
           const { WebviewWindow } = await import(
@@ -1188,16 +1439,29 @@ export const useAppStore = create<AppState>((set, get) => {
           const url = `index.html?agent=1&vault=${encodeURIComponent(
             vault
           )}&theme=${theme}${docParam}${sessionParam}`;
-          new WebviewWindow(label, {
+          const win = new WebviewWindow(label, {
             url,
             title: "Pi agent",
-            width: 980,
-            height: 760,
+            width: Math.max(520, placement?.width ?? 980),
+            height: Math.max(360, placement?.height ?? 760),
+            ...(placement ? { x: placement.x, y: placement.y } : {}),
             resizable: true,
+            decorations: false,
+            shadow: true,
+          });
+          // The WebviewWindow constructor is fire-and-forget internally (it
+          // never throws for a real creation failure — see the same note in
+          // BrowserHarness.openBrowserExternally). Tear-off closes the in-app
+          // Pi surface BEFORE this window exists, so a silent failure here
+          // would lose the Pi surface entirely; fall back to the in-app
+          // floating Pi window instead.
+          void win.once("tauri://error", (e) => {
+            console.warn("[mesa] Pi window creation failed:", e.payload ?? e);
+            set({ agentOpen: true });
           });
           return;
         } catch {
-          /* fall back to in-app modal */
+          /* fall back to the in-app floating Pi window */
         }
       }
       set({ agentOpen: true });
@@ -1388,17 +1652,13 @@ export const useAppStore = create<AppState>((set, get) => {
       saveTimer = setTimeout(() => {
         const file = get().fileFor(active);
         if (file) void writeNote(file, get().contentCache[active] ?? text);
-        const notes = { ...get().notes };
-        const cur = notes[active];
-        if (cur) {
-          notes[active] = {
-            ...cur,
-            rawLinks: extractLinks(text),
-            tags: extractTags(text),
-            aliases: extractAliases(text),
-          };
-          set({ notes });
-        }
+        const cur = get().notes[active];
+        // Replace the notes map only when the extracted metadata actually
+        // changed: its identity churn drives the graph rebuild, the backlink
+        // re-index, and every notes subscriber, and typing prose leaves
+        // links/tags/aliases untouched on most saves.
+        const next = cur ? refreshedNoteMeta(cur, text) : null;
+        if (next) set({ notes: { ...get().notes, [active]: next } });
       }, 500);
     },
 
@@ -1546,6 +1806,250 @@ export const useAppStore = create<AppState>((set, get) => {
       })),
     setAgentOpen: (open) => set({ agentOpen: open }),
 
+    openDeepResearch: (openOverlay = true) => {
+      // Opening a surface never resets an in-flight run — it only ensures the
+      // run object exists so both launchers read/drive the same state, then
+      // optionally bumps the open-token so the Steam overlay opens + focuses
+      // its window. Pi's launcher passes false and owns its slide-out wing.
+      const cur = get().deepResearch;
+      if (!cur) {
+        set({
+          deepResearch: {
+            runId: createRunId(),
+            query: "",
+            phase: "idle",
+            depth: clampDepth(
+              RESEARCH_DEPTH_PRESETS[
+                (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS) in RESEARCH_DEPTH_PRESETS
+                  ? (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS)
+                  : "standard"
+              ]
+            ),
+            context: null,
+            activity: [],
+            subQuestions: [],
+            currentRound: 0,
+            currentSubQuestion: null,
+            sources: [],
+            reportDraft: "",
+            result: null,
+            changeSet: null,
+            error: null,
+            appliedRelPaths: [],
+            seq: drSeq,
+          },
+        });
+      }
+      if (openOverlay) {
+        set((s) => ({
+          deepResearchOpenToken: s.deepResearchOpenToken + 1,
+          overlayOpen: true,
+          piOverlayOpen: false,
+        }));
+      }
+    },
+
+    startDeepResearch: async (query, opts) => {
+      const trimmed = query.trim();
+      const root = get().vaultPath;
+      if (!trimmed) {
+        get().openDeepResearch(false);
+        drPatch({ phase: "error", error: "Enter a research question first." });
+        return;
+      }
+      if (!root) {
+        get().openDeepResearch(false);
+        drPatch({ phase: "error", error: "Open a vault before running Deep Research." });
+        return;
+      }
+      // Never stack runs: a run already streaming must be cancelled first.
+      const existing = get().deepResearch;
+      if (existing && (existing.phase === "planning" || existing.phase === "researching" || existing.phase === "synthesizing")) {
+        drPatch({ phase: existing.phase, error: "A Deep Research run is already in progress — cancel it first." });
+        return;
+      }
+
+      const depth = clampDepth(
+        opts?.depth ??
+          RESEARCH_DEPTH_PRESETS[
+            (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS) in RESEARCH_DEPTH_PRESETS
+              ? (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS)
+              : "standard"
+          ]
+      );
+      const limits = limitsForDepth(DEFAULT_DEEP_RESEARCH_LIMITS, depth);
+      const context = buildResearchContext({
+        query: trimmed,
+        activePath: get().activePath,
+        selectedPaths: opts?.selectedPaths ?? [],
+        files: get().files,
+        notes: get().notes,
+        content: get().contentCache,
+        limits,
+      });
+
+      const runId = createRunId();
+      drSeq += 1;
+      set({
+        deepResearch: {
+          runId,
+          query: trimmed,
+          phase: "planning",
+          depth,
+          context,
+          activity: [{ kind: "status", message: "Preparing research context…", at: Date.now() }],
+          subQuestions: [],
+          currentRound: 0,
+          currentSubQuestion: null,
+          sources: [],
+          reportDraft: "",
+          result: null,
+          changeSet: null,
+          error: null,
+          appliedRelPaths: [],
+          seq: drSeq,
+        },
+      });
+
+      // The shared Pi session must be live AND running with the Deep Research
+      // extension (its progress/finish tools + fail-safe write/edit block).
+      // That extension loads at spawn time, so a session that started without
+      // it must restart — one `terminal_stop`, then the normal path respawns
+      // it. We never spawn a second Pi process.
+      if (!IN_TAURI) {
+        drPatch({
+          phase: "error",
+          error:
+            "Deep Research needs the desktop app's Pi agent. The browser demo has no native Pi session.",
+        });
+        return;
+      }
+      // Mount a Pi surface only when the launcher is not already inside one.
+      // This avoids opening a duplicate Pi modal behind the slide-out wing.
+      if (!currentPiSessionId() && !opts?.piSurfaceAvailable) set({ agentOpen: true });
+      if (currentPiSessionId()) {
+        await requestSharedPiRestart();
+      }
+      let sessionId: string | null = null;
+      for (let i = 0; i < 40 && !sessionId; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        sessionId = currentPiSessionId();
+        if (get().deepResearch?.runId !== runId) return; // superseded/cancelled
+      }
+      if (!sessionId) {
+        drPatch({
+          phase: "error",
+          error:
+            "Pi did not start in time. Open the Pi agent (Ctrl/Cmd+Shift+Space), let it finish starting, then run Deep Research again.",
+        });
+        if (currentPiSessionId()) await requestSharedPiRestart();
+        return;
+      }
+
+      // Arm the result listener BEFORE sending the prompt so a fast model
+      // can't finish before Mesa is listening.
+      try {
+        await drStartListening(runId);
+      } catch (e) {
+        drPatch({ phase: "error", error: `Could not start the Deep Research progress bridge: ${String(e)}` });
+        if (currentPiSessionId()) await requestSharedPiRestart();
+        return;
+      }
+
+      const prompt = buildResearchPrompt({
+        runId,
+        query: trimmed,
+        context,
+        folder: get().settings.researchFolder || "Research",
+        depth,
+      });
+      try {
+        await sendToPi(sessionId, prompt + "\n");
+        drPatch({ phase: "researching" });
+      } catch (e) {
+        await drStopListening();
+        drPatch({ phase: "error", error: `Could not send the research task to Pi: ${String(e)}` });
+        if (currentPiSessionId()) await requestSharedPiRestart();
+      }
+    },
+
+    cancelDeepResearch: async () => {
+      const cur = get().deepResearch;
+      if (!cur) return;
+      if (cur.phase === "applying") return;
+      const sid = currentPiSessionId();
+      if (sid) await interruptPi(sid);
+      await drStopListening();
+      drPatch({ phase: "cancelled", error: null, changeSet: null });
+      if (sid) await requestSharedPiRestart();
+    },
+
+    applyDeepResearch: async () => {
+      const cur = get().deepResearch;
+      if (!cur || !cur.changeSet) return;
+      const root = get().vaultPath;
+      if (!root) {
+        drPatch({ phase: "error", error: "The vault is no longer open." });
+        return;
+      }
+      // Version-check the change set against the CURRENT vault before writing.
+      const plan = resolveApplyPlan({
+        ops: cur.changeSet.ops,
+        existingContent: get().contentCache,
+        files: get().files,
+        notes: get().notes,
+      });
+      if (!plan.ok) {
+        drPatch({ phase: "error", error: plan.error, changeSet: null });
+        return;
+      }
+      drPatch({ phase: "applying" });
+      const outcome = await applyChangeSet({ root, plan });
+      if (!outcome.ok) {
+        drPatch({ phase: "error", error: outcome.error ?? "Apply failed.", changeSet: null });
+        return;
+      }
+      drPatch({ phase: "done", appliedRelPaths: outcome.appliedRelPaths });
+      // Refresh the vault scan, content cache, backlinks, and graph so the new
+      // notes and links appear (and the graph lights up) immediately.
+      if (root) await refreshMissingExternalFiles(root);
+      const latest = get();
+      const notes = { ...latest.notes };
+      const contentCache = { ...latest.contentCache };
+      for (const op of cur.changeSet.ops) {
+        contentCache[op.relPath] = op.content;
+        const file = latest.fileFor(op.relPath);
+        if (file?.isMarkdown) {
+          const existing = notes[op.relPath];
+          notes[op.relPath] = {
+            relPath: op.relPath,
+            title: existing?.title ?? file.name,
+            rawLinks: extractLinks(op.content),
+            tags: extractTags(op.content),
+            aliases: extractAliases(op.content),
+            firstImagePath: existing?.firstImagePath,
+          };
+        }
+        bumpActivityAmount(op.relPath, 1.3, op.kind === "create" ? "create" : "write");
+      }
+      set({
+        notes,
+        contentCache,
+        ...(latest.activePath && cur.changeSet.ops.some((op) => op.relPath === latest.activePath)
+          ? { content: contentCache[latest.activePath] ?? latest.content }
+          : {}),
+      });
+      // Surface the report note for the user.
+      const reportRel = cur.changeSet.reportRelPath;
+      if (get().fileFor(reportRel)) await get().openFile(reportRel);
+    },
+
+    discardDeepResearch: () => {
+      void drStopListening();
+      set({ deepResearch: null });
+    },
+
+
     openDailyNote: async (dateISO) => {
       const root = get().vaultPath;
       if (!root) return;
@@ -1661,24 +2165,6 @@ export const useAppStore = create<AppState>((set, get) => {
       void writeNote(file, next);
     },
 
-    newFromTemplate: async (templateRel) => {
-      const root = get().vaultPath;
-      if (!root) return;
-      const tpl = await get().ensureContent(templateRel);
-      const existing = new Set(get().files.map((f) => f.relPath.toLowerCase()));
-      let rel = "Untitled.md";
-      let n = 1;
-      while (existing.has(rel.toLowerCase())) rel = `Untitled ${n++}.md`;
-      const body = applyTemplate(tpl, {
-        date: localISO(),
-        time: localTime(),
-        title: rel.replace(/\.md$/, ""),
-      });
-      const file = await createNote(root, rel, body);
-      addNote(file, body);
-      await get().selectFile(rel);
-    },
-
     importDropped: async (paths) => {
       const root = get().vaultPath;
       if (!root) return;
@@ -1733,10 +2219,6 @@ export const useAppStore = create<AppState>((set, get) => {
       }
       const firstMd = created.find((f) => f.isMarkdown);
       if (firstMd) await get().selectFile(firstMd.relPath);
-    },
-
-    deleteNote: async (relPath) => {
-      await get().deleteEntry(relPath);
     },
 
     deleteEntry: async (relPath) => {
@@ -1835,13 +2317,6 @@ export const useAppStore = create<AppState>((set, get) => {
         ...toggleWorkspacePanel(settings.centerView, settings.rightStack, panel),
       });
     },
-    removePanel: (panel) => {
-      const settings = get().settings;
-      commitSettings({
-        ...settings,
-        ...removeFromWorkspace(settings.centerView, settings.rightStack, panel),
-      });
-    },
     removeViewFromWorkspace: (view) => {
       const settings = get().settings;
       commitSettings({
@@ -1912,7 +2387,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
     toggleGraphFull: () => set({ graphFull: !get().graphFull }),
 
-    openPanelWindow: async (panel) => {
+    openPanelWindow: async (panel, placement) => {
       if (!IN_TAURI) return;
       try {
         const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -1923,14 +2398,38 @@ export const useAppStore = create<AppState>((set, get) => {
         // window shows the SAME document, not the vault's first note.
         const active = get().activePath;
         const docParam = active ? `&sel=${encodeURIComponent(active)}` : "";
+        const graphBootstrapSaved =
+          panel === "graph" && vault
+            ? saveGraphWindowBootstrap(label, {
+                vaultPath: vault,
+                vaultName: get().vaultName,
+                files: get().files,
+                notes: get().notes,
+                settings: {
+                  hardwareAccel: get().settings.hardwareAccel,
+                  animations: get().settings.animations,
+                  graphShowTags: get().settings.graphShowTags,
+                  graphExistingFilesOnly: get().settings.graphExistingFilesOnly,
+                  graphShowOrphans: get().settings.graphShowOrphans,
+                  graphShowAttachments: get().settings.graphShowAttachments,
+                },
+              })
+            : false;
+        const bootstrapParam = graphBootstrapSaved
+          ? `&graphBootstrap=${encodeURIComponent(label)}`
+          : "";
+        if (graphBootstrapSaved) {
+          window.setTimeout(() => discardGraphWindowBootstrap(label), 30_000);
+        }
         const url = `index.html?panel=${panel}&vault=${encodeURIComponent(
           vault
-        )}&theme=${theme}${docParam}`;
+        )}&theme=${theme}${docParam}${bootstrapParam}`;
         new WebviewWindow(label, {
           url,
           title: panel[0].toUpperCase() + panel.slice(1),
-          width: 720,
-          height: 820,
+          width: Math.max(360, placement?.width ?? 720),
+          height: Math.max(280, placement?.height ?? 820),
+          ...(placement ? { x: placement.x, y: placement.y } : {}),
           resizable: true,
         });
       } catch {

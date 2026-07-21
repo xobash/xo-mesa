@@ -34,6 +34,7 @@ use tiny_http::{Method, Request, Response, Server};
 const EXTENSION_SRC: &str = include_str!("../resources/mesa-activity.ts");
 const GOAL_EXTENSION_SRC: &str = include_str!("../resources/mesa-goal.ts");
 const BROWSER_EXTENSION_SRC: &str = include_str!("../resources/mesa-browser.ts");
+const DEEP_RESEARCH_EXTENSION_SRC: &str = include_str!("../resources/mesa-deep-research.ts");
 
 /// Loopback ports to try, in order (inclusive). The first free one wins.
 const PORT_FIRST: u16 = 8788;
@@ -49,6 +50,8 @@ pub struct ActivityInfo {
     pub goal_extension_path: String,
     #[serde(rename = "browserExtensionPath")]
     pub browser_extension_path: String,
+    #[serde(rename = "deepResearchExtensionPath")]
+    pub deep_research_extension_path: String,
 }
 
 struct ActivityServer {
@@ -89,8 +92,8 @@ fn make_token() -> String {
 }
 
 /// Materialize the bundled Pi extensions; returns
-/// (activity_path, goal_path, browser_path).
-fn write_extensions() -> Result<(String, String, String), String> {
+/// (activity_path, goal_path, browser_path, deep_research_path).
+fn write_extensions() -> Result<(String, String, String, String), String> {
     let dir = std::env::temp_dir().join("mesa-pi");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let activity = dir.join("mesa-activity.ts");
@@ -99,10 +102,13 @@ fn write_extensions() -> Result<(String, String, String), String> {
     std::fs::write(&goal, GOAL_EXTENSION_SRC).map_err(|e| e.to_string())?;
     let browser = dir.join("mesa-browser.ts");
     std::fs::write(&browser, BROWSER_EXTENSION_SRC).map_err(|e| e.to_string())?;
+    let deep_research = dir.join("mesa-deep-research.ts");
+    std::fs::write(&deep_research, DEEP_RESEARCH_EXTENSION_SRC).map_err(|e| e.to_string())?;
     Ok((
         activity.to_string_lossy().to_string(),
         goal.to_string_lossy().to_string(),
         browser.to_string_lossy().to_string(),
+        deep_research.to_string_lossy().to_string(),
     ))
 }
 
@@ -260,6 +266,20 @@ fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
         json_response(req, json);
         return;
     }
+    // Deep Research bridge: the mesa-deep-research extension POSTs
+    // { kind: "progress" | "finish", runId, … } here while a run is active.
+    // Re-emitted verbatim as a "mesa://deep-research" event; the frontend
+    // owns validation, change-set building, and the review/apply transaction.
+    if url == "/deep-research" && method == Method::Post {
+        let mut body = String::new();
+        if req.as_reader().read_to_string(&mut body).is_ok() {
+            let _ = app.emit("mesa://deep-research", body);
+            let _ = req.respond(Response::from_string("ok"));
+        } else {
+            let _ = req.respond(Response::from_string("read error").with_status_code(400));
+        }
+        return;
+    }
     let _ = req.respond(Response::from_string("not found").with_status_code(404));
 }
 
@@ -286,7 +306,8 @@ pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
     }
 
     let token = make_token();
-    let (extension_path, goal_extension_path, browser_extension_path) = write_extensions()?;
+    let (extension_path, goal_extension_path, browser_extension_path, deep_research_extension_path) =
+        write_extensions()?;
 
     let mut bound: Option<(Server, u16)> = None;
     for port in PORT_FIRST..=PORT_LAST {
@@ -318,6 +339,7 @@ pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
         extension_path,
         goal_extension_path,
         browser_extension_path,
+        deep_research_extension_path,
     };
     *guard = Some(ActivityServer {
         running,

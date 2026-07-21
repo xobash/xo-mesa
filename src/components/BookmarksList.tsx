@@ -91,7 +91,7 @@ export function BookmarksList() {
                 aria-label="Remove bookmark"
                 onClick={() => toggleBookmark(b.rel)}
               >
-                ✕
+                ×
               </button>
             </div>
           ))}

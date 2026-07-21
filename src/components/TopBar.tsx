@@ -76,7 +76,7 @@ function VaultSwitcher() {
                   title="Remove this vault from the recent list"
                   aria-label="Remove current vault from recent list"
                 >
-                  ✕
+                  ×
                 </button>
               )}
             </div>
@@ -107,7 +107,7 @@ function VaultSwitcher() {
                 title="Remove this vault from the recent list"
                 aria-label={`Remove ${r.split(/[\\/]/).pop() || r} from recent list`}
               >
-                ✕
+                ×
               </button>
             </div>
           ))}
@@ -136,8 +136,6 @@ export function TopBar() {
   const graphFull = useAppStore((s) => s.graphFull);
   const togglePanel = useAppStore((s) => s.togglePanel);
   const toggleGraphFull = useAppStore((s) => s.toggleGraphFull);
-  const openPanelWindow = useAppStore((s) => s.openPanelWindow);
-  const removeViewFromWorkspace = useAppStore((s) => s.removeViewFromWorkspace);
   const setSearch = useAppStore((s) => s.setSearch);
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const setSyncOpen = useAppStore((s) => s.setSyncOpen);
@@ -235,17 +233,6 @@ export function TopBar() {
           aria-label={graphFull ? "Exit full graph" : "Expand graph"}
         >
           ⤢
-        </button>
-        <button
-          className="btn icon"
-          onClick={() => {
-            void openPanelWindow("graph");
-            if (shows("graph")) removeViewFromWorkspace("graph");
-          }}
-          title="Open graph in a separate window"
-          aria-label="Open graph in a separate window"
-        >
-          ⧉
         </button>
         <button
           className={"btn" + (syncListening ? " on" : "")}

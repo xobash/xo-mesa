@@ -274,7 +274,7 @@ fn handle(mut req: Request, root: &Path, token: &str, app: &tauri::AppHandle) {
                 Err(_) => respond_text(req, 404, "not found"),
             },
             Method::Put => {
-                if req.body_length().map_or(false, |l| l > MAX_PUT_BYTES) {
+                if req.body_length().is_some_and(|l| l > MAX_PUT_BYTES) {
                     respond_text(req, 413, "too large");
                     return;
                 }
@@ -1000,7 +1000,7 @@ pub async fn sync_run(
                     .ok()
                     .and_then(|mut c| c.hash_file(&p).ok())
             })
-            .map_or(false, |(_, h)| h == e.hash);
+            .is_some_and(|(_, h)| h == e.hash);
         if already {
             emit_log(
                 &app,

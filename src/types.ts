@@ -100,6 +100,10 @@ export interface Settings {
   templatesFolder: string;
   /** Note file where the user's personal (+ added) tasks live. */
   tasksFile: string;
+  /** Vault folder Deep Research writes generated notes into. */
+  researchFolder: string;
+  /** Default Deep Research thoroughness preset (quick | standard | deep). */
+  researchDepth: string;
   /** Whether the left sidebar is shown. */
   sidebarOpen: boolean;
   /** Resizable pane widths in px. */

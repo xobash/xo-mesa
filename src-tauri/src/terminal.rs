@@ -1,12 +1,12 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     env,
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -24,6 +24,34 @@ struct TerminalSession {
     child: Box<dyn portable_pty::Child + Send>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    history: Arc<Mutex<TerminalHistory>>,
+}
+
+const TERMINAL_HISTORY_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct TerminalHistory {
+    chunks: VecDeque<String>,
+    bytes: usize,
+    seq: u64,
+}
+
+impl TerminalHistory {
+    fn push(&mut self, data: String) -> u64 {
+        self.seq = self.seq.saturating_add(1);
+        self.bytes += data.len();
+        self.chunks.push_back(data);
+        while self.bytes > TERMINAL_HISTORY_MAX_BYTES && self.chunks.len() > 1 {
+            if let Some(removed) = self.chunks.pop_front() {
+                self.bytes = self.bytes.saturating_sub(removed.len());
+            }
+        }
+        self.seq
+    }
+
+    fn snapshot(&self) -> String {
+        self.chunks.iter().map(String::as_str).collect()
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -32,6 +60,13 @@ struct TerminalOutput {
     session_id: String,
     stream: String,
     data: String,
+    seq: u64,
+}
+
+#[derive(Serialize)]
+pub struct TerminalSnapshot {
+    data: String,
+    seq: u64,
 }
 
 static PI_BINARY: OnceLock<PathBuf> = OnceLock::new();
@@ -431,8 +466,13 @@ fn merged_path(prefixes: &[PathBuf]) -> Option<OsString> {
     env::join_paths(paths).ok()
 }
 
-fn spawn_reader<R>(mut reader: R, app: AppHandle, id: String, stream: &'static str)
-where
+fn spawn_reader<R>(
+    mut reader: R,
+    app: AppHandle,
+    id: String,
+    stream: &'static str,
+    history: Arc<Mutex<TerminalHistory>>,
+) where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
@@ -442,12 +482,17 @@ where
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let seq = history
+                        .lock()
+                        .map(|mut history| history.push(data.clone()))
+                        .unwrap_or(0);
                     let _ = app.emit(
                         "terminal://output",
                         TerminalOutput {
                             session_id: id.clone(),
                             stream: stream.to_string(),
                             data,
+                            seq,
                         },
                     );
                 }
@@ -457,6 +502,10 @@ where
     });
 }
 
+// The parameter list is the IPC contract with the frontend's `terminal_start`
+// invoke — every argument arrives as a named field, so a params struct would
+// only obscure the wire shape.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn terminal_start(
     app: AppHandle,
@@ -507,7 +556,8 @@ pub fn terminal_start(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     drop(pair.slave);
 
-    spawn_reader(reader, app, id.clone(), "stdout");
+    let history = Arc::new(Mutex::new(TerminalHistory::default()));
+    spawn_reader(reader, app, id.clone(), "stdout", Arc::clone(&history));
 
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     sessions.insert(
@@ -516,9 +566,26 @@ pub fn terminal_start(
             child,
             master: pair.master,
             writer,
+            history,
         },
     );
     Ok(id)
+}
+
+#[tauri::command]
+pub fn terminal_snapshot(
+    state: State<TerminalState>,
+    session_id: String,
+) -> Result<TerminalSnapshot, String> {
+    let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(&session_id)
+        .ok_or_else(|| "Terminal session not found".to_string())?;
+    let history = session.history.lock().map_err(|e| e.to_string())?;
+    Ok(TerminalSnapshot {
+        data: history.snapshot(),
+        seq: history.seq,
+    })
 }
 
 #[tauri::command]
@@ -568,4 +635,26 @@ pub fn terminal_stop(state: State<TerminalState>, session_id: String) -> Result<
         let _ = session.child.wait();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_history_preserves_order_and_sequence() {
+        let mut history = TerminalHistory::default();
+        assert_eq!(history.push("one".into()), 1);
+        assert_eq!(history.push(" two".into()), 2);
+        assert_eq!(history.snapshot(), "one two");
+        assert_eq!(history.seq, 2);
+    }
+
+    #[test]
+    fn terminal_history_is_bounded_without_dropping_the_latest_chunk() {
+        let mut history = TerminalHistory::default();
+        history.push("a".repeat(TERMINAL_HISTORY_MAX_BYTES));
+        history.push("latest".into());
+        assert_eq!(history.snapshot(), "latest");
+    }
 }
