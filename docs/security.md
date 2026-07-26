@@ -135,15 +135,23 @@ styles and is safe (styles cannot execute script).
 
 ## Supply chain
 
-`npm audit` is clean. Runtime dependencies added for security: `dompurify`
-(HTML sanitizer). Dev-only: `jsdom` (so the sanitizer can be tested against a
-real DOM). Both are widely used, MIT-licensed, and carry no transitive runtime
-dependencies of concern.
+`npm audit` is a release gate, not a durable claim that can be copied from an
+older run. Re-run it against the current lockfile and registry before release,
+review the exact dependency path and advisory, apply the smallest compatible
+lockfile change, then run the full test/build suite and audit again.
 
-Re-run `npm audit` rather than trusting this line — it has gone stale before.
-The `linkify-it` advisory above was found that way, in a package Mesa never
-depends on directly (it arrives under `markdown-it`). Transitive packages on the
-note-rendering path are in the threat model even though nothing imports them by
-name. Prefer the minimal lockfile bump for a transitive fix: `npm audit fix`
-also re-resolves cross-platform optional binaries and produces a large,
-hard-to-review diff.
+The July 2026 [PostCSS path-traversal advisory][postcss-advisory] affected
+PostCSS through `8.5.17`; Mesa resolved the Vite-transitive dependency from
+`8.5.15` to `8.5.23` (the first patched release was `8.5.18`). The lockfile
+minimum is pinned by `src/lib/supplyChainContract.test.ts`. This remains
+dev/build tooling rather than packaged application code, but high-severity
+findings are remediated instead of waived on that basis.
+
+The `linkify-it` advisory above was likewise found in a package Mesa never
+depends on directly (it arrives under `markdown-it`). Transitive packages on
+user-content and build paths remain in the threat model even though production
+source does not import them by name. Use `npm audit fix --package-lock-only`
+when it provides a compatible fix, inspect the diff, synchronize installed
+modules with `npm install`/`npm ci`, and verify with `npm audit`.
+
+[postcss-advisory]: https://github.com/advisories/GHSA-r28c-9q8g-f849

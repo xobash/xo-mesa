@@ -87,14 +87,40 @@ if errorlevel 1 (
     echo     Install Rust from https://rustup.rs or open a new terminal if winget just installed it, then re-run run.cmd.
     exit /b 1
   )
-  call rustup default stable-msvc
-  if errorlevel 1 exit /b 1
   call :refresh_paths
 )
+
+REM rustup installs cargo.exe as a proxy before a default toolchain necessarily
+REM exists. `where cargo` therefore is not a readiness check: the proxy can be
+REM present while every Cargo command fails with "no default is configured".
+call cargo --version >nul 2>nul
+if errorlevel 1 (
+  where rustup >nul 2>nul
+  if errorlevel 1 (
+    echo   x Cargo is present but cannot run, and Rustup is unavailable to repair it.
+    echo     Install Rust from https://rustup.rs, then re-run run.cmd.
+    exit /b 1
+  )
+  echo   . Configuring the stable MSVC Rust toolchain...
+  call rustup default stable-msvc
+  if errorlevel 1 (
+    echo   x Rustup could not install or select the stable MSVC toolchain.
+    echo     Check the network error above, then re-run run.cmd.
+    exit /b 1
+  )
+  call :refresh_paths
+)
+
 where cargo >nul 2>nul
 if errorlevel 1 (
   echo   x Cargo still not found after Rust install.
   echo     Open a new terminal and re-run run.cmd. If it still fails, install Rust from https://rustup.rs.
+  exit /b 1
+)
+call cargo --version >nul 2>nul
+if errorlevel 1 (
+  echo   x Cargo was found but the Rust toolchain is not usable.
+  echo     Run "rustup default stable-msvc", then re-run run.cmd.
   exit /b 1
 )
 echo   ok Rust/Cargo present

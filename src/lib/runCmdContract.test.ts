@@ -21,6 +21,21 @@ describe("Windows run.cmd bootstrap contract", () => {
     expect(launch).toBeGreaterThan(cargoGuard);
   });
 
+  it("repairs a Rustup Cargo proxy that has no default toolchain", () => {
+    const runnableCheck = runCmd.indexOf("call cargo --version >nul 2>nul");
+    const configureDefault = runCmd.indexOf("call rustup default stable-msvc", runnableCheck);
+    const verifyAfterConfigure = runCmd.indexOf(
+      "call cargo --version >nul 2>nul",
+      runnableCheck + 1,
+    );
+    const rustReady = runCmd.indexOf("ok Rust/Cargo present");
+
+    expect(runnableCheck).toBeGreaterThan(-1);
+    expect(configureDefault).toBeGreaterThan(runnableCheck);
+    expect(verifyAfterConfigure).toBeGreaterThan(configureDefault);
+    expect(rustReady).toBeGreaterThan(verifyAfterConfigure);
+  });
+
   it("verifies MSVC build tools before launching the Tauri app", () => {
     const msvcCheck = runCmd.indexOf(":has_msvc_tools");
     const msvcGuard = runCmd.indexOf("Microsoft C++ Build Tools still not found");

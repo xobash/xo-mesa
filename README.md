@@ -123,9 +123,11 @@ install only what's missing:
   mesa:build` produces AppImage / deb / rpm.
 - **Windows** — Node.js LTS, Rust, and Git via Scoop when available, with
   `winget` fallbacks for locked-down PowerShell environments. The script
-  verifies `cargo` and the Microsoft C++ Build Tools before launch, so a failed
-  dependency install stops with a fix message instead of failing inside Tauri.
-  WebView2 runtime also uses `winget` when available.
+  verifies that Cargo can actually run—not merely that Rustup's `cargo.exe`
+  proxy exists—and configures the stable MSVC toolchain when the proxy has no
+  default. It also verifies the Microsoft C++ Build Tools before launch, so a
+  failed dependency install stops with a fix message instead of failing inside
+  Tauri. WebView2 runtime also uses `winget` when available.
   `npm run mesa:build` produces `.msi` + `.exe` installers.
 
 Everything lands in your user account (`~/.cargo`, `~/.rustup`, `~/.nvm`,
@@ -313,11 +315,10 @@ a silent overwrite. See [docs/sync.md](docs/sync.md) for the full model.
   variants that poisoned hundreds of packages including `@ctrl/tinycolor`. None
   of the compromised packages or versions are present; Mesa's `debug` resolves to
   `4.4.3`, which is *after* the malicious `4.4.2`.
-- **Runtime deps ship; dev tooling doesn't.** The only advisories `npm audit`
-  reports are known dev-server issues in the build toolchain (`vite` / `vitest` /
-  `esbuild`). These run only on a developer's machine during `npm run dev`/tests
-  and are **not** part of the packaged desktop app, so they don't affect
-  installed Mesa. They are non-malware advisories, not compromised packages.
+- **Audit findings are fixed, not waived.** Dependency changes must leave
+  `npm audit` clean, including transitive build-tool dependencies. The committed
+  lockfile is the reviewed source of exact versions; do not assume an advisory
+  is harmless solely because npm classifies the affected package as dev-only.
 
 You can reproduce the check yourself: `npm ci` for an exact install, then
 `npm audit` and `npm ls debug` to confirm the tree.

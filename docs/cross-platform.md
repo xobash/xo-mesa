@@ -30,10 +30,14 @@ on Windows. `install.sh` installs Git when needed, clones or fast-forwards the
 checkout, and then hands off to `run.sh`; `install.ps1` does the same before
 handing off to `run.cmd`. `run.cmd` prefers user-local Scoop installs but falls
 back to `winget` for Node.js, Git, and Rust when Scoop cannot bootstrap in the
-current PowerShell environment. It verifies `cargo` and Microsoft C++ Build
-Tools before launching Tauri, so setup stops at the missing dependency instead
-of failing later in `cargo metadata` or the Rust link step. The setup scripts
-also clear a stale Rust build cache if the project folder was moved or renamed.
+current PowerShell environment. It executes `cargo --version` rather than
+trusting executable presence because Rustup can install a Cargo proxy before a
+default toolchain exists. If that check fails while Rustup is available,
+`run.cmd` configures `stable-msvc` and verifies Cargo again. It also verifies
+Microsoft C++ Build Tools before launching Tauri, so setup stops at the missing
+dependency instead of failing later in `cargo metadata` or the Rust link step.
+The setup scripts also clear a stale Rust build cache if the project folder was
+moved or renamed.
 
 ## CI build matrix
 
