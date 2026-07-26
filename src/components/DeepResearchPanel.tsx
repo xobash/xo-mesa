@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useAppStore } from "../store";
+import { useAppStore, getStore } from "../store";
 import type { DeepResearchRunState } from "../store";
 import { IN_TAURI } from "../lib/vault";
 import {
   RESEARCH_DEPTH_PRESETS,
   DEPTH_LIMITS,
   clampDepth,
+  type ResearchContextScope,
   type ResearchDepth,
   type ResearchDepthPreset,
   type ResearchActivity,
 } from "../lib/deepResearch";
+import { buildResearchTroubleshootingKit } from "../lib/deepResearchDiagnostics";
+import { currentPiSessionId } from "../lib/deepResearchRun";
 
 /**
  * Deep Research surface — the single UI for a Deep Research run, mounted from
@@ -50,10 +53,18 @@ const KIND_ICON: Record<ResearchActivity["kind"], string> = {
   plan: "▤",
   round: "↻",
   subquestion: "→",
-  source: "⌕",
+  search: "⌕",
+  source: "▹",
   note: "✓",
   synthesize: "✎",
   status: "·",
+};
+
+const SCOPE_INFO: Record<ResearchContextScope, string> = {
+  workspace:
+    "Send only what you're looking at: the active note, selected notes, and their direct links (backlinks + outgoing).",
+  vault:
+    "Also mine the whole vault: notes sharing tags with the picked set and query-term content matches.",
 };
 
 function num(lo: number, hi: number, set: (n: number) => void) {
@@ -86,10 +97,42 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
   const discardDeepResearch = useAppStore((s) => s.discardDeepResearch);
   const openFile = useAppStore((s) => s.openFile);
 
+  const fileCount = useAppStore((s) => s.files.length);
+  const noteCount = useAppStore((s) => Object.keys(s.notes).length);
+
   const [query, setQuery] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [showDepth, setShowDepth] = useState(false);
+  const [copiedKit, setCopiedKit] = useState(false);
   const activityRef = useRef<HTMLDivElement | null>(null);
+
+  // Secret-scrubbed markdown kit for pasting into a bug report or at an LLM.
+  const copyKit = async () => {
+    const cur = getStore().deepResearch;
+    if (!cur) return;
+    let appVersion = "dev";
+    if (IN_TAURI) {
+      try {
+        const { getVersion } = await import("@tauri-apps/api/app");
+        appVersion = await getVersion();
+      } catch {
+        /* keep "dev" */
+      }
+    }
+    const kit = buildResearchTroubleshootingKit({
+      appVersion,
+      userAgent: navigator.userAgent,
+      vaultFileCount: fileCount,
+      vaultNoteCount: noteCount,
+      piSessionLive: Boolean(currentPiSessionId()),
+      agentProvider: settings.agentProvider,
+      agentModel: settings.agentModel,
+      run: cur,
+    });
+    void navigator.clipboard?.writeText(kit);
+    setCopiedKit(true);
+    setTimeout(() => setCopiedKit(false), 1400);
+  };
 
   // Per-run depth (initialized from the persisted default preset).
   const defaultDepth = useMemo(
@@ -134,6 +177,8 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
         unknown: run.result.claims.filter((c) => c.kind === "unknown").length,
       }
     : null;
+  const scope: ResearchContextScope =
+    settings.researchContextScope === "vault" ? "vault" : "workspace";
   const activePreset = (Object.keys(RESEARCH_DEPTH_PRESETS) as ResearchDepthPreset[]).find((p) => {
     const preset = RESEARCH_DEPTH_PRESETS[p];
     return preset.rounds === depth.rounds &&
@@ -171,7 +216,7 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && canStart) {
               e.preventDefault();
-              void startDeepResearch(query, { depth, piSurfaceAvailable });
+              void startDeepResearch(query, { depth, scope, piSurfaceAvailable });
             }
           }}
         />
@@ -198,9 +243,22 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
               ⚙
             </button>
           </div>
+          <div className="dr-depth-presets" role="group" aria-label="Context scope">
+            {(["workspace", "vault"] as ResearchContextScope[]).map((sc) => (
+              <button
+                key={sc}
+                className={"dr-preset" + (scope === sc ? " on" : "")}
+                onClick={() => setSetting("researchContextScope", sc)}
+                disabled={isBusy || run.phase === "applying"}
+                title={SCOPE_INFO[sc]}
+              >
+                {sc === "workspace" ? "workspace ctx" : "vault ctx"}
+              </button>
+            ))}
+          </div>
           <div className="dr-actions">
             {!isBusy && run.phase !== "applying" && (
-              <button className="btn primary" disabled={!canStart} onClick={() => void startDeepResearch(query, { depth, piSurfaceAvailable })}>
+              <button className="btn primary" disabled={!canStart} onClick={() => void startDeepResearch(query, { depth, scope, piSurfaceAvailable })}>
                 {run.phase === "idle" || run.phase === "planning" ? "Start research" : "Run again"}
               </button>
             )}
@@ -261,7 +319,9 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
       {/* Context summary */}
       {run.context && (
         <div className="dr-context">
-          <div className="dr-context-title">Context sent to Pi — {run.context.summary}</div>
+          <div className="dr-context-title">
+            Context sent to Pi — {run.context.summary} · {run.context.scope} scope
+          </div>
           <div className="dr-context-notes">
             {run.context.notes.slice(0, 10).map((n) => (
               <span key={n.relPath} className="dr-chip" title={n.via.join(", ")}>
@@ -272,6 +332,12 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
               <span className="dr-chip dr-chip-more">+{run.context.notes.length - 10} more</span>
             )}
           </div>
+          {run.context.notes.length === 0 && run.context.scope === "workspace" && (
+            <div className="dr-context-trunc">
+              No workspace notes included — open or select a note before starting, or switch to
+              vault ctx to mine the whole vault.
+            </div>
+          )}
           {run.context.truncated && (
             <div className="dr-context-trunc">
               Bounded for responsiveness; {run.context.omittedNotes} related note
@@ -330,7 +396,7 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
       {run.activity.length > 0 && run.phase !== "review" && run.phase !== "done" && (
         <div className="dr-activity" ref={activityRef}>
           {run.activity.map((a, i) => (
-            <div key={i} className={"dr-act dr-act-" + a.kind}>
+            <div key={i} className={"dr-act dr-act-" + a.kind + (a.observed ? " dr-act-observed" : "")}>
               <span className="dr-act-icon">{KIND_ICON[a.kind]}</span>
               <span className="dr-act-msg">
                 {a.kind === "source" && a.sourceUrl ? (
@@ -372,6 +438,9 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
           <div className="dr-error-title">Deep Research hit a problem</div>
           <div className="dr-error-body">{run.error}</div>
           <div className="dr-error-actions">
+            <button className="btn" onClick={() => void copyKit()}>
+              {copiedKit ? "Copied" : "Copy troubleshooting kit"}
+            </button>
             <button className="btn" onClick={() => discardDeepResearch()}>
               Dismiss
             </button>

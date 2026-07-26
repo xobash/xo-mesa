@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:perf": "vitest run src/lib/graph.perf.test.ts --mode graph-bench",
     "test:watch": "vitest",
     "mesa": "node scripts/dev.mjs",
     "mesa:build": "node scripts/dev.mjs build",

@@ -11,6 +11,8 @@ import {
   buildResearchPrompt,
   canonicalizeSourceUrl,
   dedupeSources,
+  searchQueryOf,
+  activityForNavigation,
   parseResultEnvelope,
   buildChangeSet,
   buildApplyPlan,
@@ -64,6 +66,44 @@ describe("dedupeSources", () => {
     ]);
     expect(out.map((s) => s.url)).toEqual(["https://a.com/x", "https://b.com/y"]);
     expect(out[0].title).toBe("A");
+  });
+});
+
+// --- observed navigation (queries + sources the harness actually visited) ----
+describe("searchQueryOf", () => {
+  it("extracts the query from common search engines", () => {
+    expect(searchQueryOf("https://duckduckgo.com/?q=aleister+crowley&ia=web")).toBe("aleister crowley");
+    expect(searchQueryOf("https://html.duckduckgo.com/html/?q=test")).toBe("test");
+    expect(searchQueryOf("https://www.google.com/search?q=epstein+timeline&hl=en")).toBe("epstein timeline");
+    expect(searchQueryOf("https://www.bing.com/search?q=abc")).toBe("abc");
+    expect(searchQueryOf("https://search.brave.com/search?q=abc")).toBe("abc");
+    expect(searchQueryOf("https://www.startpage.com/sp/search?query=abc")).toBe("abc");
+  });
+  it("returns null for ordinary pages, non-search engine paths, and bad URLs", () => {
+    expect(searchQueryOf("https://en.wikipedia.org/wiki/Aleister_Crowley")).toBeNull();
+    expect(searchQueryOf("https://google.com/maps?q=pizza")).toBeNull(); // not /search
+    expect(searchQueryOf("https://duckduckgo.com/")).toBeNull(); // no query
+    expect(searchQueryOf("javascript:alert(1)")).toBeNull();
+    expect(searchQueryOf("not a url")).toBeNull();
+  });
+});
+
+describe("activityForNavigation", () => {
+  it("labels a search-engine navigation as an observed search with its query", () => {
+    const a = activityForNavigation("https://duckduckgo.com/?q=sex+magick+history", 123);
+    expect(a).toMatchObject({ kind: "search", observed: true, at: 123 });
+    expect(a?.message).toContain("sex magick history");
+  });
+  it("labels an ordinary page navigation as an observed source", () => {
+    const a = activityForNavigation("https://en.wikipedia.org/wiki/Thelema?utm_source=x", 5);
+    expect(a).toMatchObject({ kind: "source", observed: true, at: 5 });
+    expect(a?.sourceUrl).toBe("https://en.wikipedia.org/wiki/Thelema");
+    expect(a?.message).toBe("Opened en.wikipedia.org/wiki/Thelema");
+  });
+  it("rejects non-web navigations", () => {
+    expect(activityForNavigation("about:blank", 1)).toBeNull();
+    expect(activityForNavigation("file:///etc/passwd", 1)).toBeNull();
+    expect(activityForNavigation("", 1)).toBeNull();
   });
 });
 
@@ -131,6 +171,7 @@ describe("buildResearchContext", () => {
       selectedPaths: [],
       files, notes, content,
       limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+      scope: "vault",
     });
     const paths = out.notes.map((n) => n.relPath);
     expect(paths).not.toContain(".secret/x.md");
@@ -163,7 +204,22 @@ describe("buildResearchContext", () => {
     expect(out.notes[0].redacted).toBe(true);
   });
 
-  it("pulls deterministic related notes via backlinks, outgoing links, tags, and search", () => {
+  it("vault scope pulls related notes via backlinks, outgoing links, tags, and search", () => {
+    const out = buildResearchContext({
+      query: "mesa",
+      activePath: "a.md",
+      selectedPaths: [],
+      files, notes, content,
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+      scope: "vault",
+    });
+    expect(out.scope).toBe("vault");
+    const paths = out.notes.map((n) => n.relPath);
+    expect(paths).toContain("b.md"); // backlink + outgoing
+    expect(paths).toContain("sub/d.md"); // shared #ai tag
+  });
+
+  it("defaults to workspace scope: active + selected + link neighborhood, NO vault sweep", () => {
     const out = buildResearchContext({
       query: "mesa",
       activePath: "a.md",
@@ -171,9 +227,11 @@ describe("buildResearchContext", () => {
       files, notes, content,
       limits: DEFAULT_DEEP_RESEARCH_LIMITS,
     });
-    const paths = out.notes.map((n) => n.relPath);
-    expect(paths).toContain("b.md"); // backlink + outgoing
-    expect(paths).toContain("sub/d.md"); // shared #ai tag
+    expect(out.scope).toBe("workspace");
+    // a.md (active) + b.md (its backlink/outgoing neighbor) only — the
+    // shared-tag note (sub/d.md) and content-search matches stay out.
+    expect(out.notes.map((n) => n.relPath)).toEqual(["a.md", "b.md"]);
+    expect(out.omittedNotes).toBe(0);
   });
 
   it("enforces the note cap and reports truncation", () => {
@@ -183,6 +241,7 @@ describe("buildResearchContext", () => {
       selectedPaths: [],
       files, notes, content,
       limits: { ...DEFAULT_DEEP_RESEARCH_LIMITS, maxContextNotes: 2 },
+      scope: "vault",
     });
     expect(out.notes.length).toBeLessThanOrEqual(2);
     expect(out.truncated).toBe(true);

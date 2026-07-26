@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import pdfBytesSrc from "./pdfBytes.ts?raw";
 import pdfThumbSrc from "./pdfThumb.ts?raw";
 import pdfSrc from "./pdf.ts?raw";
+import usePdfEditorSrc from "../components/usePdfEditor.ts?raw";
 
 /**
  * Bundle-layering contract for the PDF modules.
@@ -46,5 +47,25 @@ describe("pdf module layering", () => {
       expect(pdfSrc, `pdf.ts should re-export ${name}`).toContain(name);
     }
     expect(staticImports(pdfSrc)).toContain("./pdfBytes");
+  });
+
+  it("bounds PDF rerender scratch memory to one effect-local canvas", () => {
+    expect(usePdfEditorSrc).toContain(
+      'const renderCanvas = document.createElement("canvas")'
+    );
+    expect(usePdfEditorSrc).not.toContain(
+      "renderCanvasRefs.current.set"
+    );
+    expect(usePdfEditorSrc).not.toMatch(
+      /Map<number,\s*HTMLCanvasElement>\(new Map\(\)\).*renderCanvas/i
+    );
+  });
+
+  it("tracks all painted pages without publishing React state per page", () => {
+    expect(usePdfEditorSrc).toContain(
+      "renderedPagesRef.current.add(i - 1)"
+    );
+    expect(usePdfEditorSrc).toContain("setFirstPagePainted(true)");
+    expect(usePdfEditorSrc).not.toContain("setRenderedPages((prev)");
   });
 });

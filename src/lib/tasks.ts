@@ -72,6 +72,67 @@ export function parseTasks(
   return out;
 }
 
+/** The note metadata `collectVaultTasks` reads (structural — see `NoteMeta`). */
+export interface TaskNoteMeta {
+  title: string;
+}
+
+interface TaskMemoEntry {
+  src: string;
+  title: string;
+  kind: TaskKind;
+  tasks: TaskItem[];
+}
+
+/**
+ * Per-note memo for `collectVaultTasks`. Rebuilt each call from the entries
+ * still present, so notes deleted from the vault stop retaining their content.
+ */
+let taskMemo = new Map<string, TaskMemoEntry>();
+
+/**
+ * Every task in the vault, tagged personal (it lives in the user's tasks note)
+ * or agent, in note order.
+ *
+ * The dashboard re-runs this whenever the content cache changes identity, which
+ * is every debounced editor save — so a naive pass re-split and re-scanned the
+ * WHOLE vault (measured: 15.2 ms at 2,000 notes / 8.6 MiB, 39.5 ms at 5,000)
+ * at up to 2 Hz while typing, to recompute a result that differs in one note.
+ * Each note's parse is therefore memoised on its exact content string, title,
+ * and tag, so a save re-parses only the note that changed.
+ *
+ * Returned `TaskItem`s are SHARED across calls and must be treated read-only
+ * (`groupTasks`/`bucketTask` only read; the dashboard filters into new arrays).
+ */
+export function collectVaultTasks(
+  notes: Record<string, TaskNoteMeta>,
+  cache: Record<string, string>,
+  personalRel: string
+): TaskItem[] {
+  const next = new Map<string, TaskMemoEntry>();
+  const out: TaskItem[] = [];
+  for (const rel of Object.keys(notes)) {
+    const src = cache[rel];
+    if (src == null) continue;
+    const title = notes[rel].title;
+    const kind: TaskKind = rel === personalRel ? "personal" : "agent";
+    const hit = taskMemo.get(rel);
+    const tasks =
+      hit && hit.src === src && hit.title === title && hit.kind === kind
+        ? hit.tasks
+        : parseTasks(rel, title, src).map((t) => ({ ...t, kind }));
+    next.set(rel, { src, title, kind, tasks });
+    for (const t of tasks) out.push(t);
+  }
+  taskMemo = next;
+  return out;
+}
+
+/** Drop the memo — for tests, and whenever a vault is closed. */
+export function resetVaultTaskMemo(): void {
+  taskMemo = new Map();
+}
+
 export interface TaskLinePatch {
   checked?: boolean;
   due?: string | null;

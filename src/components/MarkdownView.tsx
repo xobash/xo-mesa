@@ -1,9 +1,25 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { VaultFile } from "../types";
-import { renderMarkdown } from "../lib/markdown";
 import { resolveAssetPath } from "../lib/graph";
 import { urlForPath } from "../lib/vault";
 import { useAppStore } from "../store";
+
+/**
+ * The markdown renderer (markdown-it + dompurify, ~120 kB minified) is loaded
+ * as its own chunk so it never blocks first paint — see `lib/markdown.ts`.
+ * The import is kicked off when this module evaluates, not when a view mounts:
+ * markdown can only render after note bytes come back from an async disk read,
+ * which is orders of magnitude slower than resolving a local chunk, so
+ * `renderer` is warm before the first render and the synchronous path below is
+ * the one that always runs in practice. `ready` exists only to cover the
+ * theoretical first-frame race, and keeps the rendered output correct if it
+ * ever loses.
+ */
+type Renderer = (source: string) => string;
+let renderer: Renderer | null = null;
+const rendererReady: Promise<void> = import("../lib/markdown").then((m) => {
+  renderer = m.renderMarkdown;
+});
 
 /**
  * Renders markdown to HTML, then walks the result to:
@@ -31,7 +47,20 @@ export function MarkdownView({
   const storeOpen = useAppStore((s) => s.openTarget);
   const useFiles = files ?? storeFiles;
   const onClick = onWikiClick ?? storeOpen;
-  const html = useMemo(() => renderMarkdown(source), [source]);
+  const [ready, setReady] = useState(renderer !== null);
+  const html = useMemo(
+    () => (renderer ? renderer(source) : ""),
+    [source, ready]
+  );
+
+  useEffect(() => {
+    if (ready) return;
+    let alive = true;
+    void rendererReady.then(() => alive && setReady(true));
+    return () => {
+      alive = false;
+    };
+  }, [ready]);
 
   useEffect(() => {
     const el = ref.current;
@@ -108,7 +137,10 @@ export function MarkdownView({
     }
 
     return () => links.forEach((a) => a.removeEventListener("click", onLinkClick));
-  }, [source, useFiles, onClick, highlight]);
+    // `html` is a pure function of `source`; it is listed so the DOM wiring
+    // below also re-runs in the rare case the renderer chunk resolves after
+    // the first render (html "" -> real markup).
+  }, [source, html, useFiles, onClick, highlight]);
 
   return (
     <div

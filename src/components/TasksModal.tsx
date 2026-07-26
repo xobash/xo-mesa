@@ -1,6 +1,11 @@
 import { useMemo, useState } from "react";
 import { useAppStore } from "../store";
-import { parseTasks, groupTasks, taskProject, type TaskItem } from "../lib/tasks";
+import {
+  collectVaultTasks,
+  groupTasks,
+  taskProject,
+  type TaskItem,
+} from "../lib/tasks";
 import { localISO } from "../lib/daily";
 import { Modal } from "./Modal";
 
@@ -30,21 +35,12 @@ export function TasksPanel({ onPick }: { onPick?: () => void }) {
   const today = localISO();
   const next = offsetISO(1);
 
-  const all = useMemo(() => {
-    const personalRel = (tasksFile || "Tasks.md").trim();
-    const out: TaskItem[] = [];
-    for (const rel of Object.keys(notes)) {
-      const c = cache[rel];
-      if (c == null) continue;
-      // Personal = the tasks the user added themselves (live in the tasks note);
-      // everything else parsed from the vault is agent work.
-      const kind = rel === personalRel ? "personal" : "agent";
-      for (const t of parseTasks(rel, notes[rel].title, c)) {
-        out.push({ ...t, kind });
-      }
-    }
-    return out;
-  }, [notes, cache, tasksFile]);
+  // Personal = the tasks the user added themselves (they live in the tasks
+  // note); everything else parsed from the vault is agent work.
+  const all = useMemo(
+    () => collectVaultTasks(notes, cache, (tasksFile || "Tasks.md").trim()),
+    [notes, cache, tasksFile]
+  );
 
   const submitDraft = () => {
     const text = draft.trim();

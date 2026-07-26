@@ -83,12 +83,15 @@ export function usePdfEditor(
   const [loadFailed, setLoadFailed] = useState(false);
   const [fields, setFields] = useState<FormField[]>([]);
   const [textRuns, setTextRuns] = useState<PdfTextRun[]>([]);
-  const [renderedPages, setRenderedPages] = useState<Set<number>>(() => new Set());
+  const [firstPagePainted, setFirstPagePainted] = useState(false);
+  // Page completion is imperative canvas bookkeeping. Keep the complete set
+  // available without publishing a new React state object after every page;
+  // only page 1 changes visible UI (it retires the native warm-start iframe).
+  const renderedPagesRef = useRef<Set<number>>(new Set());
   const [history, setHistory] = useState<Uint8Array[]>([]);
   const [future, setFuture] = useState<Uint8Array[]>([]);
   const viewports = useRef<Map<number, pdfjs.PageViewport>>(new Map());
   const canvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
-  const renderCanvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
   const renderPageOverrideRef = useRef<Set<number> | null>(null);
   const bytesRef = useRef<Uint8Array | null>(null);
   const docRef = useRef<pdfjs.PDFDocumentProxy | null>(null);
@@ -96,6 +99,11 @@ export function usePdfEditor(
   const historyRef = useRef<Uint8Array[]>([]);
   const futureRef = useRef<Uint8Array[]>([]);
   const queueRef = useRef<Promise<void>>(Promise.resolve());
+  // Every async edit/history/save job belongs to the PDF path that started it.
+  // PdfView is reused when the user switches directly from PDF A to PDF B, so
+  // an old transform must never publish bytes into the new document's state.
+  const documentGenerationRef = useRef(0);
+  const operationPathRef = useRef<string | null>(null);
   const canvasRefCallbacks = useRef<
     Map<number, (el: HTMLCanvasElement | null) => void>
   >(new Map());
@@ -120,16 +128,31 @@ export function usePdfEditor(
     setStatus("");
     setPageCount(0);
     setFields([]);
-    setRenderedPages(new Set());
+    renderedPagesRef.current.clear();
+    setFirstPagePainted(false);
     viewports.current.clear();
     canvasRefs.current.clear();
-    renderCanvasRefs.current.clear();
     canvasRefCallbacks.current.clear();
     if (canvasVersionRaf.current !== null) {
       cancelAnimationFrame(canvasVersionRaf.current);
       canvasVersionRaf.current = null;
     }
   }, []);
+
+  const captureDocumentGeneration = useCallback(
+    () => ({
+      generation: documentGenerationRef.current,
+      path: operationPathRef.current,
+    }),
+    []
+  );
+
+  const isCurrentDocumentGeneration = useCallback(
+    (captured: { generation: number; path: string | null }) =>
+      captured.generation === documentGenerationRef.current &&
+      captured.path === operationPathRef.current,
+    []
+  );
 
   const setHistorySnapshots = useCallback((next: Uint8Array[]) => {
     historyRef.current = next;
@@ -203,6 +226,8 @@ export function usePdfEditor(
   // during the document's life is handled by the parse effect below.
   useEffect(() => {
     return () => {
+      documentGenerationRef.current++;
+      operationPathRef.current = null;
       docRef.current?.destroy();
       docRef.current = null;
     };
@@ -213,11 +238,19 @@ export function usePdfEditor(
   const loadedPathRef = useRef<string | null>(null);
   useEffect(() => {
     if (!enabled || !file) {
+      if (operationPathRef.current !== null) {
+        documentGenerationRef.current++;
+        operationPathRef.current = null;
+      }
       loadedPathRef.current = null;
       resetDocumentState();
       return;
     }
     const isNewDocument = loadedPathRef.current !== file.path;
+    if (operationPathRef.current !== file.path) {
+      documentGenerationRef.current++;
+      operationPathRef.current = file.path;
+    }
     loadedPathRef.current = file.path;
     let cancelled = false;
     if (isNewDocument) {
@@ -349,6 +382,15 @@ export function usePdfEditor(
     let activeTask: pdfjs.RenderTask | null = null;
     (async () => {
       try {
+        // Paint through one effect-local scratch canvas. The visible page
+        // canvases retain their previous pixels until each replacement is
+        // complete, so zoom/edit rerenders still never flash white. Keeping a
+        // second full-resolution canvas for every page doubled sustained pixel
+        // backing on large PDFs; one scratch bounds that duplicate allocation
+        // to the largest page in this render pass. A new effect gets a new
+        // scratch, so a cancelled render can never race its successor on the
+        // same canvas.
+        const renderCanvas = document.createElement("canvas");
         const pageOverride = renderPageOverrideRef.current;
         renderPageOverrideRef.current = null;
         const pageNumbers = pageOverride
@@ -364,11 +406,6 @@ export function usePdfEditor(
           viewports.current.set(i - 1, viewport);
           const canvas = canvasRefs.current.get(i - 1);
           if (!canvas) continue;
-          let renderCanvas = renderCanvasRefs.current.get(i - 1);
-          if (!renderCanvas) {
-            renderCanvas = document.createElement("canvas");
-            renderCanvasRefs.current.set(i - 1, renderCanvas);
-          }
           renderCanvas.width = viewport.width;
           renderCanvas.height = viewport.height;
           const renderCtx = renderCanvas.getContext("2d");
@@ -405,13 +442,9 @@ export function usePdfEditor(
           const ctx = canvas.getContext("2d");
           if (!ctx) continue;
           ctx.drawImage(renderCanvas, 0, 0);
-          setRenderedPages((prev) => {
-            if (prev.has(i - 1)) return prev;
-            const next = new Set(prev);
-            next.add(i - 1);
-            return next;
-          });
+          renderedPagesRef.current.add(i - 1);
           if (i === 1) {
+            setFirstPagePainted(true);
             setStatus("");
           } else if (doc.numPages > 8) {
             await nextFrame();
@@ -486,13 +519,17 @@ export function usePdfEditor(
 
   /** Run a byte transform, pushing the previous bytes onto the undo stack. */
   const apply = (transform: PdfTransform, options: PdfApplyOptions = {}) => {
+    const document = captureDocumentGeneration();
     return enqueue(async () => {
+      if (!isCurrentDocumentGeneration(document)) return;
       const before = bytesRef.current;
       if (!before) return;
       try {
         const beforeSnapshot = copyPdfBytes(before);
         const result = copyPdfBytes(await transform(beforeSnapshot));
+        if (!isCurrentDocumentGeneration(document)) return;
         await assertValidPdfBytes(result);
+        if (!isCurrentDocumentGeneration(document)) return;
         if (pdfBytesEqual(beforeSnapshot, result)) {
           return;
         }
@@ -501,80 +538,100 @@ export function usePdfEditor(
             ? null
             : new Set(options.pages.map((page) => Math.trunc(page)));
         if (options.structural) {
-          setRenderedPages(new Set());
+          renderedPagesRef.current.clear();
+          setFirstPagePainted(false);
         }
         setHistorySnapshots([...historyRef.current, beforeSnapshot]);
         setFutureSnapshots([]);
         setCurrentBytes(result);
       } catch (e) {
+        if (!isCurrentDocumentGeneration(document)) return;
         setStatus(`Edit failed: ${String(e)}`);
       }
     });
   };
 
   const undo = () => {
+    const document = captureDocumentGeneration();
     return enqueue(async () => {
+      if (!isCurrentDocumentGeneration(document)) return;
       const current = bytesRef.current;
       const history = historyRef.current;
       if (!history.length || !current) return;
       const previous = copyPdfBytes(history[history.length - 1]);
       try {
         await assertValidPdfBytes(previous);
+        if (!isCurrentDocumentGeneration(document)) return;
         renderPageOverrideRef.current = null;
-        setRenderedPages(new Set());
+        renderedPagesRef.current.clear();
+        setFirstPagePainted(false);
         setHistorySnapshots(history.slice(0, -1));
         setFutureSnapshots([...futureRef.current, copyPdfBytes(current)]);
         setCurrentBytes(previous);
       } catch (e) {
+        if (!isCurrentDocumentGeneration(document)) return;
         setStatus(`Undo failed: ${String(e)}`);
       }
     });
   };
   const redo = () => {
+    const document = captureDocumentGeneration();
     return enqueue(async () => {
+      if (!isCurrentDocumentGeneration(document)) return;
       const current = bytesRef.current;
       const future = futureRef.current;
       if (!future.length || !current) return;
       const next = copyPdfBytes(future[future.length - 1]);
       try {
         await assertValidPdfBytes(next);
+        if (!isCurrentDocumentGeneration(document)) return;
         renderPageOverrideRef.current = null;
-        setRenderedPages(new Set());
+        renderedPagesRef.current.clear();
+        setFirstPagePainted(false);
         setFutureSnapshots(future.slice(0, -1));
         setHistorySnapshots([...historyRef.current, copyPdfBytes(current)]);
         setCurrentBytes(next);
       } catch (e) {
+        if (!isCurrentDocumentGeneration(document)) return;
         setStatus(`Redo failed: ${String(e)}`);
       }
     });
   };
 
   const save = async () => {
+    const document = captureDocumentGeneration();
+    const targetFile = file;
+    if (!targetFile) return;
     return enqueue(async () => {
+      if (!isCurrentDocumentGeneration(document)) return;
+      // Capture bytes only after earlier queued edits have settled. The
+      // document identity and path were captured before enqueueing, so this
+      // cannot combine a later PDF's bytes with the original target path.
       const current = bytesRef.current;
-      if (!current || !file) return;
+      const baseline = savedBytesRef.current;
+      if (!current || !baseline) return;
       const snapshot = copyPdfBytes(current);
+      const expectedCurrentBytes = copyPdfBytes(baseline);
       try {
         await assertValidPdfBytes(snapshot);
+        if (!isCurrentDocumentGeneration(document)) return;
         if (IN_TAURI) {
-          // Stale-overwrite guard: if the file on disk no longer matches the
-          // bytes this editing session started from, another tool changed it.
-          // Overwriting would silently destroy that newer version — refuse.
-          const baseline = savedBytesRef.current;
-          const disk = await readFile(file.path).catch(() => null);
-          if (disk && baseline && !pdfBytesEqual(copyPdfBytes(disk), baseline)) {
-            setStatus(
-              "Save blocked: this PDF changed on disk after it was opened. Your edits are still here — reopen the file to load the newer version, or duplicate it to keep both."
-            );
-            return;
-          }
-          await persistPdfBytes(file.path, snapshot, {
-            readFile,
-            writeFile,
-            remove,
-            exists,
-            rename,
-          });
+          // The expected bytes are enforced inside the verified-write
+          // transaction (and checked again immediately before commit), so an
+          // external rewrite cannot slip between a UI pre-check and the save.
+          await persistPdfBytes(
+            targetFile.path,
+            snapshot,
+            {
+              readFile,
+              writeFile,
+              remove,
+              exists,
+              rename,
+            },
+            { expectedCurrentBytes }
+          );
+          if (!isCurrentDocumentGeneration(document)) return;
           savedBytesRef.current = copyPdfBytes(snapshot);
           setDirty(false);
           setStatus("Saved.");
@@ -582,7 +639,14 @@ export function usePdfEditor(
           setStatus("Editing is read-only in the browser demo.");
         }
       } catch (e) {
-        setStatus(`Save failed: ${String(e)}`);
+        if (!isCurrentDocumentGeneration(document)) return;
+        if (/changed before the verified write/i.test(String(e))) {
+          setStatus(
+            "Save blocked: this PDF changed on disk after it was opened. Your edits are still here — reopen the file to load the newer version, or duplicate it to keep both."
+          );
+        } else {
+          setStatus(`Save failed: ${String(e)}`);
+        }
       }
     });
   };
@@ -603,9 +667,9 @@ export function usePdfEditor(
     canRedo: future.length > 0,
     viewports,
     canvasRefs,
-    renderedPages,
+    renderedPages: renderedPagesRef.current,
+    firstPagePainted,
     bindCanvas,
-    renderCanvasRefs,
     apply,
     undo,
     redo,

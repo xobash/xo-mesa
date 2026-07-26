@@ -2,15 +2,14 @@
 // renderMarkdown sanitizes its output through DOMPurify, which needs a DOM;
 // the extraction tests below are DOM-agnostic and run fine under jsdom too.
 import { describe, it, expect } from "vitest";
+import { renderMarkdown, sanitizeHtml } from "./markdown";
 import {
   extractLinks,
   extractTags,
   extractFirstImage,
   parseFrontmatter,
   extractAliases,
-  renderMarkdown,
-  sanitizeHtml,
-} from "./markdown";
+} from "./markdownExtract";
 
 describe("extractLinks", () => {
   it("captures wiki links and strips aliases", () => {
@@ -173,5 +172,26 @@ describe("sanitizeHtml / renderMarkdown XSS defense", () => {
     );
     expect(out).toContain('href="https://example.com"');
     expect(out).toContain('src="images/local.png"');
+  });
+});
+
+describe("renderMarkdown DoS resistance", () => {
+  // `linkify: true` routes every note through linkify-it. Versions <= 5.0.1
+  // scanned an unbounded email local-part / auth segment, so a note made of
+  // repeated `mailto:` rescanned to end-of-input on each position — quadratic.
+  // Measured on the vulnerable release: 22 kB -> 86 ms, 44 kB -> 317 ms,
+  // 98 kB -> 1662 ms (a 1 MB note would hang the webview for minutes). 5.0.2
+  // caps the local-part at 64 chars (RFC 5321) and auth at 50, making it flat
+  // (~4 ms at 98 kB). This matters because note bytes are NOT trusted: they
+  // arrive from imported vaults, synced peer devices, and agent-fetched web
+  // content (see the module docblock in markdown.ts). Threshold is deliberately
+  // loose — it separates linear from quadratic, not fast from slow.
+  it("renders an adversarial repeated-`mailto:` note in linear time", () => {
+    const note = "mailto:".repeat(14300); // ~98 kB
+    const t0 = performance.now();
+    const html = renderMarkdown(note);
+    const elapsed = performance.now() - t0;
+    expect(html.length).toBeGreaterThan(0);
+    expect(elapsed).toBeLessThan(500);
   });
 });

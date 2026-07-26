@@ -9,17 +9,11 @@ import { FileTree } from "./components/FileTree";
 import { TagList } from "./components/TagList";
 import { BookmarksList } from "./components/BookmarksList";
 import { Preview } from "./components/Preview";
-import { GraphView } from "./components/GraphView";
 import { StatusBar } from "./components/StatusBar";
-import { CommandPalette } from "./components/CommandPalette";
-import { SearchPanel } from "./components/SearchPanel";
-import { SettingsModal } from "./components/SettingsModal";
 import { SyncModal } from "./components/SyncModal";
 import { ConnectVaultModal } from "./components/ConnectVaultModal";
-import { AgentPanel, AgentOverlay, AgentSurface } from "./components/AgentPanel";
 import { TasksModal, TasksPanel } from "./components/TasksModal";
 import { Tour, HelpModal, hasToured } from "./components/Guide";
-import { Overlay } from "./components/Overlay";
 import { DocumentView, DocPopoutModal } from "./components/DocumentView";
 import { DropOverlay } from "./components/DropOverlay";
 import { PreviewCard } from "./components/PreviewCard";
@@ -58,6 +52,96 @@ import { consumeGraphWindowBootstrap } from "./lib/graphWindowBootstrap";
 const Editor = lazy(() =>
   import("./components/Editor").then((m) => ({ default: m.Editor }))
 );
+
+// Graph is not part of the default Editor + Preview workspace, but its canvas
+// renderer and d3-force stack were paid by every main/popout startup. Keep the
+// same component boundary while loading it only when a graph surface mounts.
+const LazyGraphView = lazy(() =>
+  import("./components/GraphView").then((m) => ({ default: m.GraphView }))
+);
+
+const LazyAgentSurface = lazy(() =>
+  import("./components/AgentPanel").then((m) => ({ default: m.AgentSurface }))
+);
+const LazyAgentPanel = lazy(() =>
+  import("./components/AgentPanel").then((m) => ({ default: m.AgentPanel }))
+);
+const LazyAgentOverlay = lazy(() =>
+  import("./components/AgentPanel").then((m) => ({ default: m.AgentOverlay }))
+);
+const LazyOverlay = lazy(() =>
+  import("./components/Overlay").then((m) => ({ default: m.Overlay }))
+);
+const LazyCommandPalette = lazy(() =>
+  import("./components/CommandPalette").then((m) => ({ default: m.CommandPalette }))
+);
+const LazySearchPanel = lazy(() =>
+  import("./components/SearchPanel").then((m) => ({ default: m.SearchPanel }))
+);
+const LazySettingsModal = lazy(() =>
+  import("./components/SettingsModal").then((m) => ({ default: m.SettingsModal }))
+);
+
+function GraphView() {
+  return (
+    <Suspense fallback={<div className="graph-wrap" aria-busy="true" />}>
+      <LazyGraphView />
+    </Suspense>
+  );
+}
+
+function AgentSurface(props: React.ComponentProps<typeof LazyAgentSurface>) {
+  return (
+    <Suspense fallback={<div className="agent-surface" aria-busy="true" />}>
+      <LazyAgentSurface {...props} />
+    </Suspense>
+  );
+}
+
+/** Closed Pi windows should not pull the terminal/harness surface tree into
+ * startup. Their store flags already own visibility, so gate the lazy module
+ * at the same boundary. */
+function AgentWindows() {
+  const agentOpen = useAppStore((s) => s.agentOpen);
+  const piOverlayOpen = useAppStore((s) => s.piOverlayOpen);
+  if (!agentOpen && !piOverlayOpen) return null;
+  return (
+    <Suspense fallback={null}>
+      {agentOpen && <LazyAgentPanel />}
+      {piOverlayOpen && <LazyAgentOverlay />}
+    </Suspense>
+  );
+}
+
+/** Load the Steam overlay only on first use, then keep it mounted forever so
+ * Overlay's existing 240 ms close animation can finish after `open` flips. */
+function OverlayBoundary() {
+  const open = useAppStore((s) => s.overlayOpen);
+  const [loaded, setLoaded] = useState(open);
+  useEffect(() => {
+    if (open) setLoaded(true);
+  }, [open]);
+  if (!loaded && !open) return null;
+  return (
+    <Suspense fallback={null}>
+      <LazyOverlay />
+    </Suspense>
+  );
+}
+
+function EphemeralModals() {
+  const paletteOpen = useAppStore((s) => s.paletteOpen);
+  const searchOpen = useAppStore((s) => s.searchOpen);
+  const settingsOpen = useAppStore((s) => s.settingsOpen);
+  if (!paletteOpen && !searchOpen && !settingsOpen) return null;
+  return (
+    <Suspense fallback={null}>
+      {paletteOpen && <LazyCommandPalette />}
+      {searchOpen && <LazySearchPanel />}
+      {settingsOpen && <LazySettingsModal />}
+    </Suspense>
+  );
+}
 
 const initialRouteParams = new URLSearchParams(location.search);
 let graphWindowBootstrapped = false;
@@ -1284,12 +1368,9 @@ export default function App() {
         </div>
       )}
       <StatusBar />
-      <CommandPalette />
-      <SearchPanel />
-      <SettingsModal />
+      <EphemeralModals />
       <SyncModal />
-      <AgentPanel />
-      <AgentOverlay />
+      <AgentWindows />
       <TasksModal />
       <HelpModal />
       <Tour />
@@ -1297,7 +1378,7 @@ export default function App() {
       <DropOverlay />
       <PreviewLayer />
       <DragGhostLayer />
-      <Overlay />
+      <OverlayBoundary />
     </div>
   );
 }

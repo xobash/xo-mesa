@@ -64,6 +64,78 @@ describe("persistVerifiedBytes", () => {
     expect([...files.keys()]).toEqual(["/vault/test.bin"]);
   });
 
+  it("rechecks expected bytes before commit and preserves a concurrent external rewrite", async () => {
+    const original = new Uint8Array([1, 2, 3]);
+    const external = new Uint8Array([7, 7, 7]);
+    const next = new Uint8Array([9, 9, 9]);
+    const { fs, files } = makeFs(original);
+    const racingFs: VerifiedWriteFs = {
+      ...fs,
+      async writeFile(path, data) {
+        await fs.writeFile(path, data);
+        if (path.includes(".mesa-save-")) {
+          files.set("/vault/test.bin", external.slice(0));
+        }
+      },
+    };
+
+    await expect(
+      persistVerifiedBytes("/vault/test.bin", next, racingFs, {
+        expectedCurrentBytes: original,
+      })
+    ).rejects.toThrow(/changed before the verified write/i);
+
+    expect(files.get("/vault/test.bin")).toEqual(external);
+    expect([...files.keys()]).toEqual(["/vault/test.bin"]);
+  });
+
+  it("preserves a concurrent create detected before commit", async () => {
+    const external = new Uint8Array([7, 7, 7]);
+    const next = new Uint8Array([9, 9, 9]);
+    const { fs, files } = makeFs();
+    const racingFs: VerifiedWriteFs = {
+      ...fs,
+      async writeFile(path, data) {
+        await fs.writeFile(path, data);
+        if (path.includes(".mesa-save-")) {
+          files.set("/vault/test.bin", external.slice(0));
+        }
+      },
+    };
+
+    await expect(
+      persistVerifiedBytes("/vault/test.bin", next, racingFs, {
+        expectedCurrentBytes: null,
+      })
+    ).rejects.toThrow(/expected missing state/i);
+
+    expect(files.get("/vault/test.bin")).toEqual(external);
+    expect([...files.keys()]).toEqual(["/vault/test.bin"]);
+  });
+
+  it("preserves an external rewrite when atomic rename fails into fallback", async () => {
+    const original = new Uint8Array([1, 2, 3]);
+    const external = new Uint8Array([7, 7, 7]);
+    const next = new Uint8Array([9, 9, 9]);
+    const { fs, files } = makeFs(original);
+    const racingFs: VerifiedWriteFs = {
+      ...fs,
+      async rename() {
+        files.set("/vault/test.bin", external.slice(0));
+        throw new Error("rename failed");
+      },
+    };
+
+    await expect(
+      persistVerifiedBytes("/vault/test.bin", next, racingFs, {
+        expectedCurrentBytes: original,
+      })
+    ).rejects.toThrow(/changed before the verified write/i);
+
+    expect(files.get("/vault/test.bin")).toEqual(external);
+    expect([...files.keys()]).toEqual(["/vault/test.bin"]);
+  });
+
   it("restores the original bytes when the final write reads back truncated", async () => {
     const original = new Uint8Array([1, 2, 3]);
     const next = new Uint8Array([4, 5, 6, 7]);

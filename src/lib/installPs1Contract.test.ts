@@ -20,4 +20,13 @@ describe("Windows irm installer contract", () => {
     expect(installer).toContain("winget install --id Git.Git");
     expect(installer).toContain("Refresh-MesaBootstrapPath");
   });
+
+  it("is safe to run through `iex` — no top-level `exit` closes the caller's session", () => {
+    // `irm ... | iex` runs this text in the USER'S runspace, so any top-level
+    // `exit` terminates their PowerShell window (reads as a crash). The body
+    // must instead live in one `& { ... }` script block and return normally.
+    expect(installer).toMatch(/^&\s*\{/m); // wrapped in a script block
+    expect(installer).not.toMatch(/^\s*exit\b/m); // no exit statement anywhere
+    expect(installer).not.toContain("exit $LASTEXITCODE");
+  });
 });

@@ -4,7 +4,7 @@ import {
   extractFirstImage,
   extractTags,
   extractAliases,
-} from "./markdown";
+} from "./markdownExtract";
 
 /**
  * Turn raw vault files + their text into note metadata: the [[links]] each note

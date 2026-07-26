@@ -49,6 +49,15 @@ only the touched page; structural page edits repaint the document. Large-documen
 rendering yields between page paints, and text-run extraction only starts when
 the `Edit text` tool is active.
 
+Large documents keep the previous visible page pixels during rerenders but use
+only one effect-local scratch canvas for the incoming paint, rather than
+retaining a second full-resolution canvas for every page. Page completion stays
+out of React state except for the first-page handoff from the native warm-start
+surface. Edit Text indexes extracted runs by page once, so hit-box rendering is
+linear in the extracted runs instead of rescanning the whole document for every
+page. Hover thumbnails retain the 24 most recently used decoded canvases and
+skip stale queued prewarms when the pointer has already moved to another PDF.
+
 ## Encrypted PDFs
 
 Encrypted (password-protected) PDFs are strictly read-only. pdf.js can decrypt
@@ -80,6 +89,15 @@ over the real PDF path, and read it back byte-for-byte. If the final file comes
 back truncated, invalid, or mismatched, Mesa restores the backup instead of
 leaving a corrupted PDF behind. See `docs/vault-safety.md` for the full write,
 crash-recovery, and stale-overwrite contract.
+
+Every queued operation is also bound to the PDF path and document generation
+that started it. `PdfView` is reused when navigating directly from one PDF to
+another; if an edit, undo, redo, or validation from the previous PDF finishes
+late, its result is discarded instead of entering the newly selected
+document's state. Save captures the document identity and path before it enters
+the queue, then captures the current bytes and on-disk baseline after earlier
+queued edits settle. It therefore saves prior accepted edits without ever
+combining one PDF's bytes with another PDF's path.
 
 If another tool rewrites the PDF while it is open in Mesa: a clean document
 reloads automatically (with a status note); a document with unsaved edits keeps

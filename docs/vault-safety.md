@@ -34,12 +34,20 @@ never leave a half-written file where a note or PDF used to be.
   seconds are left alone in case another Mesa instance is mid-save.
 - Stale-overwrite protection: saving a PDF that another tool has rewritten
   since Mesa opened it is refused with an explanation instead of silently
-  destroying the newer on-disk version. The unsaved edits stay in the editor.
+  destroying the newer on-disk version. The opened-byte expectation is checked
+  inside the verified-write transaction and checked again immediately before
+  commit, after backup/temp validation. A concurrent rewrite detected before
+  Mesa attempts the target commit is preserved exactly; rollback never writes
+  the old baseline over a target Mesa has not touched. The unsaved edits stay
+  in the editor.
 - `persistVerifiedBytes` supports an optimistic-concurrency precondition checked
   before it writes a backup, temp, or target: exact expected current bytes for
-  an update, or an expected-missing target for a create. Deep Research uses
-  this on every reviewed operation, so a stale store cache or a file created
-  after review cannot authorize an overwrite.
+  an update, or an expected-missing target for a create. It rechecks the same
+  precondition immediately before the commit; a file created or rewritten
+  during staging is neither overwritten, restored, nor removed. If atomic
+  rename fails, the precondition is checked once more before the fallback
+  rewrite. PDF saves and Deep Research use this on every update/create, so
+  stale editor/store state cannot authorize an overwrite.
 - Device sync writes on the Rust side are atomic too: sibling temp file +
   rename (`sync_core.rs::atomic_write`), so a dropped connection cannot
   truncate a note.
@@ -51,6 +59,9 @@ never leave a half-written file where a note or PDF used to be.
 - If the PDF has unsaved edits, Mesa keeps the edits visible, says so in the
   status line, and blocks saving until the file is reopened — nothing on disk
   is clobbered and nothing in the editor is lost.
+- Async edit/history/save work is scoped to the PDF path that started it. A
+  late transform from a previously selected PDF is discarded and cannot
+  replace the current PDF's in-memory bytes.
 - Mesa's own save echoing back through the file watcher is recognized by byte
   equality and ignored (undo history survives saves).
 - Hover thumbnails are invalidated when a PDF changes on disk.

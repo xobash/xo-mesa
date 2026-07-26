@@ -104,6 +104,9 @@ export interface Settings {
   researchFolder: string;
   /** Default Deep Research thoroughness preset (quick | standard | deep). */
   researchDepth: string;
+  /** Deep Research context scope (workspace | vault). Workspace sends only
+   *  what the user is looking at; vault also mines tag/content matches. */
+  researchContextScope: string;
   /** Whether the left sidebar is shown. */
   sidebarOpen: boolean;
   /** Resizable pane widths in px. */

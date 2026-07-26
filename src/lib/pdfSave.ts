@@ -1,7 +1,12 @@
 import { assertValidPdfBytes } from "./pdf";
-import { persistVerifiedBytes, type VerifiedWriteFs } from "./verifiedWrite";
+import {
+  persistVerifiedBytes,
+  type VerifiedWriteFs,
+  type VerifiedWriteOptions,
+} from "./verifiedWrite";
 
 export type PdfSaveFs = VerifiedWriteFs;
+export type PdfSaveOptions = Pick<VerifiedWriteOptions, "expectedCurrentBytes">;
 
 /**
  * Persist a PDF with post-write verification and automatic restore.
@@ -13,10 +18,12 @@ export type PdfSaveFs = VerifiedWriteFs;
 export async function persistPdfBytes(
   filePath: string,
   snapshot: Uint8Array,
-  fs: PdfSaveFs
+  fs: PdfSaveFs,
+  options: PdfSaveOptions = {}
 ): Promise<void> {
   await persistVerifiedBytes(filePath, snapshot, fs, {
     kind: "PDF",
+    expectedCurrentBytes: options.expectedCurrentBytes,
     validate: async (bytes) => {
       await assertValidPdfBytes(bytes);
     },

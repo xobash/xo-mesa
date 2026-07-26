@@ -34,19 +34,28 @@ deeper presets are not clipped back to the standard limits.
 ## What context is sent to Pi
 
 Before anything runs, Deep Research builds a deterministic context from the
-current vault and shows it to you in the surface ("Context sent to Pi"):
+current vault and shows it to you in the surface ("Context sent to Pi"),
+under a user-selectable **context scope** (the `workspace ctx` / `vault ctx`
+toggle beside the depth presets, persisted as
+`settings.researchContextScope`):
 
-- the **active note** and any **selected notes** (always included);
-- **related notes** gathered deterministically from **backlinks**, **outgoing
-  links**, **shared tags**, and a bounded **content search** — in that order,
-  deduplicated;
-- explicit **limits**: note count, per-note bytes, total context bytes, source
-  count, generated-note count, generated-note bytes, related-note count, and a
-  total generated-output byte budget
+- **workspace** (the default) sends only what you are looking at: the
+  **active note**, any **selected notes**, and the active note's direct link
+  neighborhood (**backlinks** + **outgoing links** — the notes the
+  graph/backlinks surfaces show around it). No vault-wide sweeps; on a large
+  vault this stays a handful of notes.
+- **vault** additionally mines the whole vault for notes sharing a **tag**
+  with the picked set and for bounded query-term **content search** matches —
+  in that order, deduplicated. On a large vault most of this selection is
+  then reported as omitted by the caps.
+- both scopes honor explicit **limits**: note count, per-note bytes, total
+  context bytes, source count, generated-note count, generated-note bytes,
+  related-note count, and a total generated-output byte budget
   (`DEFAULT_DEEP_RESEARCH_LIMITS` in `src/lib/deepResearch.ts`).
 
-Truncation is reported explicitly ("N omitted, truncated") so you know when
-the context was bounded to stay responsive on a large vault.
+Truncation is reported explicitly ("N omitted, truncated"), and the surface
+names the scope the context was built with, so you know exactly why a note
+was or wasn't sent.
 
 **Privacy / credential boundary:** any dot-prefixed path segment (`.file.md`,
 `.folder/note.md`, and Mesa's own `.name.mesa-save/backup-…tmp` write
@@ -75,10 +84,20 @@ has; Deep Research adds nothing sensitive on top of that.)
    same browser harness you can watch live). Round 1 builds breadth; subsequent
    rounds verify important claims, seek primary corroboration, resolve
    disagreements, and close gaps.
-3. **Live assembly** — `deep_research_progress` reports the current round,
-   sub-question, each source as it is opened and finished, specific activity,
-   and bounded report snapshots after each major synthesis section. The wing
-   shows the report taking shape rather than a generic spinner.
+3. **Live assembly** — two independent feeds keep the surface honest:
+   - `deep_research_progress` (self-reported): the current round,
+     sub-question, each source as it is opened and finished, specific
+     activity, and bounded report snapshots after each major synthesis
+     section. The wing shows the report taking shape rather than a generic
+     spinner.
+   - **Observed navigation** (Mesa's own evidence): while a run is active,
+     Mesa also feeds every REAL browser-harness navigation
+     (`mesa://browse` / `mesa://harness-nav`) into the activity feed and
+     source list — search-engine URLs are shown as "Searched for …" with the
+     decoded query, other pages as opened sources. This works even when the
+     model never calls the progress tool, so the user always sees the true
+     queries and pages under the hood (rendered dimmer than self-reported
+     entries).
 4. **Finish** — Pi returns a structured result (`deep_research_finish`):
    report markdown, proposed source notes, sources (URL + title + date),
    claims, and related notes.

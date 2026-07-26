@@ -43,7 +43,7 @@ import {
 } from "./lib/vault";
 import { buildNotes, refreshedNoteMeta, resolveTarget } from "./lib/graph";
 import { childRelPath, duplicateRelPath, ancestorFolders, safeBaseName } from "./lib/fsnames";
-import { extractLinks, extractTags, extractAliases } from "./lib/markdown";
+import { extractLinks, extractTags, extractAliases } from "./lib/markdownExtract";
 import {
   bumpActivityAmount,
   changedLineStats,
@@ -75,7 +75,11 @@ import { stat } from "@tauri-apps/plugin-fs";
 import { planKeyMigration } from "./lib/migrate";
 import { invalidatePdfThumb } from "./lib/pdfThumb";
 import { forgetRecentVault, rememberRecentVault } from "./lib/recentVaults";
-import { updateTaskLine, type TaskLinePatch } from "./lib/tasks";
+import {
+  resetVaultTaskMemo,
+  updateTaskLine,
+  type TaskLinePatch,
+} from "./lib/tasks";
 import { getPiSessionSnapshot, requestSharedPiRestart } from "./lib/piSessionBridge";
 import type { DetachedWindowPlacement } from "./lib/windowTearOff";
 import {
@@ -95,10 +99,12 @@ import {
   researchReportQualityIssues,
   canonicalizeSourceUrl,
   truncateUtf8,
+  activityForNavigation,
   type DeepResearchPhase,
   type DeepResearchResult,
   type DeepResearchContext,
   type ResearchChangeSet,
+  type ResearchContextScope,
   type ResearchDepth,
   type ResearchActivity,
 } from "./lib/deepResearch";
@@ -110,6 +116,7 @@ import {
   applyChangeSet,
   resolveApplyPlan,
 } from "./lib/deepResearchRun";
+import { explainResearchTimeout } from "./lib/deepResearchDiagnostics";
 
 const CALENDAR_FILE = "calendar.json";
 
@@ -132,6 +139,9 @@ export interface DeepResearchRunState {
   runId: string;
   query: string;
   phase: DeepResearchPhase;
+  /** When the run was started (ms epoch), 0 while idle. Drives the
+   *  inactivity timeout and the troubleshooting kit's elapsed times. */
+  startedAt: number;
   /** The thoroughness the run was started with. */
   depth: ResearchDepth;
   /** The deterministic context snapshot the run was started with. */
@@ -234,6 +244,7 @@ const DEFAULT_SETTINGS: Settings = {
   tasksFile: "Tasks.md",
   researchFolder: "Research",
   researchDepth: "standard",
+  researchContextScope: "workspace",
   sidebarOpen: true,
   sidebarWidth: 240,
   rightWidth: 380,
@@ -408,7 +419,12 @@ interface AppState {
   openDeepResearch: (openOverlay?: boolean) => void;
   startDeepResearch: (
     query: string,
-    opts?: { selectedPaths?: string[]; depth?: ResearchDepth; piSurfaceAvailable?: boolean }
+    opts?: {
+      selectedPaths?: string[];
+      depth?: ResearchDepth;
+      scope?: ResearchContextScope;
+      piSurfaceAvailable?: boolean;
+    }
   ) => Promise<void>;
   cancelDeepResearch: () => Promise<void>;
   applyDeepResearch: () => Promise<void>;
@@ -509,7 +525,13 @@ export const useAppStore = create<AppState>((set, get) => {
   // --- Deep Research run bookkeeping (module-scope, not React state). -------
   let drSeq = 0;
   let drUnlisten: (() => void) | null = null;
+  let drNavUnlistens: (() => void)[] = [];
+  let drLastObservedUrl: string | null = null;
+  let drLastEventAt = 0;
   let drTimeout: ReturnType<typeof setTimeout> | undefined;
+  // INACTIVITY window, not a whole-run budget: a slow provider that keeps
+  // reporting progress (or keeps browsing) is never killed mid-run; the run
+  // fails only after this long with zero progress AND zero observed browsing.
   const DR_TIMEOUT_MS = 6 * 60 * 1000;
 
   const drPatch = (patch: Partial<DeepResearchRunState>) => {
@@ -520,9 +542,11 @@ export const useAppStore = create<AppState>((set, get) => {
   async function drStopListening() {
     if (drTimeout) clearTimeout(drTimeout);
     drTimeout = undefined;
-    const un = drUnlisten;
+    const uns = [drUnlisten, ...drNavUnlistens];
     drUnlisten = null;
-    if (un) {
+    drNavUnlistens = [];
+    for (const un of uns) {
+      if (!un) continue;
       try {
         un();
       } catch {
@@ -538,13 +562,25 @@ export const useAppStore = create<AppState>((set, get) => {
     const cur = get().deepResearch;
     if (!cur || cur.runId !== runId) return;
     if (!rawResult || typeof rawResult !== "object") {
-      drPatch({ phase: "error", error: "Pi returned a malformed research result. Run Deep Research again." });
+      drPatch({
+        phase: "error",
+        error:
+          "Pi called deep_research_finish but its result payload was not a structured object. " +
+          "The model produced the finish call without a valid JSON envelope — check the Pi terminal " +
+          "scrollback for what it actually emitted, then run again (a stronger model usually fixes this).",
+      });
       return;
     }
     const limits = limitsForDepth(DEFAULT_DEEP_RESEARCH_LIMITS, cur.depth);
     const result = validateResearchResult(rawResult as DeepResearchResult, limits);
     if (!result.report.markdown.trim()) {
-      drPatch({ phase: "error", error: "Pi returned an empty research report. Run Deep Research again." });
+      drPatch({
+        phase: "error",
+        error:
+          "Pi finished the run but the validated result contains no report markdown " +
+          "(report.markdown was empty or not a string after validation). Check the Pi terminal " +
+          "scrollback for the raw finish payload, then run again.",
+      });
       return;
     }
     const qualityIssues = researchReportQualityIssues(result, cur.depth);
@@ -553,9 +589,10 @@ export const useAppStore = create<AppState>((set, get) => {
       drPatch({
         phase: "error",
         error:
-          "Pi's report did not meet the thesis-grade research contract: " +
-          qualityIssues.join("; ") +
-          ". Run again or increase the depth.",
+          "Pi finished, but its report failed the thesis-grade research contract:\n- " +
+          qualityIssues.join("\n- ") +
+          "\nMesa rejects incomplete reports rather than offering them for review. " +
+          "Run again, increase the depth, or try a stronger model if this repeats.",
       });
       return;
     }
@@ -587,11 +624,12 @@ export const useAppStore = create<AppState>((set, get) => {
     drUnlisten = await listenDeepResearch((evt) => {
       const cur = get().deepResearch;
       if (!cur || cur.runId !== runId || evt.runId !== runId) return;
+      drLastEventAt = Date.now();
       if (evt.kind === "progress") {
         const phase = evt.phase ?? "researching";
         const message = (evt.message ?? "").slice(0, 800);
         const allowedKinds: ResearchActivity["kind"][] = [
-          "plan", "round", "subquestion", "source", "note", "synthesize", "status",
+          "plan", "round", "subquestion", "search", "source", "note", "synthesize", "status",
         ];
         const kind = allowedKinds.includes(evt.activityKind as ResearchActivity["kind"])
           ? (evt.activityKind as ResearchActivity["kind"])
@@ -655,19 +693,71 @@ export const useAppStore = create<AppState>((set, get) => {
         drFinish(runId, evt.result);
       }
     });
-    drTimeout = setTimeout(() => {
+    // Observed activity: the loopback server / native harness mirror every REAL
+    // browser navigation (`mesa://browse` = the agent's browse tool call,
+    // `mesa://harness-nav` = the harness webview actually navigating, incl.
+    // redirects and SPA moves). Feeding these into the run means the user sees
+    // the true queries and sources even when the model never calls the
+    // self-report progress tool. Best-effort — a failed registration only
+    // loses observation, never the run.
+    drLastObservedUrl = null;
+    const observeNavigation = (rawUrl: unknown) => {
       const cur = get().deepResearch;
       if (!cur || cur.runId !== runId) return;
-      if (cur.phase === "review" || cur.phase === "done" || cur.phase === "error") return;
-      const sid = currentPiSessionId();
-      if (sid) void interruptPi(sid);
-      void drStopListening();
-      drPatch({
-        phase: "error",
-        error: "Deep Research timed out. Pi may be stuck or the provider is unresponsive — try again.",
+      if (cur.phase !== "planning" && cur.phase !== "researching" && cur.phase !== "synthesizing") return;
+      const activity = activityForNavigation(String(rawUrl ?? ""), Date.now());
+      if (!activity?.sourceUrl) return;
+      // browse + harness-nav both fire for one navigation — collapse the echo.
+      if (activity.sourceUrl === drLastObservedUrl) return;
+      drLastObservedUrl = activity.sourceUrl;
+      drLastEventAt = Date.now();
+      let sources = cur.sources;
+      if (activity.kind === "source" && !sources.some((s) => s.url === activity.sourceUrl)) {
+        sources = [...sources, { url: activity.sourceUrl, title: activity.sourceTitle, status: "reading" as const }]
+          .slice(0, cur.depth.maxSources);
+      }
+      set({
+        deepResearch: {
+          ...cur,
+          activity: [...cur.activity, activity].slice(-300),
+          sources,
+        },
       });
-      if (sid) void requestSharedPiRestart();
-    }, DR_TIMEOUT_MS);
+    };
+    if (IN_TAURI) {
+      try {
+        drNavUnlistens = [
+          await listen<string>("mesa://browse", (ev) => observeNavigation(ev.payload)),
+          await listen<{ url?: string }>("mesa://harness-nav", (ev) => observeNavigation(ev.payload?.url)),
+        ];
+      } catch {
+        /* observation is best-effort; self-reported progress still flows */
+      }
+    }
+    drLastEventAt = Date.now();
+    const armTimeout = (delay: number) => {
+      drTimeout = setTimeout(() => {
+        const cur = get().deepResearch;
+        if (!cur || cur.runId !== runId) return;
+        if (cur.phase === "review" || cur.phase === "done" || cur.phase === "error" || cur.phase === "cancelled") return;
+        // Still hearing from the run (progress OR observed browsing)? Then it
+        // is slow, not stuck — re-arm for the remainder of the quiet window.
+        const idle = Date.now() - drLastEventAt;
+        if (idle < DR_TIMEOUT_MS) {
+          armTimeout(DR_TIMEOUT_MS - idle);
+          return;
+        }
+        const sid = currentPiSessionId();
+        if (sid) void interruptPi(sid);
+        void drStopListening();
+        drPatch({
+          phase: "error",
+          error: explainResearchTimeout({ run: cur, piSessionLive: Boolean(sid) }),
+        });
+        if (sid) void requestSharedPiRestart();
+      }, delay);
+    };
+    armTimeout(DR_TIMEOUT_MS);
   }
 
   function commitSettings(settings: Settings): void {
@@ -1477,6 +1567,9 @@ export const useAppStore = create<AppState>((set, get) => {
       const root = picked === DEMO_ROOT ? DEMO_ROOT : canonicalRoot(picked);
       if (!root) return;
       set({ loading: true, status: "Scanning vault…" });
+      // The task memo keys on relPath, so without this the outgoing vault's
+      // note contents stay reachable until the dashboard next runs a pass.
+      resetVaultTaskMemo();
 
       // Crash recovery first, so a file restored from a stale save backup is
       // scanned like any other. Never throws; never blocks opening the vault.
@@ -1818,6 +1911,7 @@ export const useAppStore = create<AppState>((set, get) => {
             runId: createRunId(),
             query: "",
             phase: "idle",
+            startedAt: 0,
             depth: clampDepth(
               RESEARCH_DEPTH_PRESETS[
                 (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS) in RESEARCH_DEPTH_PRESETS
@@ -1878,6 +1972,8 @@ export const useAppStore = create<AppState>((set, get) => {
           ]
       );
       const limits = limitsForDepth(DEFAULT_DEEP_RESEARCH_LIMITS, depth);
+      const scope: ResearchContextScope =
+        (opts?.scope ?? get().settings.researchContextScope) === "vault" ? "vault" : "workspace";
       const context = buildResearchContext({
         query: trimmed,
         activePath: get().activePath,
@@ -1886,6 +1982,7 @@ export const useAppStore = create<AppState>((set, get) => {
         notes: get().notes,
         content: get().contentCache,
         limits,
+        scope,
       });
 
       const runId = createRunId();
@@ -1895,6 +1992,7 @@ export const useAppStore = create<AppState>((set, get) => {
           runId,
           query: trimmed,
           phase: "planning",
+          startedAt: Date.now(),
           depth,
           context,
           activity: [{ kind: "status", message: "Preparing research context…", at: Date.now() }],

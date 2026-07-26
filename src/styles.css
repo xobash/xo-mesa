@@ -5945,7 +5945,7 @@ body,
 }
 .dr-error-title { color: var(--danger); font-weight: 600; margin-bottom: 6px; }
 .dr-error-body { color: var(--text); font-size: 12px; white-space: pre-wrap; }
-.dr-error-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
+.dr-error-actions { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
 
 .dr-review { display: flex; flex-direction: column; gap: 10px; }
 .dr-review-head {
@@ -6023,7 +6023,7 @@ body,
 .dr-done-list { display: flex; flex-direction: column; gap: 4px; }
 
 /* --- Deep Research: depth controls + live research map + activity feed ---- */
-.dr-depth-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.dr-depth-bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .dr-depth-presets { display: flex; gap: 4px; }
 .dr-preset {
   background: var(--surface-control);
@@ -6087,8 +6087,11 @@ body,
 .dr-act-plan .dr-act-icon { color: var(--accent); }
 .dr-act-round .dr-act-icon { color: var(--accent); }
 .dr-act-subquestion .dr-act-icon { color: var(--accent); }
+.dr-act-search .dr-act-icon { color: var(--accent-2); }
 .dr-act-source .dr-act-icon { color: var(--accent-2); }
 .dr-act-note .dr-act-icon { color: var(--ok); }
+/* Activity Mesa observed itself (real harness navigations) vs self-reported. */
+.dr-act-observed .dr-act-msg { color: var(--text-dim); }
 .dr-act-synthesize .dr-act-icon { color: var(--accent); }
 .dr-act-msg { white-space: pre-wrap; word-break: break-word; }
 .dr-act-src { color: var(--accent-2); }

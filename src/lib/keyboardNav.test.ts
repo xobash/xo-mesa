@@ -29,6 +29,7 @@ const baseSettings: Settings = {
   tasksFile: "Tasks.md",
   researchFolder: "Research",
   researchDepth: "standard",
+  researchContextScope: "workspace",
   sidebarOpen: true,
   sidebarWidth: 240,
   rightWidth: 380,

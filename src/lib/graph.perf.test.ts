@@ -2,11 +2,11 @@
  * Graph hot-path bench + optimization characterization (session 2026-07-03).
  *
  * Two jobs:
- *  1. Reproducible perf bench: times the graph's pure hot paths at demo-ish
- *     (650n) and stress (2000n) scale and prints a table. Private GraphView
- *     helpers (resolveOverlaps, graphBounds, the render-liveness loop) are
- *     copied here as documented verbatim equivalents, with source line
- *     citations, because they are module-private. Numbers feed
+ *  1. Opt-in reproducible perf bench (`npm run test:perf`): times the graph's
+ *     pure hot paths at demo-ish (650n) and stress (2000n) scale and prints a
+ *     table. Private GraphView helpers (resolveOverlaps, graphBounds, the
+ *     render-liveness loop) are copied here as documented verbatim equivalents,
+ *     with source line citations, because they are module-private. Numbers feed
  *     docs/graph-and-preview-optimizations.md.
  *  2. Characterization tests protecting the optimizations those numbers drove:
  *     - Round 1 (idle-resolver gate): resolveOverlaps' boolean return is a
@@ -395,7 +395,7 @@ describe("liveness hypot dedup parity (Round 2, 2026-07-03)", () => {
 });
 
 describe("graph perf baseline", () => {
-  it("prints baseline numbers", () => {
+  it.runIf(import.meta.env.MODE === "graph-bench")("prints baseline numbers", () => {
     // resolver-settle passes below run into the seconds on CI runners; default
     // Vitest timeout (5000ms) isn't enough headroom.
     const rows: string[] = [];

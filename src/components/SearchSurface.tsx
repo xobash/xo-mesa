@@ -1,15 +1,12 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../store";
-import { parseSearchQuery } from "../lib/search";
+import {
+  parseSearchQuery,
+  searchVault,
+  type SearchHit,
+  type SearchPass,
+} from "../lib/search";
 import { PreviewCard } from "./PreviewCard";
-
-interface Hit {
-  rel: string;
-  title: string;
-  ext: string;
-  snippet: string;
-  count: number;
-}
 
 export function SearchSurface({
   initialQuery = "",
@@ -37,37 +34,24 @@ export function SearchSurface({
     setTimeout(() => inputRef.current?.select(), 0);
   }, [initialQuery]);
 
-  const results = useMemo<Hit[]>(() => {
-    const { term, ext } = parseSearchQuery(dq);
-    if (term.length < 2 && !ext) return [];
-    const re =
-      term.length >= 2
-        ? new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")
-        : null;
-    const out: Hit[] = [];
-    for (const f of files) {
-      if (ext && f.ext.toLowerCase() !== ext) continue;
-      const nameHit = term ? f.name.toLowerCase().includes(term) : true;
-      const text = (cache[f.relPath] ?? "").toLowerCase();
-      const idx = term ? text.indexOf(term) : -1;
-      if (term && idx < 0 && !nameHit) continue;
-      let snippet = "";
-      if (idx >= 0) {
-        const start = Math.max(0, idx - 32);
-        const raw = cache[f.relPath] ?? "";
-        snippet =
-          (start > 0 ? "..." : "") +
-          raw.slice(start, idx + term.length + 60).replace(/\s+/g, " ") +
-          "...";
-      } else if (!term) {
-        snippet = f.relPath;
-      }
-      const count = re ? (text.match(re) || []).length : 0;
-      out.push({ rel: f.relPath, title: f.name, ext: f.ext, snippet, count });
+  // Previous pass, reused to narrow the next keystroke instead of rescanning the
+  // whole vault (see `searchVault`). Dropped whenever the file list or content
+  // cache changes identity, since an edited note may newly match a term that
+  // already excluded it.
+  const passRef = useRef<SearchPass | null>(null);
+  const scannedRef = useRef<{ files: unknown; cache: unknown } | null>(null);
+
+  const results = useMemo<SearchHit[]>(() => {
+    if (
+      scannedRef.current?.files !== files ||
+      scannedRef.current?.cache !== cache
+    ) {
+      scannedRef.current = { files, cache };
+      passRef.current = null;
     }
-    return out
-      .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title))
-      .slice(0, 100);
+    const pass = searchVault(files, cache, dq, passRef.current);
+    passRef.current = pass;
+    return pass.hits;
   }, [dq, files, cache]);
 
   const { term, ext } = parseSearchQuery(q);

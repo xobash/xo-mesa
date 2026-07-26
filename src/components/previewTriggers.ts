@@ -22,7 +22,9 @@ function prewarmPreview(target: PreviewTarget): void {
   if (!file) return;
   const kind = fileKind(file.ext);
   if (kind === "pdf") {
-    void warmPdfThumb(file.path);
+    // Pointer sweeps intentionally supersede stale queued prewarms. A visible
+    // PdfThumb requests the same promise and handles real render failures.
+    void warmPdfThumb(file.path).catch(() => undefined);
     return;
   }
   if (file.isMarkdown || isTextExt(file.ext) || file.ext === "rtf") {

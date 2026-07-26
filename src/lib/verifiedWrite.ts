@@ -128,6 +128,7 @@ export async function persistVerifiedBytes(
   let tempWritten = false;
   let tempConsumed = false;
   let backupWritten = false;
+  let targetCommitAttempted = false;
 
   try {
     if (options.expectedCurrentBytes === null && hadOriginal) {
@@ -148,20 +149,49 @@ export async function persistVerifiedBytes(
     tempWritten = true;
     await readBackVerifiedBytes(tempPath, snapshot, fs, "Temporary", options);
 
+    // The precondition above protects the start of the transaction. Re-check
+    // it immediately before commit as well: backup/temp verification may take
+    // long enough for another process to rewrite the target in between.
+    if (options.expectedCurrentBytes === null) {
+      if (await fs.exists(filePath)) {
+        throw new Error(`Current ${options.kind ?? "file"} no longer matches the expected missing state.`);
+      }
+    } else if (options.expectedCurrentBytes instanceof Uint8Array) {
+      const current = await fs.readFile(filePath).catch(() => null);
+      if (!current || !bytesEqual(current, options.expectedCurrentBytes)) {
+        throw new Error(`Current ${options.kind ?? "file"} bytes changed before the verified write.`);
+      }
+    }
+
     if (fs.rename) {
       try {
         await fs.rename(tempPath, filePath);
+        targetCommitAttempted = true;
         tempConsumed = true;
       } catch {
         // Rename can fail across quirky filesystems; fall back to a rewrite.
+        // Recheck the optimistic precondition once more first because the
+        // rename attempt itself may have raced with an external writer.
+        if (options.expectedCurrentBytes === null) {
+          if (await fs.exists(filePath)) {
+            throw new Error(`Current ${options.kind ?? "file"} no longer matches the expected missing state.`);
+          }
+        } else if (options.expectedCurrentBytes instanceof Uint8Array) {
+          const current = await fs.readFile(filePath).catch(() => null);
+          if (!current || !bytesEqual(current, options.expectedCurrentBytes)) {
+            throw new Error(`Current ${options.kind ?? "file"} bytes changed before the verified write.`);
+          }
+        }
+        targetCommitAttempted = true;
         await fs.writeFile(filePath, snapshot);
       }
     } else {
+      targetCommitAttempted = true;
       await fs.writeFile(filePath, snapshot);
     }
     await readBackVerifiedBytes(filePath, snapshot, fs, "Final", options);
   } catch (error) {
-    if (backupWritten && original) {
+    if (targetCommitAttempted && backupWritten && original) {
       try {
         const backupRead = await readBackVerifiedBytes(
           backupPath,
@@ -175,7 +205,7 @@ export async function persistVerifiedBytes(
       } catch {
         // Best effort restore; preserve the original failure below.
       }
-    } else if (!hadOriginal) {
+    } else if (targetCommitAttempted && !hadOriginal) {
       await fs.remove(filePath).catch(() => undefined);
     }
     throw error;

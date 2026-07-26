@@ -14,6 +14,7 @@ import {
   undoRedoShortcutAction,
 } from "../lib/shortcuts";
 import { urlForPath, restoreLatestAgentSnapshot } from "../lib/vault";
+import { groupPdfTextRunsByPage } from "../lib/pdfTextRuns";
 import { usePdfEditor } from "./usePdfEditor";
 import {
   rotatePage,
@@ -85,7 +86,7 @@ export function PdfView({ rel }: { rel: string }) {
     loadFailed,
     fields,
     textRuns,
-    renderedPages,
+    firstPagePainted,
     canUndo,
     canRedo,
     viewports,
@@ -155,6 +156,10 @@ export function PdfView({ rel }: { rel: string }) {
       return sniffFileType(bytes);
     }
   }, [bytes]);
+  const textRunsByPage = useMemo(
+    () => groupPdfTextRunsByPage(textRuns),
+    [textRuns]
+  );
   // Recovery from a corrupting write made outside Mesa's own save path — most
   // commonly the embedded Pi agent's own read/write/edit tools, which touch
   // disk directly and bypass persistVerifiedBytes entirely (see
@@ -177,7 +182,6 @@ export function PdfView({ rel }: { rel: string }) {
     }
   };
   const zoomFactor = renderScale > 0 ? scale / renderScale : 1;
-  const firstPagePainted = renderedPages.has(0);
   useEffect(() => {
     scaleRef.current = scale;
   }, [scale]);
@@ -719,8 +723,7 @@ export function PdfView({ rel }: { rel: string }) {
                       )}
                       {mode === "edit" &&
                         tool === "edit" &&
-                        textRuns
-                          .filter((run) => run.page === i)
+                        (textRunsByPage.get(i) ?? [])
                           .map((run, idx) => (
                             <button
                               key={`${run.left}:${run.top}:${idx}`}

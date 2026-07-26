@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  warmPdfThumb: vi.fn(),
+  warmPdfThumb: vi.fn(() => Promise.resolve()),
   ensurePeek: vi.fn(),
   hideHoverPreview: vi.fn(),
   showHoverPreview: vi.fn(),

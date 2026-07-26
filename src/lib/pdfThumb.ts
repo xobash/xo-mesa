@@ -1,6 +1,14 @@
 import { readFile } from "@tauri-apps/plugin-fs";
 import { IN_TAURI, urlForPath } from "./vault";
+import { lruGet, lruSet } from "./boundedLru";
+import { LatestWinsQueue } from "./latestWinsQueue";
 import { sanitizePdfBytes } from "./pdfBytes";
+// `?url` resolves to the worker's asset URL string only — it does NOT pull the
+// pdf.js engine into this module's chunk, so the static form is safe here and
+// matches `usePdfEditor.ts`. Importing it dynamically instead made Rollup emit
+// a separate chunk whose entire body was this one string, costing the first
+// thumbnail an extra request.
+import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 type PdfJsModule = typeof import("pdfjs-dist");
 
@@ -10,29 +18,12 @@ export interface PdfThumbSnapshot {
   canvas: HTMLCanvasElement;
 }
 
+// A 320 px-wide Letter-page canvas is roughly 0.5 MiB decoded. Keep recent
+// thumbnails instant without retaining one full RGBA canvas for every PDF the
+// pointer has ever crossed during this process.
+const MAX_CACHED_THUMBS = 24;
 const thumbCache = new Map<string, Promise<PdfThumbSnapshot>>();
-const MAX_ACTIVE_THUMB_RENDERS = 1;
-let activeThumbRenders = 0;
-const thumbQueue: Array<() => void> = [];
-
-function enqueueThumbRender<T>(task: () => Promise<T>): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const run = () => {
-      activeThumbRenders++;
-      task()
-        .then(resolve, reject)
-        .finally(() => {
-          activeThumbRenders--;
-          // LIFO: newest request first. Sweeping the pointer down the sidebar
-          // queues a prewarm per file — the PDF actually being hovered is the
-          // most recent one, so it must not wait behind stale prewarms.
-          thumbQueue.pop()?.();
-        });
-    };
-    if (activeThumbRenders < MAX_ACTIVE_THUMB_RENDERS) run();
-    else thumbQueue.push(run);
-  });
-}
+const thumbRenderQueue = new LatestWinsQueue<string, PdfThumbSnapshot>(1);
 
 let pdfjsPromise: Promise<PdfJsModule> | null = null;
 
@@ -40,8 +31,6 @@ function loadPdfjs(): Promise<PdfJsModule> {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
       const pdfjs = await import("pdfjs-dist");
-      const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url"))
-        .default;
       pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
       return pdfjs;
     })();
@@ -113,13 +102,20 @@ async function renderPdfThumb(path: string): Promise<PdfThumbSnapshot> {
  * cached so hover prewarm and the visible hover card share the same work.
  */
 export function warmPdfThumb(path: string): Promise<PdfThumbSnapshot> {
-  const cached = thumbCache.get(path);
+  // A cache hit can refer to work that is still queued. Re-prioritize it so
+  // moving away and back before the active render completes still paints the
+  // PDF the pointer ultimately settled on.
+  thumbRenderQueue.prioritize(path);
+  const cached = lruGet(thumbCache, path);
   if (cached) return cached;
-  const promise = enqueueThumbRender(() => renderPdfThumb(path)).catch((err) => {
-    thumbCache.delete(path);
+  let promise: Promise<PdfThumbSnapshot>;
+  promise = thumbRenderQueue.enqueue(path, () => renderPdfThumb(path)).catch((err) => {
+    // Invalidation followed by a fresh request can leave this older job
+    // finishing late; never let its failure delete the replacement entry.
+    if (thumbCache.get(path) === promise) thumbCache.delete(path);
     throw err;
   });
-  thumbCache.set(path, promise);
+  lruSet(thumbCache, path, promise, MAX_CACHED_THUMBS);
   return promise;
 }
 

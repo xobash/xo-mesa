@@ -46,6 +46,22 @@ describe("persistPdfBytes", () => {
     expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
   });
 
+  it("enforces the caller's expected on-disk PDF bytes inside the transaction", async () => {
+    const opened = await makePdf("opened");
+    const external = await makePdf("external");
+    const edited = await makePdf("edited");
+    const { fs, files } = makeFs(external);
+
+    await expect(
+      persistPdfBytes("/vault/test.pdf", edited, fs, {
+        expectedCurrentBytes: opened,
+      })
+    ).rejects.toThrow(/changed before the verified write/i);
+
+    expect(files.get("/vault/test.pdf")).toEqual(external);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
   it("restores the original bytes when the final write is truncated", async () => {
     const original = await makePdf("before");
     const next = await makePdf("after");

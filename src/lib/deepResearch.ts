@@ -1,6 +1,6 @@
 import type { NoteMeta, VaultFile } from "../types";
 import { safeBaseName } from "./fsnames";
-import { extractLinks } from "./markdown";
+import { extractLinks } from "./markdownExtract";
 import { resolveTarget } from "./graph";
 import { backlinksFor } from "./graph";
 
@@ -157,6 +157,7 @@ export type ResearchActivityKind =
   | "plan"       // sub-question set announced
   | "round"      // started a new breadth/verification/synthesis pass
   | "subquestion"// started researching a sub-question
+  | "search"     // ran a web search (query parsed from the search-engine URL)
   | "source"     // opened a source
   | "note"       // finished reading/summarizing a source
   | "synthesize" // assembling notes/report
@@ -173,6 +174,11 @@ export interface ResearchActivity {
   sourceUrl?: string;
   /** Source title, when known. */
   sourceTitle?: string;
+  /**
+   * True when Mesa OBSERVED this activity itself (a real browser-harness
+   * navigation) rather than trusting the model's self-reported progress call.
+   */
+  observed?: boolean;
   /** Monotonic timestamp (ms) for ordering/display. */
   at: number;
 }
@@ -239,8 +245,22 @@ export interface DeepResearchContextNote {
   redacted?: boolean;
 }
 
+/**
+ * How widely context is gathered from the vault.
+ *
+ * - `workspace` (default): only what the user is looking at — the active note,
+ *   explicitly selected notes, and the active note's direct link neighborhood
+ *   (backlinks + outgoing links — the notes the graph/backlinks surfaces show
+ *   around it). No vault-wide sweeps.
+ * - `vault`: additionally mines the whole vault for notes sharing a tag with
+ *   the picked set and for query-term content matches. On a large vault this
+ *   selects far more than the caps keep, so most of it is reported as omitted.
+ */
+export type ResearchContextScope = "workspace" | "vault";
+
 export interface DeepResearchContext {
   query: string;
+  scope: ResearchContextScope;
   notes: DeepResearchContextNote[];
   totalBytes: number;
   truncated: boolean;
@@ -283,6 +303,58 @@ export function canonicalizeSourceUrl(raw: string): string | null {
   let path = u.pathname || "/";
   if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
   return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${path}${qs}`;
+}
+
+/**
+ * If `url` is a recognizable web-search results page, return the decoded
+ * search query; otherwise `null`. Used to label OBSERVED browser-harness
+ * navigations as "searched for X" instead of an opaque engine URL.
+ */
+export function searchQueryOf(raw: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
+  const param =
+    host === "duckduckgo.com" || host === "html.duckduckgo.com" ? "q"
+    : host === "bing.com" ? "q"
+    : host === "search.brave.com" ? "q"
+    : host === "ecosia.org" ? "q"
+    : host === "kagi.com" ? "q"
+    : host === "startpage.com" ? "query"
+    : (host === "google.com" || host.endsWith(".google.com") || /^google\.[a-z.]+$/.test(host)) &&
+      u.pathname.startsWith("/search") ? "q"
+    : null;
+  if (!param) return null;
+  const q = (u.searchParams.get(param) ?? "").trim();
+  return q || null;
+}
+
+/**
+ * Map a REAL browser-harness navigation (observed via `mesa://browse` /
+ * `mesa://harness-nav`, not self-reported by the model) to a run activity:
+ * search-engine URLs become a `search` entry showing the query, other http(s)
+ * pages become a `source` entry. Non-web URLs return `null`.
+ */
+export function activityForNavigation(rawUrl: string, at: number): ResearchActivity | null {
+  const url = canonicalizeSourceUrl(rawUrl);
+  if (!url) return null;
+  const query = searchQueryOf(rawUrl);
+  if (query) {
+    return { kind: "search", message: `Searched for “${query}”`, sourceUrl: url, observed: true, at };
+  }
+  let label = url;
+  try {
+    const u = new URL(url);
+    label = u.hostname + (u.pathname === "/" ? "" : u.pathname);
+  } catch {
+    /* keep the canonical URL as the label */
+  }
+  return { kind: "source", message: `Opened ${label}`, sourceUrl: url, sourceTitle: label, observed: true, at };
 }
 
 /** Canonicalize + dedupe a list of raw sources; drops malformed/duplicate. */
@@ -343,6 +415,8 @@ export interface BuildContextInput {
   notes: Record<string, NoteMeta>;
   content: Record<string, string>;
   limits: DeepResearchLimits;
+  /** Context gathering scope; defaults to `workspace`. */
+  scope?: ResearchContextScope;
 }
 
 function isHiddenArtifact(rel: string): boolean {
@@ -397,14 +471,19 @@ function queryTerms(query: string): string[] {
 }
 
 /**
- * Deterministic context selection. Always includes the active file and the
- * explicitly selected files; then adds related notes gathered from backlinks,
- * outgoing links, shared tags, and a bounded content search — in that order,
- * deduped, capped by note count and bytes. Hidden write artifacts and any
- * dot-prefixed path are always excluded. Truncation is reported explicitly.
+ * Deterministic context selection. Always includes the active file, the
+ * explicitly selected files, and the active note's direct link neighborhood
+ * (backlinks + outgoing links). In `vault` scope it additionally mines the
+ * whole vault for shared-tag notes and a bounded query-term content search —
+ * in that order, deduped, capped by note count and bytes. The default
+ * `workspace` scope performs NO vault-wide sweep: only what the user's
+ * workspace surfaces are showing goes to the model. Hidden write artifacts
+ * and any dot-prefixed path are always excluded. Truncation is reported
+ * explicitly.
  */
 export function buildResearchContext(input: BuildContextInput): DeepResearchContext {
   const { query, activePath, selectedPaths, notes, content, limits } = input;
+  const scope: ResearchContextScope = input.scope ?? "workspace";
   const mdFiles = input.files.filter((f) => f.isMarkdown && !isHiddenArtifact(f.relPath));
   const byRel = new Map(mdFiles.map((f) => [f.relPath, f]));
 
@@ -449,24 +528,28 @@ export function buildResearchContext(input: BuildContextInput): DeepResearchCont
     }
   }
 
-  // 3. Notes sharing a tag with any already-picked note.
-  const pickedTags = new Set<string>();
-  for (const n of picked.values()) for (const t of n.tags) pickedTags.add(t);
-  if (pickedTags.size) {
-    for (const f of mdFiles) {
-      const meta = notes[f.relPath];
-      if (meta && meta.tags.some((t) => pickedTags.has(t))) add(f.relPath, "tag");
+  // Vault scope only: mine the rest of the vault. Workspace scope stops at
+  // what the user's surfaces are showing — no whole-vault sweeps.
+  if (scope === "vault") {
+    // 3. Notes sharing a tag with any already-picked note.
+    const pickedTags = new Set<string>();
+    for (const n of picked.values()) for (const t of n.tags) pickedTags.add(t);
+    if (pickedTags.size) {
+      for (const f of mdFiles) {
+        const meta = notes[f.relPath];
+        if (meta && meta.tags.some((t) => pickedTags.has(t))) add(f.relPath, "tag");
+      }
     }
-  }
 
-  // 4. Bounded content search over the remaining notes.
-  const terms = queryTerms(query);
-  if (terms.length) {
-    for (const f of mdFiles) {
-      if (picked.has(f.relPath)) continue;
-      const text = (content[f.relPath] ?? "").toLowerCase();
-      const name = f.name.toLowerCase();
-      if (terms.some((t) => text.includes(t) || name.includes(t))) add(f.relPath, "search");
+    // 4. Bounded content search over the remaining notes.
+    const terms = queryTerms(query);
+    if (terms.length) {
+      for (const f of mdFiles) {
+        if (picked.has(f.relPath)) continue;
+        const text = (content[f.relPath] ?? "").toLowerCase();
+        const name = f.name.toLowerCase();
+        if (terms.some((t) => text.includes(t) || name.includes(t))) add(f.relPath, "search");
+      }
     }
   }
 
@@ -502,7 +585,7 @@ export function buildResearchContext(input: BuildContextInput): DeepResearchCont
     `${kept.length} note${kept.length === 1 ? "" : "s"} in context` +
     (truncated ? ` (${omitted} omitted, ${totalBytes} B, truncated)` : `, ${totalBytes} B`);
 
-  return { query, notes: kept, totalBytes, truncated, omittedNotes: omitted, summary };
+  return { query, scope, notes: kept, totalBytes, truncated, omittedNotes: omitted, summary };
 }
 
 // ---------------------------------------------------------------------------

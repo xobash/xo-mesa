@@ -60,6 +60,29 @@ The exported `sanitizeHtml` and the full render path are pinned by
 asserts both that the vectors are stripped and that the app's own markup
 survives. Tests run under jsdom so DOMPurify exercises a real DOM.
 
+### Denial of service on the same surface
+
+Sanitization protects integrity; the renderer also has to survive hostile input
+that is merely *expensive*. `renderMarkdown` runs with `linkify: true`, so every
+note is scanned by `linkify-it`. Versions `<= 5.0.1` (GHSA-v245-v573-v5vm)
+scanned an unbounded email local-part and auth segment, so a note built from
+repeated `mailto:` rescanned to end-of-input at each position — quadratic.
+Measured on the vulnerable release: a 22 kB note blocked for 86 ms, 44 kB for
+317 ms, 98 kB for 1662 ms; a 1 MB note would freeze the webview for minutes.
+Because the render happens on the UI thread, that is a full app hang, reachable
+from exactly the untrusted sources listed above.
+
+`linkify-it >= 5.0.2` caps the local-part at 64 chars (RFC 5321) and the auth
+segment at 50, making the scan linear (~4 ms at 98 kB — a 415× improvement on
+that input). The only behavior change is that email addresses with a local-part
+longer than the RFC maximum no longer autolink; ordinary emails, URLs, `www.`
+hosts, and explicit `mailto:` links are unaffected. Pinned by the
+`renderMarkdown DoS resistance` test in `src/lib/markdown.test.ts`, which is
+verified to FAIL against 5.0.1.
+
+The general rule: treat anything reachable from note bytes as attacker-shaped.
+When adding a renderer feature, prefer bounded quantifiers over greedy scans.
+
 ## Content-Security-Policy (recommended hardening)
 
 `app.security.csp` in `src-tauri/tauri.conf.json` is `null`. The sanitizer above
@@ -112,7 +135,15 @@ styles and is safe (styles cannot execute script).
 
 ## Supply chain
 
-`npm audit`, `npm audit --omit=dev`, and `npm audit signatures` are clean.
-Runtime dependencies added for security: `dompurify` (HTML sanitizer). Dev-only:
-`jsdom` (so the sanitizer can be tested against a real DOM). Both are widely
-used, MIT-licensed, and carry no transitive runtime dependencies of concern.
+`npm audit` is clean. Runtime dependencies added for security: `dompurify`
+(HTML sanitizer). Dev-only: `jsdom` (so the sanitizer can be tested against a
+real DOM). Both are widely used, MIT-licensed, and carry no transitive runtime
+dependencies of concern.
+
+Re-run `npm audit` rather than trusting this line — it has gone stale before.
+The `linkify-it` advisory above was found that way, in a package Mesa never
+depends on directly (it arrives under `markdown-it`). Transitive packages on the
+note-rendering path are in the threat model even though nothing imports them by
+name. Prefer the minimal lockfile bump for a transitive fix: `npm audit fix`
+also re-resolves cross-platform optional binaries and produces a large,
+hard-to-review diff.

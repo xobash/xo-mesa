@@ -238,3 +238,412 @@ Checks: `npm run typecheck` (0 errors) · `npm test` (355 passed) ·
 - **Stale-read guard.** `ensureContent` never overwrites cache entries written
   while its disk read was in flight (typing during load can't be clobbered);
   `selectFile` re-checks the active path and cache before committing content.
+
+---
+
+# Adaptive efficiency campaign (2026-07-23)
+
+Goal: improve startup payload, idle memory/subscriptions, repository footprint,
+and verification time while preserving every UI, API, file format, dependency,
+and safety boundary. The starting worktree already contained an in-progress
+Markdown renderer split; its **current** entry chunk was used as the baseline,
+so this campaign does not claim prior work.
+
+## Baseline
+
+- Frontend: typecheck clean; 53 Vitest files / 493 tests passed; production
+  build 447 modules in 2.70 s.
+- Startup entry: **483.41 kB minified / 157.64 kB gzip**.
+- Full test wall time: **7.55 s**; the timing-only graph baseline consumed
+  6.15 s of the test body.
+- Dist: 3.8 MB; installed npm tree: 343 MB / 270 lockfile packages
+  (69 production, 200 development plus root).
+- Native: 19 Rust tests passed; no-feature dev build warning-free.
+- Repository: 4.2 MB tracked; `docs/mesa-overlay.png` was 631,070 bytes.
+
+## Round 1 — defer GraphView and d3-force
+
+- **Selection.** Graph is absent from the default Editor + Preview workspace,
+  yet every main/popout startup parsed its canvas renderer and force engine.
+- **Change.** `App.tsx` lazy-loads `GraphView.tsx` behind a layout-stable
+  `.graph-wrap` Suspense fallback. `graphLoadContract.test.ts` pins the dynamic
+  boundary and GraphView's exclusive production ownership of `d3-force`.
+- **Measured.** Entry **483.41 → 439.76 kB minified** and
+  **157.64 → 141.02 kB gzip** (−9.0% / −10.5%). Graph is a local on-demand
+  42.58 kB / 16.19 kB gzip chunk.
+- **Compatibility.** Existing graph logic/tests are unchanged; the targeted
+  graph suite, boundary tests, typecheck, and production build passed.
+
+## Round 2 — defer closed Pi and Steam-overlay trees
+
+- **Selection.** Closed Pi and Steam overlay surfaces pulled in AgentPanel,
+  browser harness, Deep Research UI, and the full overlay window implementation
+  at every startup.
+- **Change.** Pi surfaces load only when a workspace/window route or the
+  existing `agentOpen`/`piOverlayOpen` flags request them. The Steam overlay
+  loads on first open and remains mounted thereafter, preserving its existing
+  240 ms close-animation lifecycle.
+- **Measured.** Entry **439.76 → 371.89 kB minified** and
+  **141.02 → 120.78 kB gzip** (−15.4% / −14.4% for this round). Deferred
+  chunks: AgentPanel 43.68 kB / 14.22 kB gzip; Overlay 25.55 kB / 8.38 kB gzip.
+- **Compatibility.** `optionalSurfaceLoadContract.test.ts` pins both flag gates
+  and the retain-after-first-open behavior. Pi/window/layout contract tests,
+  typecheck, and production build passed.
+
+## Round 3 — defer closed ephemeral modals
+
+- **Selection.** Command palette, search, and settings had no closed-state
+  responsibilities but still added startup code and store subscriptions.
+- **Change.** One App boundary loads each modal only under its existing open
+  flag; component state, focus effects, commands, and styling are unchanged.
+- **Measured.** Entry **371.89 → 363.23 kB minified** and
+  **120.78 → 118.37 kB gzip**. The marginal win was small enough to stop
+  further modal splitting.
+- **Compatibility.** The optional-surface contract test pins all three imports
+  and flags; keyboard, layout, typecheck, and build checks passed.
+
+## Round 4 — losslessly recompress the overlay screenshot
+
+- **Selection.** A tracked 631 kB documentation PNG had a measurable lossless
+  recompression opportunity; runtime assets and app icons were left untouched.
+- **Change.** Recompressed `docs/mesa-overlay.png` at the same 2880×1800 RGBA
+  dimensions while retaining DPI, EXIF, and ICC metadata.
+- **Measured.** **631,070 → 332,381 bytes**: −298,689 bytes (−47.3%).
+  Pillow's decoded-pixel difference bounding box was `None` (pixel-identical).
+
+## Round 5 — keep the timing benchmark out of normal tests
+
+- **Selection.** The graph timing baseline only prints machine-dependent
+  numbers; its real regression/parity assertions are separate tests, but the
+  timing loop consumed most of every full suite.
+- **Change.** The timing-only case runs under Vite mode `graph-bench` through
+  `npm run test:perf`. The three resolver/liveness parity tests remain in every
+  `npm test`.
+- **Measured.** Full-suite wall time **7.55 → 4.89 s** (−35.2%) while adding
+  eight passing boundary assertions; the normal pass count rose by seven
+  because the timing-only case is now skipped. The opt-in benchmark still runs
+  all four graph tests and prints the full 650/2000-node table.
+
+## Campaign result and stop decision
+
+- Startup entry: **483.41 → 363.23 kB minified** (−120.18 kB, −24.9%) and
+  **157.64 → 118.37 kB gzip** (−39.27 kB, −24.9%).
+- Repository disk: −298,689 bytes with no decoded-pixel change.
+- Test feedback: −35.2% wall time; all compatibility assertions preserved.
+- Dependencies and native feature flags were unchanged. Every direct npm/Rust
+  dependency has a live source use; removing or consolidating one would be a
+  high-risk product/runtime change.
+- Kept as-is after reassessment: SyncModal (owns live discovery side effects
+  even while closed), the full-vault content cache (required by instant
+  search/tasks/research context), PDF engines/worker (feature-critical), Graph
+  image caches (no measured memory profile proving a safe cap), and native
+  TLS/PTY dependencies. The PDF thumbnail cache was measured and bounded in the
+  2026-07-24 campaign below.
+- No new hardware acceleration was added: Graph already uses the canvas render
+  path and prior profiling shows its remaining measured per-frame work is below
+  the risk threshold. SIMD/GPU/threading changes would be platform-sensitive
+  and speculative without device profiles.
+- Remaining opportunities require native/device profiling, product decisions
+  about first-open latency versus preloading, or high-risk dependency/cache
+  changes; they fail the campaign's measurable-value and compatibility bar.
+
+---
+
+# Adaptive PDF efficiency campaign (2026-07-24)
+
+Goal: reduce large-document memory, background preview CPU, page-paint React
+work, and Edit Text latency without changing PDF pixels, file bytes, tools,
+undo/save safety, native fallback behavior, dependencies, or public workflows.
+The campaign started from the complete 2026-07-23 working tree and attributes
+only the deltas below.
+
+## Baseline
+
+- Typecheck clean; 56 Vitest files / 507 passed + 1 intentionally skipped
+  timing-only case.
+- Production build: 447 modules in 2.55 s; startup entry 363.99 kB minified /
+  118.45 kB gzip; full `dist/` 3.7 MB.
+- Full suite: 3.75 s Vitest-reported duration / 4.24 s wall time.
+- Installed npm tree: 343 MB; 27 root dependencies and 445 resolved tree nodes.
+- PDF renderer retained one full-resolution scratch canvas **per page** in
+  addition to every visible page canvas.
+- PDF thumbnails retained one decoded 320 px-wide canvas per distinct path
+  with no eviction, and every pointer-swept prewarm eventually rasterized.
+- Page painting published a new React `Set` after every page.
+- Edit Text rendered each page by filtering the document-wide text-run list:
+  O(pages × runs), measured at 190.789 ms median for 500 pages / 50,000 runs.
+
+## Pass 1 — bound PDF rerender scratch memory
+
+- **Goal.** Remove duplicate per-page canvas backing while keeping old pixels
+  visible until each replacement paint is complete.
+- **Selection rationale.** This was the largest proven sustained allocation:
+  it scaled with every rendered page and duplicated full-resolution RGBA
+  backing. It outranked byte-copy and bundle micro-optimizations by orders of
+  magnitude with lower compatibility risk.
+- **Evidence/change.** `usePdfEditor` now creates one effect-local scratch
+  canvas and reuses it sequentially across the pass. Each successor effect gets
+  a different scratch, so cancellation cannot race a new pdf.js render on the
+  same canvas.
+- **Files.** `src/components/usePdfEditor.ts`,
+  `src/lib/pdfBytes.test.ts`.
+- **Compatibility.** Visible canvases are still untouched until the scratch
+  paint completes; page order, yielding, blank-first-page detection, partial
+  page repaint, cancellation, and fallback behavior are unchanged.
+- **Metrics/memory.** Letter pages at scale 1.2 use about 2.66 MiB of RGBA
+  backing each. Duplicate scratch backing becomes 26.6→2.7 MiB at 10 pages,
+  133.0→2.7 MiB at 50, 266.0→2.7 MiB at 100, and
+  1,330.0→2.7 MiB at 500 (90.0–99.8% reduction in this allocation).
+- **Verification.** Typecheck plus seven targeted PDF hook/layering tests.
+- **Risk.** Canvas allocation now occurs once per render effect rather than
+  being retained; this deliberately trades negligible element creation for a
+  very large sustained-memory reduction.
+- **Next.** Bound decoded hover-thumbnail retention.
+
+## Pass 2 — bound the decoded PDF thumbnail cache
+
+- **Goal.** Prevent sustained preview memory from growing with every distinct
+  PDF hovered during the process lifetime.
+- **Selection rationale.** After Pass 1, this was the only remaining proven
+  unbounded decoded-canvas cache on the PDF path.
+- **Evidence/change.** The promise/canvas cache is now a 24-entry LRU. Cache
+  hits promote their entry; late failures remove only their own promise so an
+  invalidated/re-requested replacement cannot be deleted.
+- **Files.** `src/lib/boundedLru.ts`,
+  `src/lib/boundedLru.test.ts`, `src/lib/pdfThumb.ts`.
+- **Compatibility.** The 24 most recent thumbnails remain instant; evicted
+  entries rerender through the same byte/range-load and pdf.js path with
+  identical pixels.
+- **Metrics/memory.** A typical 320 px-wide Letter thumbnail is about
+  0.505 MiB decoded. Retention is now typically bounded near 12.1 MiB instead
+  of 50.5 MiB after 100 paths, 252.7 MiB after 500, or 505.4 MiB after 1,000.
+- **Verification.** Typecheck plus nine LRU, PDF layering, and preview-trigger
+  tests.
+- **Risk.** Returning to a PDF beyond the 24-entry working set rerenders its
+  thumbnail; this is a cache miss only, not a user-visible behavior change.
+- **Next.** Stop stale queued prewarms from consuming background CPU.
+
+## Pass 3 — make queued preview rendering latest-wins
+
+- **Goal.** Avoid rasterizing PDFs the pointer has already left.
+- **Selection rationale.** The cache bound fixed retention but a fast sidebar
+  sweep could still enqueue hundreds of stale pdf.js jobs, consuming CPU long
+  after the interaction ended.
+- **Evidence/change.** A tested `LatestWinsQueue` lets the single active render
+  finish safely, renders the newest queued path next, and rejects older queued
+  interactions before their task starts. Returning to an already queued cache
+  entry reprioritizes it. Intentional prewarm supersession is swallowed at the
+  fire-and-forget trigger; visible `PdfThumb` keeps its existing error path.
+- **Files.** `src/lib/latestWinsQueue.ts`,
+  `src/lib/latestWinsQueue.test.ts`, `src/lib/pdfThumb.ts`,
+  `src/components/previewTriggers.ts` and its test.
+- **Compatibility.** Active pdf.js work is never cancelled, visible requests
+  share/promote the cached promise, and the final pointer target renders through
+  the same code.
+- **Metrics/CPU.** A sweep across N uncached PDFs changes eventual
+  rasterizations from N to at most two (active + newest): 80% avoided at 10,
+  98% at 100, 99.6% at 500, and 99.8% at 1,000.
+- **Verification.** Typecheck plus 13 queue/LRU/preview/layering tests,
+  including duplicate same-path generations found during the second-pass audit.
+- **Risk.** Superseded queued promises reject by design; all current
+  fire-and-forget and visible consumers handle that rejection.
+- **Next.** Remove per-page React completion publications.
+
+## Pass 4 — keep page completion out of React state
+
+- **Goal.** Prevent a full PDF component reconciliation after every painted
+  page.
+- **Selection rationale.** The canvases are painted imperatively and only the
+  first page changes visible React UI by retiring the native warm-start iframe.
+  Publishing every other completion had cost without a consumer.
+- **Evidence/change.** The complete rendered-page set now lives in a ref.
+  React state publishes only `firstPagePainted`; structural edits and
+  document resets clear both together.
+- **Files.** `src/components/usePdfEditor.ts`,
+  `src/components/PdfView.tsx`, `src/lib/pdfBytes.test.ts`.
+- **Compatibility.** Complete page tracking remains available, the first-page
+  handoff occurs at the same point, and canvas painting/yield order is unchanged.
+- **Metrics/CPU.** Completion publications become 10→1, 50→1, 100→1, and
+  500→1 (90.0–99.8% fewer React updates).
+- **Verification.** Typecheck plus 27 PDF render, transformation, and
+  document-identity tests.
+- **Risk.** None identified; later page completion has no declarative consumer.
+- **Next.** Index text runs once instead of scanning them per page.
+
+## Pass 5 — index Edit Text runs by page
+
+- **Goal.** Make large text-PDF interaction linear in extracted runs.
+- **Selection rationale.** With memory and background work bounded, the
+  remaining reproducible UI-thread hotspot was the render-time
+  `pages × textRuns` filter.
+- **Evidence/change.** `groupPdfTextRunsByPage` builds a memoized page→runs map
+  whenever extraction publishes a new array. Rendering performs one lookup per
+  page and preserves source order and object identity.
+- **Files.** `src/lib/pdfTextRuns.ts`,
+  `src/lib/pdfTextRuns.test.ts`, `src/components/PdfView.tsx`.
+- **Compatibility.** Hit boxes, order, keys, coordinates, text, and click
+  handlers are unchanged.
+- **Metrics/CPU.** The 500-page/50,000-run synthetic case drops from
+  25,000,000 predicate checks and 190.789 ms median to one 50,000-run grouping
+  pass plus 500 lookups, measured below 1 ms in the final run (about 95×+).
+- **Verification.** Typecheck plus 29 text-index and PDF regression tests.
+- **Risk.** The map retains only arrays of references to the already-resident
+  runs; added memory is O(runs) references and is released with the source
+  array.
+- **Next.** No sixth change met the five-pass reliability threshold.
+
+## Campaign result and stop decision
+
+- The two dominant unbounded/linear memory paths are now bounded:
+  per-render duplicate canvas backing is O(largest page), and retained
+  thumbnails are O(24 recent paths).
+- Rapid preview sweeps no longer create an arbitrarily long background
+  raster queue.
+- Large-document page completion causes one React update, and Edit Text
+  rendering is O(runs + pages) rather than O(runs × pages).
+- No dependency, native feature, API, CLI, file format, security, validation,
+  diagnostics, accessibility, fallback, or save-integrity contract changed.
+- Final verification: typecheck clean; 59 Vitest files / 516 passed + 1
+  intentionally skipped timing case; graph perf 4/4; production build
+  450 modules in 2.57 s; Rust 19/19 plus no-default-features build; production
+  npm audit 0; universal app/DMG package; clean diff and privacy scans.
+- Final bundles: entry 364.94 kB / 118.85 kB gzip; PDF view 453.15 kB /
+  186.16 kB gzip; `dist/` 3.7 MB; universal app 14 MB; DMG 9,167,985 bytes.
+- Startup, package, and dependency work was left unchanged because the prior
+  campaign had already split every measured heavy optional surface and the
+  remaining dependencies are feature-owned.
+- Remaining candidates were rejected for this campaign: viewport
+  virtualization changes scroll/layout semantics and needs physical device QA;
+  pdf.js range-loading for the primary editable byte path changes worker/I/O
+  ownership and needs heterogeneous-device profiling; form/text extraction
+  scheduling changes tool timing; hardware/native/dependency changes are
+  platform-sensitive; smaller byte-copy and blank-paint sampling changes do not
+  outrank their regression surface without a device trace.
+
+---
+
+# Vault search pass (2026-07-25)
+
+Goal: reduce the per-keystroke cost of full-text vault search, the app's most
+interactive whole-vault operation. Reassessment of the whole tree picked this
+over the remaining PDF/startup ideas: the entry chunk and PDF paths were
+already split and bounded by the two prior campaigns, whereas search still
+rescanned and re-lowercased the entire content cache on every keystroke.
+
+Rejected first, with numbers, so they are not re-tread:
+
+- **Bounding the vault-open per-file IPC fan-out** (`readNote` for every
+  markdown file, `stat` for every file — both unbounded `Promise.all`, unlike
+  the deliberately batched `walk`). Modelled against a bounded service pool:
+  wall time is unchanged (queueing is work-conserving) and peak retained bytes
+  are identical, because vault open retains every result by design. No
+  measurable win without a native device trace; left alone.
+- **Case-insensitive regex (`/term/gi`) instead of lowercasing.** Allocation-
+  free, but **0.56–0.59x** — V8's `indexOf` over a lowered string beats a
+  regex exec loop. Rejected.
+- **Counting matches with an `indexOf` loop instead of `String.match`.**
+  1.01–1.03x, inside noise. Not worth the churn.
+- **Memoising the lowercased corpus across keystrokes.** 1.50–1.64x, but it
+  doubles retained memory for the searched corpus, which contradicts the
+  memory goal. Rejected in favour of narrowing, which costs nothing.
+
+## Fix — case-insensitive matching (correctness)
+
+- **Evidence.** `parseSearchQuery` returns the term with the user's casing
+  intact, but `SearchSurface` compared it against `text.toLowerCase()` and
+  `f.name.toLowerCase()`. A lowered string can never contain an uppercase
+  character, so **any query containing a capital letter returned zero
+  results** — searching `Budget` in a vault holding `Budget.md` whose body says
+  "Budget" produced nothing. No test covered a capitalised query.
+- **Change.** `searchVault` lowers the query as well as the text.
+- **Verified in the browser demo.** `Graph` and `graph` now return the same
+  six ranked notes with the same match counts; before, `Graph` returned none.
+
+## Change — incremental prefix narrowing
+
+- **Evidence.** The results memo scanned every file and allocated a full
+  lowercased copy of every note on every keystroke: 11.7 MiB of transient
+  string per keystroke at 2,000 notes, 29.3 MiB at 5,000.
+- **Why it is safe.** Substring matching is monotone under prefix extension: if
+  `term2` starts with `term1`, every file containing `term2` contains `term1`,
+  so `matches(term2) ⊆ matches(term1)` and the rest of the vault provably
+  cannot match. Each keystroke therefore only rescans the previous survivors.
+- **Change.** The matching logic moved out of the component into pure
+  `searchVault` (`src/lib/search.ts`), which returns a `SearchPass` carrying
+  the uncapped survivor set. `SearchSurface` holds the last pass in a ref and
+  drops it whenever `files` or `contentCache` changes identity, so an edited
+  note can never stay wrongly excluded. Any other mismatch — backspace, paste,
+  a changed `ext:` filter, or a pass that never scanned — falls back to a full
+  scan on its own.
+- **Numbers (real implementation, 2% hit rate, typing "budget" = 5
+  keystrokes).** 2,000 notes / 11.7 MiB: **21.45 → 4.93 ms (4.4x)**.
+  5,000 notes / 29.3 MiB: **55.46 → 13.16 ms (4.2x)**. Transient lowercased
+  allocation over the sequence drops **78%** (58.6 → 12.7 MiB at 2,000 notes).
+  Retained memory is unchanged — nothing new is cached.
+- **Parity.** Narrowed passes are asserted equal to full scans for growing and
+  shrinking terms, across an `ext:` filter change, and from a never-scanned
+  pass. `candidates` is kept uncapped: a regression test with 140 matching
+  notes where the only narrower match sorts last proves the 100-hit display cap
+  cannot drop it. A Proxy-based test pins that narrowing reads only survivors.
+  Round-trip parity (`gr` → `graph` → `gr`) was also confirmed live in the
+  browser demo, counts included.
+
+## Result
+
+- Files: `src/lib/search.ts`, `src/lib/search.test.ts`,
+  `src/components/SearchSurface.tsx`, `src/lib/AGENTS.md`.
+- Entry chunk unchanged at 364.94 kB / 118.85 kB gzip (search is lazy);
+  `SearchSurface` chunk 2.99 → 3.36 kB.
+- Verification: typecheck clean; 59 files / **527 passed** + 1 skipped (was
+  516); production build clean; browser-demo GUI exercised with zero console
+  errors.
+- No dependency, API, CLI, file format, security, validation, diagnostics, or
+  accessibility contract changed. Search ranking, snippets, the `ext:`/`type:`
+  filters, the 2-character minimum, and the 100-result cap all behave as before.
+
+---
+
+# Tasks dashboard pass (2026-07-25)
+
+Goal: stop the Tasks dashboard from re-parsing the whole vault on every
+keystroke-debounce. Selected after the search pass because it is the same class
+of defect on the other always-mountable whole-vault surface — the Tasks panel
+docks as a persistent workspace pane, so its cost lands while the user types.
+
+- **Evidence.** `TasksPanel`'s memo keys on `[notes, cache, tasksFile]`, and the
+  content cache's identity is replaced by every debounced editor save. Each pass
+  re-ran `parseTasks` over every note — `content.split("\n")` allocating a line
+  array for the entire vault. Measured vault-wide pass: **15.2 ms at 2,000
+  notes / 8.6 MiB** and **39.5 ms at 5,000 notes / 21.4 MiB**, at up to 2 Hz
+  while typing, to recompute a result that differs in exactly one note.
+- **Change.** The vault-wide loop moved out of the component into pure
+  `collectVaultTasks` (`src/lib/tasks.ts`), which memoises each note's parse on
+  its exact content string, title, and personal/agent tag. A save re-parses only
+  the note that changed. The memo is rebuilt each call from the notes still
+  present, so a deleted note stops retaining its content, and
+  `store.openVault` calls `resetVaultTaskMemo` so switching vaults cannot
+  strand the previous vault's text.
+- **Numbers (real implementation, one note edited per pass).** 2,000 notes:
+  **15.37 → 0.73 ms (21x)**. 5,000 notes: **39.20 → 0.90 ms (44x)**. The
+  residual is the memo rebuild and flattening, which scales with note count
+  rather than vault bytes. Retained memory grows only by the parsed task
+  objects; note text was already retained by the content cache.
+- **Parity.** Pinned against a verbatim copy of the pre-memo implementation,
+  plus tests for tag/title invalidation, notes with no cached content, notes
+  leaving and returning to the vault with different content, and a post-reset
+  pass. `TaskItem`s are now shared across passes and documented read-only;
+  `groupTasks`/`bucketTask` only read and the dashboard filters into new arrays.
+- **Verified in the browser demo.** Adding two personal tasks updated the
+  dashboard each time (Personal 0→1→2), and marking one Done through the board
+  moved the count 2→1, flipped the card to `done`, and switched its action to
+  Reopen — so every mutation path invalidates correctly. Zero console errors.
+
+## Result
+
+- Files: `src/lib/tasks.ts`, `src/lib/tasks.test.ts`,
+  `src/components/TasksModal.tsx`, `src/store.ts`, `src/lib/AGENTS.md`.
+- Verification: typecheck clean; 59 files / **534 passed** + 1 skipped (was 516
+  at the start of the day); production build clean; browser-demo GUI exercised.
+- No dependency, API, CLI, file format, security, validation, diagnostics, or
+  accessibility contract changed. Task parsing, tagging, bucketing, ordering,
+  and the personal/agent split all behave as before.
