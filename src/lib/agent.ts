@@ -90,6 +90,7 @@ export interface ActivityInfo {
   token: string;
   extensionPath: string;
   goalExtensionPath?: string;
+  contextExtensionPath?: string;
   browserExtensionPath?: string;
   deepResearchExtensionPath?: string;
 }
@@ -119,6 +120,92 @@ export function activityOpForTool(
 }
 
 /**
+ * Extensions whose bytes Pi's text-oriented mutation tools cannot round-trip.
+ *
+ * Pi's `write`/`edit`/`apply_patch` tools carry string content: reaching disk
+ * means the bytes went through a UTF-8 decode/encode cycle, which silently
+ * mangles every byte sequence that isn't valid UTF-8. For a binary file that
+ * is not an edit, it is destruction — most visibly a PDF, where a single
+ * altered byte invalidates the xref table and the document stops opening.
+ *
+ * Mesa cannot make an external process write good bytes, so it removes the
+ * opportunity: these tools are blocked outright on these paths. Mesa's own
+ * editors are unaffected — they write through `persistVerifiedBytes`, not
+ * through Pi. Nor is `bash` affected, so a real binary-aware tool driven by
+ * the agent (qpdf, ImageMagick, a Python script) still works normally.
+ *
+ * Deliberately excludes text-based formats that merely look like documents
+ * (`.rtf`, `.svg`, `.csv`, `.json`, `.xml`): those round-trip through a text
+ * tool safely and Mesa has no reason to restrict them.
+ */
+export const PI_BLOCKED_BINARY_EXTENSIONS: readonly string[] = [
+  // Documents whose containers are binary or zip-based.
+  "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+  "odt", "ods", "odp", "pages", "numbers", "key", "epub", "mobi",
+  // Images.
+  "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff",
+  "ico", "avif", "heic", "heif", "psd", "ai", "sketch",
+  // Archives and disk images.
+  "zip", "gz", "tgz", "bz2", "xz", "zst", "7z", "rar", "tar", "dmg", "iso",
+  // Audio / video.
+  "mp3", "m4a", "aac", "flac", "ogg", "opus", "wav", "aiff",
+  "mp4", "m4v", "mov", "avi", "mkv", "webm", "wmv",
+  // Fonts.
+  "ttf", "otf", "woff", "woff2", "eot",
+  // Executables, libraries, and binary data stores.
+  "exe", "dll", "dylib", "so", "bin", "wasm", "class", "jar",
+  "pyc", "sqlite", "sqlite3", "db",
+];
+
+/** Pi built-in tools that write file content from a string payload. `bash` is
+ *  intentionally absent: it moves bytes with real tools, not a text encoder. */
+const PI_CONTENT_WRITE_TOOLS = ["write", "edit", "apply_patch"];
+
+/** Lowercased extension of a path (no dot), or "" when it has none. */
+function extensionOf(path: string): string {
+  const base = path.slice(
+    Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1
+  );
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0 || dot === base.length - 1) return "";
+  return base.slice(dot + 1).toLowerCase();
+}
+
+/** Would a text-oriented agent write to `path` corrupt it? */
+export function isPiBlockedBinaryPath(path: string): boolean {
+  return PI_BLOCKED_BINARY_EXTENSIONS.includes(extensionOf(path));
+}
+
+/**
+ * Decide whether a Pi `tool_call` must be blocked to protect a binary file,
+ * returning the block payload Pi's tool_call hook expects (or null to let the
+ * call proceed untouched). This mirrors the logic embedded in the Pi extension
+ * (`src-tauri/resources/mesa-activity.ts`); it lives here so the decision is
+ * unit-tested, exactly like `activityOpForTool` above.
+ *
+ * The reason text is the model's only feedback, so it names the real
+ * constraint and the two paths that do work — otherwise a capable agent just
+ * retries the same write.
+ */
+export function piBinaryWriteBlock(
+  toolName: string,
+  path: unknown
+): { block: true; reason: string } | null {
+  if (!PI_CONTENT_WRITE_TOOLS.includes(toolName.trim().toLowerCase())) return null;
+  if (typeof path !== "string" || !path || !isPiBlockedBinaryPath(path)) return null;
+  return {
+    block: true,
+    reason:
+      `Mesa blocked this write: "${path}" is a binary file, and a text-based ` +
+      "write/edit tool cannot round-trip its bytes — the write would corrupt it, " +
+      "not change it. Do not retry with different content. Either use a " +
+      "format-aware command-line tool via bash (e.g. qpdf, ImageMagick, a " +
+      "Python library), or tell the user to make this change in Mesa's own " +
+      "editor, which writes binary files safely.",
+  };
+}
+
+/**
  * Extra environment variables and CLI args needed to make the embedded Pi agent
  * report file reads/edits/writes back to Mesa, and to ship Mesa's built-in
  * /goal command. The env vars activate the activity extension (which stays
@@ -135,6 +222,7 @@ export function piActivityLaunch(info: ActivityInfo | null | undefined): {
   }
   const args = ["--extension", info.extensionPath];
   if (info.goalExtensionPath) args.push("--extension", info.goalExtensionPath);
+  if (info.contextExtensionPath) args.push("--extension", info.contextExtensionPath);
   if (info.browserExtensionPath) args.push("--extension", info.browserExtensionPath);
   return {
     env: {

@@ -3,12 +3,45 @@ import { describe, expect, it } from "vitest";
 // the Mesa binary (include_str! in activity.rs / harness.rs). These contract
 // tests read those exact sources so a refactor cannot silently break the
 // agent-side browse tools, the snapshot transports, or the security gates.
+import activityExt from "../../src-tauri/resources/mesa-activity.ts?raw";
 import browserExt from "../../src-tauri/resources/mesa-browser.ts?raw";
+import contextExt from "../../src-tauri/resources/mesa-context.ts?raw";
 import deepResearchExt from "../../src-tauri/resources/mesa-deep-research.ts?raw";
 import reporter from "../../src-tauri/resources/harness-reporter.js?raw";
 import harnessRs from "../../src-tauri/src/harness.rs?raw";
 import activityRs from "../../src-tauri/src/activity.rs?raw";
 import capabilities from "../../src-tauri/capabilities/default.json";
+import agentSrc from "./agent.ts?raw";
+import { PI_BLOCKED_BINARY_EXTENSIONS, piBinaryWriteBlock } from "./agent";
+
+describe("mesa-context.ts live workspace contract", () => {
+  it("injects authenticated loopback context before every agent turn", () => {
+    expect(contextExt).toContain('pi.on("before_agent_start"');
+    expect(contextExt).toContain("async (event)");
+    expect(contextExt).toContain("http://127.0.0.1:${port}/context");
+    expect(contextExt).toContain("Authorization: `Bearer ${token}`");
+    expect(contextExt).toContain("event.systemPrompt +");
+    expect(contextExt).toContain("supersedes any older Mesa workspace context");
+  });
+
+  it("stays inert outside Mesa and has no non-loopback destination", () => {
+    const gate = contextExt.indexOf("if (!port || !token) return;");
+    const hook = contextExt.indexOf('pi.on("before_agent_start"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(hook).toBeGreaterThan(gate);
+    const urls = contextExt.match(/https?:\/\/(?!127\.0\.0\.1)[^"'` )]+/g) ?? [];
+    expect(urls).toEqual([]);
+  });
+
+  it("is materialized and served behind the activity auth gate", () => {
+    expect(activityRs).toContain("CONTEXT_EXTENSION_SRC");
+    expect(activityRs).toContain("context_extension_path");
+    const headerAuth = activityRs.indexOf("if !auth_ok(&req, token)");
+    const contextRoute = activityRs.indexOf('url == "/context"');
+    expect(contextRoute).toBeGreaterThan(headerAuth);
+    expect(activityRs).toContain("activity_set_context");
+  });
+});
 
 describe("mesa-browser.ts Pi extension contract", () => {
   it("registers both agent tools", () => {
@@ -164,5 +197,81 @@ describe("mesa-deep-research.ts Pi extension contract", () => {
     expect(activityRs).toContain('app.emit("mesa://deep-research", body)');
     expect(activityRs).toContain("deep_research_extension_path");
     expect(activityRs).toContain("DEEP_RESEARCH_EXTENSION_SRC");
+  });
+});
+
+describe("mesa-activity.ts binary-write block contract", () => {
+  // This extension is the only thing standing between Pi's text-oriented write
+  // tools and the user's binary files. It is compiled into the Rust binary via
+  // include_str! and cannot import src/lib, so it hand-mirrors the tested
+  // reference in agent.ts. These tests are what keep the two copies honest.
+
+  /** The extension's inline mirror of PI_BLOCKED_BINARY_EXTENSIONS. */
+  function extensionListFromSource(): string[] {
+    const m = /const BLOCKED_BINARY_EXTENSIONS = \[([\s\S]*?)\];/.exec(activityExt);
+    if (!m) throw new Error("BLOCKED_BINARY_EXTENSIONS not found in mesa-activity.ts");
+    return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  }
+
+  it("mirrors the tested extension list in agent.ts exactly", () => {
+    expect(extensionListFromSource()).toEqual([...PI_BLOCKED_BINARY_EXTENSIONS]);
+  });
+
+  it("mirrors the tested content-write tool list", () => {
+    expect(activityExt).toContain(
+      'const CONTENT_WRITE_TOOLS = ["write", "edit", "apply_patch"];'
+    );
+  });
+
+  it("mirrors the reason string the model is given", () => {
+    // A drifting reason is a silent behaviour change: it is the only feedback
+    // the agent gets, and a vague one makes it retry the corrupting write.
+    const reasonTemplate = (source: string): string => {
+      const m = /reason:\s*(`Mesa blocked this write[\s\S]*?),\s*\};/.exec(source);
+      if (!m) throw new Error("block reason template not found");
+      return m[1].replace(/\s+/g, " ").trim();
+    };
+    expect(reasonTemplate(activityExt)).toBe(reasonTemplate(agentSrc));
+    // And it actually says the two things that stop a retry loop.
+    const reason = piBinaryWriteBlock("write", "/vault/a.pdf")!.reason;
+    expect(reason).toContain("Do not retry with different content.");
+    expect(reason).toContain("bash");
+  });
+
+  it("actually blocks — returns the block payload from the tool_call hook", () => {
+    expect(activityExt).toContain("block: true");
+    expect(activityExt).toContain("const blocked = binaryWriteBlock(toolName, absPath);");
+    expect(activityExt).toContain("if (blocked) return blocked;");
+  });
+
+  it("decides the block before reporting, so a blocked write is not graph activity", () => {
+    const blockIdx = activityExt.indexOf("if (blocked) return blocked;");
+    const reportIdx = activityExt.indexOf("if (op) report(op, absPath);");
+    expect(blockIdx).toBeGreaterThan(-1);
+    expect(reportIdx).toBeGreaterThan(blockIdx);
+  });
+
+  it("stays inert outside Mesa (env gate before the hook is registered)", () => {
+    const gate = activityExt.indexOf("if (!port || !token) return;");
+    const hook = activityExt.indexOf('pi.on("tool_call"');
+    expect(gate).toBeGreaterThan(-1);
+    expect(hook).toBeGreaterThan(gate);
+  });
+
+  it("never blocks bash, so an agent can still drive real binary tools", () => {
+    expect(extensionListFromSource()).not.toContain("bash");
+    expect(activityExt).not.toMatch(/CONTENT_WRITE_TOOLS[^;]*bash/);
+  });
+
+  it("talks only to the loopback server", () => {
+    const urls = activityExt.match(/https?:\/\/(?!127\.0\.0\.1)[^"'` )]+/g) ?? [];
+    expect(urls).toEqual([]);
+  });
+
+  it("no longer carries the removed snapshot machinery", () => {
+    // The .mesa-pi-snapshot-*.bak safety net was removed in favour of the
+    // block above; leftover copy code would silently resurrect it.
+    expect(activityExt).not.toContain("copyFileSync");
+    expect(activityExt).not.toContain("mesa-pi-snapshot");
   });
 });

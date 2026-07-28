@@ -3819,11 +3819,6 @@ body,
   font-size: 13px;
   line-height: 1.6;
 }
-.pdf-error-actions {
-  display: flex;
-  justify-content: center;
-  margin-top: 14px;
-}
 .pdf-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -4550,6 +4545,9 @@ body,
 }
 .pi-terminal-chrome.window-titlebar { cursor: grab; }
 .pi-terminal-chrome.window-titlebar:active { cursor: grabbing; }
+.agent-window.titlebar-overlay .pi-terminal-chrome.window-titlebar {
+  padding-left: 82px;
+}
 .pi-terminal-heading {
   min-width: 0;
   display: flex;

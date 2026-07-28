@@ -122,6 +122,32 @@ export function isLikelyBlankPdfPaint(
       if (r < 245 || g < 245 || b < 245) visible++;
     }
   }
-  if (samples === 0) return true;
-  return visible < Math.max(3, Math.ceil(samples * 0.004));
+  if (samples > 0 && visible >= Math.max(3, Math.ceil(samples * 0.004))) {
+    return false;
+  }
+
+  // The grid is the fast path, not the authority. Sparse but valid pages
+  // (signatures, checkboxes, a short title, registration marks) can place every
+  // drawn pixel between its 32×32 sample points. `getImageData` already paid to
+  // materialize the complete backing array, so only when the grid looks blank
+  // scan that array until enough real ink is found. Correctness matters more than
+  // a coarse false positive here: declaring a good paint blank drops the whole
+  // PDF into the native fallback and removes Mesa's editable canvases.
+  const pixelCount = Math.min(width * height, Math.floor(pixels.length / 4));
+  let fullVisible = 0;
+  for (let i = 0; i < pixelCount; i++) {
+    const idx = i * 4;
+    const a = pixels[idx + 3] ?? 255;
+    if (a < 8) continue;
+    const r = pixels[idx] ?? 255;
+    const g = pixels[idx + 1] ?? 255;
+    const b = pixels[idx + 2] ?? 255;
+    if (r < 245 || g < 245 || b < 245) {
+      fullVisible++;
+      // Match the coarse probe's minimum so one or two dirty backing pixels
+      // cannot hide a genuinely broken paint.
+      if (fullVisible >= 3) return false;
+    }
+  }
+  return true;
 }

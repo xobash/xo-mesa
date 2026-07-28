@@ -13,7 +13,7 @@ import {
   isTextEntryTarget,
   undoRedoShortcutAction,
 } from "../lib/shortcuts";
-import { urlForPath, restoreLatestAgentSnapshot } from "../lib/vault";
+import { urlForPath } from "../lib/vault";
 import { groupPdfTextRunsByPage } from "../lib/pdfTextRuns";
 import { usePdfEditor } from "./usePdfEditor";
 import {
@@ -31,6 +31,7 @@ import {
   type InkPoint,
   type RGB,
 } from "../lib/pdf";
+import type { VaultFile } from "../types";
 import type { PdfTextRun } from "./usePdfEditor";
 
 type Tool = "select" | "edit" | "text" | "highlight" | "ink";
@@ -58,16 +59,25 @@ interface PendingReplace {
   top: number;
 }
 
-export function PdfView({ rel }: { rel: string }) {
-  const fileFor = useAppStore((s) => s.fileFor);
-  const file = fileFor(rel);
+export function PdfView({
+  rel,
+  file: explicitFile,
+}: {
+  rel: string;
+  /** Standalone document windows own their own vault scan and pass the exact
+   *  file explicitly; the main workspace resolves it from the shared store. */
+  file?: VaultFile;
+}) {
+  const storeFile = useAppStore((s) => s.fileFor(rel));
+  const file = explicitFile ?? storeFile;
   // Subscribe to the file's mtime (updated by the vault watcher) so the viewer
   // re-checks the disk bytes when another tool rewrites this PDF. The store
   // mutates the VaultFile in place, so the primitive mtime is the reliable
   // subscription target — object identity does not change.
-  const fileMtime = useAppStore(
+  const storeFileMtime = useAppStore(
     (s) => s.files.find((f) => f.relPath === rel)?.mtime
   );
+  const fileMtime = explicitFile?.mtime ?? storeFileMtime;
   // PDFs open in the native read-only viewer first. pdf.js/pdf-lib work starts
   // only after the user enters edit mode so large PDFs do not slow browsing.
   const [mode, setMode] = useState<"view" | "edit">("view");
@@ -160,27 +170,6 @@ export function PdfView({ rel }: { rel: string }) {
     () => groupPdfTextRunsByPage(textRuns),
     [textRuns]
   );
-  // Recovery from a corrupting write made outside Mesa's own save path — most
-  // commonly the embedded Pi agent's own read/write/edit tools, which touch
-  // disk directly and bypass persistVerifiedBytes entirely (see
-  // src/lib/agentBackup.ts). Mesa takes a defensive snapshot before every Pi
-  // write/edit tool call; this offers to restore the newest one whenever the
-  // file Mesa has open turns out not to be a valid PDF.
-  const [snapshotStatus, setSnapshotStatus] = useState<string | null>(null);
-  const restoreSnapshot = async () => {
-    if (!file) return;
-    setSnapshotStatus("Looking for a Pi-write safety snapshot…");
-    try {
-      const restored = await restoreLatestAgentSnapshot(file.path);
-      setSnapshotStatus(
-        restored
-          ? "Restored the version from before the last Pi agent write. Reloading…"
-          : "No safety snapshot found for this file."
-      );
-    } catch (e) {
-      setSnapshotStatus(`Restore failed: ${String(e)}`);
-    }
-  };
   const zoomFactor = renderScale > 0 ? scale / renderScale : 1;
   useEffect(() => {
     scaleRef.current = scale;
@@ -481,6 +470,7 @@ export function PdfView({ rel }: { rel: string }) {
   return (
     <div
       className="pdf-editor"
+      data-testid="pdf-editor"
       ref={editorRef}
       tabIndex={-1}
       onKeyDown={handleUndoRedoShortcut}
@@ -615,12 +605,6 @@ export function PdfView({ rel }: { rel: string }) {
                   ? `This file looks like ${sniffFileType(bytes)} — not a PDF. It may be corrupted, mislabeled with a .pdf name, or an error page that was saved instead of the real document. Try re-downloading the original.`
                   : status || "It doesn't look like a valid PDF file."}
               </div>
-              <div className="pdf-error-actions">
-                <button className="btn ghost" onClick={() => void restoreSnapshot()}>
-                  Restore previous version
-                </button>
-              </div>
-              {snapshotStatus && <div className="pdf-error-msg">{snapshotStatus}</div>}
             </div>
           ) : renderError && bytes && invalidPdfType ? (
             <div className="pdf-error">
@@ -628,12 +612,6 @@ export function PdfView({ rel }: { rel: string }) {
               <div className="pdf-error-msg">
                 {`This file looks like ${invalidPdfType} — not a valid PDF. It may be corrupted, empty, mislabeled with a .pdf name, or an error page that was saved instead of the real document.`}
               </div>
-              <div className="pdf-error-actions">
-                <button className="btn ghost" onClick={() => void restoreSnapshot()}>
-                  Restore previous version
-                </button>
-              </div>
-              {snapshotStatus && <div className="pdf-error-msg">{snapshotStatus}</div>}
             </div>
           ) : renderError && bytes ? (
             <iframe
@@ -646,6 +624,7 @@ export function PdfView({ rel }: { rel: string }) {
               {showNativeFirstPaint && (
                 <iframe
                   className="media-pdf pdf-native-first-paint"
+                  data-testid="pdf-native-first-paint"
                   src={urlForPath(file.path)}
                   title={file.name}
                 />
@@ -654,6 +633,7 @@ export function PdfView({ rel }: { rel: string }) {
                 className={
                   "pdf-pages-inner" + (showNativeFirstPaint ? " warming" : "")
                 }
+                data-testid="pdf-pages"
                 ref={pagesInnerRef}
                 style={{ "--pdf-zoom": zoomFactor } as CSSProperties}
                 aria-hidden={showNativeFirstPaint ? true : undefined}
@@ -676,6 +656,8 @@ export function PdfView({ rel }: { rel: string }) {
                       <canvas
                         ref={bindCanvas(i)}
                         className="pdf-canvas"
+                        data-testid="pdf-page-canvas"
+                        data-page-number={i + 1}
                         onClick={(e) => onPageClick(i, e)}
                         onPointerDown={(e) => onDown(i, e)}
                         onPointerMove={(e) => onMove(i, e)}

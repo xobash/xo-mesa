@@ -18,6 +18,10 @@ import { parseWriteArtifactName } from "./verifiedWrite";
  *   the target is either the old or the fully-verified new bytes) → removed.
  * - A stale `save` temp is always removed: its bytes were either committed via
  *   rename (in which case no artifact remains) or never committed.
+ * - A `rescue` artifact is the original of a write whose rollback FAILED, so it
+ *   may be the only surviving copy of the user's file. It is restored when the
+ *   target is missing and otherwise LEFT IN PLACE — never removed, because the
+ *   target it sits next to holds bytes Mesa could not verify.
  * - Stale sync temps (`.mesa-sync-tmp-…`, written by the Rust side) → removed.
  */
 
@@ -65,13 +69,17 @@ export function planWriteRecovery(
 
     const parsed = parseWriteArtifactName(a.name);
     if (parsed) {
-      if (parsed.label === "backup" && a.targetExists === false) {
+      const holdsOriginal = parsed.label === "backup" || parsed.label === "rescue";
+      if (holdsOriginal && a.targetExists === false) {
         actions.push({
           kind: "restore",
           dir: a.dir,
           artifactName: a.name,
           targetName: parsed.targetBase,
         });
+      } else if (parsed.label === "rescue") {
+        // Last surviving copy next to an unverifiable target — leave it alone.
+        continue;
       } else {
         actions.push({ kind: "remove", dir: a.dir, artifactName: a.name });
       }

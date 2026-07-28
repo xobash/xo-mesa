@@ -46,6 +46,39 @@ describe("persistPdfBytes", () => {
     expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
   });
 
+  it("saves an edit to a PDF carrying trailing bytes after its %%EOF", async () => {
+    // Real documents pick up debris after %%EOF (incremental-update leftovers,
+    // a server footer, a scanner tag). pdf-lib parses and edits them happily,
+    // so Mesa opens and edits them — the save must not then refuse because the
+    // ORIGINAL fails Mesa's own format opinion. Validation belongs on the bytes
+    // Mesa authored, not on the user's existing file.
+    const clean = await makePdf("before");
+    const trailing = new Uint8Array(clean.length + 5000);
+    trailing.set(clean, 0);
+    trailing.fill(0x20, clean.length);
+    const edited = await makePdf("after");
+    const { fs, files } = makeFs(trailing);
+
+    await persistPdfBytes("/vault/test.pdf", edited, fs, {
+      expectedCurrentBytes: trailing,
+    });
+
+    expect(files.get("/vault/test.pdf")).toEqual(edited);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
+  it("still rejects candidate bytes that are not a valid PDF", async () => {
+    const original = await makePdf("before");
+    const { fs, files } = makeFs(original);
+
+    await expect(
+      persistPdfBytes("/vault/test.pdf", new Uint8Array([1, 2, 3]), fs)
+    ).rejects.toThrow(/verification failed/i);
+    // The original is untouched and no debris is left behind.
+    expect(files.get("/vault/test.pdf")).toEqual(original);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
   it("enforces the caller's expected on-disk PDF bytes inside the transaction", async () => {
     const opened = await makePdf("opened");
     const external = await makePdf("external");

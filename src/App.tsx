@@ -1,5 +1,15 @@
-import { Fragment, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import {
+  Fragment,
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import { useAppStore, getStore } from "./store";
 import { IN_TAURI, DEMO_ROOT, fileKind, isEditableTextExt } from "./lib/vault";
 import { MediaView } from "./components/MediaView";
@@ -34,7 +44,6 @@ import {
   dockIntoMainWindow,
   installNativeDragDock,
   normalizeDockWindowPayload,
-  startDraggingCurrentWindow,
 } from "./lib/windowDock";
 import {
   claimKeyboardShortcut,
@@ -43,6 +52,19 @@ import {
 } from "./lib/shortcuts";
 import type { SortMode, RightPanel, WorkspaceView } from "./types";
 import { consumeGraphWindowBootstrap } from "./lib/graphWindowBootstrap";
+import {
+  AGENT_CONTEXT_EVENT,
+  AGENT_WINDOW_READY_EVENT,
+} from "./lib/piSessionBridge";
+import {
+  buildAgentContext,
+  contextPrompt,
+  type AgentContext,
+} from "./lib/agent";
+import {
+  LatestWinsQueue,
+  SupersededTaskError,
+} from "./lib/latestWinsQueue";
 
 // The CodeMirror editor stack (~590 kB min across codemirror + @lezer) is the
 // entry chunk's largest resident, and only the main window's DocPane ever
@@ -81,6 +103,11 @@ const LazySearchPanel = lazy(() =>
 const LazySettingsModal = lazy(() =>
   import("./components/SettingsModal").then((m) => ({ default: m.SettingsModal }))
 );
+
+// Main-workspace context changes can be faster than Tauri IPC completion
+// (e.g. keyboard navigation through notes). Serialize them and skip queued
+// stale values so Rust's per-turn context can never settle on an older view.
+const PI_CONTEXT_PUBLISH_QUEUE = new LatestWinsQueue<string, void>();
 
 function GraphView() {
   return (
@@ -464,31 +491,74 @@ function AgentWindow() {
   const selectFile = useAppStore((s) => s.selectFile);
   const routeParams = useMemo(() => new URLSearchParams(location.search), []);
   const sel = routeParams.get("sel");
+  const requestedVault = routeParams.get("vault") ?? "";
+  // The detached realm opens and scans the vault in the background, but PTY
+  // adoption must not wait for that potentially expensive scan. The launch
+  // URL came from the already-open main vault and is sufficient to bind the
+  // complete AgentSurface to the existing backend session immediately.
+  const agentVaultPath = vaultPath || requestedVault;
+  const agentLabel = routeParams.get("agentLabel") ?? "";
+  const titleOverlay = routeParams.get("titleOverlay") === "1";
+  const [contextOverride, setContextOverride] = useState<AgentContext | null>(null);
   // The live Pi session id handed off by the window this was popped out
   // from (see `openAgentWindow` in store.ts). This window is a separate
   // Tauri WebviewWindow/JS realm, so without carrying this across explicitly
   // AgentSurface has no way to know a `pi` process is already running for
   // this vault and would spawn a second, contextless one.
   const attachSessionId = routeParams.get("piSession");
+  const announceReady = useCallback(
+    async (sessionId: string) => {
+      if (!agentLabel) return;
+      await emit(AGENT_WINDOW_READY_EVENT, {
+        label: agentLabel,
+        sessionId,
+      }).catch((error) => {
+        console.warn("[mesa] detached Pi ready acknowledgement failed:", error);
+      });
+    },
+    [agentLabel]
+  );
   useEffect(() => {
     if (vaultPath && sel) void selectFile(sel);
   }, [vaultPath, sel, selectFile]);
   useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | null = null;
+    void listen<AgentContext>(AGENT_CONTEXT_EVENT, (event) => {
+      if (alive && event.payload && typeof event.payload === "object") {
+        setContextOverride(event.payload);
+      }
+    }).then((off) => {
+      if (alive) unlisten = off;
+      else off();
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+  useEffect(() => {
     let dispose: (() => void) | undefined;
-    void installNativeDragDock({ kind: "agent" })
+    void installNativeDragDock(
+      { kind: "agent" },
+      { requireUserDragArm: true }
+    )
       .then((cleanup) => (dispose = cleanup))
       .catch((error) => console.warn("[mesa] native Pi docking unavailable:", error));
     return () => dispose?.();
   }, []);
 
   return (
-    <div className="agent-window">
-      {vaultPath ? (
+    <div className={"agent-window" + (titleOverlay ? " titlebar-overlay" : "")}>
+      {agentVaultPath ? (
         <AgentSurface
           embedded
           attachSessionId={attachSessionId}
+          vaultPathOverride={agentVaultPath}
+          contextOverride={contextOverride}
           windowTitle="Pi agent"
-          onTitleBarPointerDown={() => void startDraggingCurrentWindow()}
+          nativeDragRegion
+          onSessionReady={announceReady}
           onClose={() => void closeCurrentPopoutWindow()}
         />
       ) : (
@@ -822,6 +892,10 @@ export default function App() {
   const requestedVault = useMemo(() => routeParams.get("vault") ?? "", [routeParams]);
 
   const vaultPath = useAppStore((s) => s.vaultPath);
+  const vaultName = useAppStore((s) => s.vaultName);
+  const activePath = useAppStore((s) => s.activePath);
+  const openTabs = useAppStore((s) => s.openTabs);
+  const settings = useAppStore((s) => s.settings);
   const files = useAppStore((s) => s.files);
   const graphFull = useAppStore((s) => s.graphFull);
   const loading = useAppStore((s) => s.loading);
@@ -854,6 +928,47 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.accel = hardwareAccel ? "on" : "off";
   }, [hardwareAccel]);
+
+  // Keep the one external Pi process and every detached AgentSurface aligned
+  // with what the MAIN Mesa workspace is showing. Process env/startup args are
+  // immutable, so Rust stores this path-only context for mesa-context.ts to
+  // inject before each turn; detached webviews receive the same typed payload
+  // for their visible context strip. Popout realms never publish their stale
+  // launch-time store back over the main workspace.
+  const liveAgentContext = useMemo(
+    () =>
+      buildAgentContext({
+        vaultName,
+        vaultPath,
+        activePath,
+        openTabs,
+        settings,
+      }),
+    [vaultName, vaultPath, activePath, openTabs, settings]
+  );
+  const liveAgentContextText = useMemo(
+    () => contextPrompt(liveAgentContext),
+    [liveAgentContext]
+  );
+  useEffect(() => {
+    if (docMode || panelMode || agentMode || !IN_TAURI) return;
+    const context = vaultPath ? liveAgentContextText : "";
+    void PI_CONTEXT_PUBLISH_QUEUE.enqueue(context, async () => {
+      await invoke("activity_set_context", { context });
+      if (vaultPath) await emit(AGENT_CONTEXT_EVENT, liveAgentContext);
+    }).catch((error) => {
+      if (!(error instanceof SupersededTaskError)) {
+        console.warn("[mesa] Pi context publish failed:", error);
+      }
+    });
+  }, [
+    docMode,
+    panelMode,
+    agentMode,
+    vaultPath,
+    liveAgentContext,
+    liveAgentContextText,
+  ]);
 
   // First-run guided tour, once the vault is open.
   useEffect(() => {

@@ -236,7 +236,6 @@ function PiOverlayWindow({
         IN_TAURI &&
         isWindowTearOffPoint(ev.clientX, ev.clientY, window.innerWidth, window.innerHeight)
       ) {
-        onClose();
         void openAgentWindow(
           detachedWindowPlacement({
             screenX: ev.screenX,
@@ -246,7 +245,9 @@ function PiOverlayWindow({
             width: w,
             height: h,
           })
-        );
+        ).then((opened) => {
+          if (opened) onClose();
+        });
       }
     };
     const cancel = () => {

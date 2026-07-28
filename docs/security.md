@@ -12,8 +12,9 @@ deliberate trade-offs rather than oversights.
 | Rendered markdown → app DOM | note bytes may be untrusted (imported vault, synced peer, agent-written) | DOMPurify sanitize before `dangerouslySetInnerHTML` — see below |
 | Saved `.html` files → viewer | a saved web page may contain active content | isolated **cross-origin** sandboxed `<iframe>` (asset origin ≠ app origin) |
 | LAN sync server (`sync.rs`, `0.0.0.0`) | reachable by peers on your network | constant-time `Bearer` check (SHA-256 digest compare), pinned TLS, `safe_join` path guard, 1 GiB PUT cap, per-file hash verify |
-| Loopback activity/harness server (`activity.rs`, `127.0.0.1`) | other local processes | per-run bearer token; harness snapshot route verifies the same token in-body (no-cors can't send headers) |
+| Loopback activity/context/harness server (`activity.rs`, `127.0.0.1`) | other local processes | per-run bearer token; `/context` exposes only Mesa's bounded path/layout prompt to the bundled extension; harness snapshot route verifies the same token in-body (no-cors can't send headers) |
 | Pi terminal (`terminal.rs`) | spawns real processes | argv-based `CommandBuilder` — never a shell string, so no command injection from injected args |
+| Detached Pi window (`agent-*`) | second trusted app webview adopts the live PTY | same local Mesa bundle/capabilities as the main window; carries only the existing session id and selected path; explicit window permissions are limited to show/focus/close/drag lifecycle operations; never navigates to remote content |
 | Harness navigation (`harness.rs`) | agent/user drives a real webview | scheme-confined to `http/https/about/blob/data`; the child webview's label matches no capability pattern, so remote pages hold zero permissions |
 | Native page fetch (`browse.rs`) | agent/user browses arbitrary URLs | scheme-confined to `http/https`, 4 MB body cap, 20 s timeout, memory-only cookie jar isolated from the OS browser and the webview |
 

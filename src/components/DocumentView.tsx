@@ -1,21 +1,26 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { VaultFile } from "../types";
-import { scanVault, readNote, urlForPath, isImageExt } from "../lib/vault";
-
-const VIDEO_RE = /^(mp4|webm|ogg|ogv|mov|m4v)$/i;
-function mediaKind(rel: string): "image" | "video" | "pdf" | "text" {
-  const ext = rel.split(".").pop()?.toLowerCase() ?? "";
-  if (isImageExt(ext) || ext === "svg") return "image";
-  if (VIDEO_RE.test(ext)) return "video";
-  if (ext === "pdf") return "pdf";
-  return "text";
-}
+import {
+  extOf,
+  fileKind,
+  isTextualVaultFile,
+  readNote,
+  scanVault,
+  stripExt,
+  urlForPath,
+} from "../lib/vault";
 import { resolveTarget } from "../lib/graph";
 import { closeCurrentPopoutWindow, dockIntoMainWindow } from "../lib/windowDock";
 import { MarkdownView } from "./MarkdownView";
 import { Modal } from "./Modal";
 import { useAppStore, getStore, type ThemeId } from "../store";
 import { useApplyTheme } from "./useApplyTheme";
+
+// Standalone windows share the same PDF surface as the main workspace without
+// pulling pdf.js/pdf-lib into the entry chunk used by every document window.
+const LazyPdfView = lazy(() =>
+  import("./PdfView").then((module) => ({ default: module.PdfView }))
+);
 
 /**
  * Standalone document window (Tauri). Spawned with ?doc, ?vault, ?theme in the
@@ -44,27 +49,38 @@ export function DocumentView() {
     };
   }, [vault]);
 
+  const selectedFile = useMemo<VaultFile>(() => {
+    const existing = files.find((file) => file.relPath === rel);
+    if (existing) return existing;
+    const base = rel.replace(/.*\//, "");
+    const ext = extOf(base);
+    return {
+      path: `${vault.replace(/\/+$/, "")}/${rel}`,
+      relPath: rel,
+      name: stripExt(base),
+      ext,
+      isMarkdown: ext === "md" || ext === "markdown",
+    };
+  }, [files, rel, vault]);
+
   useEffect(() => {
     let alive = true;
-    const f =
-      files.find((x) => x.relPath === rel) ??
-      ({
-        path: `${vault}/${rel}`,
-        relPath: rel,
-        name: rel.replace(/.*\//, "").replace(/\.md$/i, ""),
-        ext: "md",
-        isMarkdown: true,
-      } as VaultFile);
-    void readNote(f).then((text) => {
+    setTitle(selectedFile.name);
+    document.title = selectedFile.name + " — Mesa";
+    if (!isTextualVaultFile(selectedFile)) {
+      setContent("");
+      return () => {
+        alive = false;
+      };
+    }
+    void readNote(selectedFile).then((text) => {
       if (!alive) return;
       setContent(text);
-      setTitle(f.name);
-      document.title = f.name + " — Mesa";
     });
     return () => {
       alive = false;
     };
-  }, [rel, files, vault]);
+  }, [selectedFile]);
 
   const onWiki = (target: string) => {
     const lower = target.toLowerCase().replace(/\.md$/i, "");
@@ -78,8 +94,8 @@ export function DocumentView() {
     if (hit) setRel(hit.relPath);
   };
 
-  const kind = mediaKind(rel);
-  const src = urlForPath(`${vault.replace(/\/+$/, "")}/${rel}`);
+  const kind = fileKind(selectedFile.ext);
+  const src = urlForPath(selectedFile.path);
   return (
     <div className="doc-window">
       <header className="doc-window-bar">
@@ -106,7 +122,9 @@ export function DocumentView() {
         ) : kind === "video" ? (
           <video className="doc-media" src={src} controls />
         ) : kind === "pdf" ? (
-          <iframe className="doc-pdf" src={src} title={title} />
+          <Suspense fallback={<div className="editor-empty">Loading PDF editor…</div>}>
+            <LazyPdfView rel={rel} file={selectedFile} />
+          </Suspense>
         ) : (
           <MarkdownView source={content} files={files} onWikiClick={onWiki} />
         )}

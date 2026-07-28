@@ -26,12 +26,6 @@ import {
   planWriteRecovery,
   type FoundArtifact,
 } from "./writeRecovery";
-import {
-  isAgentSnapshotName,
-  latestAgentSnapshot,
-  planAgentSnapshotPrune,
-  type FoundAgentSnapshot,
-} from "./agentBackup";
 
 /** The one fs adapter every verified vault write goes through. `rename` makes
  *  the final commit atomic (temp → target), so a crash can never leave a
@@ -56,6 +50,52 @@ export function isTextExt(ext: string): boolean {
 export function isEditableTextExt(ext: string): boolean {
   return /^(md|markdown|txt|text)$/i.test(ext);
 }
+/**
+ * Whether Mesa's note-TEXT pipeline may read and write this file.
+ *
+ * The one definition of that decision. `selectFile` already used exactly this
+ * test to decide whether to load a file's content into the editor cache; every
+ * other stage of the text pipeline (`ensureContent`, `flushSave`, `writeNote`)
+ * now asks the same question, so the read side and the write side can never
+ * disagree about what a file is.
+ *
+ * Why it matters: the text pipeline round-trips through a JS string
+ * (`readTextFile` → `contentCache` → `TextEncoder`). For a PDF, an image, or
+ * any other binary that round-trip is destructive — and when there is no cached
+ * text at all (the normal state for a binary, which is never read as text), the
+ * "current content" of the active file reads as the empty string, so a flush
+ * would replace the file with zero bytes. Binary files are edited only through
+ * their own byte-level paths (`pdfSave.ts` → `persistVerifiedBytes`).
+ */
+export function isTextualVaultFile(file: {
+  ext: string;
+  isMarkdown?: boolean;
+}): boolean {
+  return !!file.isMarkdown || isTextExt(file.ext) || /^rtf$/i.test(file.ext);
+}
+
+/**
+ * The text a crash-safety flush (blur / hide / quit) is allowed to write for
+ * `file`, or `null` when the flush must be skipped entirely.
+ *
+ * A flush exists to persist a debounced *edit*, so it may only ever write text
+ * Mesa actually holds for that file. Two cases must never reach the disk:
+ *   - a file the text pipeline may not touch at all (see `isTextualVaultFile`)
+ *   - a file with no cached text, i.e. nothing was ever loaded or edited — for
+ *     example a note whose opening read is still in flight. Treating that as ""
+ *     would flush an empty document over the real file.
+ * An empty *cached* string is a real edit (the user cleared the note) and is
+ * written normally.
+ */
+export function flushableNoteText(
+  file: { ext: string; isMarkdown?: boolean },
+  cachedContent: string | undefined
+): string | null {
+  if (cachedContent === undefined) return null;
+  if (!isTextualVaultFile(file)) return null;
+  return cachedContent;
+}
+
 /** Image files we can display in a viewer. */
 export function isImageExt(ext: string): boolean {
   return /^(png|jpe?g|gif|webp|bmp|avif|ico)$/i.test(ext);
@@ -111,13 +151,6 @@ function toRel(root: string, full: string): string {
 function baseName(p: string): string {
   const parts = p.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || p;
-}
-/** Parent directory of an absolute path, forward-slash normalized, no
- *  trailing slash — pairs with `joinPath`/`baseName` for splitting a path. */
-function dirName(p: string): string {
-  const norm = p.replace(/\\/g, "/");
-  const i = norm.lastIndexOf("/");
-  return i < 0 ? "" : norm.slice(0, i);
 }
 /**
  * Normalize an external path into a vault-relative path Mesa can match.
@@ -311,11 +344,26 @@ export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<strin
   }
 }
 
+/**
+ * Write TEXT content to a vault file.
+ *
+ * Fails closed on anything the text pipeline may not represent
+ * (`isTextualVaultFile`): encoding a JS string over a PDF/image/archive
+ * destroys it, and this is the last checkpoint every text write passes
+ * through, so no present or future caller can reach the disk with a
+ * text-encoded overwrite of a binary file. Binary editing has its own
+ * byte-level path (`pdfSave.ts` → `persistVerifiedBytes`).
+ */
 export async function writeNote(
   file: VaultFile,
   content: string,
   expectedCurrentContent?: string
 ): Promise<void> {
+  if (!isTextualVaultFile(file)) {
+    throw new Error(
+      `Refusing to write text over "${file.relPath}" — Mesa only edits text files as text, and writing this one would corrupt it.`
+    );
+  }
   if (isDemo(file.path)) {
     demoWrite(file.relPath, content);
     return;
@@ -631,7 +679,9 @@ export async function recoverWriteArtifacts(
           /* leave mtime undefined — planner treats it as stale */
         }
         const parsed = parseWriteArtifactName(a.name);
-        if (parsed?.label === "backup") {
+        // Both labels hold original bytes, so both need to know whether the
+        // file they belong to still exists.
+        if (parsed && parsed.label !== "save") {
           a.targetExists = await safeExists(joinPath(a.dir, parsed.targetBase));
         }
       })
@@ -667,8 +717,7 @@ export async function recoverWriteArtifacts(
 /**
  * Recursively collect `{dir, name}` entries for files whose basename passes
  * `matches`, using the same directory skip rules as the scan walk
- * (dot-prefixed, node_modules). Shared by the write-artifact recovery and
- * agent-snapshot prune sweeps.
+ * (dot-prefixed, node_modules). Used by the write-artifact recovery sweep.
  */
 async function collectFilesMatching(
   dir: string,
@@ -690,86 +739,6 @@ async function collectFilesMatching(
       out.push({ dir, name: e.name });
     }
   }
-}
-
-/** Outcome of an agent-snapshot prune sweep, for status/logging. */
-export interface AgentSnapshotPruneResult {
-  removed: string[];
-}
-
-/**
- * Sweep the vault for stale Pi-write safety snapshots (dot-prefixed
- * `.name.ext.mesa-pi-snapshot-…bak` siblings — see `src/lib/agentBackup.ts`)
- * and remove everything past the retention window (`planAgentSnapshotPrune`).
- * Runs at vault open, alongside `recoverWriteArtifacts`. Never throws —
- * pruning must not block opening a vault.
- */
-export async function pruneAgentSnapshots(
-  root: string
-): Promise<AgentSnapshotPruneResult> {
-  const result: AgentSnapshotPruneResult = { removed: [] };
-  if (!IN_TAURI || isDemo(root)) return result;
-  try {
-    const found: FoundAgentSnapshot[] = [];
-    await collectFilesMatching(root, isAgentSnapshotName, found);
-    if (!found.length) return result;
-    for (const action of planAgentSnapshotPrune(found, Date.now())) {
-      const artifactAbs = joinPath(action.dir, action.name);
-      try {
-        await remove(artifactAbs);
-        result.removed.push(artifactAbs);
-      } catch {
-        /* skip — a locked or vanished artifact must not abort the sweep */
-      }
-    }
-  } catch (e) {
-    console.error("[mesa] agent-snapshot prune sweep failed:", e);
-  }
-  return result;
-}
-
-/**
- * Find the newest Pi-write safety snapshot for `absPath`, if one exists.
- * Read-only — does not touch the target file. Returns the snapshot's
- * absolute path, or null.
- */
-export async function findLatestAgentSnapshot(
-  absPath: string
-): Promise<string | null> {
-  if (!IN_TAURI) return null;
-  const dir = dirName(absPath);
-  const target = baseName(absPath);
-  let entries;
-  try {
-    entries = await readDir(dir);
-  } catch {
-    return null;
-  }
-  const found: FoundAgentSnapshot[] = entries
-    .filter((e): e is typeof e & { name: string } => Boolean(e.isFile && e.name && isAgentSnapshotName(e.name)))
-    .map((e) => ({ dir, name: e.name }));
-  const match = latestAgentSnapshot(found, dir, target);
-  return match ? joinPath(match.dir, match.name) : null;
-}
-
-/**
- * Restore `absPath` from its newest Pi-write safety snapshot, if one exists.
- * The restore write itself goes through `persistVerifiedBytes` — the
- * *recovery* write gets Mesa's normal backup/atomic-rename/read-back
- * guarantees even though the original corrupting write (made by Pi's
- * external process) did not. Returns whether a snapshot was found and
- * restored; never throws.
- */
-export async function restoreLatestAgentSnapshot(
-  absPath: string
-): Promise<boolean> {
-  const snapshotAbs = await findLatestAgentSnapshot(absPath);
-  if (!snapshotAbs) return false;
-  const bytes = await readFile(snapshotAbs);
-  await persistVerifiedBytes(absPath, bytes, VAULT_FS, {
-    kind: "Pi-agent snapshot restore",
-  });
-  return true;
 }
 
 export async function removeFile(absPath: string): Promise<void> {
@@ -806,7 +775,7 @@ export async function removeVaultEntry(
 
 /** Resolve an absolute file path to a URL the webview can load (images, etc). */
 export function urlForPath(absPath: string): string {
-  if (isDemo(absPath)) return demoAsset();
+  if (isDemo(absPath)) return demoAsset(absPath);
   return convertFileSrc(absPath);
 }
 
@@ -827,6 +796,10 @@ const SPARK_SVG =
         <circle cx='60' cy='130' r='6'/><circle cx='195' cy='125' r='6'/></g>
     </svg>`
   );
+
+// Static instead of base64-in-JavaScript so the browser fixture stays out of
+// Mesa's production startup chunk. Vite serves/copies this local public asset.
+const DEMO_PDF_URI = "/mesa-pdf-tour.pdf";
 
 const DEMO: Record<string, string> = {
   "Welcome.md": `# Welcome to Mesa
@@ -930,6 +903,7 @@ Connected to [[Graph View]] and [[Project Mesa]].
 
 ![[spark.svg]]
 `,
+  "Mesa PDF Tour.pdf": "",
   "assets/spark.svg": "<!-- demo image, served from memory -->",
 };
 
@@ -952,6 +926,7 @@ function demoRead(rel: string): string {
 function demoWrite(rel: string, content: string): void {
   DEMO[rel] = content;
 }
-function demoAsset(): string {
-  return SPARK_SVG; // the demo ships a single illustrative image
+function demoAsset(absPath: string): string {
+  if (/\.pdf$/i.test(absPath)) return DEMO_PDF_URI;
+  return SPARK_SVG;
 }

@@ -45,5 +45,9 @@ describe("window dock payloads", () => {
     expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 410, y: 205 }, cursor: { x: 700, y: 100 }, main })).toBe(false);
     expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 40, y: 40 }, main })).toBe(false);
     expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 700, y: 100 }, main, pointerWasOutsideMain: false })).toBe(false);
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 700, y: 100 }, main, dragWasArmed: false })).toBe(false);
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 700, y: 100 }, main, nativeMoveCount: 1 })).toBe(false);
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 700, y: 100 }, main, nativeMoveCount: 2, nativeMoveSpanMs: 100 })).toBe(false);
+    expect(shouldDockNativeWindow({ initial: { x: 400, y: 200 }, current: { x: 520, y: 260 }, cursor: { x: 700, y: 100 }, main, nativeMoveCount: 3, nativeMoveSpanMs: 20 })).toBe(false);
   });
 });

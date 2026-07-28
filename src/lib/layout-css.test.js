@@ -168,6 +168,14 @@ describe("layout css", () => {
     ).toContain('content: "Release to move outside Mesa"');
   });
 
+  it("integrates macOS native traffic lights without covering Pi controls", () => {
+    expect(css).toMatch(
+      /\.agent-window\.titlebar-overlay\s+\.pi-terminal-chrome\.window-titlebar\s*\{[^}]*padding-left:\s*82px/s
+    );
+    expect(appSource).toContain('titleOverlay ? " titlebar-overlay" : ""');
+    expect(agentPanel).toContain("data-tauri-drag-region={nativeDragRegion");
+  });
+
   it("keeps Deep Research to one title bar per mount", () => {
     // The panel renders NO in-body header: its phase chip lives in the host's
     // single title bar (overlay window bar / Pi research wing bar), matching

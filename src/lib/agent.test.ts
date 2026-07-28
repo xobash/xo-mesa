@@ -4,9 +4,12 @@ import {
   archiveRelPath,
   buildAgentContext,
   contextPrompt,
+  isPiBlockedBinaryPath,
   piActivityLaunch,
+  piBinaryWriteBlock,
   piDeepResearchLaunch,
   piStartupArgs,
+  PI_BLOCKED_BINARY_EXTENSIONS,
   resolveNavTarget,
   vaultFilePath,
   webSearchUrl,
@@ -144,6 +147,7 @@ describe("Pi activity reporting", () => {
       token: "abc123",
       extensionPath: "/tmp/mesa-pi/mesa-activity.ts",
       goalExtensionPath: "/tmp/mesa-pi/mesa-goal.ts",
+      contextExtensionPath: "/tmp/mesa-pi/mesa-context.ts",
       browserExtensionPath: "/tmp/mesa-pi/mesa-browser.ts",
     };
     const launch = piActivityLaunch(info);
@@ -156,6 +160,8 @@ describe("Pi activity reporting", () => {
       "/tmp/mesa-pi/mesa-activity.ts",
       "--extension",
       "/tmp/mesa-pi/mesa-goal.ts",
+      "--extension",
+      "/tmp/mesa-pi/mesa-context.ts",
       "--extension",
       "/tmp/mesa-pi/mesa-browser.ts",
     ]);
@@ -202,5 +208,63 @@ describe("piDeepResearchLaunch", () => {
       env: {},
       args: [],
     });
+  });
+});
+
+describe("piBinaryWriteBlock", () => {
+  // The regression this exists for: Pi's text-oriented `write`/`edit` tools
+  // reaching a PDF and destroying it. Mesa used to only snapshot around this;
+  // it now prevents it outright, so these cases are the guarantee itself.
+  it("blocks every content-write tool on a PDF", () => {
+    for (const tool of ["write", "edit", "apply_patch"]) {
+      const blocked = piBinaryWriteBlock(tool, "/vault/report.pdf");
+      expect(blocked?.block, tool).toBe(true);
+      expect(blocked?.reason, tool).toContain("binary file");
+    }
+  });
+
+  it("names the offending path and the routes that do work", () => {
+    const blocked = piBinaryWriteBlock("write", "/vault/Papers/thesis.pdf");
+    expect(blocked?.reason).toContain("/vault/Papers/thesis.pdf");
+    // The reason string is the model's only feedback — without these it just
+    // retries the same corrupting write with different content.
+    expect(blocked?.reason).toContain("Do not retry");
+    expect(blocked?.reason).toContain("bash");
+  });
+
+  it("blocks regardless of case or path separator", () => {
+    expect(piBinaryWriteBlock("WRITE", "C:\\vault\\Report.PDF")?.block).toBe(true);
+    expect(piBinaryWriteBlock(" Edit ", "/vault/scan.PdF")?.block).toBe(true);
+  });
+
+  it("leaves text files alone", () => {
+    for (const path of ["/vault/note.md", "/vault/data.json", "/vault/a.txt",
+                        "/vault/page.svg", "/vault/doc.rtf", "/vault/rows.csv"]) {
+      expect(piBinaryWriteBlock("write", path), path).toBeNull();
+    }
+  });
+
+  it("never blocks reads, or bash — an agent may still drive real binary tools", () => {
+    expect(piBinaryWriteBlock("read", "/vault/report.pdf")).toBeNull();
+    expect(piBinaryWriteBlock("bash", "/vault/report.pdf")).toBeNull();
+    expect(piBinaryWriteBlock("grep", "/vault/report.pdf")).toBeNull();
+  });
+
+  it("ignores calls with no usable path", () => {
+    expect(piBinaryWriteBlock("write", undefined)).toBeNull();
+    expect(piBinaryWriteBlock("write", "")).toBeNull();
+    expect(piBinaryWriteBlock("write", 42)).toBeNull();
+  });
+
+  it("treats a dotfile with no extension as text, not as its own extension", () => {
+    expect(isPiBlockedBinaryPath("/vault/.pdf")).toBe(false);
+    expect(isPiBlockedBinaryPath("/vault/README")).toBe(false);
+    expect(isPiBlockedBinaryPath("/vault/trailing.")).toBe(false);
+  });
+
+  it("covers the formats most likely to be in a vault", () => {
+    for (const ext of ["pdf", "docx", "xlsx", "png", "jpg", "zip", "mp4", "sqlite"]) {
+      expect(PI_BLOCKED_BINARY_EXTENSIONS, ext).toContain(ext);
+    }
   });
 });

@@ -10,10 +10,31 @@ export interface VerifiedWriteFs {
   rename?(oldPath: string, newPath: string): Promise<void>;
 }
 
-export type VerifiedWriteStage = "Backup" | "Temporary" | "Final" | "Restore";
+export type VerifiedWriteStage =
+  | "Backup"
+  | "Temporary"
+  | "Final"
+  | "Restore"
+  | "Rescue";
+
+/**
+ * Stages holding bytes MESA AUTHORED, and therefore the only ones `validate`
+ * judges. `Backup`, `Restore`, and `Rescue` hold the user's existing file: it
+ * is already on disk, Mesa is only preserving it, and byte-for-byte equality
+ * already proves the copy is faithful. Applying a format opinion there refuses
+ * to save an edit because the ORIGINAL displeases the validator — which is
+ * backwards, since the save is what would replace it. Real PDFs carrying more
+ * than 4 KiB of debris after `%%EOF` parse and edit fine but fail Mesa's EOF
+ * check, so this was reachable as "Backup PDF write verification failed."
+ */
+const AUTHORED_STAGES: ReadonlySet<VerifiedWriteStage> = new Set([
+  "Temporary",
+  "Final",
+]);
 
 export interface VerifiedWriteOptions {
   kind?: string;
+  /** Judges candidate bytes only — see `AUTHORED_STAGES`. */
   validate?: (bytes: Uint8Array, stage: VerifiedWriteStage) => Promise<void>;
   /**
    * Optional optimistic-concurrency precondition checked from disk inside the
@@ -24,7 +45,14 @@ export interface VerifiedWriteOptions {
   expectedCurrentBytes?: Uint8Array | null;
 }
 
-export type WriteArtifactLabel = "save" | "backup";
+/**
+ * `save` = candidate bytes in flight, `backup` = the original bytes for the
+ * duration of one transaction, `rescue` = the original bytes of a transaction
+ * whose rollback FAILED. A rescue artifact is the user's last surviving copy,
+ * so unlike the other two it outlives the transaction and crash recovery never
+ * deletes it while the target exists.
+ */
+export type WriteArtifactLabel = "save" | "backup" | "rescue";
 
 /** Split a forward- or back-slash path into directory + basename. */
 function splitPath(path: string): { dir: string; base: string } {
@@ -50,7 +78,7 @@ export function buildWriteArtifactPath(
     .slice(2)}.tmp`;
 }
 
-const ARTIFACT_RE = /^\.(.+)\.mesa-(save|backup)-\d+-[a-z0-9]+\.tmp$/;
+const ARTIFACT_RE = /^\.(.+)\.mesa-(save|backup|rescue)-\d+-[a-z0-9]+\.tmp$/;
 
 export interface WriteArtifactInfo {
   /** Basename of the file the artifact was written for. */
@@ -85,7 +113,7 @@ async function readBackVerifiedBytes(
   { kind = "file", validate }: VerifiedWriteOptions
 ): Promise<Uint8Array> {
   const bytes = copyBytes(await fs.readFile(path));
-  if (validate) {
+  if (validate && AUTHORED_STAGES.has(stage)) {
     try {
       await validate(bytes, stage);
     } catch {
@@ -96,6 +124,43 @@ async function readBackVerifiedBytes(
     throw new Error(`${stage} ${kind} write verification failed.`);
   }
   return bytes;
+}
+
+/**
+ * Make the original bytes outlive a transaction whose rollback failed.
+ *
+ * Preferred route is renaming the already-verified backup, because the same
+ * condition that breaks a rollback is usually a full disk — where copying a
+ * second 52 MB PDF would fail too. Falls back to a verified copy, and finally
+ * to keeping the backup under its own name. Returns the surviving path; the
+ * caller uses it to decide whether the backup may still be cleaned up.
+ */
+async function preserveOriginalBytes(
+  filePath: string,
+  original: Uint8Array,
+  backupPath: string,
+  fs: VerifiedWriteFs,
+  options: VerifiedWriteOptions
+): Promise<string> {
+  const rescuePath = buildWriteArtifactPath(filePath, "rescue");
+  if (fs.rename) {
+    try {
+      await fs.rename(backupPath, rescuePath);
+      return rescuePath;
+    } catch {
+      // Fall through to a copy.
+    }
+  }
+  try {
+    await fs.writeFile(rescuePath, original);
+    await readBackVerifiedBytes(rescuePath, original, fs, "Rescue", options);
+    return rescuePath;
+  } catch {
+    // An unverified rescue copy must not be advertised as the survivor; drop
+    // it and keep the backup, which was verified at the start of the write.
+    await fs.remove(rescuePath).catch(() => undefined);
+    return backupPath;
+  }
 }
 
 /**
@@ -111,6 +176,9 @@ async function readBackVerifiedBytes(
  * 4. Read the target back and verify it byte-for-byte one final time.
  * 5. Any failure → restore the original bytes from the backup (verified), or
  *    remove a failed brand-new file so no truncated debris is left behind.
+ * 6. If that restore ALSO fails, the backup is the only remaining copy of the
+ *    user's file — it is preserved as a `rescue` artifact and named in the
+ *    thrown error instead of being cleaned up.
  *
  * With rename available there is no instant at which the target holds partial
  * bytes: it is either the old file or the fully-verified new file.
@@ -129,6 +197,7 @@ export async function persistVerifiedBytes(
   let tempConsumed = false;
   let backupWritten = false;
   let targetCommitAttempted = false;
+  let preservedPath: string | null = null;
 
   try {
     if (options.expectedCurrentBytes === null && hadOriginal) {
@@ -192,6 +261,7 @@ export async function persistVerifiedBytes(
     await readBackVerifiedBytes(filePath, snapshot, fs, "Final", options);
   } catch (error) {
     if (targetCommitAttempted && backupWritten && original) {
+      let restored = false;
       try {
         const backupRead = await readBackVerifiedBytes(
           backupPath,
@@ -202,18 +272,39 @@ export async function persistVerifiedBytes(
         );
         await fs.writeFile(filePath, backupRead);
         await readBackVerifiedBytes(filePath, original, fs, "Restore", options);
+        restored = true;
       } catch {
         // Best effort restore; preserve the original failure below.
       }
+      if (!restored) {
+        // The target holds bytes we could not verify and the rollback could not
+        // put the original back. Deleting the backup here is what turned a
+        // failed save into permanent data loss, so keep it instead.
+        preservedPath = await preserveOriginalBytes(
+          filePath,
+          original,
+          backupPath,
+          fs,
+          options
+        );
+      }
     } else if (targetCommitAttempted && !hadOriginal) {
       await fs.remove(filePath).catch(() => undefined);
+    }
+    if (preservedPath) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${detail} The original ${options.kind ?? "file"} was preserved at ${preservedPath}.`
+      );
     }
     throw error;
   } finally {
     if (tempWritten && !tempConsumed) {
       await fs.remove(tempPath).catch(() => undefined);
     }
-    if (backupWritten) {
+    // A backup promoted to a rescue copy is already gone from this path; one
+    // kept under its own name is the survivor and must not be removed.
+    if (backupWritten && preservedPath !== backupPath) {
       await fs.remove(backupPath).catch(() => undefined);
     }
   }

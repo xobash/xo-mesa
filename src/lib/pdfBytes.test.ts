@@ -3,6 +3,8 @@ import pdfBytesSrc from "./pdfBytes.ts?raw";
 import pdfThumbSrc from "./pdfThumb.ts?raw";
 import pdfSrc from "./pdf.ts?raw";
 import usePdfEditorSrc from "../components/usePdfEditor.ts?raw";
+import pdfViewSrc from "../components/PdfView.tsx?raw";
+import documentViewSrc from "../components/DocumentView.tsx?raw";
 
 /**
  * Bundle-layering contract for the PDF modules.
@@ -67,5 +69,21 @@ describe("pdf module layering", () => {
     );
     expect(usePdfEditorSrc).toContain("setFirstPagePainted(true)");
     expect(usePdfEditorSrc).not.toContain("setRenderedPages((prev)");
+  });
+
+  it("keeps stable hooks for the living browser PDF workflow", () => {
+    expect(pdfViewSrc).toContain('data-testid="pdf-editor"');
+    expect(pdfViewSrc).toContain('data-testid="pdf-pages"');
+    expect(pdfViewSrc).toContain('data-testid="pdf-page-canvas"');
+    expect(pdfViewSrc).toContain('data-page-number={i + 1}');
+  });
+
+  it("keeps standalone PDF windows on the same lazy PdfView pipeline", () => {
+    expect(documentViewSrc).toContain('import("./PdfView")');
+    expect(documentViewSrc).toContain(
+      "<LazyPdfView rel={rel} file={selectedFile} />"
+    );
+    expect(documentViewSrc).not.toContain('<iframe className="doc-pdf"');
+    expect(pdfViewSrc).toContain("file?: VaultFile");
   });
 });

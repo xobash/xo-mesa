@@ -33,6 +33,7 @@ use tiny_http::{Method, Request, Response, Server};
 /// network at runtime.
 const EXTENSION_SRC: &str = include_str!("../resources/mesa-activity.ts");
 const GOAL_EXTENSION_SRC: &str = include_str!("../resources/mesa-goal.ts");
+const CONTEXT_EXTENSION_SRC: &str = include_str!("../resources/mesa-context.ts");
 const BROWSER_EXTENSION_SRC: &str = include_str!("../resources/mesa-browser.ts");
 const DEEP_RESEARCH_EXTENSION_SRC: &str = include_str!("../resources/mesa-deep-research.ts");
 
@@ -48,6 +49,8 @@ pub struct ActivityInfo {
     pub extension_path: String,
     #[serde(rename = "goalExtensionPath")]
     pub goal_extension_path: String,
+    #[serde(rename = "contextExtensionPath")]
+    pub context_extension_path: String,
     #[serde(rename = "browserExtensionPath")]
     pub browser_extension_path: String,
     #[serde(rename = "deepResearchExtensionPath")]
@@ -63,6 +66,26 @@ struct ActivityServer {
 fn state() -> &'static Mutex<Option<ActivityServer>> {
     static S: OnceLock<Mutex<Option<ActivityServer>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(None))
+}
+
+const CONTEXT_MAX_BYTES: usize = 64 * 1024;
+
+fn context_state() -> &'static Mutex<String> {
+    static CONTEXT: OnceLock<Mutex<String>> = OnceLock::new();
+    CONTEXT.get_or_init(|| Mutex::new(String::new()))
+}
+
+fn bounded_context(mut context: String) -> String {
+    context = context.trim().to_string();
+    if context.len() <= CONTEXT_MAX_BYTES {
+        return context;
+    }
+    let mut end = CONTEXT_MAX_BYTES;
+    while !context.is_char_boundary(end) {
+        end -= 1;
+    }
+    context.truncate(end);
+    context
 }
 
 fn nanos() -> u128 {
@@ -92,14 +115,16 @@ fn make_token() -> String {
 }
 
 /// Materialize the bundled Pi extensions; returns
-/// (activity_path, goal_path, browser_path, deep_research_path).
-fn write_extensions() -> Result<(String, String, String, String), String> {
+/// (activity_path, goal_path, context_path, browser_path, deep_research_path).
+fn write_extensions() -> Result<(String, String, String, String, String), String> {
     let dir = std::env::temp_dir().join("mesa-pi");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let activity = dir.join("mesa-activity.ts");
     std::fs::write(&activity, EXTENSION_SRC).map_err(|e| e.to_string())?;
     let goal = dir.join("mesa-goal.ts");
     std::fs::write(&goal, GOAL_EXTENSION_SRC).map_err(|e| e.to_string())?;
+    let context = dir.join("mesa-context.ts");
+    std::fs::write(&context, CONTEXT_EXTENSION_SRC).map_err(|e| e.to_string())?;
     let browser = dir.join("mesa-browser.ts");
     std::fs::write(&browser, BROWSER_EXTENSION_SRC).map_err(|e| e.to_string())?;
     let deep_research = dir.join("mesa-deep-research.ts");
@@ -107,6 +132,7 @@ fn write_extensions() -> Result<(String, String, String, String), String> {
     Ok((
         activity.to_string_lossy().to_string(),
         goal.to_string_lossy().to_string(),
+        context.to_string_lossy().to_string(),
         browser.to_string_lossy().to_string(),
         deep_research.to_string_lossy().to_string(),
     ))
@@ -159,6 +185,17 @@ fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
         }
         return;
     }
+    // Current path-only Mesa workspace context. The bundled context extension
+    // reads this before every Pi turn, so a long-lived/shared PTY follows the
+    // main workspace without restarting or relying on immutable process env.
+    if url == "/context" && method == Method::Get {
+        let context = context_state()
+            .lock()
+            .map(|context| context.clone())
+            .unwrap_or_default();
+        json_response(req, serde_json::json!({ "context": context }).to_string());
+        return;
+    }
     // Pi's `browse` tool: navigate the visible harness and answer with the
     // RENDERED page. The `mesa://browse` event pops the wing open; the wing
     // drives the native harness webview; its injected reporter streams the
@@ -191,12 +228,9 @@ fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
         let mut nudged = false;
         let mut rendered: Option<crate::harness::HarnessSnapshot> = None;
         while bumped_at.elapsed() < Duration::from_secs(9) {
-            if let Some(snap) = crate::harness::wait_for_snapshot(
-                gen,
-                &target,
-                min_at,
-                Duration::from_millis(450),
-            ) {
+            if let Some(snap) =
+                crate::harness::wait_for_snapshot(gen, &target, min_at, Duration::from_millis(450))
+            {
                 rendered = Some(snap);
                 break;
             }
@@ -224,8 +258,8 @@ fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
             .to_string(),
             None => match crate::browse::browse_fetch_blocking(target) {
                 Ok(page) => {
-                    let mut v = serde_json::to_value(&page)
-                        .unwrap_or_else(|_| serde_json::json!({}));
+                    let mut v =
+                        serde_json::to_value(&page).unwrap_or_else(|_| serde_json::json!({}));
                     if let Some(obj) = v.as_object_mut() {
                         obj.insert("rendered".into(), serde_json::Value::Bool(false));
                         obj.insert(
@@ -289,9 +323,7 @@ fn handle_request(mut req: Request, token: &str, app: &tauri::AppHandle) {
 /// a reporter with nowhere to report would blind the agent).
 pub fn harness_report_target() -> Option<(u16, String)> {
     let guard = state().lock().ok()?;
-    guard
-        .as_ref()
-        .map(|s| (s.info.port, s.info.token.clone()))
+    guard.as_ref().map(|s| (s.info.port, s.info.token.clone()))
 }
 
 /// Start (or reuse) the loopback activity server and materialize the Pi
@@ -306,8 +338,13 @@ pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
     }
 
     let token = make_token();
-    let (extension_path, goal_extension_path, browser_extension_path, deep_research_extension_path) =
-        write_extensions()?;
+    let (
+        extension_path,
+        goal_extension_path,
+        context_extension_path,
+        browser_extension_path,
+        deep_research_extension_path,
+    ) = write_extensions()?;
 
     let mut bound: Option<(Server, u16)> = None;
     for port in PORT_FIRST..=PORT_LAST {
@@ -338,6 +375,7 @@ pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
         token,
         extension_path,
         goal_extension_path,
+        context_extension_path,
         browser_extension_path,
         deep_research_extension_path,
     };
@@ -347,6 +385,16 @@ pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
         info: info.clone(),
     });
     Ok(info)
+}
+
+/// Publish the main workspace's current path-only Pi context. This state is
+/// independent of the loopback server lifecycle, so the main renderer can
+/// update it before Pi starts and the first agent turn still sees it.
+#[tauri::command]
+pub fn activity_set_context(context: String) -> Result<(), String> {
+    let mut current = context_state().lock().map_err(|e| e.to_string())?;
+    *current = bounded_context(context);
+    Ok(())
 }
 
 #[tauri::command]
@@ -359,4 +407,19 @@ pub fn activity_stop() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_context_is_trimmed_and_bounded_on_utf8_boundaries() {
+        assert_eq!(bounded_context("  active.md  ".into()), "active.md");
+        let oversized = "é".repeat(CONTEXT_MAX_BYTES);
+        let bounded = bounded_context(oversized);
+        assert!(bounded.len() <= CONTEXT_MAX_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
+        assert!(bounded.ends_with('é'));
+    }
 }

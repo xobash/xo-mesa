@@ -31,8 +31,8 @@ import {
   watchVault,
   importDroppedPaths,
   recoverWriteArtifacts,
-  pruneAgentSnapshots,
-  isTextExt,
+  isTextualVaultFile,
+  flushableNoteText,
   extOf,
   stripExt,
   normalizeVaultRelPath,
@@ -70,7 +70,8 @@ import {
   serializeEvents,
   type CalEvent,
 } from "./lib/daily";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { stat } from "@tauri-apps/plugin-fs";
 import { planKeyMigration } from "./lib/migrate";
 import { invalidatePdfThumb } from "./lib/pdfThumb";
@@ -80,7 +81,13 @@ import {
   updateTaskLine,
   type TaskLinePatch,
 } from "./lib/tasks";
-import { getPiSessionSnapshot, requestSharedPiRestart } from "./lib/piSessionBridge";
+import {
+  AGENT_CONTEXT_EVENT,
+  AGENT_WINDOW_READY_EVENT,
+  getPiSessionSnapshot,
+  requestSharedPiRestart,
+} from "./lib/piSessionBridge";
+import { buildAgentContext } from "./lib/agent";
 import type { DetachedWindowPlacement } from "./lib/windowTearOff";
 import {
   discardGraphWindowBootstrap,
@@ -124,6 +131,20 @@ const LAST_VAULT_KEY = "mesa:lastVault";
 const THEME_KEY = "mesa:theme";
 const SETTINGS_KEY = "mesa:settings";
 const RECENTS_KEY = "mesa:recentVaults";
+
+async function reclaimMainPiResizeOwnership(): Promise<void> {
+  const session = getPiSessionSnapshot();
+  if (!session.sessionId) return;
+  try {
+    await invoke("terminal_attach", {
+      sessionId: session.sessionId,
+      cols: session.cols,
+      rows: session.rows,
+    });
+  } catch {
+    // Best effort: the fallback AgentSurface will claim on focus/mount too.
+  }
+}
 const MAX_RECENTS = 8;
 
 interface DragGhost {
@@ -469,7 +490,8 @@ interface AppState {
     fingerprint: string;
   } | null>;
   openDocWindow: (relPath: string) => Promise<void>;
-  openAgentWindow: (placement?: DetachedWindowPlacement) => Promise<void>;
+  /** Returns true only after the detached window has adopted the live PTY. */
+  openAgentWindow: (placement?: DetachedWindowPlacement) => Promise<boolean>;
   openVault: (path?: string) => Promise<void>;
   removeRecentVault: (path: string) => void;
   selectFile: (relPath: string) => Promise<void>;
@@ -1520,41 +1542,140 @@ export const useAppStore = create<AppState>((set, get) => {
           // window's copy of AgentPanel's SHARED_PI_SESSION singleton starts
           // out empty even though the real session is still alive — see
           // adoptSharedPiSession in components/AgentPanel.tsx.
-          const liveSession = getPiSessionSnapshot();
-          const sessionParam =
-            liveSession.sessionId && liveSession.vaultPath === vault
-              ? `&piSession=${encodeURIComponent(liveSession.sessionId)}`
-              : "";
+          // Tear-out is an attachment, never a second launch. A very fast
+          // drag can race AgentSurface's async xterm/Pi startup, so keep the
+          // source surface mounted while waiting briefly for its session id.
+          let liveSession = getPiSessionSnapshot();
+          for (
+            let attempt = 0;
+            attempt < 40 &&
+            (!liveSession.sessionId || liveSession.vaultPath !== vault);
+            attempt++
+          ) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+            liveSession = getPiSessionSnapshot();
+          }
+          if (!liveSession.sessionId || liveSession.vaultPath !== vault) {
+            throw new Error("Pi is still starting.");
+          }
+          const sessionParam = `&piSession=${encodeURIComponent(
+            liveSession.sessionId
+          )}`;
           const label = `agent-${Date.now().toString(36)}`;
+          const titleOverlay = /Macintosh|Mac OS X/i.test(navigator.userAgent);
           const url = `index.html?agent=1&vault=${encodeURIComponent(
             vault
-          )}&theme=${theme}${docParam}${sessionParam}`;
-          const win = new WebviewWindow(label, {
-            url,
-            title: "Pi agent",
-            width: Math.max(520, placement?.width ?? 980),
-            height: Math.max(360, placement?.height ?? 760),
-            ...(placement ? { x: placement.x, y: placement.y } : {}),
-            resizable: true,
-            decorations: false,
-            shadow: true,
+          )}&theme=${theme}&agentLabel=${encodeURIComponent(label)}${
+            titleOverlay ? "&titleOverlay=1" : ""
+          }${docParam}${sessionParam}`;
+          let resolveReady: (ready: boolean) => void = () => undefined;
+          const ready = new Promise<boolean>((resolve) => {
+            resolveReady = resolve;
           });
-          // The WebviewWindow constructor is fire-and-forget internally (it
-          // never throws for a real creation failure — see the same note in
-          // BrowserHarness.openBrowserExternally). Tear-off closes the in-app
-          // Pi surface BEFORE this window exists, so a silent failure here
-          // would lose the Pi surface entirely; fall back to the in-app
-          // floating Pi window instead.
-          void win.once("tauri://error", (e) => {
-            console.warn("[mesa] Pi window creation failed:", e.payload ?? e);
-            set({ agentOpen: true });
+          let creationFailed = false;
+          const stopReadyListener = await listen<{
+            label?: string;
+            sessionId?: string;
+          }>(AGENT_WINDOW_READY_EVENT, (event) => {
+            if (
+              event.payload?.label === label &&
+              typeof event.payload.sessionId === "string"
+            ) {
+              resolveReady(true);
+            }
           });
-          return;
-        } catch {
+          try {
+            const win = new WebviewWindow(label, {
+              url,
+              title: `Pi agent — ${get().vaultName || "Mesa"}`,
+              width: Math.max(520, placement?.width ?? 980),
+              height: Math.max(360, placement?.height ?? 760),
+              minWidth: 520,
+              minHeight: 360,
+              ...(placement ? { x: placement.x, y: placement.y } : {}),
+              resizable: true,
+              decorations: true,
+              ...(titleOverlay
+                ? {
+                    titleBarStyle: "overlay" as const,
+                    hiddenTitle: true,
+                  }
+                : {}),
+              shadow: true,
+              // Create the OS window visibly. The source Pi remains mounted
+              // until the child acknowledges PTY adoption, but visibility
+              // must not depend on a post-create `show()` mutation or on the
+              // detached realm finishing a full vault scan.
+              visible: true,
+            });
+            void win.once("tauri://error", (e) => {
+              creationFailed = true;
+              console.warn("[mesa] Pi window creation failed:", e.payload ?? e);
+              resolveReady(false);
+            });
+            const timeout = window.setTimeout(
+              () => resolveReady(false),
+              15_000
+            );
+            const adopted = await ready;
+            window.clearTimeout(timeout);
+            if (!adopted) {
+              if (creationFailed) {
+                await win.close().catch(() => undefined);
+                await reclaimMainPiResizeOwnership();
+                set({
+                  agentOpen: true,
+                  status: "Pi window creation failed; restored inside Mesa.",
+                });
+              } else {
+                // A lost/delayed app event is not proof that the visible child
+                // failed. Never destroy a potentially adopted, interactive Pi
+                // window on a timer; keep the source mounted as the fail-safe.
+                set({
+                  status:
+                    "Pi handoff was not confirmed; both Pi surfaces were kept open.",
+                });
+              }
+              return false;
+            }
+            // PTY adoption is the handoff boundary. Focus and the initial
+            // context mirror are conveniences after that boundary; a stale
+            // runtime capability or transient focus denial must never close a
+            // visible, adopted Pi window.
+            await win.setFocus().catch((error) => {
+              console.warn("[mesa] detached Pi focus request failed:", error);
+            });
+            const current = get();
+            await emitTo(
+              label,
+              AGENT_CONTEXT_EVENT,
+              buildAgentContext({
+                vaultName: current.vaultName,
+                vaultPath: current.vaultPath,
+                activePath: current.activePath,
+                openTabs: current.openTabs,
+                settings: current.settings,
+              })
+            ).catch((error) => {
+              console.warn("[mesa] initial detached Pi context mirror failed:", error);
+            });
+            return true;
+          } finally {
+            stopReadyListener();
+          }
+        } catch (error) {
+          await reclaimMainPiResizeOwnership();
+          console.warn("[mesa] Pi native window launch failed:", error);
+          set({
+            status: `Pi tear-out failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          });
           /* fall back to the in-app floating Pi window */
         }
       }
       set({ agentOpen: true });
+      return false;
     },
 
     openVault: async (path) => {
@@ -1580,12 +1701,6 @@ export const useAppStore = create<AppState>((set, get) => {
           recovered.restored
         );
       }
-      // Prune stale Pi-write safety snapshots (see src/lib/agentBackup.ts).
-      // Independent of the crash-recovery sweep above: these are defensive
-      // copies taken before the embedded Pi agent's own write/edit tool calls,
-      // not Mesa's own in-flight write artifacts. Never blocks vault open.
-      void pruneAgentSnapshots(root);
-
       const files = await scanVault(root);
       // read note contents in parallel — far faster startup on large vaults
       const contents = new Map<string, string>();
@@ -1668,7 +1783,7 @@ export const useAppStore = create<AppState>((set, get) => {
       }
       // text/markdown loads content for the editor; media (image/pdf/video)
       // renders from its path, so no content read is needed.
-      const textual = file.isMarkdown || isTextExt(file.ext) || file.ext === "rtf";
+      const textual = isTextualVaultFile(file);
       const tabs = get().settings.enableTabs
         ? get().openTabs.includes(relPath)
           ? get().openTabs
@@ -1744,7 +1859,16 @@ export const useAppStore = create<AppState>((set, get) => {
       if (saveTimer) clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         const file = get().fileFor(active);
-        if (file) void writeNote(file, get().contentCache[active] ?? text);
+        // Same gate as flushSave: only a file the text pipeline owns is ever
+        // written from editor text (`flushableNoteText`).
+        const pending = file
+          ? flushableNoteText(file, get().contentCache[active] ?? text)
+          : null;
+        if (file && pending !== null) {
+          void writeNote(file, pending).catch((e) =>
+            set({ status: `Save failed: ${String(e)}` })
+          );
+        }
         const cur = get().notes[active];
         // Replace the notes map only when the extracted metadata actually
         // changed: its identity churn drives the graph rebuild, the backlink
@@ -1757,6 +1881,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // Write the active note to disk immediately (on blur / hide / quit) so a
     // debounced edit is never lost to a crash or close.
+    //
+    // This runs for whatever file happens to be ACTIVE, on events the user
+    // never thinks of as saving (window blur, hide, quit), so what it may
+    // write is decided by `flushableNoteText`: never a file the text pipeline
+    // does not own (a PDF/image/binary would be replaced by zero bytes — it
+    // has no cached text by design), and never a file whose text Mesa has not
+    // actually loaded yet (a note whose opening read is still in flight).
     flushSave: () => {
       if (saveTimer) {
         clearTimeout(saveTimer);
@@ -1765,7 +1896,12 @@ export const useAppStore = create<AppState>((set, get) => {
       const active = get().activePath;
       if (!active) return;
       const file = get().fileFor(active);
-      if (file) void writeNote(file, get().contentCache[active] ?? "");
+      if (!file) return;
+      const pending = flushableNoteText(file, get().contentCache[active]);
+      if (pending === null) return;
+      void writeNote(file, pending).catch((e) =>
+        set({ status: `Save failed: ${String(e)}` })
+      );
     },
 
     newNote: async () => {
@@ -2552,6 +2688,14 @@ export const useAppStore = create<AppState>((set, get) => {
       if (pending) return pending;
       const file = get().fileFor(relPath);
       if (!file) return "";
+      // Never pull a non-text file through the text pipeline. `readNote`
+      // decodes bytes as UTF-8, so caching a PDF/image here would put a lossy
+      // decode of it into `contentCache` — content every text consumer,
+      // including the crash-safety flush, would then treat as that file's real
+      // text. Callers of this are the text surfaces (editor, code/html/rtf
+      // views); the activity bridge also calls it for whatever path an agent
+      // touched, which is exactly how a binary could get in.
+      if (!isTextualVaultFile(file)) return "";
       const read = readNote(file)
         .then((text) => {
           // If newer content landed in the cache while the disk read was in

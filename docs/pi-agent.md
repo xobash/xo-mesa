@@ -35,7 +35,7 @@ The frontend renders that terminal protocol with xterm.js, so Pi receives raw
 keystrokes, ANSI output, cursor movement, terminal resizing, paste, selection,
 and provider setup inside the CLI.
 
-Mesa keeps one live Pi PTY/xterm session across every Pi surface: the
+Mesa keeps one live Pi PTY session across every Pi surface: the
 floating Pi window (opened by the dedicated shortcut, and reused as the
 fallback surface when a feature needs Pi or a native pop-out fails), the
 Steam-style overlay Pi window, the workspace pane, and the popped-out Pi OS
@@ -51,29 +51,86 @@ Tauri `WebviewWindow` is a separate JS realm, so it can't see that singleton
 at all. To avoid silently orphaning the running `pi` process and starting a
 second, contextless one, Mesa hands the live session id to the new window
 through its launch URL (`openAgentWindow` in `store.ts`); the new window
-probes that the backend session is still alive with a harmless
-`terminal_resize` call and, if so, reattaches its own xterm instance to that
+atomically claims the backend session with `terminal_attach` and reattaches its
+own xterm instance to that
 same session (`adoptSharedPiSession` in `AgentPanel.tsx`) instead of calling
 `terminal_start`. Rust retains a bounded output history for each PTY. The new
 window subscribes to live output first, requests `terminal_snapshot`, replays
-it, then drains only events with a newer sequence number. This preserves the
+its ordered resize/output timeline, then drains only events with a newer
+sequence number. Preserving the grid-size timeline matters for full-screen
+terminal UIs: replaying cursor-up/rewrite bytes at only the new window's width
+changes line wrapping and leaves stale or duplicated lines. This preserves the
 visible conversation without losing or duplicating bytes during the handoff.
 Because Rust's `TerminalState` and the `terminal://output` event are app-global
-(not per-window), both windows can stay attached to the same live session at
-once if the user keeps both open.
+(not per-window), both windows can stay attached to the same live session
+during the handoff.
 
-A live Pi session is never silently restarted just because the injected
-startup context drifted (the user switched files) — relaunching would drop the
+The detached surface is Mesa's complete `AgentSurface`, not a stripped-down
+terminal transcript. It keeps the context strip, Deep Research, workspace and
+browser controls, the xterm input path, and the exact same injected session
+context and extensions. Mesa creates it as a decorated native Tauri
+`WebviewWindow` and makes the OS window visible immediately. `AgentSurface`
+uses the authoritative vault path in the launch URL to adopt the existing PTY
+without waiting for its separate store to finish a full vault scan. The source
+surface remains mounted until the child emits `mesa://agent-window-ready`, so a
+failed or slow adoption cannot discard the working terminal. On macOS the native traffic-light controls are retained with
+an overlay-style title bar and hidden duplicate title; Windows and Linux retain
+their ordinary OS window frame. Mesa's Tauri capability explicitly permits the
+post-handshake `setFocus`, `close`, and title-bar drag operations; the
+base read-only window permission set is not sufficient for those mutations.
+Once PTY adoption succeeds, focus and the initial context mirror are
+best-effort conveniences: failure cannot close the working child. Native
+dock-back is also disarmed until the user presses the Pi drag region and makes
+a sustained native drag (at least three move events spanning 80ms). Ordinary
+click/focus interaction disarms without movement, and OS startup frame
+corrections are ignored even if one exceeds the normal distance threshold.
+The ready acknowledgement is broadcast app-wide. If it is delayed or lost,
+Mesa keeps both surfaces alive and reports an unconfirmed handoff; it never
+closes a visible child on a timer. Only an explicit native creation error is
+eligible for automatic child cleanup.
+See Tauri's
+[WebviewWindow API](https://v2.tauri.app/reference/javascript/api/namespacewebviewwindow/)
+and [window customization guide](https://v2.tauri.app/learn/window-customization/).
+
+A live Pi session is never silently restarted just because the workspace
+context drifted (the user switched files) — relaunching would drop the
 conversation and shed any session-scoped launch env a feature injected at
-spawn (e.g. Deep Research's read-only write-block). A fresh context is only
-used when a brand-new session spawns; the session restarts only on an explicit
-feature request (the shared-session restart bridge in `lib/piSessionBridge.ts`),
-a vault change, or an app restart.
+spawn (e.g. Deep Research's read-only write-block). Instead, the main Mesa
+renderer publishes the same path-only context shown in the context strip to
+the authenticated loopback activity bridge. The bundled `mesa-context`
+extension reads it before every agent turn and appends an authoritative
+`Live Mesa workspace context` block to that turn's system prompt. Detached
+AgentSurface renderers receive the same typed update over an app-local Tauri
+event, so their visible strip follows the main workspace too. The session
+restarts only on an explicit feature request (the shared-session restart bridge
+in `lib/piSessionBridge.ts`), a vault change, or an app restart.
 Mesa serializes Pi startup, awaits the previous Tauri output listener cleanup,
 and accepts terminal output only when both the session id and listener
 generation match the active shared session. That prevents stale PTY output from
 rendering twice into the shared xterm during overlay/workspace switches or
 feature-requested restarts.
+
+PTY dimensions have one owner at a time. `terminal_start` assigns the spawning
+Mesa window; `terminal_attach` atomically transfers ownership when Pi tears out
+or docks back; focus changes reclaim it for the active Mesa surface. Resize
+bursts from FitAddon/ResizeObserver/font changes run through a serialized
+latest-wins queue, and the native backend ignores resize calls from non-owners.
+This prevents two webviews—or two out-of-order async calls—from fighting over
+one PTY width and breaking Pi's TUI redraw arithmetic. Snapshot replay is the
+one path allowed to resize the grid without telling the PTY, because it is
+reproducing the historical timeline; it therefore always reconciles the grid
+with the PTY when it finishes, since a real resize can land during the replay
+and a later `fit()` cannot detect it.
+
+Every byte Mesa reads from the PTY is decoded through one incremental UTF-8
+decoder per session. A read returns whatever the kernel had buffered, so a
+multi-byte character routinely straddles two reads; decoding each read on its
+own replaced one character with several replacement characters and made the
+line wider than Pi wrote it. Pi's redraw then landed a row below its previous
+render and left it on screen — text appearing twice, with the first word of a
+wrapped line stranded on its own row. Mesa holds an incomplete trailing
+sequence back until the next read instead, so the emulator lays out exactly the
+columns Pi counted.
 
 Mesa caches the resolved Pi executable after the first successful launch and
 starts the PTY at the terminal's current columns/rows to avoid a visible resize
@@ -85,14 +142,16 @@ often ship Unix-style `pi` scripts beside Windows launch shims. If Mesa resolves
 an extensionless Node shebang script it launches it through `node.exe`; if only
 the Windows wrapper exists it launches that wrapper through `cmd.exe`.
 
-Mesa does not fake a transcript with styled text. It also does not embed
-Terminal.app, Windows Terminal, cmd.exe, or PowerShell as an OS-owned child
-window inside the Tauri webview; that is not a durable cross-platform target.
-Mesa owns the PTY process and renders the terminal stream inside Mesa.
+Mesa does not fake a transcript with styled text. It also does not substitute
+Terminal.app, Windows Terminal, cmd.exe, or PowerShell for the detached Pi
+surface. Those programs can attach to a byte stream, but they cannot host
+Mesa's context strip, Deep Research and browser controls, app state, or
+review-before-apply workflow. Mesa therefore owns the one PTY process and
+renders it with xterm.js inside a real movable/resizable OS window.
 
 Mesa launches `pi` directly in the current vault folder. The terminal receives
-path-only Mesa context through Pi's `--append-system-prompt` startup hook and
-mirrors the same values through `MESA_*` environment variables:
+an initial path-only fallback through Pi's `--append-system-prompt` startup
+hook and mirrors the launch values through `MESA_*` environment variables:
 
 - `MESA_VAULT_NAME`
 - `MESA_VAULT_PATH`
@@ -105,17 +164,22 @@ mirrors the same values through `MESA_*` environment variables:
 - `MESA_CONTEXT`
 
 The active file is the document currently selected in Mesa's editor/preview.
-When Pi is popped into its own OS window, Mesa carries that selected file in the
-window URL before starting the PTY so the injected context still matches the
-main workspace.
+The immutable launch values remain useful to tools that read process env, but
+the per-turn `mesa-context` block is the model-facing authority after the
+workspace changes. When Pi is popped into its own OS window, Mesa carries the
+selected file in the launch URL for first paint, then replaces that snapshot
+with every main-workspace context update while adopting the already-running
+PTY. It never restarts Pi merely to refresh context.
 
 The dedicated shortcut overlay uses one title bar for its title, terminal
 status, and controls. While that bar is dragged to a workspace edge Mesa shows
 `Release to move outside Mesa`; releasing there opens the native window under
 the same grabbed point on the desktop and hands off the live Pi session. No
-separate pop-out button is required. The native Pi window is undecorated so
-this same combined bar remains its only title bar. Drag that title bar over
-the main Mesa window and release to dock it; there is no permanent Dock button.
+separate pop-out button is required. The detached Pi surface has real native
+window decorations; on macOS its combined Pi bar is also marked with Tauri's
+`data-tauri-drag-region` inside the overlay title bar, leaving room for the
+native traffic lights. Drag that Pi bar over the main Mesa window and release
+to dock it; there is no permanent Dock button.
 
 Provider setup belongs inside the terminal workflow the user chooses to run.
 Mesa no longer maintains a separate provider panel for Pi.
@@ -157,21 +221,28 @@ Pi is a real native process with the vault as its cwd. Its `write`/`edit`
 tools write straight to disk from that external process, whatever the
 provider — this is the one write path in Mesa that `persistVerifiedBytes`
 (`src/lib/verifiedWrite.ts`) never sees, so none of Mesa's own backup/atomic-
-rename/read-back guarantees apply to it. A tool that mishandles a file it
-doesn't understand well — most visibly a binary file like a PDF — can
-overwrite it with no recovery path.
+rename/read-back guarantees apply to it.
 
-Mesa cannot prevent an external process from writing bad bytes; it makes sure
-that write is always recoverable instead. The same pre-execution `tool_call`
-hook the activity extension already uses (it fires before a `write`/`edit`
-tool runs) also takes a defensive snapshot of the file's current on-disk bytes
-first, so the state right before any Pi write always has a recovery point.
-Full detail — naming/retention contract, the crash-recovery interaction, and
-the restore path — is in [vault-safety.md](vault-safety.md). Short version:
-snapshots are dot-prefixed siblings (invisible to scan/watch/sync, same as
-Mesa's own write artifacts), pruned to the newest 5 per file / 14 days at
-vault open, and never auto-restored — `PdfView` offers a "Restore previous
-version" action when the open PDF turns out not to be valid instead.
+For text files that is fine: a text tool round-trips text, and Pi editing notes
+is the intended workflow. For a binary file it is not an edit but destruction.
+`write`/`edit`/`apply_patch` carry string content, so reaching disk means a
+UTF-8 decode/encode cycle that mangles every byte sequence which isn't valid
+UTF-8. On a PDF, one altered byte invalidates the xref table and the document
+stops opening.
+
+So Mesa blocks those tools on binary paths. The same pre-execution `tool_call`
+hook the activity extension already uses returns `{ block: true, reason }` and
+the write never happens. The reason string tells the model the two routes that
+do work — a format-aware tool via `bash` (qpdf, ImageMagick, a Python library),
+or Mesa's own editor — because without that a capable agent just retries the
+same corrupting write. `bash` itself is never blocked, so agent-driven binary
+work still functions; only the text-encoder path is closed. Reads are never
+blocked either.
+
+Full detail — the blocked extension list, the lockstep contract between the
+extension and its tested reference in `src/lib/agent.ts`, and why the previous
+snapshot-based safety net was removed — is in
+[vault-safety.md](vault-safety.md).
 
 ## /goal command
 

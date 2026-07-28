@@ -142,8 +142,7 @@ fn local_lan_ip() -> Result<String, String> {
 fn auth_ok(req: &Request, token: &str) -> bool {
     let expected = Sha256::digest(format!("Bearer {}", token).as_bytes());
     req.headers().iter().any(|h| {
-        h.field.equiv("Authorization")
-            && Sha256::digest(h.value.as_str().as_bytes()) == expected
+        h.field.equiv("Authorization") && Sha256::digest(h.value.as_str().as_bytes()) == expected
     })
 }
 
@@ -160,7 +159,10 @@ fn cors_headers() -> Vec<Header> {
     [
         ("Access-Control-Allow-Origin", "*"),
         ("Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS"),
-        ("Access-Control-Allow-Headers", "Authorization, Content-Type"),
+        (
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type",
+        ),
         ("Access-Control-Allow-Private-Network", "true"),
         ("Access-Control-Max-Age", "86400"),
     ]
@@ -198,7 +200,11 @@ fn handle(mut req: Request, root: &Path, token: &str, app: &tauri::AppHandle) {
         emit_log(
             app,
             "warn",
-            format!("[serve] rejected {} {} — bad or missing sync key", method, req.url()),
+            format!(
+                "[serve] rejected {} {} — bad or missing sync key",
+                method,
+                req.url()
+            ),
         );
         respond_text(req, 401, "unauthorized");
         return;
@@ -238,7 +244,11 @@ fn handle(mut req: Request, root: &Path, token: &str, app: &tauri::AppHandle) {
             sync_core::build_manifest(root, &mut cache)
         };
         for (rel, err) in &skipped {
-            emit_log(app, "warn", format!("[serve] manifest skipped {rel}: {err}"));
+            emit_log(
+                app,
+                "warn",
+                format!("[serve] manifest skipped {rel}: {err}"),
+            );
         }
         emit_log(
             app,
@@ -454,9 +464,11 @@ fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
             fingerprint,
         }
     } else {
-        let CertifiedKey { cert, signing_key } =
-            rcgen::generate_simple_self_signed(vec!["mesa.local".to_string(), "localhost".to_string()])
-                .map_err(|e| e.to_string())?;
+        let CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
+            "mesa.local".to_string(),
+            "localhost".to_string(),
+        ])
+        .map_err(|e| e.to_string())?;
         let cert_pem = cert.pem();
         let key_pem = signing_key.serialize_pem();
         let fingerprint = sha256_hex(cert.der().as_ref());
@@ -871,7 +883,9 @@ pub async fn sync_run(
         "info",
         format!(
             "sync started — peer {base}, pin {}",
-            pin.as_deref().map(|p| &p[..12.min(p.len())]).unwrap_or("none (trust-on-first-use)")
+            pin.as_deref()
+                .map(|p| &p[..12.min(p.len())])
+                .unwrap_or("none (trust-on-first-use)")
         ),
     );
     emit_progress(&app, "manifest", 0, 0, "");

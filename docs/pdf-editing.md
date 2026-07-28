@@ -30,11 +30,33 @@ as all other PDF edits.
 
 Mesa now loads the file bytes and renders pages with pdf.js in both viewer mode
 and edit mode. If pdf.js cannot render the current bytes, or if pdf.js
-completes but paints a blank first page, Mesa falls back to a native embed fed
-from the verified in-memory bytes (a blob URL), so the fallback always shows
-exactly the document Mesa has open — including unsaved edits — and cannot
-diverge from it. Invalid, empty, or mislabeled `.pdf` files show an explicit
-error instead of a blank white pane.
+completes but paints a blank first page *that had content to draw*, Mesa falls
+back to a native embed fed from the verified in-memory bytes (a blob URL), so
+the fallback always shows exactly the document Mesa has open — including
+unsaved edits — and cannot diverge from it. Invalid, empty, or mislabeled
+`.pdf` files show an explicit error instead of a blank white pane.
+
+A first page that is *genuinely* blank — a blank cover sheet, a separator, a
+"this page intentionally left blank" leaf, or a scanned document with an empty
+leading sheet — is not a failed render. Mesa asks pdf.js whether the page has
+any drawing operations before treating a blank paint as a failure, so these
+documents keep Mesa's own canvas renderer and stay fully editable. Previously
+they were pushed into the read-only fallback, which silently removed every
+editing tool, because the annotation surfaces only exist over Mesa's canvases.
+
+Sparse pages are protected separately. A short title, signature, checkbox, or
+small vector mark can fall between every point in a coarse pixel grid even
+though pdf.js painted it correctly. Mesa uses the grid only as a fast path; if
+it appears blank, Mesa scans the complete pixel buffer already returned by
+`getImageData` before consulting the operator list. A valid sparse page
+therefore keeps Mesa's canvases and editing tools instead of being mistaken for
+a failed render.
+
+Standalone/popout document windows use this same `PdfView` pipeline and pass
+their scanned file record into it explicitly. They no longer maintain a
+separate iframe-only PDF renderer, so opening a PDF outside the main workspace
+does not lose Mesa's canvas fallback checks, edit tools, history, or verified
+save path.
 
 Zoom and edit rerenders keep the last painted page visible until the refreshed
 page image is ready, so the canvas does not flash white between scales or after
@@ -47,7 +69,10 @@ the scroll correction targets the settled state exactly and the ease animates on
 top of it. The zoom range stays clamped to 50–300%. Annotation edits (text, replacement, highlight, and pencil) repaint
 only the touched page; structural page edits repaint the document. Large-document
 rendering yields between page paints, and text-run extraction only starts when
-the `Edit text` tool is active.
+the `Edit text` tool is active. When several annotations land in quick
+succession, every touched page is repainted — the pending repaint set
+accumulates rather than being replaced, so an edit is never left invisible
+because a later edit on another page overtook it.
 
 Large documents keep the previous visible page pixels during rerenders but use
 only one effect-local scratch canvas for the incoming paint, rather than
@@ -68,6 +93,36 @@ post-save validation cannot distinguish from a healthy file. Every editing
 tool therefore fails closed on an encrypted document with a clear
 "Mesa keeps it read-only" message before any bytes are touched. Viewing,
 zooming, and page geometry are unaffected.
+
+## Undo Depth on Large Documents
+
+Undo and redo hold whole-document snapshots, because a PDF edit is a
+byte-in/byte-out transform. Mesa bounds what those stacks retain (128 MiB of
+snapshots, 200 entries) and drops the oldest entries first, so editing stays
+possible on documents that would otherwise exhaust the webview: measured on the
+test corpus, ten highlight edits on a 52 MiB PDF retained 625.6 MiB and kept
+growing linearly. Ordinary documents are unaffected — a 36 KiB PDF and a
+2.4 MiB scanned PDF both keep their full history — and the most recent
+snapshot is never dropped, so one undo always works even on a document larger
+than the entire budget.
+
+## Text Mesa Can Write
+
+Mesa stamps text with pdf-lib's built-in standard fonts, whose WinAnsi encoding
+covers Latin-1: ASCII, accented Latin letters, the curly quotes / dashes /
+ellipsis / bullet / euro block, and the tab and newline characters pdf-lib
+normalizes for layout. Greek, Cyrillic, CJK, emoji, and symbols such as `→` are
+outside that encoding.
+
+Adding text, replacing text, or filling a form field with characters the fonts
+cannot render is refused before the document is touched, naming the offending
+characters (`"α" (U+03B1)`) instead of surfacing pdf-lib's raw
+`WinAnsi cannot encode "α" (0x03b1)`. The check asks the font itself what it
+accepts, so it can never disagree with the encoder or reject text that used to
+work. Documents that merely *contain* such text stay fully viewable and
+editable — pdf-lib only regenerates the appearance of fields an edit changes,
+so filling an ASCII field in a form that holds Cyrillic elsewhere works
+normally.
 
 ## Page Moves Preserve the Rest of the Document
 
@@ -103,3 +158,15 @@ If another tool rewrites the PDF while it is open in Mesa: a clean document
 reloads automatically (with a status note); a document with unsaved edits keeps
 the edits visible and blocks Save until the file is reopened, so Mesa never
 silently overwrites the newer on-disk version and never discards the edits.
+
+## Browser Regression
+
+The browser demo includes a deterministic local `Mesa PDF Tour.pdf`. It exists
+for the living PDF regression workflow and never phones home or writes a real
+vault. Open it, wait for the first canvas to replace the warm-start iframe,
+enter Edit PDF, append a page, undo, redo, and press Save. The expected final
+state is two rendered page canvases, no fallback iframe/error, and
+`Editing is read-only in the browser demo.` with no new console/worker errors.
+The fixture bytes and stable automation hooks are pinned by the PDF/vault tests.
+Replay the sequence in both the main workspace and the standalone document
+route. Desktop save/reopen validation remains a separate native check.

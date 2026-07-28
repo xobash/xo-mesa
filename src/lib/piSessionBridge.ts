@@ -16,12 +16,23 @@ export interface PiSessionSnapshot {
   sessionId: string | null;
   vaultPath: string | null;
   contextText: string | null;
+  cols: number;
+  rows: number;
 }
+
+/** The detached Pi webview emits this only after it has adopted the live PTY
+ * and installed its output listener. The main window keeps the source surface
+ * mounted until this handshake arrives, so a failed popout never strands Pi. */
+export const AGENT_WINDOW_READY_EVENT = "mesa://agent-window-ready";
+/** Main-workspace AgentContext broadcast to detached Pi renderer realms. */
+export const AGENT_CONTEXT_EVENT = "mesa://agent-context";
 
 let snapshot: PiSessionSnapshot = {
   sessionId: null,
   vaultPath: null,
   contextText: null,
+  cols: 80,
+  rows: 24,
 };
 
 export function setPiSessionSnapshot(next: PiSessionSnapshot): void {

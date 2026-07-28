@@ -223,10 +223,8 @@ pub struct ManifestDiff {
 /// Safe two-way diff — mirrors `diffManifests` in src/lib/sync.ts exactly
 /// (including output order: remote order for pull/conflict, local for push).
 pub fn diff_manifests(local: &[ManifestEntry], remote: &[ManifestEntry]) -> ManifestDiff {
-    let l: HashMap<&str, &ManifestEntry> =
-        local.iter().map(|e| (e.rel.as_str(), e)).collect();
-    let r: HashMap<&str, &ManifestEntry> =
-        remote.iter().map(|e| (e.rel.as_str(), e)).collect();
+    let l: HashMap<&str, &ManifestEntry> = local.iter().map(|e| (e.rel.as_str(), e)).collect();
+    let r: HashMap<&str, &ManifestEntry> = remote.iter().map(|e| (e.rel.as_str(), e)).collect();
     let mut d = ManifestDiff::default();
     for e in remote {
         match l.get(e.rel.as_str()) {
@@ -252,9 +250,7 @@ pub fn host_of_base(base: &str) -> String {
         .strip_prefix("https://")
         .or_else(|| base.strip_prefix("http://"))
         .unwrap_or(base);
-    let end = no_scheme
-        .find([':', '/'])
-        .unwrap_or(no_scheme.len());
+    let end = no_scheme.find([':', '/']).unwrap_or(no_scheme.len());
     no_scheme[..end].to_string()
 }
 
@@ -536,7 +532,11 @@ mod tests {
         let litter: Vec<_> = std::fs::read_dir(target.parent().unwrap())
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".mesa-sync-tmp"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".mesa-sync-tmp")
+            })
             .collect();
         assert!(litter.is_empty());
         let _ = std::fs::remove_dir_all(&dir);

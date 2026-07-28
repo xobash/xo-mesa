@@ -15,6 +15,7 @@ import {
   StandardFonts,
   rgb,
   degrees,
+  PDFFont,
   PDFTextField,
   PDFCheckBox,
   PDFDropdown,
@@ -118,6 +119,83 @@ async function loadForEdit(bytes: Uint8Array): Promise<PDFDocument> {
   return doc;
 }
 
+/**
+ * pdf-lib normalizes these before encoding — tabs become spaces, backspace and
+ * form feed are stripped, newlines split the run into lines — so they draw fine
+ * even though the encoder rejects them on their own. Excluding them keeps the
+ * check from rejecting text that works today.
+ */
+const TEXT_LAYOUT_CHARS = new Set(["\t", "\n", "\r", "\b", "\f"]);
+
+/**
+ * A standard-font instance used purely to ask the real encoder what it accepts.
+ * Built on a throwaway document so validating never embeds a stray font into
+ * the user's PDF, and cached because the answer is the same for every call.
+ */
+let encodingProbeFont: Promise<PDFFont> | null = null;
+function standardFontProbe(): Promise<PDFFont> {
+  if (!encodingProbeFont) {
+    encodingProbeFont = PDFDocument.create()
+      .then((doc) => doc.embedFont(StandardFonts.Helvetica))
+      .catch((e) => {
+        encodingProbeFont = null;
+        throw e;
+      });
+  }
+  return encodingProbeFont;
+}
+
+function describeChar(ch: string): string {
+  const code = ch.codePointAt(0) ?? 0;
+  return `"${ch}" (U+${code.toString(16).toUpperCase().padStart(4, "0")})`;
+}
+
+/**
+ * Fail before touching the document when the built-in fonts cannot render the
+ * text. Mesa embeds only pdf-lib's standard fonts, whose WinAnsi encoding
+ * covers Latin-1 — Greek, Cyrillic, CJK, emoji, and arrows raise a raw
+ * `WinAnsi cannot encode "α" (0x03b1)` from deep inside pdf-lib, which tells a
+ * user nothing. Asking the font itself keeps this exactly consistent with the
+ * encoder instead of maintaining a second coverage table that could drift.
+ */
+export async function assertTextEncodable(text: string): Promise<void> {
+  const font = await standardFontProbe();
+  const unsupported: string[] = [];
+  for (const ch of new Set(Array.from(text))) {
+    if (TEXT_LAYOUT_CHARS.has(ch)) continue;
+    try {
+      font.encodeText(ch);
+    } catch {
+      unsupported.push(ch);
+    }
+  }
+  if (!unsupported.length) return;
+  const shown = unsupported.slice(0, 6).map(describeChar).join(", ");
+  const more =
+    unsupported.length > 6 ? `, and ${unsupported.length - 6} more` : "";
+  throw new Error(
+    `Mesa writes PDF text with the built-in standard fonts, which cover Latin-1 ` +
+      `characters only. They cannot render ${shown}${more}. Replace or remove ` +
+      `${unsupported.length === 1 ? "that character" : "those characters"} to edit this text.`
+  );
+}
+
+/**
+ * Translate pdf-lib's raw encoder failure into the same explanation if one ever
+ * escapes the pre-check — saving regenerates the appearance of each field the
+ * edit marked dirty, and that runs inside pdf-lib. Any other error passes
+ * through untouched.
+ */
+function withEncodingContext(error: unknown): unknown {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/cannot encode/i.test(message)) return error;
+  return new Error(
+    `This PDF contains text the built-in standard fonts cannot render (${message}). ` +
+      `Mesa keeps such documents read-only rather than writing a file that would ` +
+      `lose those characters.`
+  );
+}
+
 export async function assertValidPdfBytes(bytes: Uint8Array): Promise<void> {
   const clean = sanitizePdfBytes(bytes);
   if (!hasPdfEofMarker(clean)) {
@@ -205,6 +283,7 @@ export async function movePage(
 
 /** Stamp text onto a page at PDF coordinates (bottom-left origin). */
 export async function addText(bytes: Uint8Array, s: TextStamp): Promise<Uint8Array> {
+  await assertTextEncodable(s.text);
   const doc = await loadForEdit(bytes);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const page = doc.getPage(s.page);
@@ -228,6 +307,9 @@ export async function replaceText(
   bytes: Uint8Array,
   s: TextReplacement
 ): Promise<Uint8Array> {
+  // Checked before the white-out rectangle is drawn, so a rejected replacement
+  // cannot leave a painted-over box behind if the caller ever reuses the doc.
+  await assertTextEncodable(s.text);
   const doc = await loadForEdit(bytes);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const page = doc.getPage(s.page);
@@ -363,6 +445,7 @@ export async function setFormField(
   name: string,
   value: string
 ): Promise<Uint8Array> {
+  await assertTextEncodable(value);
   const doc = await loadForEdit(bytes);
   const form = doc.getForm();
   const f = form.getFieldMaybe(name);
@@ -371,5 +454,9 @@ export async function setFormField(
   else if (f instanceof PDFCheckBox) value === "true" ? f.check() : f.uncheck();
   else if (f instanceof PDFDropdown) f.select(value);
   else if (f instanceof PDFRadioGroup) f.select(value);
-  return doc.save();
+  try {
+    return await doc.save();
+  } catch (e) {
+    throw withEncodingContext(e);
+  }
 }

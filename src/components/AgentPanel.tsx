@@ -10,24 +10,29 @@ import {
   piActivityLaunch,
   piDeepResearchLaunch,
   piStartupArgs,
+  type AgentContext,
   type ActivityInfo,
 } from "../lib/agent";
 import { IN_TAURI } from "../lib/vault";
 import { claimKeyboardShortcut, isPlainShiftTab } from "../lib/shortcuts";
 import { shouldAcceptTerminalOutput } from "../lib/terminalOutput";
+import { createLatestTerminalResizeQueue } from "../lib/terminalResize";
+import {
+  replayTerminalSnapshot,
+  type TerminalSnapshot,
+} from "../lib/terminalReplay";
 import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
-import { setPiSessionSnapshot, registerSharedPiRestart, onSharedPiRestart } from "../lib/piSessionBridge";
+import {
+  setPiSessionSnapshot,
+  registerSharedPiRestart,
+  onSharedPiRestart,
+} from "../lib/piSessionBridge";
 import { BrowserHarness } from "./BrowserHarness";
 import { DeepResearchPanel, DeepResearchPhaseChip } from "./DeepResearchPanel";
 
 interface TerminalEvent {
   sessionId: string;
   stream: "stdout" | "stderr";
-  data: string;
-  seq: number;
-}
-
-interface TerminalSnapshot {
   data: string;
   seq: number;
 }
@@ -84,6 +89,73 @@ const SHARED_PI_SESSION: SharedPiSessionState = {
   lastOutputSeq: 0,
 };
 
+// One in-flight resize IPC per renderer realm. FitAddon/ResizeObserver can
+// report several sizes in one frame; collapsing the burst prevents an older
+// async command from landing after the newest dimensions.
+const SHARED_PI_RESIZE_QUEUE = createLatestTerminalResizeQueue(
+  async ({ sessionId, cols, rows }) => {
+    await invoke("terminal_resize", { sessionId, cols, rows });
+  }
+);
+
+function queueSharedPiResize(term: Terminal): void {
+  const sessionId = SHARED_PI_SESSION.sessionId;
+  if (!sessionId) return;
+  SHARED_PI_RESIZE_QUEUE.enqueue({
+    sessionId,
+    cols: term.cols,
+    rows: term.rows,
+  });
+}
+
+async function claimSharedPiResizeOwnership(term: Terminal): Promise<void> {
+  const sessionId = SHARED_PI_SESSION.sessionId;
+  if (!sessionId) return;
+  await invoke("terminal_attach", {
+    sessionId,
+    cols: term.cols,
+    rows: term.rows,
+  });
+}
+
+let resizeFocusListenerInstalled = false;
+// While a snapshot replays, `replayTerminalSnapshot` drives `terminal.resize()`
+// itself to reproduce the PTY's historical grid timeline; those synthetic sizes
+// must not be pushed back to the live PTY. Replay is async and spans many
+// frames, though, so a REAL resize (host layout settling, font change) can land
+// in the same window — see `reconcileSharedPiSizeAfterReplay`.
+let replayingTerminalSnapshot = false;
+
+// Re-establish the invariant the whole terminal depends on: the xterm grid and
+// the PTY are the same size. `fit()` alone cannot do this, because it no-ops
+// when the grid already matches the host — so a resize suppressed during replay
+// would leave xterm and the PTY permanently different widths, and a PTY that is
+// wider than the emulator is exactly what strands duplicate lines above Pi's
+// cursor-up redraws. Pushing the size unconditionally closes that hole; the
+// latest-wins queue collapses it with fit()'s own event, and Rust drops it as a
+// no-op when the PTY already has these dimensions.
+function reconcileSharedPiSizeAfterReplay(term: Terminal): void {
+  try {
+    SHARED_PI_SESSION.fit?.fit();
+  } catch {
+    /* the host may still be laying out; its ResizeObserver catches up */
+  }
+  queueSharedPiResize(term);
+}
+
+async function installSharedPiResizeFocusListener(term: Terminal): Promise<void> {
+  if (resizeFocusListenerInstalled || !IN_TAURI) return;
+  resizeFocusListenerInstalled = true;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (focused) void claimSharedPiResizeOwnership(term);
+    });
+  } catch {
+    resizeFocusListenerInstalled = false;
+  }
+}
+
 // Mirror the identity of the locally-tracked session into a plain lib/
 // module so store.ts (window pop-out) can read it without importing this
 // component module. See src/lib/piSessionBridge.ts.
@@ -92,6 +164,8 @@ function publishPiSessionSnapshot(): void {
     sessionId: SHARED_PI_SESSION.sessionId,
     vaultPath: SHARED_PI_SESSION.vaultPath,
     contextText: SHARED_PI_SESSION.contextText,
+    cols: SHARED_PI_SESSION.terminal?.cols ?? 80,
+    rows: SHARED_PI_SESSION.terminal?.rows ?? 24,
   });
 }
 
@@ -234,23 +308,22 @@ async function createSharedPiTerminal(): Promise<Terminal> {
     if (!id) return;
     void invoke("terminal_write", { sessionId: id, input });
   });
-  // THE "double text" fix: keep the PTY in lockstep with xterm for EVERY
-  // cols/rows change. Pi's TUI redraws its streaming block with cursor-up +
-  // rewrite arithmetic based on the PTY's size; when that drifts from what
-  // xterm actually renders, logical lines wrap into more physical lines than
-  // Pi accounts for, the cursor-up count falls short, and stale partial lines
-  // survive above the rewritten block — the doubled text. Previously only the
-  // host ResizeObserver propagated size to the PTY, so font-size changes
-  // (Ctrl+±, which refit xterm without resizing the host) desynced the two.
-  // onResize fires on every real dimension change from any path — one
-  // authoritative propagation point.
+  // Double-text prevention: Pi's TUI redraws streaming blocks with cursor-up +
+  // rewrite arithmetic based on the PTY's size. If xterm wraps at a different
+  // width, stale physical lines survive above the rewrite. onResize observes
+  // every real grid change; the latest-wins queue prevents older async IPC
+  // from landing last, and Rust rejects calls from a non-owning webview during
+  // native-window handoff.
   term.onResize(({ cols, rows }) => {
+    if (replayingTerminalSnapshot) return;
     const id = SHARED_PI_SESSION.sessionId;
-    if (id) void invoke("terminal_resize", { sessionId: id, cols, rows });
+    if (id) SHARED_PI_RESIZE_QUEUE.enqueue({ sessionId: id, cols, rows });
+    publishPiSessionSnapshot();
   });
 
   SHARED_PI_SESSION.terminal = term;
   SHARED_PI_SESSION.fit = fit;
+  void installSharedPiResizeFocusListener(term);
   return term;
 }
 
@@ -332,8 +405,16 @@ async function attachSharedPiOutputListener(): Promise<void> {
   if (sessionId) {
     try {
       const snapshot = await invoke<TerminalSnapshot>("terminal_snapshot", { sessionId });
-      SHARED_PI_SESSION.terminal?.reset();
-      SHARED_PI_SESSION.terminal?.write(snapshot.data);
+      const terminal = SHARED_PI_SESSION.terminal;
+      if (terminal) {
+        replayingTerminalSnapshot = true;
+        try {
+          await replayTerminalSnapshot(terminal, snapshot);
+        } finally {
+          replayingTerminalSnapshot = false;
+          reconcileSharedPiSizeAfterReplay(terminal);
+        }
+      }
       SHARED_PI_SESSION.lastOutputSeq = snapshot.seq;
     } catch {
       // If the session disappears between attach and replay, draining the
@@ -461,10 +542,11 @@ async function ensureSharedPiSession(
 // having no other option) is exactly what silently orphaned the original
 // session and started a second, contextless one.
 //
-// Instead: probe the session is still alive with a harmless `terminal_resize`
-// (fails if the backend has no such session — e.g. it was independently
-// stopped), then point this window's shared terminal at it, same as the tail
-// of ensureSharedPiSession's spawn path minus the spawn.
+// Instead: atomically claim resize ownership with `terminal_attach` (which
+// also proves the backend session is alive), then point this window's shared
+// terminal at it, same as the tail of ensureSharedPiSession's spawn path minus
+// the spawn. Ownership prevents the old and new xterms from fighting over one
+// PTY width during the acknowledged handoff.
 async function adoptSharedPiSession(
   sessionId: string,
   vaultPath: string,
@@ -474,7 +556,7 @@ async function adoptSharedPiSession(
   if (!IN_TAURI) {
     throw new Error("Browser preview mode: native Pi terminal is unavailable.");
   }
-  await invoke("terminal_resize", {
+  await invoke("terminal_attach", {
     sessionId,
     cols: terminal.cols,
     rows: terminal.rows,
@@ -493,7 +575,11 @@ export function AgentSurface({
   embedded = false,
   browserSlideOut = false,
   attachSessionId = null,
+  vaultPathOverride = null,
+  contextOverride = null,
   windowTitle,
+  nativeDragRegion = false,
+  onSessionReady,
   onTitleBarPointerDown,
   onPlaceInWorkspace,
   onClose,
@@ -512,15 +598,32 @@ export function AgentSurface({
    * instead of `ensureSharedPiSession` spawning a brand-new `pi` process,
    * which is what silently dropped the conversation before this existed. */
   attachSessionId?: string | null;
+  /** Authoritative vault path carried in the detached launch URL. A popout
+   * must be able to adopt the existing PTY before its separate store finishes
+   * the full vault scan; gating on that scan can make the native window time
+   * out before it ever becomes usable. */
+  vaultPathOverride?: string | null;
+  /** Live context mirrored from the main workspace into a detached renderer.
+   * The detached store is a separate JS realm and its launch-time `sel` would
+   * otherwise remain stale after the user changes notes in Mesa. */
+  contextOverride?: AgentContext | null;
   /** Optional outer-window title. When supplied, the terminal status and Pi
    * tools become the actual title bar instead of a second toolbar beneath it. */
   windowTitle?: string;
+  /** Marks the combined Pi toolbar as a Tauri drag region in a decorated
+   * detached window. Buttons remain interactive because Tauri drag regions
+   * apply only to the element carrying the attribute. */
+  nativeDragRegion?: boolean;
+  /** Fired after this realm has adopted/started the PTY and subscribed to its
+   * sequenced output. Used to make tear-out an acknowledged handoff. */
+  onSessionReady?: (sessionId: string) => void | Promise<void>;
   onTitleBarPointerDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPlaceInWorkspace?: () => void;
   onClose?: () => void;
 }) {
   const vaultName = useAppStore((s) => s.vaultName);
-  const vaultPath = useAppStore((s) => s.vaultPath);
+  const storeVaultPath = useAppStore((s) => s.vaultPath);
+  const vaultPath = vaultPathOverride ?? storeVaultPath;
   const activePath = useAppStore((s) => s.activePath);
   const openTabs = useAppStore((s) => s.openTabs);
   const settings = useAppStore((s) => s.settings);
@@ -559,7 +662,7 @@ export function AgentSurface({
   const [researchWingWidth, setResearchWingWidth] = useState(520);
   const researchResizeRef = useRef<{ startX: number; startW: number; sign: 1 | -1 } | null>(null);
 
-  const ctx = useMemo(
+  const localCtx = useMemo(
     () =>
       buildAgentContext({
         vaultName,
@@ -570,6 +673,7 @@ export function AgentSurface({
       }),
     [vaultName, vaultPath, activePath, openTabs, settings]
   );
+  const ctx = contextOverride ?? localCtx;
   const contextText = useMemo(() => contextPrompt(ctx), [ctx]);
 
   useEffect(() => {
@@ -610,6 +714,7 @@ export function AgentSurface({
       };
       const resizeObserver = new ResizeObserver(syncSize);
       resizeObserver.observe(host);
+      syncSize();
       const raf = window.requestAnimationFrame(syncSize);
       disposeSizeSync = () => {
         window.cancelAnimationFrame(raf);
@@ -656,27 +761,20 @@ export function AgentSurface({
         pendingAttachRef.current = null;
         const id =
           toAttach && !SHARED_PI_SESSION.sessionId
-            ? await adoptSharedPiSession(toAttach, vaultPath, contextText, term).catch(
-                (e) => {
-                  console.warn(
-                    "[mesa] could not reattach the Pi session handed off from the previous window, starting a new one:",
-                    e
-                  );
-                  return ensureSharedPiSession(vaultPath, ctx, contextText, term);
-                }
-              )
+            ? await adoptSharedPiSession(toAttach, vaultPath, contextText, term)
             : await ensureSharedPiSession(vaultPath, ctx, contextText, term);
         if (!alive) return;
         setSessionId(id);
         if (term === xtermRef.current) {
           term.focus();
           fitRef.current?.fit();
-          void invoke("terminal_resize", {
-            sessionId: id,
-            cols: term.cols,
-            rows: term.rows,
-          });
+          if (document.hasFocus()) {
+            await claimSharedPiResizeOwnership(term);
+          } else {
+            queueSharedPiResize(term);
+          }
         }
+        await onSessionReady?.(id);
       } catch (e) {
         term?.writeln("\x1b[31mpi terminal error:\x1b[0m");
         term?.writeln(String(e));
@@ -687,7 +785,7 @@ export function AgentSurface({
     return () => {
       alive = false;
     };
-  }, [termReady, vaultPath, contextText, restartTick]);
+  }, [termReady, vaultPath, contextText, restartTick, onSessionReady]);
 
   // When the embedded Pi agent uses its `browse` tool, Mesa mirrors the
   // navigation here — pop the wing open so the user can watch the agent work.
@@ -755,14 +853,28 @@ export function AgentSurface({
       <section className="agent-terminal-pane">
         <div
           className={"pi-terminal-chrome" + (windowTitle ? " window-titlebar" : "")}
+          data-tauri-drag-region={nativeDragRegion ? "" : undefined}
           onPointerDown={(event) => {
             if ((event.target as HTMLElement).closest("button")) return;
             onTitleBarPointerDown?.(event);
           }}
         >
-          <div className="pi-terminal-heading">
-            {windowTitle && <span className="pi-terminal-window-title">{windowTitle}</span>}
-            <span className="pi-terminal-title">
+          <div
+            className="pi-terminal-heading"
+            data-tauri-drag-region={nativeDragRegion ? "" : undefined}
+          >
+            {windowTitle && (
+              <span
+                className="pi-terminal-window-title"
+                data-tauri-drag-region={nativeDragRegion ? "" : undefined}
+              >
+                {windowTitle}
+              </span>
+            )}
+            <span
+              className="pi-terminal-title"
+              data-tauri-drag-region={nativeDragRegion ? "" : undefined}
+            >
               {windowTitle ? "Terminal · " : "Pi terminal · "}
               {terminalSize.cols}×{terminalSize.rows} · {fontSize}px
             </span>
@@ -995,7 +1107,6 @@ function PiFloatingWindow({
       dragState.current.mode = null;
       setTearOffArmed(false);
       if (detach) {
-        onClose();
         void openAgentWindow(
           detachedWindowPlacement({
             screenX: e.screenX,
@@ -1005,7 +1116,9 @@ function PiFloatingWindow({
             width: ds.origW,
             height: ds.origH,
           })
-        );
+        ).then((opened) => {
+          if (opened) onClose();
+        });
       }
     };
     const onCancel = () => {

@@ -64,10 +64,7 @@ pub struct BrowsePage {
 /// We are a cross-origin ancestor (tauri://localhost), so any `sameorigin` /
 /// `deny` XFO or any CSP `frame-ancestors` that isn't a plain wildcard blocks.
 fn frame_blocked(headers: &reqwest::header::HeaderMap) -> bool {
-    if let Some(xfo) = headers
-        .get("x-frame-options")
-        .and_then(|v| v.to_str().ok())
-    {
+    if let Some(xfo) = headers.get("x-frame-options").and_then(|v| v.to_str().ok()) {
         let v = xfo.trim().to_ascii_lowercase();
         if v.contains("deny") || v.contains("sameorigin") || v.contains("allow-from") {
             return true;

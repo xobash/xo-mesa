@@ -177,7 +177,11 @@ pub fn snapshot_payload_from_scheme_url(url: &tauri::Url) -> Option<String> {
 /// Ingest a snapshot body from either transport. Stores it, wakes `/browse`
 /// waiters, and mirrors observed navigations (including SPA pushState moves)
 /// to the frontend address bar via `mesa://harness-nav`.
-pub fn ingest_snapshot_body(app: &tauri::AppHandle, body: &str, expected_token: &str) -> Result<(), String> {
+pub fn ingest_snapshot_body(
+    app: &tauri::AppHandle,
+    body: &str,
+    expected_token: &str,
+) -> Result<(), String> {
     let (lock, cvar) = state();
     let mut emit_url: Option<(String, String)> = None;
     {
@@ -379,8 +383,8 @@ fn wait_for_report_target(timeout: Duration) -> Option<(u16, String)> {
 }
 
 fn reporter_script() -> Result<String, String> {
-    let (port, token) = wait_for_report_target(Duration::from_millis(1500))
-        .ok_or("activity server not running")?;
+    let (port, token) =
+        wait_for_report_target(Duration::from_millis(1500)).ok_or("activity server not running")?;
     Ok(REPORTER_SRC
         .replace("__MESA_PORT__", &port.to_string())
         .replace("__MESA_TOKEN__", &token))
@@ -409,7 +413,10 @@ fn create_webview(
                 }
                 return false; // never actually navigate the bridge scheme
             }
-            matches!(nav_url.scheme(), "http" | "https" | "about" | "blob" | "data")
+            matches!(
+                nav_url.scheme(),
+                "http" | "https" | "about" | "blob" | "data"
+            )
         });
     let (dx, dy) = effective_offset(window);
     window
@@ -466,8 +473,9 @@ pub fn harness_navigate(
                 Ok(()) => return Ok(()),
                 Err(first_err) => {
                     let _ = wv.close();
-                    return create_webview(&window, &app, parsed, x, y, w, h)
-                        .map_err(|retry_err| format!("{first_err} (retry also failed: {retry_err})"));
+                    return create_webview(&window, &app, parsed, x, y, w, h).map_err(
+                        |retry_err| format!("{first_err} (retry also failed: {retry_err})"),
+                    );
                 }
             }
         }

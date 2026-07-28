@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PDFDocument, StandardFonts } from "pdf-lib";
+import { PDFDocument, PDFHexString, StandardFonts } from "pdf-lib";
 import {
   readPdfPages,
   rotatePage,
@@ -156,6 +156,77 @@ describe("pdf editing core", () => {
     expect(fields.find((f) => f.name === "agree")!.value).toBe("true");
   });
 
+  it("explains which characters the standard fonts cannot render", async () => {
+    const start = await makePdf(1);
+    const stamp = { page: 0, x: 20, y: 20, size: 12 };
+
+    // The raw pdf-lib failure is `WinAnsi cannot encode "α" (0x03b1)`.
+    await expect(addText(start, { ...stamp, text: "αβ" })).rejects.toThrow(
+      /built-in standard fonts.*U\+03B1/s
+    );
+    await expect(
+      replaceText(start, { ...stamp, width: 40, height: 12, text: "日本語" })
+    ).rejects.toThrow(/U\+65E5/);
+    // Emoji are outside the BMP — the surrogate pair must be reported as one
+    // character, not two unpaired halves.
+    await expect(addText(start, { ...stamp, text: "ok 🚀" })).rejects.toThrow(
+      /U\+1F680/
+    );
+    // A rejected edit never produces bytes.
+    await expect(addText(start, { ...stamp, text: "→" })).rejects.toThrow(
+      /U\+2192/
+    );
+  });
+
+  it("still accepts every character the encoder actually supports", async () => {
+    const start = await makePdf(1);
+    // Latin-1, the CP1252 punctuation block, and the layout characters pdf-lib
+    // normalizes before encoding must all keep working.
+    const supported = "Ada — café “naïve” … €50\tok\nnext\r\nline";
+    const out = await addText(start, {
+      page: 0,
+      x: 20,
+      y: 40,
+      size: 11,
+      text: supported,
+    });
+    expect(out.length).toBeGreaterThan(0);
+    await assertValidPdfBytes(out);
+  });
+
+  it("rejects an unrenderable field value without breaking non-Latin forms", async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 300]);
+    const form = doc.getForm();
+    const other = form.createTextField("other");
+    other.addToPage(page, { x: 20, y: 240, width: 160, height: 20 });
+    const mine = form.createTextField("mine");
+    mine.addToPage(page, { x: 20, y: 200, width: 160, height: 20 });
+    const start = await doc.save();
+
+    // Seed a Cyrillic value the way another PDF tool would: a UTF-16BE string
+    // written straight into the field dictionary.
+    const seedDoc = await PDFDocument.load(start);
+    seedDoc
+      .getForm()
+      .getTextField("other")
+      .acroField.setValue(PDFHexString.fromText("Привет"));
+    const seeded = await seedDoc.save({ updateFieldAppearances: false });
+
+    // Editing an unrelated ASCII field must still work: pdf-lib only rebuilds
+    // the appearance of fields the edit marks dirty, so the guard must not be
+    // widened into a document-wide refusal.
+    const edited = await setFormField(seeded, "mine", "Ada");
+    const fields = await getFormFields(edited);
+    expect(fields.find((f) => f.name === "mine")!.value).toBe("Ada");
+    expect(fields.find((f) => f.name === "other")!.value).toBe("Привет");
+
+    // The value being typed is what gets checked, up front.
+    await expect(setFormField(start, "mine", "Привет")).rejects.toThrow(
+      /U\+041F/
+    );
+  });
+
   it("locates the %PDF header and tolerates leading junk", async () => {
     const good = await makePdf(1);
     expect(findPdfHeader(good)).toBe(0);
@@ -298,5 +369,37 @@ describe("pdf editing core", () => {
       }
     }
     expect(isLikelyBlankPdfPaint(marked, 20, 20)).toBe(false);
+  });
+
+  it("does not misclassify sparse page content between coarse sample points", () => {
+    // A valid page can contain only a small title, signature, checkbox, or
+    // registration mark. The old 32×32 grid missed content between its sample
+    // points, then the non-empty operator list incorrectly sent the whole PDF
+    // to the native fallback and removed Mesa's editable canvases.
+    const width = 612;
+    const height = 792;
+    const sparse = new Uint8ClampedArray(width * height * 4).fill(255);
+    for (let y = 1; y < 6; y++) {
+      for (let x = 1; x < 6; x++) {
+        const idx = (y * width + x) * 4;
+        sparse[idx] = 20;
+        sparse[idx + 1] = 20;
+        sparse[idx + 2] = 20;
+      }
+    }
+    expect(isLikelyBlankPdfPaint(sparse, width, height)).toBe(false);
+  });
+
+  it("does not let one or two dirty backing pixels hide a broken blank paint", () => {
+    const width = 612;
+    const height = 792;
+    const dirtyBlank = new Uint8ClampedArray(width * height * 4).fill(255);
+    for (const [x, y] of [[1, 1], [2, 2]]) {
+      const idx = (y * width + x) * 4;
+      dirtyBlank[idx] = 20;
+      dirtyBlank[idx + 1] = 20;
+      dirtyBlank[idx + 2] = 20;
+    }
+    expect(isLikelyBlankPdfPaint(dirtyBlank, width, height)).toBe(true);
   });
 });

@@ -30,6 +30,17 @@ describe("write artifact names", () => {
     }
   });
 
+  it("recognises the rescue label a failed rollback leaves behind", () => {
+    const rescue = baseNameOf(
+      buildWriteArtifactPath("/vault/Notes/report.pdf", "rescue")
+    );
+    expect(isMesaWriteArtifactName(rescue)).toBe(true);
+    expect(parseWriteArtifactName(rescue)).toEqual({
+      targetBase: "report.pdf",
+      label: "rescue",
+    });
+  });
+
   it("round-trip: built names parse back to their target basename", () => {
     const save = baseNameOf(buildWriteArtifactPath("/vault/a b/note.md", "save"));
     const backup = baseNameOf(buildWriteArtifactPath("C:\\vault\\note.md", "backup"));
@@ -83,6 +94,25 @@ describe("planWriteRecovery", () => {
     const name = baseNameOf(buildWriteArtifactPath("/vault/note.md", "backup"));
     const plan = planWriteRecovery([artifact({ name, targetExists: true })], NOW);
     expect(plan).toEqual([{ kind: "remove", dir: "/vault", artifactName: name }]);
+  });
+
+  it("restores a stale rescue copy whose target file is missing", () => {
+    const name = baseNameOf(buildWriteArtifactPath("/vault/note.md", "rescue"));
+    const plan = planWriteRecovery(
+      [artifact({ name, targetExists: false })],
+      NOW
+    );
+    expect(plan).toEqual([
+      { kind: "restore", dir: "/vault", artifactName: name, targetName: "note.md" },
+    ]);
+  });
+
+  it("never removes a rescue copy, even when the target exists", () => {
+    // Unlike a backup, a rescue sits next to a target holding bytes Mesa could
+    // not verify — it may be the user's only good copy.
+    const name = baseNameOf(buildWriteArtifactPath("/vault/note.md", "rescue"));
+    expect(planWriteRecovery([artifact({ name, targetExists: true })], NOW)).toEqual([]);
+    expect(planWriteRecovery([artifact({ name })], NOW)).toEqual([]);
   });
 
   it("always removes stale save temps and sync temps", () => {
