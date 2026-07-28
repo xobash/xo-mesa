@@ -124,7 +124,9 @@ describe("harness.rs ↔ activity.rs ↔ capabilities security contract", () => 
   it("intercepts the mesa-snap bridge scheme and confines navigation", () => {
     expect(harnessRs).toContain('"mesa-snap"');
     expect(harnessRs).toContain("return false; // never actually navigate the bridge scheme");
-    expect(harnessRs).toMatch(/matches!\(nav_url\.scheme\(\), "http" \| "https" \| "about" \| "blob" \| "data"\)/);
+    expect(harnessRs).toMatch(
+      /matches!\(\s*nav_url\.scheme\(\),\s*"http" \| "https" \| "about" \| "blob" \| "data"\s*\)/,
+    );
   });
 
   it("verifies the per-run token on every snapshot ingest", () => {
