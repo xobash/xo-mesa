@@ -128,6 +128,15 @@ describe("layout css", () => {
     expect(block).not.toContain("rgba(");
   });
 
+  it("keeps inline Pi wings from collapsing the bounded terminal pane", () => {
+    const browserInline = ruleBody(/\.agent-browser-wing\.inline\s*\{/);
+    const researchInline = ruleBody(/\.dr-wing\.inline\s*\{/);
+    expect(browserInline).toContain("max-width: 50%");
+    expect(researchInline).toContain("max-width: 50%");
+    expect(agentPanel).toContain("if (!browserSlideOut) setResearchOpen(false)");
+    expect(agentPanel).toContain("if (!browserSlideOut) setBrowserOpen(false)");
+  });
+
   it("uses one title bar and drag-to-tear-off for every floating Pi window", () => {
     // The one shared floating-window implementation: combined title bar,
     // drag-to-move, drag-to-edge tear-off into a native OS window.
@@ -202,6 +211,26 @@ describe("layout css", () => {
     expect(ruleBody(/\.dr-wing-bar\s*>\s*\.pi-tool\s*\{/)).toContain("margin-left: auto");
     expect(css).not.toContain(".dr-head");
     expect(css).not.toContain(".dr-title");
+  });
+
+  it("keeps Deep Research evidence and source text readable instead of shrinking or ellipsizing it", () => {
+    expect(ruleBody(/\.dr-root\s*>\s*\*\s*\{/)).toContain("flex: 0 0 auto");
+    expect(ruleBody(/\.dr-research-graph-scroll\s*\{/)).toContain("overflow: auto");
+    expect(ruleBody(/\.dr-research-graph-svg\s*\{/)).toContain("max-width: none");
+    expect(drPanel).toContain("width={graph.width}");
+    expect(drPanel).toContain("height={node.height}");
+    expect(drPanel).toContain('className="dr-context"');
+    expect(drPanel).toContain("aria-expanded={contextOpen}");
+
+    const sourceTitle = ruleBody(/\.dr-source-title\s*\{/);
+    expect(sourceTitle).toContain("overflow-wrap: anywhere");
+    expect(sourceTitle).not.toContain("text-overflow: ellipsis");
+    expect(sourceTitle).not.toContain("white-space: nowrap");
+    expect(drPanel).toContain('className="dr-source-link"');
+    expect(drPanel).toContain("<ResearchSourceIcon");
+    expect(drPanel).toContain("Open saved page");
+    expect(drPanel).toContain('className="dr-source-actions"');
+    expect(ruleBody(/\.dr-source-actions\s*\{/)).toContain("flex-wrap: wrap");
   });
 
   it("keeps overlay window geometry persistence non-destructive", () => {

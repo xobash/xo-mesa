@@ -23,6 +23,7 @@ export function SearchSurface({
   const cache = useAppStore((s) => s.contentCache);
   const openFile = useAppStore((s) => s.openFile);
   const setPiOverlayOpen = useAppStore((s) => s.setPiOverlayOpen);
+  const unindexedTextFiles = useAppStore((s) => s.unindexedTextFiles);
   const [q, setQ] = useState(initialQuery);
   const [sel, setSel] = useState(0);
   const dq = useDeferredValue(q);
@@ -135,6 +136,16 @@ export function SearchSurface({
           )}
           {(term.length >= 2 || ext) && results.length === 0 && (
             <div className="palette-empty">No matches</div>
+          )}
+          {/* Incomplete full-text coverage must never be silent: if the vault's
+              text exceeded the open-time cache budget, say so rather than let
+              a search look exhaustive when it is not. Zero on normal vaults. */}
+          {unindexedTextFiles > 0 && (term.length >= 2 || ext) && (
+            <div className="palette-empty">
+              {unindexedTextFiles.toLocaleString()} large text{" "}
+              {unindexedTextFiles === 1 ? "file is" : "files are"} matched by
+              name only — this vault exceeds the full-text cache budget.
+            </div>
           )}
         </div>
         {active && (

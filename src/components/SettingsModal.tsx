@@ -1,12 +1,21 @@
 import { useAppStore, THEMES } from "../store";
 import { Modal } from "./Modal";
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+function Toggle({
+  label,
+  on,
+  onChange,
+}: {
+  label: string;
+  on: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       className={"toggle" + (on ? " on" : "")}
       role="switch"
       aria-checked={on}
+      aria-label={label}
       onClick={() => onChange(!on)}
     >
       <span className="toggle-knob" />
@@ -63,6 +72,7 @@ export function SettingsModal() {
             </div>
           </div>
           <Toggle
+            label="Tabs"
             on={settings.enableTabs}
             onChange={(v) => setSetting("enableTabs", v)}
           />
@@ -102,6 +112,7 @@ export function SettingsModal() {
             </div>
           </div>
           <Toggle
+            label="Hardware acceleration"
             on={settings.hardwareAccel}
             onChange={(v) => setSetting("hardwareAccel", v)}
           />
@@ -113,6 +124,7 @@ export function SettingsModal() {
             <div className="setting-desc">UI transitions and motion throughout.</div>
           </div>
           <Toggle
+            label="Animations"
             on={settings.animations}
             onChange={(v) => setSetting("animations", v)}
           />
@@ -127,6 +139,7 @@ export function SettingsModal() {
             </div>
           </div>
           <Toggle
+            label="Auto-hide sidebar"
             on={settings.sidebarAutoHide}
             onChange={(v) => {
               setSetting("sidebarAutoHide", v);

@@ -7,9 +7,12 @@ change set of new/updated notes and applies it only after you approve — with
 verified atomic writes and all-or-nothing rollback.
 
 It is local-first: network traffic is limited to the user's existing Pi model
-provider and the web sources Pi chooses to browse. Nothing is sent to a Mesa
-service (there is no Mesa server), and the vault is never mutated without your
-explicit approval.
+provider and the web sources Pi chooses to browse or archive. Nothing is sent
+to a Mesa service (there is no Mesa server). Proposed research notes are never
+written without your explicit approval. The one intentional automatic write is
+the accepted-source archive described below: after a result passes validation,
+Mesa preserves those webpages under `Web Archives/` by default so the evidence
+remains reopenable from the vault.
 
 ## Launching
 
@@ -101,6 +104,63 @@ has; Deep Research adds nothing sensitive on top of that.)
 4. **Finish** — Pi returns a structured result (`deep_research_finish`):
    report markdown, proposed source notes, sources (URL + title + date),
    claims, and related notes.
+5. **Preserve accepted sources** — after the finish payload passes URL and
+   report-quality validation, Mesa archives only the final `result.sources`
+   set. Search results, redirects that did not survive canonicalization, and
+   pages merely opened during exploration are not archived. Up to three saves
+   run at once in the background, so the proposal can enter review immediately.
+
+The flyout also shows a **live evidence graph**. It starts with the user's
+actual question and adds nodes only when Mesa receives a real progress report
+or observes a real browser navigation. Planned source slots, empty sub-question
+slots, and future placeholder nodes are never drawn. Pi-reported actions and
+Mesa-observed actions are visually distinguished, so a quiet graph is evidence
+that no research action has reached Mesa yet. As actions accumulate, the graph
+keeps node text at a fixed readable size and scrolls instead of scaling the
+whole graph down. Labels wrap in full. The context snapshot is collapsed during
+an active run so it cannot consume the graph's working area, but remains
+available on demand.
+
+The source list uses browser-tab-style cards: a direct site favicon with a
+local initial fallback, a human site name, a readable page title, and truthful
+read/archive status. The raw URL is not used as the title. Clicking
+**Copy link · site** copies the exact canonical source URL. An accepted source
+moves through **Saving local copy** to **Saved locally** and then exposes
+**Open saved page**, which opens the `.html` file inside Mesa. Source cards
+remain available after the proposed notes are applied. A failed archive is
+shown on that source rather than silently reported as saved.
+
+## Accepted-source archives
+
+Accepted sources use the same archive transaction as the Pi browser's manual
+**Archive** action:
+
+- files are created under `Web Archives/` with readable timestamp, host, and
+  page names;
+- HTML receives the original/final source URL plus a `<base>` when needed, so
+  relative links, images, and styles can resolve when opened inside Mesa;
+- the file is created through `persistVerifiedBytes` with a missing-target
+  precondition, so an existing archive is never silently overwritten;
+- after the verified write, Mesa registers the file in the open vault without
+  rescanning or disrupting the current view;
+- if Mesa cannot fetch an HTML body, it saves a small, safely escaped local
+  source-link record instead. The card says **Link saved** and still opens it;
+- if the verified vault write itself fails, no success is shown. The source
+  card says **Archive failed**, and the troubleshooting kit includes the
+  per-source archive state and error.
+
+An archive preserves the fetched HTML response, not a guaranteed complete
+offline mirror of every remote asset. Pages whose CSS, images, or scripts live
+on the original site may still need network access when reopened. Archiving is
+independent of the note proposal: discarding the proposed note changes does not
+erase accepted evidence that has already been saved.
+
+Mesa submits the multi-line task to Pi's interactive editor as the prompt body
+followed by an explicit Enter key. Seeing the prompt text in the Pi editor only
+proves that text reached the PTY; it does not prove that Pi submitted a model
+turn. The run state records the launch boundary (Pi restart/start, bridge setup,
+prompt submission, waiting for model, or first activity) so a stalled run is
+diagnosable instead of looking like generic "researching" progress.
 
 **Read-only guarantee:** while a run is active, the bundled
 `mesa-deep-research` Pi extension blocks Pi's mutation-capable `write`, `edit`,
@@ -186,6 +246,17 @@ up) immediately, then opens the report note.
 - **Failures** (Pi unavailable, browsing unavailable, provider error,
   malformed structured output, timeout, stale files) move the run to a clear
   **error** state with an actionable message; nothing is written.
+
+The **Copy troubleshooting kit** action stays hidden during healthy work. An
+invisible watchdog reveals it only when a submitted prompt has produced zero
+real research actions for 120 seconds, or immediately after Mesa records a
+confirmed run error (for example a failed Pi/provider bridge call). Any real
+progress report, search, source visit, note, or synthesis action suppresses the
+initial-inactivity trigger. The kit contains the Mesa and webview environment,
+run phase, launch boundary, prompt size/submission time, whether the first
+model/browser signal arrived, context summary, source counts, and the
+observed-versus-self-reported activity timeline. It withholds the vault's
+absolute path and provider/API keys.
 
 ## Limitations (browser demo / native-only)
 

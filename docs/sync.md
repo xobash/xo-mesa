@@ -73,6 +73,13 @@ Advanced disclosure so the default path stays readable.
 
 - Sync is HTTPS-only; bare addresses (LAN IP, Tailscale name, `host:port`,
   pairing code) resolve to `https://`.
+- Manual entries are validated before they become saved devices. Mesa accepts
+  IPv4, bracketed IPv6, DNS/Tailscale hostnames, pairing codes, and `http(s)`
+  URLs; whitespace, credentials in URLs, malformed hostnames, and ports outside
+  `1`–`65535` are rejected with an inline error.
+- The listener port is constrained to the same `1`–`65535` range in the UI,
+  persisted-settings loader, and store boundary. Invalid values from an older
+  settings file heal to the default `8787` before discovery or native startup.
 - A peer's stable identity is its certificate fingerprint, not its address, so a
   device keeps its trust even if its IP changes.
 

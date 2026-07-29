@@ -96,6 +96,32 @@ export function flushableNoteText(
   return cachedContent;
 }
 
+/**
+ * Whether an externally modified file's CACHED text must be re-read from disk.
+ *
+ * The mirror of `flushableNoteText` on the read side: any file whose text Mesa
+ * is holding has to be refreshed when that file changes underneath it, or the
+ * cache becomes a lie. The watcher refreshed markdown only, which was survivable
+ * while markdown was the only thing cached at vault open — but the content cache
+ * now covers every textual file the budget allows (`planTextCache`), so a `.txt`,
+ * `.py`, `.json` or `.html` edited by another tool, a synced device, or an agent
+ * kept its stale text for the whole session. That is not just a display problem:
+ * search matched text no longer on disk, `selectFile` served the stale copy
+ * synchronously (it only reads when the entry is `undefined`), and saving that
+ * copy wrote it straight back over the newer file.
+ *
+ * A file with NO cache entry returns false on purpose — nothing is stale, and
+ * the lazy read in `ensureContent` already produces current text. Re-reading it
+ * here would also pull in files the vault-open budget deliberately skipped.
+ */
+export function needsCachedTextRefresh(
+  file: { ext: string; isMarkdown?: boolean },
+  cachedContent: string | undefined
+): boolean {
+  if (cachedContent === undefined) return false;
+  return isTextualVaultFile(file);
+}
+
 /** Image files we can display in a viewer. */
 export function isImageExt(ext: string): boolean {
   return /^(png|jpe?g|gif|webp|bmp|avif|ico)$/i.test(ext);
@@ -127,9 +153,9 @@ export function fileKind(ext: string): FileKind {
  *
  * Every place Mesa remembers or compares a vault path must use this so the same
  * folder is never stored under two spellings. This matters most on Windows,
- * where the OS hands back backslash paths (`C:\Users\Xo\Vault`) from some entry
- * points and forward-slash paths from the folder dialog — without canonicalizing,
- * the recents list can't match its own entries and "remove vault" appears to do
+ * where the OS hands back backslash paths from some entry points and
+ * forward-slash paths from the folder dialog — without canonicalizing, the
+ * recents list can't match its own entries and "remove vault" appears to do
  * nothing.
  */
 export function canonicalRoot(p: string): string {
@@ -253,6 +279,34 @@ export async function scanVault(root: string): Promise<VaultFile[]> {
   return out;
 }
 
+/** Directory names `walk` never descends into. */
+const SKIPPED_DIRS = new Set(["node_modules", ".git"]);
+
+/**
+ * Whether `scanVault` would index this vault-relative path — the ONE definition
+ * of what Mesa considers part of a vault.
+ *
+ * `walk` skips every dot-prefixed entry (files and directories alike) plus
+ * `node_modules` and `.git`, so anything under them can never appear in `files`.
+ * The watcher needs the same answer: it only checked the BASENAME for a leading
+ * dot, so `.git/index` looked like an ordinary file called `index`. It was then
+ * missing from `files`, `registerExternalFile` refused it (it applies these
+ * rules), and the fallback ran `refreshMissingExternalFiles` — a full
+ * `scanVault` — for that one path, and again for the next one. A `git commit`
+ * inside a vault emits dozens of such events in a single 60 ms watch batch, so
+ * an ordinary git operation could put the app into back-to-back whole-vault
+ * rescans (4,165 readDir + 4,165 stat IPC round-trips each, on a vault this
+ * size). Answering the question up front removes the work rather than bounding
+ * it.
+ */
+export function isIndexableVaultRelPath(rel: string): boolean {
+  if (!rel) return false;
+  for (const seg of rel.split("/")) {
+    if (!seg || seg.startsWith(".") || SKIPPED_DIRS.has(seg)) return false;
+  }
+  return true;
+}
+
 /**
  * Every `readDir` is an IPC round-trip, so walking one directory at a time made
  * vault-open latency scale with the directory COUNT. Sibling directories are
@@ -278,7 +332,7 @@ async function walk(dir: string, root: string, out: VaultFile[]): Promise<void> 
             if (!e.name || e.name.startsWith(".")) continue;
             const full = joinPath(current, e.name);
             if (e.isDirectory) {
-              if (e.name === "node_modules" || e.name === ".git") continue;
+              if (SKIPPED_DIRS.has(e.name)) continue;
               next.push(full);
             } else if (e.isFile) {
               const ext = extOf(e.name);
@@ -408,7 +462,8 @@ export async function createNote(
 export async function writeVaultTextFile(
   root: string,
   relPath: string,
-  content = ""
+  content = "",
+  options: { expectedMissing?: boolean } = {}
 ): Promise<VaultFile> {
   const full = joinPath(root, relPath);
   if (isDemo(root)) {
@@ -416,7 +471,9 @@ export async function writeVaultTextFile(
   } else {
     await ensureDir(parentDir(full));
     const bytes = new TextEncoder().encode(content);
-    await persistVerifiedBytes(full, bytes, VAULT_FS);
+    await persistVerifiedBytes(full, bytes, VAULT_FS, {
+      expectedCurrentBytes: options.expectedMissing ? null : undefined,
+    });
   }
   return toVaultFile(root, relPath);
 }

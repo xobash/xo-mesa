@@ -106,6 +106,43 @@ export function decodePairing(
   return { host: octets.join("."), port };
 }
 
+/** A usable sync listener/peer port. Port 0 is an OS-level ephemeral-bind
+ *  sentinel, not an address another Mesa device can reconnect to. */
+export function isValidSyncPort(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 65535
+  );
+}
+
+/** Heal persisted/programmatic values before they reach discovery or Rust. */
+export function normalizeSyncPort(value: unknown, fallback = 8787): number {
+  if (isValidSyncPort(value)) return value;
+  return isValidSyncPort(fallback) ? fallback : 8787;
+}
+
+function isValidHostname(host: string): boolean {
+  if (!host || host.length > 253 || /\s/.test(host)) return false;
+  if (isIpv4(host)) return true;
+  // Bracketed IPv6 literals are accepted by URL and unambiguous beside a port.
+  if (host.startsWith("[") && host.endsWith("]")) {
+    try {
+      return new URL(`http://${host}`).hostname.length > 0;
+    } catch {
+      return false;
+    }
+  }
+  const labels = host.endsWith(".") ? host.slice(0, -1).split(".") : host.split(".");
+  return labels.every(
+    (label) =>
+      label.length >= 1 &&
+      label.length <= 63 &&
+      /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label)
+  );
+}
+
 /**
  * Turn whatever the user typed into a sync address (`host:port`).
  * Accepts a pairing code, a bare IP/hostname, `host:port`, or an http(s) URL.
@@ -114,13 +151,39 @@ export function decodePairing(
 export function parsePeerInput(input: string, defaultPort = 8787): string | null {
   const t = input.trim();
   if (!t) return null;
+  const safeDefaultPort = normalizeSyncPort(defaultPort);
   if (isPairingCode(t)) {
-    const d = decodePairing(t, defaultPort);
-    return d ? `${d.host}:${d.port}` : null;
+    const d = decodePairing(t, safeDefaultPort);
+    return d && isValidSyncPort(d.port) ? `${d.host}:${d.port}` : null;
   }
-  // URL form — keep as-is (sync layer will normalise the scheme).
-  if (/^https?:\/\//i.test(t)) return t.replace(/\/+$/, "");
-  // host or host:port — add the default port if none was given.
-  if (/:\d+$/.test(t)) return t;
-  return `${t}:${defaultPort}`;
+  // URL form — keep as-is (sync layer will normalise the scheme), but reject
+  // credentials, malformed hosts, and unusable explicit ports.
+  if (/^https?:\/\//i.test(t)) {
+    try {
+      const url = new URL(t);
+      if (
+        !/^https?:$/.test(url.protocol) ||
+        url.username ||
+        url.password ||
+        !isValidHostname(url.hostname) ||
+        (url.port && !isValidSyncPort(Number(url.port)))
+      ) {
+        return null;
+      }
+      return t.replace(/\/+$/, "");
+    } catch {
+      return null;
+    }
+  }
+  // Host + port. IPv6 must stay bracketed so its colons are unambiguous.
+  const withPort = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(t);
+  if (withPort) {
+    const [, host, portText] = withPort;
+    const port = Number(portText);
+    return isValidHostname(host) && isValidSyncPort(port)
+      ? `${host}:${port}`
+      : null;
+  }
+  if (!isValidHostname(t)) return null;
+  return `${t}:${safeDefaultPort}`;
 }

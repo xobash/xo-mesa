@@ -18,16 +18,18 @@ import {
   buildTroubleshootingPackage,
   formatLogLine,
 } from "../lib/syncDiagnostics";
-import { encodePairing } from "../lib/pairing";
+import { encodePairing, isValidSyncPort } from "../lib/pairing";
 import { IN_TAURI } from "../lib/vault";
 import { Modal } from "./Modal";
 import type { SyncPeer } from "../types";
 
 function Toggle({
+  label,
   on,
   onChange,
   disabled = false,
 }: {
+  label: string;
   on: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
@@ -37,6 +39,7 @@ function Toggle({
       className={"toggle" + (on ? " on" : "")}
       role="switch"
       aria-checked={on}
+      aria-label={label}
       disabled={disabled}
       onClick={() => {
         if (!disabled) onChange(!on);
@@ -352,6 +355,7 @@ export function SyncModal() {
 
   const [peerInput, setPeerInput] = useState("");
   const [peerName, setPeerName] = useState("");
+  const [peerError, setPeerError] = useState("");
   const [localIp, setLocalIp] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [myFp, setMyFp] = useState<string | null>(null);
@@ -445,6 +449,11 @@ export function SyncModal() {
     if (id) {
       setPeerInput("");
       setPeerName("");
+      setPeerError("");
+    } else {
+      setPeerError(
+        "Enter a valid pairing code, IP address, hostname, or http(s) URL."
+      );
     }
   };
 
@@ -483,6 +492,7 @@ export function SyncModal() {
             </div>
           </div>
           <Toggle
+            label="Sync"
             on={enabled}
             onChange={(v) => setSetting("syncEnabled", v)}
           />
@@ -502,6 +512,7 @@ export function SyncModal() {
               <input
                 className="text-input sync-key-input"
                 type="password"
+                aria-label="Sync key"
                 placeholder="sync key"
                 value={settings.syncToken}
                 onChange={(e) => setSetting("syncToken", e.target.value)}
@@ -519,6 +530,7 @@ export function SyncModal() {
                   </div>
                 </div>
                 <Toggle
+                  label="Receive"
                   on={listening}
                   disabled={!canReceive}
                   onChange={() => void toggleListen()}
@@ -642,6 +654,7 @@ export function SyncModal() {
                     </div>
                   </div>
                   <Toggle
+                    label="LAN discovery"
                     on={settings.syncDiscovery}
                     onChange={(v) => setSetting("syncDiscovery", v)}
                   />
@@ -656,11 +669,16 @@ export function SyncModal() {
                   <input
                     className="text-input"
                     type="number"
+                    min={1}
+                    max={65535}
+                    step={1}
+                    aria-label="Sync port"
                     style={{ width: 90 }}
                     value={settings.syncPort}
-                    onChange={(e) =>
-                      setSetting("syncPort", Number(e.target.value) || 8787)
-                    }
+                    onChange={(e) => {
+                      const port = e.currentTarget.valueAsNumber;
+                      if (isValidSyncPort(port)) setSetting("syncPort", port);
+                    }}
                   />
                 </div>
                 <div className="setting-row">
@@ -675,6 +693,7 @@ export function SyncModal() {
                     className="text-input"
                     type="number"
                     min={0}
+                    aria-label="Auto-sync interval in minutes"
                     style={{ width: 90 }}
                     value={settings.syncAutoMinutes}
                     onChange={(e) =>
@@ -696,8 +715,14 @@ export function SyncModal() {
                     <input
                       className="text-input pair-input"
                       value={peerInput}
+                      aria-label="Device address or pairing code"
+                      aria-invalid={peerError ? true : undefined}
+                      aria-describedby={peerError ? "sync-peer-error" : undefined}
                       placeholder="#ABC-1234, LAN IP, or Tailscale name"
-                      onChange={(e) => setPeerInput(e.target.value)}
+                      onChange={(e) => {
+                        setPeerInput(e.target.value);
+                        if (peerError) setPeerError("");
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") submitPeer();
                       }}
@@ -705,16 +730,30 @@ export function SyncModal() {
                     <input
                       className="text-input pair-name"
                       value={peerName}
+                      aria-label="Device name"
                       placeholder="name (optional)"
                       onChange={(e) => setPeerName(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") submitPeer();
                       }}
                     />
-                    <button className="btn" onClick={submitPeer}>
+                    <button
+                      className="btn"
+                      disabled={!peerInput.trim()}
+                      onClick={submitPeer}
+                    >
                       Add
                     </button>
                   </div>
+                  {peerError && (
+                    <div
+                      id="sync-peer-error"
+                      className="setting-error"
+                      role="alert"
+                    >
+                      {peerError}
+                    </div>
+                  )}
                 </div>
                 {localIp && (
                   <div className="pair-addr">

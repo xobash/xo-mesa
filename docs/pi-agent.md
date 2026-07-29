@@ -270,7 +270,11 @@ terminal slides it out **from behind the Pi window, to its right** — the Pi
 window keeps its size and the terminal is never covered or squeezed. In bounded
 surfaces (a workspace pane or the popped-out Pi OS window, where nothing exists
 beyond the surface edge) the harness opens as an inline sibling pane instead.
-Both variants are resizable by dragging the wing's outer edge.
+Both variants are resizable by dragging the wing's outer edge. An inline wing
+is capped at half of the bounded Pi surface, preserving at least half for a
+usable terminal; opening Browser and Deep Research is mutually exclusive only
+in that bounded mode. Floating slide-out Pi windows may keep both external
+wings open because they do not consume terminal width.
 
 In the desktop app the harness page surface is a **real native child webview**
 (Tauri multiwebview, `unstable` cargo feature; `src-tauri/src/harness.rs`),

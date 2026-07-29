@@ -274,8 +274,8 @@ async function createSharedPiTerminal(): Promise<Terminal> {
       }
     }
     // Guard against key-repeat so holding Shift+Tab doesn't flicker the overlay.
-    // Uses the debounced store toggle so the app-shell/overlay listeners can't
-    // double-fire on a single press and snap it shut.
+    // The claimed event cannot bubble to the app-shell listener, so a single
+    // physical press toggles exactly once without delaying later presses.
     if (isPlainShiftTab(event)) {
       claimKeyboardShortcut(event);
       if (event.repeat) return false;
@@ -790,8 +790,10 @@ export function AgentSurface({
   // When the embedded Pi agent uses its `browse` tool, Mesa mirrors the
   // navigation here — pop the wing open so the user can watch the agent work.
   useEffect(() => {
-    if (piBrowse) setBrowserOpen(true);
-  }, [piBrowse]);
+    if (!piBrowse) return;
+    if (!browserSlideOut) setResearchOpen(false);
+    setBrowserOpen(true);
+  }, [piBrowse, browserSlideOut]);
 
   // Wing width resize: drag the wing's outer edge. `sign` maps drag direction
   // to width change (+1: dragging right widens — slide-out wing; -1: dragging
@@ -886,6 +888,10 @@ export function AgentSurface({
                 // Prepare the one shared run without opening a duplicate
                 // Steam-overlay research window; this button owns the wing.
                 useAppStore.getState().openDeepResearch(false);
+                // A bounded workspace/native pane cannot fit two auxiliary
+                // wings without collapsing the terminal. Floating slide-outs
+                // have external space and may keep both open.
+                if (!browserSlideOut) setBrowserOpen(false);
                 setResearchOpen((v) => !v);
               }}
               title="Deep Research"
@@ -905,7 +911,10 @@ export function AgentSurface({
             )}
             <button
               className="pi-tool"
-              onClick={() => setBrowserOpen((v) => !v)}
+              onClick={() => {
+                if (!browserSlideOut) setResearchOpen(false);
+                setBrowserOpen((v) => !v);
+              }}
               title={browserOpen ? "Close browser harness" : "Open browser harness"}
               aria-label={browserOpen ? "Close browser harness" : "Open browser harness"}
             >

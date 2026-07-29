@@ -3,6 +3,8 @@ import type { ResearchActivity } from "./deepResearch";
 import {
   buildResearchTroubleshootingKit,
   explainResearchTimeout,
+  RESEARCH_TROUBLESHOOTING_IDLE_MS,
+  researchTroubleshootingTrigger,
   type ResearchRunSnapshot,
 } from "./deepResearchDiagnostics";
 
@@ -16,9 +18,13 @@ function run(partial: Partial<ResearchRunSnapshot> = {}): ResearchRunSnapshot {
   return {
     runId: "dr-test-1",
     phase: "researching",
+    launchStage: "active",
     query: "how do tides work",
     depth: { rounds: 2, subQuestions: 5, maxSources: 16, maxGeneratedNotes: 8 },
     startedAt: T0,
+    promptBytes: 2048,
+    promptSentAt: T0 + 500,
+    firstSignalAt: T0 + 1000,
     error: null,
     context: {
       query: "how do tides work",
@@ -36,7 +42,14 @@ function run(partial: Partial<ResearchRunSnapshot> = {}): ResearchRunSnapshot {
     currentRound: 1,
     currentSubQuestion: "q1",
     sources: [
-      { url: "https://a.com/x", title: "A", status: "done" },
+      {
+        url: "https://a.com/x",
+        title: "A",
+        status: "done",
+        archiveStatus: "saved",
+        archiveRelPath: "Web Archives/a.html",
+        archiveKind: "page",
+      },
       { url: "https://b.com/y", status: "reading" },
     ],
     activity: [act({ kind: "status", message: "Preparing research context…", at: T0 })],
@@ -61,6 +74,22 @@ describe("explainResearchTimeout", () => {
     expect(msg).toContain("NO web browsing");
     expect(msg).toContain("deep_research_progress");
     expect(msg).toContain("Pi terminal");
+  });
+
+  it("distinguishes a submitted prompt with no model signal", () => {
+    const msg = explainResearchTimeout({
+      run: run({
+        launchStage: "waiting-for-model",
+        activity: [act({ kind: "status", message: "Research task submitted to Pi" })],
+        subQuestions: [],
+        sources: [],
+        firstSignalAt: null,
+      }),
+      piSessionLive: true,
+      now: T0 + 400_000,
+    });
+    expect(msg).toContain("submitted a 2048 B research prompt");
+    expect(msg).toContain("model server logs");
   });
 
   it("diagnoses observed browsing without self-reports as protocol not followed", () => {
@@ -103,6 +132,72 @@ describe("explainResearchTimeout", () => {
   });
 });
 
+describe("researchTroubleshootingTrigger", () => {
+  it("stays hidden during the first two minutes of a quiet submitted run", () => {
+    expect(
+      researchTroubleshootingTrigger(
+        run({
+          launchStage: "waiting-for-model",
+          firstSignalAt: null,
+          activity: [act({ kind: "status", message: "Waiting for Pi" })],
+        }),
+        T0 + 500 + RESEARCH_TROUBLESHOOTING_IDLE_MS - 1
+      )
+    ).toBeNull();
+  });
+
+  it("reveals diagnostics after two minutes with zero real actions", () => {
+    expect(
+      researchTroubleshootingTrigger(
+        run({
+          launchStage: "waiting-for-model",
+          firstSignalAt: null,
+          activity: [act({ kind: "status", message: "Waiting for Pi" })],
+        }),
+        T0 + 500 + RESEARCH_TROUBLESHOOTING_IDLE_MS
+      )
+    ).toBe("initial-inactivity");
+  });
+
+  it("stays hidden once any real research action exists", () => {
+    expect(
+      researchTroubleshootingTrigger(
+        run({
+          activity: [
+            act({ kind: "status", message: "Waiting for Pi" }),
+            act({ kind: "search", message: "Searched for tides", observed: true }),
+          ],
+        }),
+        T0 + 500 + RESEARCH_TROUBLESHOOTING_IDLE_MS * 2
+      )
+    ).toBeNull();
+  });
+
+  it("reveals diagnostics immediately for a confirmed run error", () => {
+    expect(
+      researchTroubleshootingTrigger(
+        run({ phase: "error", launchStage: "error", error: "Provider API call failed." }),
+        T0 + 2_000
+      )
+    ).toBe("confirmed-error");
+  });
+
+  it("does not expose a kit for preflight input errors that never started a run", () => {
+    expect(
+      researchTroubleshootingTrigger(
+        run({
+          phase: "error",
+          launchStage: "error",
+          startedAt: 0,
+          promptSentAt: null,
+          error: "Enter a research question first.",
+        }),
+        T0 + 2_000
+      )
+    ).toBeNull();
+  });
+});
+
 describe("buildResearchTroubleshootingKit", () => {
   const input = {
     appVersion: "0.1.0",
@@ -131,12 +226,15 @@ describe("buildResearchTroubleshootingKit", () => {
     expect(kit).toContain("Pi session live: yes");
     expect(kit).toContain("Run id: dr-test-1");
     expect(kit).toContain("Phase: researching");
+    expect(kit).toContain("Launch stage: active");
+    expect(kit).toContain("Prompt: 2048 B");
     expect(kit).toContain("Scope: workspace");
     expect(kit).toContain("- Selected via: active 1, backlink 1, outgoing 1");
     expect(kit).toContain("a.md (active)");
     expect(kit).toContain("b.md (backlink, outgoing, redacted)");
     expect(kit).toContain("Model self-reports (deep_research_progress): 1 · Mesa-observed navigations: 1");
     expect(kit).toContain("- [done] A — https://a.com/x");
+    expect(kit).toContain("archive=saved:page (Web Archives/a.html)");
     expect(kit).toContain("- [reading] https://b.com/y");
     expect(kit).toContain("## Activity timeline");
     expect(kit).toContain("[search, observed] Searched for “tides”");

@@ -50,6 +50,19 @@ export async function sendToPi(sessionId: string, input: string): Promise<void> 
 }
 
 /**
+ * Submit a multi-line research prompt to Pi's interactive editor.
+ *
+ * A bare LF is content in Pi's editor; it can leave the whole prompt visibly
+ * typed into the editor without starting the model turn. Send the body first,
+ * then the terminal's carriage-return Enter key as a separate write so the
+ * prompt is actually submitted.
+ */
+export async function sendResearchPrompt(sessionId: string, prompt: string): Promise<void> {
+  await sendToPi(sessionId, prompt);
+  await sendToPi(sessionId, "\r");
+}
+
+/**
  * Interrupt the shared Pi session (Ctrl+C). Used for cooperative cancel; it
  * does NOT kill the process, so the user's session survives.
  */

@@ -1,6 +1,7 @@
 import type {
   DeepResearchContext,
   DeepResearchPhase,
+  DeepResearchLaunchStage,
   ResearchActivity,
   ResearchDepth,
 } from "./deepResearch";
@@ -28,15 +29,27 @@ import { formatLogTime } from "./syncDiagnostics";
 export interface ResearchRunSnapshot {
   runId: string;
   phase: DeepResearchPhase;
+  launchStage: DeepResearchLaunchStage;
   query: string;
   depth: ResearchDepth;
   startedAt: number;
+  promptBytes: number;
+  promptSentAt: number | null;
+  firstSignalAt: number | null;
   error: string | null;
   context: DeepResearchContext | null;
   subQuestions: string[];
   currentRound: number;
   currentSubQuestion: string | null;
-  sources: { url: string; title?: string; status: string }[];
+  sources: {
+    url: string;
+    title?: string;
+    status: string;
+    archiveStatus?: string;
+    archiveRelPath?: string;
+    archiveKind?: string;
+    archiveError?: string;
+  }[];
   activity: ResearchActivity[];
   reportDraft: string;
 }
@@ -57,6 +70,30 @@ export interface ResearchDiagnosticsInput {
   run: ResearchRunSnapshot;
   /** Injectable clock for tests. */
   now?: Date;
+}
+
+export const RESEARCH_TROUBLESHOOTING_IDLE_MS = 120_000;
+export type ResearchTroubleshootingTrigger = "confirmed-error" | "initial-inactivity";
+
+/**
+ * Keep diagnostics out of the healthy-run UI. They become available only
+ * after a confirmed run error or when a submitted prompt produces zero real
+ * actions for two minutes. Mesa's own seeded `status` lines do not count.
+ */
+export function researchTroubleshootingTrigger(
+  run: ResearchRunSnapshot,
+  now = Date.now()
+): ResearchTroubleshootingTrigger | null {
+  if (run.startedAt <= 0) return null;
+  if (run.phase === "error" && Boolean(run.error)) return "confirmed-error";
+  if (run.phase !== "planning" && run.phase !== "researching" && run.phase !== "synthesizing") {
+    return null;
+  }
+  if (run.activity.some((activity) => activity.kind !== "status")) return null;
+  if (!run.promptSentAt) return null;
+  return now - run.promptSentAt >= RESEARCH_TROUBLESHOOTING_IDLE_MS
+    ? "initial-inactivity"
+    : null;
 }
 
 const ACTIVITY_LINES_MAX = 80;
@@ -101,12 +138,19 @@ export function explainResearchTimeout(input: {
       "The Pi session is no longer running — it may have crashed or been closed. Reopen the Pi agent, let it finish starting, then run again."
     );
   } else if (self.length === 0 && seen.length === 0) {
-    lines.push(
-      "Mesa received NO progress reports from the model and observed NO web browsing. " +
-        "The model most likely never engaged the Deep Research protocol (the deep_research_progress / deep_research_finish tool calls) — " +
-        "smaller local models often cannot follow it. Check the Pi terminal scrollback to see what the model actually did; " +
-        "a stronger model, or the Quick preset, usually fixes this."
-    );
+    if (run.launchStage === "waiting-for-model" && run.promptSentAt) {
+      lines.push(
+        `Mesa submitted a ${run.promptBytes} B research prompt to Pi's PTY, but received NO model progress and observed NO web browsing. ` +
+          "The prompt may not have been accepted by Pi, or the provider may not have started the model turn. Check the Pi terminal for the submitted prompt and the model server logs."
+      );
+    } else {
+      lines.push(
+        "Mesa received NO progress reports from the model and observed NO web browsing. " +
+          "The model most likely never engaged the Deep Research protocol (the deep_research_progress / deep_research_finish tool calls) — " +
+          "smaller local models often cannot follow it. Check the Pi terminal scrollback to see what the model actually did; " +
+          "a stronger model, or the Quick preset, usually fixes this."
+      );
+    }
   } else if (self.length === 0) {
     lines.push(
       `Mesa observed ${seen.length} real page visit${seen.length === 1 ? "" : "s"} in the browser harness, but the model never called deep_research_progress — ` +
@@ -149,6 +193,7 @@ export function buildResearchTroubleshootingKit(input: ResearchDiagnosticsInput)
   push("");
   push(`- Run id: ${run.runId}`);
   push(`- Phase: ${run.phase}`);
+  push(`- Launch stage: ${run.launchStage}`);
   push(`- Query: ${run.query || "(empty)"}`);
   push(
     `- Depth: ${run.depth.rounds} round${run.depth.rounds === 1 ? "" : "s"}, ${run.depth.subQuestions} sub-questions, ≤${run.depth.maxSources} sources, ≤${run.depth.maxGeneratedNotes} notes`
@@ -158,6 +203,8 @@ export function buildResearchTroubleshootingKit(input: ResearchDiagnosticsInput)
       run.startedAt ? ` (${minutes(now.getTime() - run.startedAt)} ago)` : ""
     }`
   );
+  push(`- Prompt: ${run.promptBytes} B${run.promptSentAt ? `, submitted to PTY at ${new Date(run.promptSentAt).toISOString()}` : ", not submitted to PTY"}`);
+  push(`- First model/browser signal: ${run.firstSignalAt ? new Date(run.firstSignalAt).toISOString() : "none"}`);
   if (run.error) push(`- Error: ${run.error.replace(/\s*\n\s*/g, " ")}`);
   push("");
 
@@ -205,7 +252,12 @@ export function buildResearchTroubleshootingKit(input: ResearchDiagnosticsInput)
     push("### Sources");
     push("");
     for (const s of run.sources.slice(0, SOURCE_LINES_MAX)) {
-      push(`- [${s.status}] ${s.title ? `${s.title} — ` : ""}${s.url}`);
+      const archive = s.archiveStatus
+        ? ` · archive=${s.archiveStatus}${s.archiveKind ? `:${s.archiveKind}` : ""}${
+            s.archiveRelPath ? ` (${s.archiveRelPath})` : ""
+          }${s.archiveError ? ` error=${s.archiveError}` : ""}`
+        : "";
+      push(`- [${s.status}] ${s.title ? `${s.title} — ` : ""}${s.url}${archive}`);
     }
     if (run.sources.length > SOURCE_LINES_MAX) {
       push(`- …and ${run.sources.length - SOURCE_LINES_MAX} more`);

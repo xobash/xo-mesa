@@ -13,6 +13,8 @@ import {
   dedupeSources,
   searchQueryOf,
   activityForNavigation,
+  buildResearchGraph,
+  presentResearchSource,
   parseResultEnvelope,
   buildChangeSet,
   buildApplyPlan,
@@ -66,6 +68,74 @@ describe("dedupeSources", () => {
     ]);
     expect(out.map((s) => s.url)).toEqual(["https://a.com/x", "https://b.com/y"]);
     expect(out[0].title).toBe("A");
+  });
+});
+
+describe("presentResearchSource", () => {
+  it("turns opaque source URLs into a browser-style site and page identity", () => {
+    const source = presentResearchSource(
+      "https://en.wikipedia.org/wiki/Jeffrey_Epstein?utm_source=test",
+      "en.wikipedia.org/wiki/Jeffrey_Epstein"
+    );
+    expect(source).toEqual({
+      url: "https://en.wikipedia.org/wiki/Jeffrey_Epstein",
+      siteName: "Wikipedia",
+      host: "en.wikipedia.org",
+      pageTitle: "Jeffrey Epstein",
+      faviconUrl: "https://en.wikipedia.org/favicon.ico",
+      initial: "W",
+    });
+  });
+
+  it("keeps a real source title and provides a readable known-site label", () => {
+    const source = presentResearchSource(
+      "https://www.theguardian.com/books/2017/jun/01/example",
+      "A documented history of the subject"
+    );
+    expect(source?.siteName).toBe("The Guardian");
+    expect(source?.pageTitle).toBe("A documented history of the subject");
+  });
+
+  it("rejects non-web sources", () => {
+    expect(presentResearchSource("file:///tmp/private", "Private")).toBeNull();
+  });
+});
+
+describe("buildResearchGraph", () => {
+  it("does not invent planned or source nodes before real activity exists", () => {
+    const graph = buildResearchGraph("How do tides work?", [
+      { kind: "status", message: "Waiting for the model", at: 1_000 },
+    ]);
+    expect(graph.nodes.map((n) => n.kind)).toEqual(["query"]);
+    expect(graph.edges).toEqual([]);
+  });
+
+  it("builds a chronological graph from announced and observed actions", () => {
+    const graph = buildResearchGraph("How do tides work?", [
+      { kind: "plan", message: "Cause\nEvidence", at: 1_000 },
+      { kind: "subquestion", message: "Researching cause", subQuestion: "What causes tides?", at: 2_000 },
+      { kind: "search", message: "Searched for “tide causes”", observed: true, sourceUrl: "https://search.test", at: 3_000 },
+      { kind: "source", message: "Opened source", sourceTitle: "NOAA tides", sourceUrl: "https://noaa.test", at: 4_000 },
+      { kind: "note", message: "Finished source", sourceUrl: "https://noaa.test", at: 5_000 },
+    ]);
+    expect(graph.nodes.map((n) => n.kind)).toEqual(["query", "plan", "subquestion", "search", "source", "note"]);
+    expect(graph.nodes.find((n) => n.kind === "search")?.observed).toBe(true);
+    expect(graph.edges).toHaveLength(5);
+    expect(graph.edges[0]).toEqual({ id: "edge-0", source: "query", target: "activity-0" });
+  });
+
+  it("keeps complete labels at readable size and spaces same-column nodes apart", () => {
+    const longLabel =
+      "This complete source description must wrap across every required line without being truncated";
+    const graph = buildResearchGraph("Question", [
+      { kind: "source", message: "Opened one", sourceTitle: longLabel, at: 1_000 },
+      { kind: "source", message: "Opened two", sourceTitle: "Second source", at: 2_000 },
+    ]);
+    const first = graph.nodes[1];
+    const second = graph.nodes[2];
+    expect(first.lines.join(" ")).toBe(longLabel);
+    expect(first.height).toBeGreaterThan(52);
+    expect(second.y).toBeGreaterThanOrEqual(first.y + first.height + 16);
   });
 });
 

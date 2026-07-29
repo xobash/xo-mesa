@@ -6,12 +6,19 @@ import {
   RESEARCH_DEPTH_PRESETS,
   DEPTH_LIMITS,
   clampDepth,
+  buildResearchGraph,
+  presentResearchSource,
   type ResearchContextScope,
   type ResearchDepth,
   type ResearchDepthPreset,
   type ResearchActivity,
+  type ResearchSourcePresentation,
 } from "../lib/deepResearch";
-import { buildResearchTroubleshootingKit } from "../lib/deepResearchDiagnostics";
+import {
+  buildResearchTroubleshootingKit,
+  RESEARCH_TROUBLESHOOTING_IDLE_MS,
+  researchTroubleshootingTrigger,
+} from "../lib/deepResearchDiagnostics";
 import { currentPiSessionId } from "../lib/deepResearchRun";
 
 /**
@@ -34,8 +41,12 @@ import { currentPiSessionId } from "../lib/deepResearchRun";
 function phaseLabel(run: DeepResearchRunState): string {
   switch (run.phase) {
     case "idle": return "Ready";
-    case "planning": return "Planning sub-questions…";
-    case "researching": return "Researching sources…";
+    case "planning": return run.launchStage === "starting-pi" || run.launchStage === "restarting-pi"
+      ? "Starting Pi…"
+      : "Planning sub-questions…";
+    case "researching": return run.launchStage === "waiting-for-model"
+      ? "Waiting for Pi…"
+      : "Researching sources…";
     case "synthesizing": return "Writing notes…";
     case "review": return "Review proposed changes";
     case "applying": return "Applying changes…";
@@ -74,6 +85,122 @@ function num(lo: number, hi: number, set: (n: number) => void) {
   };
 }
 
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* Fall through to the legacy WebKit/Tauri clipboard path. */
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "true");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+  }
+}
+
+function ResearchActivityGraph({ run }: { run: DeepResearchRunState }) {
+  const graph = buildResearchGraph(run.query, run.activity);
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  return (
+    <div className="dr-research-graph">
+      <div className="dr-map-title">
+        Live evidence graph · {Math.max(0, graph.nodes.length - 1)} actual actions
+        {graph.omitted ? ` · ${graph.omitted} older actions omitted from view` : ""}
+      </div>
+      <div className="dr-research-graph-scroll">
+        <svg
+          className="dr-research-graph-svg"
+          width={graph.width}
+          height={graph.height}
+          viewBox={`0 0 ${graph.width} ${graph.height}`}
+          role="img"
+          aria-label="Live Deep Research evidence graph"
+        >
+          <g className="dr-research-graph-edges">
+            {graph.edges.map((edge) => {
+              const source = byId.get(edge.source);
+              const target = byId.get(edge.target);
+              if (!source || !target) return null;
+              const sameColumn = source.x === target.x;
+              return (
+                <line
+                  key={edge.id}
+                  x1={source.x + (sameColumn ? 65 : 128)}
+                  y1={source.y + source.height / 2}
+                  x2={target.x + (sameColumn ? 65 : 0)}
+                  y2={target.y + target.height / 2}
+                />
+              );
+            })}
+          </g>
+          <g className="dr-research-graph-nodes">
+            {graph.nodes.map((node) => (
+              <g
+                key={node.id}
+                className={
+                  `dr-graph-node dr-graph-node-${node.kind}` +
+                  (node.observed ? " observed" : " reported") +
+                  (node.latest ? " latest" : "")
+                }
+                transform={`translate(${node.x},${node.y})`}
+              >
+                <title>{node.label}</title>
+                <rect width="130" height={node.height} rx="8" />
+                <circle cx="11" cy="11" r="3" />
+                <text x="19" y="13" className="dr-graph-kind">{node.kind}</text>
+                {node.lines.map((line, i) => (
+                  <text key={i} x="8" y={25 + i * 11} className="dr-graph-label">{line}</text>
+                ))}
+              </g>
+            ))}
+          </g>
+        </svg>
+      </div>
+      {graph.nodes.length === 1 && (
+        <div className="dr-graph-empty">
+          No research action has been observed yet. Mesa is waiting for Pi to submit a model or browser signal.
+        </div>
+      )}
+      <div className="dr-graph-legend">
+        <span><i className="dr-legend-dot reported" /> Pi reported</span>
+        <span><i className="dr-legend-dot observed" /> Mesa observed</span>
+      </div>
+    </div>
+  );
+}
+
+function ResearchSourceIcon({ source }: { source: ResearchSourcePresentation }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [source.faviconUrl]);
+  return (
+    <span className="dr-source-icon" title={source.siteName} aria-hidden="true">
+      {failed ? (
+        <span className="dr-source-icon-fallback">{source.initial}</span>
+      ) : (
+        <img
+          src={source.faviconUrl}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </span>
+  );
+}
+
 /**
  * Live phase chip for the run, rendered by each HOST's single title bar
  * (the Steam-overlay window bar and the Pi research wing bar). The panel
@@ -103,7 +230,10 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
   const [query, setQuery] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [showDepth, setShowDepth] = useState(false);
-  const [copiedKit, setCopiedKit] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [copiedKit, setCopiedKit] = useState<"idle" | "copied" | "failed">("idle");
+  const [copiedSource, setCopiedSource] = useState<string | null>(null);
+  const [watchdogNow, setWatchdogNow] = useState(() => Date.now());
   const activityRef = useRef<HTMLDivElement | null>(null);
 
   // Secret-scrubbed markdown kit for pasting into a bug report or at an LLM.
@@ -129,9 +259,9 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
       agentModel: settings.agentModel,
       run: cur,
     });
-    void navigator.clipboard?.writeText(kit);
-    setCopiedKit(true);
-    setTimeout(() => setCopiedKit(false), 1400);
+    const copied = await copyText(kit);
+    setCopiedKit(copied ? "copied" : "failed");
+    setTimeout(() => setCopiedKit("idle"), 1800);
   };
 
   // Per-run depth (initialized from the persisted default preset).
@@ -152,6 +282,27 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
   useEffect(() => {
     if (run?.query) setQuery(run.query);
   }, [run?.runId, run?.query]);
+  useEffect(() => {
+    setContextOpen((run?.startedAt ?? 0) <= 0);
+  }, [run?.runId]);
+
+  // Invisible initial-stall watchdog. Healthy runs render nothing; after a
+  // submitted prompt has produced zero real actions for two minutes, React
+  // wakes once so the troubleshooting action can appear.
+  useEffect(() => {
+    const now = Date.now();
+    setWatchdogNow(now);
+    if (!run || researchTroubleshootingTrigger(run, now)) return;
+    if (!run.promptSentAt) return;
+    if (run.activity.some((activity) => activity.kind !== "status")) return;
+    if (run.phase !== "planning" && run.phase !== "researching" && run.phase !== "synthesizing") return;
+    const remaining = run.promptSentAt + RESEARCH_TROUBLESHOOTING_IDLE_MS - now;
+    const timer = window.setTimeout(
+      () => setWatchdogNow(Date.now()),
+      Math.max(0, remaining) + 20
+    );
+    return () => window.clearTimeout(timer);
+  }, [run?.runId, run?.phase, run?.promptSentAt, run?.error, run?.activity]);
 
   // Keep the live activity feed pinned to the bottom while a run streams.
   useEffect(() => {
@@ -161,6 +312,10 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
 
   const opList = useMemo(() => run?.changeSet?.ops ?? [], [run?.changeSet]);
   const previewOp = useMemo(() => opList.find((o) => o.relPath === preview) ?? null, [opList, preview]);
+  const researchGraph = useMemo(() => (run ? <ResearchActivityGraph run={run} /> : null), [run]);
+  const troubleshootingTrigger = run
+    ? researchTroubleshootingTrigger(run, watchdogNow)
+    : null;
 
   if (!run) return null;
 
@@ -169,6 +324,7 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
   const canStart = !isBusy && run.phase !== "applying" && query.trim().length > 0;
   const hasProposal = run.phase === "review" && run.changeSet;
   const doneSources = run.sources.filter((s) => s.status === "done").length;
+  const savedSources = run.sources.filter((s) => s.archiveStatus === "saved").length;
   const claimCounts = run.result
     ? {
         verified: run.result.claims.filter((c) => c.kind === "verified").length,
@@ -190,6 +346,11 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
   const applyPreset = (p: ResearchDepthPreset) => {
     setDepth(clampDepth(RESEARCH_DEPTH_PRESETS[p]));
     setSetting("researchDepth", p);
+  };
+  const copySourceLink = async (url: string) => {
+    if (!(await copyText(url))) return;
+    setCopiedSource(url);
+    window.setTimeout(() => setCopiedSource((current) => current === url ? null : current), 1800);
   };
 
   return (
@@ -262,6 +423,15 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
                 {run.phase === "idle" || run.phase === "planning" ? "Start research" : "Run again"}
               </button>
             )}
+            {troubleshootingTrigger && run.phase !== "error" && (
+              <button className="btn" onClick={() => void copyKit()}>
+                {copiedKit === "copied"
+                  ? "Copied"
+                  : copiedKit === "failed"
+                    ? "Copy failed"
+                    : "Copy troubleshooting kit"}
+              </button>
+            )}
             {isBusy && (
               <button className="btn" onClick={() => void cancelDeepResearch()}>
                 Cancel
@@ -318,44 +488,57 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
 
       {/* Context summary */}
       {run.context && (
-        <div className="dr-context">
-          <div className="dr-context-title">
-            Context sent to Pi — {run.context.summary} · {run.context.scope} scope
-          </div>
-          <div className="dr-context-notes">
-            {run.context.notes.slice(0, 10).map((n) => (
-              <span key={n.relPath} className="dr-chip" title={n.via.join(", ")}>
-                {n.relPath}
-              </span>
-            ))}
-            {run.context.notes.length > 10 && (
-              <span className="dr-chip dr-chip-more">+{run.context.notes.length - 10} more</span>
+        <div
+          key={`${run.runId}:${run.startedAt > 0 ? "running" : "idle"}`}
+          className="dr-context"
+        >
+          <button
+            type="button"
+            className="dr-context-title"
+            aria-expanded={contextOpen}
+            onClick={() => setContextOpen((open) => !open)}
+          >
+            <span>Context sent to Pi — {run.context.summary} · {run.context.scope} scope</span>
+            <span className="dr-context-toggle">{contextOpen ? "Hide" : "Details"}</span>
+          </button>
+          {contextOpen && <div className="dr-context-body">
+            <div className="dr-context-notes">
+              {run.context.notes.slice(0, 10).map((n) => (
+                <span key={n.relPath} className="dr-chip" title={n.via.join(", ")}>
+                  {n.relPath}
+                </span>
+              ))}
+              {run.context.notes.length > 10 && (
+                <span className="dr-chip dr-chip-more">+{run.context.notes.length - 10} more</span>
+              )}
+            </div>
+            {run.context.notes.length === 0 && run.context.scope === "workspace" && (
+              <div className="dr-context-trunc">
+                No workspace notes included — open or select a note before starting, or switch to
+                vault ctx to mine the whole vault.
+              </div>
             )}
-          </div>
-          {run.context.notes.length === 0 && run.context.scope === "workspace" && (
-            <div className="dr-context-trunc">
-              No workspace notes included — open or select a note before starting, or switch to
-              vault ctx to mine the whole vault.
-            </div>
-          )}
-          {run.context.truncated && (
-            <div className="dr-context-trunc">
-              Bounded for responsiveness; {run.context.omittedNotes} related note
-              {run.context.omittedNotes === 1 ? "" : "s"} omitted.
-            </div>
-          )}
-          {run.context.notes.some((n) => n.redacted) && (
-            <div className="dr-context-trunc">
-              Credential-shaped values were redacted before this context was sent to Pi.
-            </div>
-          )}
+            {run.context.truncated && (
+              <div className="dr-context-trunc">
+                Bounded for responsiveness; {run.context.omittedNotes} related note
+                {run.context.omittedNotes === 1 ? "" : "s"} omitted.
+              </div>
+            )}
+            {run.context.notes.some((n) => n.redacted) && (
+              <div className="dr-context-trunc">
+                Credential-shaped values were redacted before this context was sent to Pi.
+              </div>
+            )}
+          </div>}
         </div>
       )}
 
+      {run.startedAt > 0 && run.phase !== "done" && researchGraph}
+
       {/* Live research map: sub-questions + sources */}
-      {(run.subQuestions.length > 0 || run.sources.length > 0) && run.phase !== "done" && (
+      {(run.sources.length > 0 || (run.phase !== "done" && run.subQuestions.length > 0)) && (
         <div className="dr-map">
-          {run.subQuestions.length > 0 && (
+          {run.subQuestions.length > 0 && run.phase !== "done" && (
             <div className="dr-subq">
               <div className="dr-map-title">
                 Sub-questions · round {Math.max(1, run.currentRound)}/{run.depth.rounds}
@@ -378,14 +561,65 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
             <div className="dr-sources">
               <div className="dr-map-title">
                 Sources · {doneSources}/{run.sources.length} read
+                {savedSources > 0 ? ` · ${savedSources} saved` : ""}
               </div>
               <div className="dr-source-list">
-                {run.sources.map((s) => (
-                  <div key={s.url} className={"dr-source dr-source-" + s.status} title={s.url}>
-                    <span className="dr-source-mark">{s.status === "done" ? "✓" : "…"}</span>
-                    <span className="dr-source-title">{s.title || s.url}</span>
-                  </div>
-                ))}
+                {run.sources.map((s) => {
+                  const source = presentResearchSource(s.url, s.title);
+                  if (!source) return null;
+                  return (
+                    <div key={s.url} className={"dr-source dr-source-" + s.status}>
+                      <ResearchSourceIcon source={source} />
+                      <div className="dr-source-body">
+                        <div className="dr-source-meta">
+                          <span className="dr-source-site">{source.siteName}</span>
+                          <span
+                            className="dr-source-status"
+                            title={s.archiveError}
+                          >
+                            {s.archiveStatus === "saving"
+                              ? "Saving local copy"
+                              : s.archiveStatus === "saved"
+                                ? s.archiveKind === "link" ? "Link saved" : "Saved locally"
+                                : s.archiveStatus === "failed"
+                                  ? "Archive failed"
+                                  : s.status === "done" ? "Read" : "Reading"}
+                          </span>
+                        </div>
+                        <div className="dr-source-title">{source.pageTitle}</div>
+                        <div className="dr-source-actions">
+                          <button
+                            type="button"
+                            className="dr-source-link"
+                            title={`Copy ${source.url}`}
+                            onClick={() => void copySourceLink(source.url)}
+                          >
+                            {copiedSource === source.url ? "Copied link" : `Copy link · ${source.host}`}
+                          </button>
+                          {s.archiveStatus === "saved" && s.archiveRelPath && (
+                            <button
+                              type="button"
+                              className="dr-source-link dr-source-open"
+                              title={s.archiveRelPath}
+                              onClick={() => void openFile(s.archiveRelPath!)}
+                            >
+                              Open saved page
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <span className="dr-source-mark" aria-hidden="true">
+                        {s.archiveStatus === "failed"
+                          ? "!"
+                          : s.archiveStatus === "saving"
+                            ? "↓"
+                            : s.archiveStatus === "saved"
+                              ? "▣"
+                              : s.status === "done" ? "✓" : "…"}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -438,9 +672,15 @@ export function DeepResearchPanel({ piSurfaceAvailable = false }: { piSurfaceAva
           <div className="dr-error-title">Deep Research hit a problem</div>
           <div className="dr-error-body">{run.error}</div>
           <div className="dr-error-actions">
-            <button className="btn" onClick={() => void copyKit()}>
-              {copiedKit ? "Copied" : "Copy troubleshooting kit"}
-            </button>
+            {troubleshootingTrigger && (
+              <button className="btn" onClick={() => void copyKit()}>
+                {copiedKit === "copied"
+                  ? "Copied"
+                  : copiedKit === "failed"
+                    ? "Copy failed"
+                    : "Copy troubleshooting kit"}
+              </button>
+            )}
             <button className="btn" onClick={() => discardDeepResearch()}>
               Dismiss
             </button>

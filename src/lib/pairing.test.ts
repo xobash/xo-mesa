@@ -4,6 +4,8 @@ import {
   decodePairing,
   isPairingCode,
   isIpv4,
+  isValidSyncPort,
+  normalizeSyncPort,
   parsePeerInput,
 } from "./pairing";
 import { peerFromDiscovery } from "./sync";
@@ -74,11 +76,32 @@ describe("parsePeerInput", () => {
   it("passes through host:port and adds the default port", () => {
     expect(parsePeerInput("192.168.1.5:9000")).toBe("192.168.1.5:9000");
     expect(parsePeerInput("my-mac")).toBe("my-mac:8787");
+    expect(parsePeerInput("studio.tailnet.ts.net")).toBe(
+      "studio.tailnet.ts.net:8787"
+    );
+    expect(parsePeerInput("[::1]:9000")).toBe("[::1]:9000");
     expect(parsePeerInput("http://10.0.0.2:8787/")).toBe("http://10.0.0.2:8787");
   });
 
-  it("returns null for empty input", () => {
+  it("returns null for empty or malformed input", () => {
     expect(parsePeerInput("   ")).toBeNull();
+    expect(parsePeerInput("not a valid host !!!")).toBeNull();
+    expect(parsePeerInput("-bad-host-name")).toBeNull();
+    expect(parsePeerInput("host:0")).toBeNull();
+    expect(parsePeerInput("host:65536")).toBeNull();
+    expect(parsePeerInput("https://user:secret@host:8787")).toBeNull();
+    expect(parsePeerInput("https://host:99999")).toBeNull();
+  });
+
+  it("heals unusable default ports and validates the listener range", () => {
+    expect(isValidSyncPort(1)).toBe(true);
+    expect(isValidSyncPort(65535)).toBe(true);
+    expect(isValidSyncPort(0)).toBe(false);
+    expect(isValidSyncPort(65536)).toBe(false);
+    expect(isValidSyncPort(8787.5)).toBe(false);
+    expect(normalizeSyncPort(99999)).toBe(8787);
+    expect(normalizeSyncPort(99999, 9000)).toBe(9000);
+    expect(parsePeerInput("studio", 99999)).toBe("studio:8787");
   });
 });
 

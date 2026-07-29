@@ -3,17 +3,13 @@ import { useAppStore, THEMES } from "../store";
 import {
   localISO,
   monthMatrix,
+  calendarGridKeyTarget,
   weekMatrix,
   MONTH_NAMES,
   holidaysForYear,
   type CalEvent,
 } from "../lib/daily";
 import { IN_TAURI, isImageExt, urlForPath } from "../lib/vault";
-import {
-  claimKeyboardShortcut,
-  isPlainShiftTab,
-  isTextEntryTarget,
-} from "../lib/shortcuts";
 import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
 import { AgentSurface } from "./AgentPanel";
 import { DeepResearchPanel, DeepResearchPhaseChip } from "./DeepResearchPanel";
@@ -444,19 +440,52 @@ function AppleCalendar() {
 
   const monthGrid = (year: number, month0: number, mini = false) => {
     const weeks = monthMatrix(year, month0, 0); // Sunday-first (Apple)
+    const selectGridDate = (
+      date: string,
+      origin?: HTMLButtonElement
+    ) => {
+      setSelected(date);
+      setCursor(date);
+      if (mini) setView("month");
+      if (!origin) return;
+      window.requestAnimationFrame(() => {
+        document
+          .querySelector<HTMLButtonElement>(
+            `.cal2-cell[data-calendar-date="${date}"]`
+          )
+          ?.focus();
+      });
+    };
     return (
-      <div className={"cal2-grid" + (mini ? " mini" : "")}>
+      <div
+        className={"cal2-grid" + (mini ? " mini" : "")}
+        role="grid"
+        aria-label={`${MONTH_NAMES[month0]} ${year}`}
+      >
         {!mini &&
           SUN_DOW.map((d) => (
-            <div key={d} className="cal2-dow">
+            <div key={d} className="cal2-dow" role="columnheader">
               {d}
             </div>
           ))}
         {weeks.flat().map((date) => {
           const inMonth = Number(date.slice(5, 7)) - 1 === month0;
           const bs = banners(date);
+          const [dateYear, dateMonth, dateDay] = dateParts(date);
+          const dateLabel = new Date(
+            dateYear,
+            dateMonth - 1,
+            dateDay
+          ).toLocaleDateString(undefined, {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          });
           return (
-            <div
+            <button
+              type="button"
+              role="gridcell"
               key={date}
               className={
                 "cal2-cell" +
@@ -464,12 +493,22 @@ function AppleCalendar() {
                 (date === selected ? " sel" : "")
               }
               title={date}
-              onClick={() => {
-                setSelected(date);
-                if (mini) {
-                  setCursor(date);
-                  setView("month");
-                }
+              data-calendar-date={date}
+              aria-selected={date === selected}
+              aria-current={date === today ? "date" : undefined}
+              aria-label={
+                dateLabel +
+                (bs.length
+                  ? `: ${bs.map((banner) => banner.title).join(", ")}`
+                  : "")
+              }
+              tabIndex={date === selected ? 0 : -1}
+              onClick={() => selectGridDate(date)}
+              onKeyDown={(event) => {
+                const target = calendarGridKeyTarget(date, event.key);
+                if (!target) return;
+                event.preventDefault();
+                selectGridDate(target, event.currentTarget);
               }}
             >
               <span className={"cal2-num" + (date === today ? " today" : "")}>
@@ -487,7 +526,7 @@ function AppleCalendar() {
                 <span className="cal2-more">+{bs.length - 3} more</span>
               )}
               {mini && bs.length > 0 && <span className="cal2-dot" />}
-            </div>
+            </button>
           );
         })}
       </div>
@@ -798,9 +837,11 @@ function Gallery() {
 }
 
 function OverlayToggle({
+  label,
   on,
   onChange,
 }: {
+  label: string;
   on: boolean;
   onChange: (v: boolean) => void;
 }) {
@@ -809,6 +850,7 @@ function OverlayToggle({
       className={"toggle" + (on ? " on" : "")}
       role="switch"
       aria-checked={on}
+      aria-label={label}
       onClick={() => onChange(!on)}
     >
       <span className="toggle-knob" />
@@ -845,6 +887,7 @@ function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-desc">Optional browser-style editor tabs.</div>
           </div>
           <OverlayToggle
+            label="Tabs"
             on={settings.enableTabs}
             onChange={(v) => setSetting("enableTabs", v)}
           />
@@ -855,6 +898,7 @@ function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-desc">Reveal the sidebar from the left edge.</div>
           </div>
           <OverlayToggle
+            label="Auto-hide sidebar"
             on={settings.sidebarAutoHide}
             onChange={(v) => {
               setSetting("sidebarAutoHide", v);
@@ -868,6 +912,7 @@ function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-desc">Window motion, fades, and UI transitions.</div>
           </div>
           <OverlayToggle
+            label="Animations"
             on={settings.animations}
             onChange={(v) => setSetting("animations", v)}
           />
@@ -878,6 +923,7 @@ function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-desc">GPU-assisted graph canvas when available.</div>
           </div>
           <OverlayToggle
+            label="Hardware acceleration"
             on={settings.hardwareAccel}
             onChange={(v) => setSetting("hardwareAccel", v)}
           />
@@ -1108,7 +1154,6 @@ export function Overlay() {
   const open = useAppStore((s) => s.overlayOpen);
   const animations = useAppStore((s) => s.settings.animations);
   const setOpen = useAppStore((s) => s.setOverlayOpen);
-  const toggleOverlay = useAppStore((s) => s.toggleOverlay);
   const moveViewToRight = useAppStore((s) => s.moveViewToRight);
   const deepResearchOpenToken = useAppStore((s) => s.deepResearchOpenToken);
   const openDeepResearch = useAppStore((s) => s.openDeepResearch);
@@ -1179,23 +1224,13 @@ export function Overlay() {
         e.preventDefault();
         setOpen(false);
       }
-      // Shift+Tab is the symmetric toggle. Use the debounced store toggle so
-      // the app-shell listener and this one can't double-fire on a single
-      // press and snap the overlay shut (the "immediately closes" bug).
-      if (isPlainShiftTab(e) && !e.repeat) {
-        const el = document.activeElement as HTMLElement | null;
-        if (!isTextEntryTarget(el)) {
-          claimKeyboardShortcut(e);
-          toggleOverlay();
-        }
-      }
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open, setOpen, toggleOverlay]);
+  }, [open, setOpen]);
 
   if (!renderOverlay) return null;
 

@@ -43,8 +43,10 @@ lists those files but does not claim to parse, render, or serialize them.
    `VaultFile` explicitly; there is no second iframe-only PDF implementation.
 2. `usePdfEditor` reads exact bytes, snapshots the saved baseline, and gives a
    copied/sanitized buffer to one pdf.js document proxy.
-3. The worker parses; page canvases paint sequentially through one scratch
-   canvas. Zoom changes projection/render scale without reparsing bytes.
+3. The worker parses; page 1 mounts first and page canvases paint sequentially
+   through one scratch canvas. The hook renders only mounted canvases, then the
+   view admits the remaining page shells in small batches after page 1 is
+   visible. Zoom changes projection/render scale without reparsing bytes.
 4. Blank-paint validation first probes a 32×32 grid and, only when that grid
    appears blank, scans the already-read full pixel buffer. This preserves
    sparse valid pages while retaining the broken-render fallback.
@@ -62,7 +64,9 @@ lists those files but does not claim to parse, render, or serialize them.
 
 The browser demo includes `Mesa PDF Tour.pdf`, a deterministic local one-page
 PDF. `PdfView` exposes stable `data-testid` hooks for the editor, page
-container, and numbered canvases. The replayable workflow is:
+container, and numbered canvases. `scripts/pdf-perf-browser.mjs` can collect
+the in-viewer PDF timeline, long tasks, canvas count, and Chromium heap sample
+when run with a local Playwright installation. The replayable workflow is:
 
 1. Open `Mesa PDF Tour.pdf`.
 2. Wait for page 1 to have non-zero canvas dimensions and for the warm-start

@@ -54,6 +54,46 @@ export function monthMatrix(
   return weeks;
 }
 
+/** Roving-focus destination for the Sunday-first month grid. */
+export function calendarGridKeyTarget(
+  dateISO: string,
+  key: string
+): string | null {
+  const [y, m, d] = dateISO.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  if (
+    !Number.isFinite(date.getTime()) ||
+    localISO(date) !== dateISO
+  ) {
+    return null;
+  }
+  let delta: number;
+  switch (key) {
+    case "ArrowLeft":
+      delta = -1;
+      break;
+    case "ArrowRight":
+      delta = 1;
+      break;
+    case "ArrowUp":
+      delta = -7;
+      break;
+    case "ArrowDown":
+      delta = 7;
+      break;
+    case "Home":
+      delta = -date.getDay();
+      break;
+    case "End":
+      delta = 6 - date.getDay();
+      break;
+    default:
+      return null;
+  }
+  date.setDate(date.getDate() + delta);
+  return localISO(date);
+}
+
 /** A user calendar event, persisted in the vault's `calendar.json`. */
 export interface CalEvent {
   date: string; // YYYY-MM-DD

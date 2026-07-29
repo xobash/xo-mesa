@@ -33,8 +33,14 @@ import {
 } from "../lib/pdf";
 import type { VaultFile } from "../types";
 import type { PdfTextRun } from "./usePdfEditor";
+import { markPdfPerf } from "./pdfPerf";
 
 type Tool = "select" | "edit" | "text" | "highlight" | "ink";
+
+/** How long Mesa gets to paint page 1 before the native read-only renderer is
+ *  stood up to cover the gap. Below the threshold where a delay reads as a
+ *  stall, and above the measured first-page time for ordinary documents. */
+const NATIVE_WARM_START_DELAY_MS = 120;
 
 const COLORS: { label: string; rgb: RGB }[] = [
   { label: "Black", rgb: { r: 0, g: 0, b: 0 } },
@@ -102,6 +108,10 @@ export function PdfView({
     viewports,
     canvasRefs,
     bindCanvas,
+    pageSizes,
+    pageSizeVersion,
+    setOnscreenPages,
+    perfRunId,
     apply,
     undo,
     redo,
@@ -118,6 +128,8 @@ export function PdfView({
   const [color, setColor] = useState<RGB>(COLORS[0].rgb);
   const [size, setSize] = useState(14);
   const [showForm, setShowForm] = useState(false);
+  const [mountedPageCount, setMountedPageCount] = useState(0);
+  const [mountedForPath, setMountedForPath] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingText | null>(null);
   const [pendingValue, setPendingValue] = useState("");
   const [replacePending, setReplacePending] = useState<PendingReplace | null>(null);
@@ -175,15 +187,148 @@ export function PdfView({
     scaleRef.current = scale;
   }, [scale]);
   // The webview's native PDF renderer streams straight from disk via the asset
-  // protocol, so it can show the real document immediately — it must not wait
-  // for the editor's full byte read to finish.
-  const showNativeFirstPaint = !loadFailed && !renderError && !firstPagePainted;
+  // protocol, so it can cover a slow open — but standing it up is not free. It
+  // is a SECOND full PDF stack over the same file: the OS renderer reads and
+  // maps the document again, alongside the copy Mesa already holds and the copy
+  // in the pdf.js worker. On a machine that is swapping, that duplicate is
+  // exactly what the user feels, and Mesa's own first page now lands in tens of
+  // milliseconds for most documents — so the cover is usually pure cost.
+  //
+  // So: wait a beat. If Mesa paints page 1 first (the common case), the native
+  // renderer is never started at all. If the open really is slow — a huge
+  // scanned document, a cold cache, a machine under pressure — the cover still
+  // appears and behaves exactly as before.
+  const [warmStartDue, setWarmStartDue] = useState(false);
+  useEffect(() => {
+    if (firstPagePainted || loadFailed || renderError) {
+      setWarmStartDue(false);
+      return;
+    }
+    setWarmStartDue(false);
+    const id = window.setTimeout(
+      () => setWarmStartDue(true),
+      NATIVE_WARM_START_DELAY_MS
+    );
+    return () => window.clearTimeout(id);
+  }, [file?.path, firstPagePainted, loadFailed, renderError]);
+  const showNativeFirstPaint =
+    !loadFailed && !renderError && !firstPagePainted && warmStartDue;
+
+  // Page 1's canvas has to exist in the SAME commit that first learns the page
+  // count, or the render pass that the parsed document triggers finds nothing
+  // mounted, skips, and first paint ends up waiting on a second commit plus an
+  // animation frame — which is unbounded whenever the window is occluded.
+  // Resetting here (render phase, keyed by path) instead of in an effect is what
+  // buys that commit back. Keyed by path and not by page count so that editing
+  // page count (rotate, delete, add) never unmounts the pages already painted.
+  if (mountedForPath !== (file?.path ?? null)) {
+    setMountedForPath(file?.path ?? null);
+    setMountedPageCount(0);
+  }
+  const shellCount =
+    pageCount > 0 ? Math.min(pageCount, Math.max(mountedPageCount, 1)) : 0;
+
+  // The rest of the shells follow once page 1 is up. Batches grow geometrically
+  // so a 748-page document costs ~15 admissions rather than 93, while each
+  // individual commit stays small enough not to stall the frame the user is
+  // reading. Admitting a batch only ever costs the pages in it: the render pass
+  // skips everything already painted at this scale.
+  useEffect(() => {
+    if (!firstPagePainted || shellCount >= pageCount) return;
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      if (cancelled) return;
+      setMountedPageCount((prev) => {
+        const from = Math.max(prev, 1);
+        const next = Math.min(pageCount, from + Math.min(64, Math.max(7, from)));
+        if (next !== prev) {
+          markPdfPerf(perfRunId, "page-shell-batch-mounted", {
+            mountedPages: next,
+            totalPages: pageCount,
+          });
+        }
+        return next;
+      });
+    }, 16);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
+  }, [firstPagePainted, shellCount, pageCount, perfRunId]);
 
   useEffect(() => {
     return () => {
       if (renderFallbackUrl) URL.revokeObjectURL(renderFallbackUrl);
     };
   }, [renderFallbackUrl]);
+
+  // Report which pages are on (or near) screen, so the hook rasterizes a window
+  // rather than the whole document. The margin is deliberately generous: pages
+  // an easy scroll away should already hold pixels by the time they arrive.
+  //
+  // The container is tracked in state, not read off the ref during render: a ref
+  // read gives the PREVIOUS commit's value and never re-runs this effect, which
+  // would leave the observer unattached and every page reported off-screen.
+  const [pagesEl, setPagesEl] = useState<HTMLDivElement | null>(null);
+  const [pagesInnerEl, setPagesInnerEl] = useState<HTMLDivElement | null>(null);
+  const bindPages = useCallback((el: HTMLDivElement | null) => {
+    pagesRef.current = el;
+    setPagesEl(el);
+  }, []);
+  const bindPagesInner = useCallback((el: HTMLDivElement | null) => {
+    pagesInnerRef.current = el;
+    setPagesInnerEl(el);
+  }, []);
+  useEffect(() => {
+    const scroller = pagesEl;
+    const inner = pagesInnerEl;
+    if (!scroller || !inner || shellCount === 0) return;
+    if (typeof IntersectionObserver === "undefined") {
+      // Without an observer, fall back to "everything mounted is on screen".
+      // That restores the previous whole-document behaviour rather than leaving
+      // pages permanently blank.
+      setOnscreenPages(new Set(Array.from({ length: shellCount }, (_, i) => i)));
+      return;
+    }
+    const onscreen = new Set<number>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const page = Number(
+            (entry.target as HTMLElement).dataset.pageIndex ?? "-1"
+          );
+          if (page < 0) continue;
+          if (entry.isIntersecting) onscreen.add(page);
+          else onscreen.delete(page);
+        }
+        setOnscreenPages(new Set(onscreen));
+      },
+      { root: scroller, rootMargin: "150% 0px" }
+    );
+    for (const wrap of inner.querySelectorAll<HTMLElement>(".pdf-page-wrap")) {
+      observer.observe(wrap);
+    }
+    return () => observer.disconnect();
+    // The containers participate so the observer is rebuilt when the scroll
+    // container itself is (re)mounted, not just when the shell count changes.
+  }, [shellCount, setOnscreenPages, pagesEl, pagesInnerEl]);
+
+  /** Reserved CSS box for a page, at the current render scale. Pages that have
+   *  not been measured yet borrow the nearest known page's box so the scroll
+   *  height is approximately right immediately and exact once measured. */
+  const pageBox = useCallback(
+    (pageIdx: number): { width: number; height: number } | null => {
+      void pageSizeVersion;
+      const own = pageSizes.get(pageIdx);
+      const fallback = own ?? pageSizes.get(0);
+      if (!fallback) return null;
+      return {
+        width: Math.round(fallback.width * renderScale),
+        height: Math.round(fallback.height * renderScale),
+      };
+    },
+    [pageSizes, pageSizeVersion, renderScale]
+  );
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
@@ -306,6 +451,13 @@ export function PdfView({
     const canvas = canvasRefs.current.get(pageIdx);
     const vp = viewports.current.get(pageIdx);
     if (!canvas || !vp) return null;
+    // A page whose pixels were released (or were never painted) has no bitmap,
+    // and the viewport it was last painted with outlives that release. Scaling
+    // the click by a zero-width bitmap would silently map every point onto the
+    // page origin, so an annotation would land in the corner instead of where
+    // the user clicked. No pixels, no pointer mapping — the page repaints as
+    // soon as it is back in the window, and the click is a no-op until then.
+    if (canvas.width <= 0 || canvas.height <= 0) return null;
     const rect = canvas.getBoundingClientRect();
     const vx = ((e.clientX - rect.left) * canvas.width) / rect.width;
     const vy = ((e.clientY - rect.top) * canvas.height) / rect.height;
@@ -595,7 +747,7 @@ export function PdfView({
       <div className="pdf-body" ref={bodyRef}>
         <div
           className={"pdf-pages tool-" + tool + (mode === "view" ? " native-view" : "")}
-          ref={pagesRef}
+          ref={bindPages}
         >
           {loadFailed ? (
             <div className="pdf-error">
@@ -627,6 +779,7 @@ export function PdfView({
                   data-testid="pdf-native-first-paint"
                   src={urlForPath(file.path)}
                   title={file.name}
+                  onLoad={() => markPdfPerf(perfRunId, "native-iframe-loaded")}
                 />
               )}
               <div
@@ -634,12 +787,12 @@ export function PdfView({
                   "pdf-pages-inner" + (showNativeFirstPaint ? " warming" : "")
                 }
                 data-testid="pdf-pages"
-                ref={pagesInnerRef}
+                ref={bindPagesInner}
                 style={{ "--pdf-zoom": zoomFactor } as CSSProperties}
                 aria-hidden={showNativeFirstPaint ? true : undefined}
               >
-                {Array.from({ length: pageCount }, (_, i) => (
-                  <div className="pdf-page-wrap" key={i}>
+                {Array.from({ length: shellCount }, (_, i) => (
+                  <div className="pdf-page-wrap" key={i} data-page-index={i}>
                     <div className="pdf-page-tools">
                       {mode === "edit" && (
                         <>
@@ -658,6 +811,12 @@ export function PdfView({
                         className="pdf-canvas"
                         data-testid="pdf-page-canvas"
                         data-page-number={i + 1}
+                        // The CSS box comes from the page's measured size, not
+                        // from its bitmap, so a page that has not been painted
+                        // (or whose pixels were released) still occupies exactly
+                        // the space it will occupy once painted. Without this the
+                        // scroll height changes under the reader as pages paint.
+                        style={pageBox(i) ?? undefined}
                         onClick={(e) => onPageClick(i, e)}
                         onPointerDown={(e) => onDown(i, e)}
                         onPointerMove={(e) => onMove(i, e)}

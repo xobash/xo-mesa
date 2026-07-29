@@ -32,13 +32,16 @@ import {
   importDroppedPaths,
   recoverWriteArtifacts,
   isTextualVaultFile,
+  isIndexableVaultRelPath,
   flushableNoteText,
+  needsCachedTextRefresh,
   extOf,
   stripExt,
   normalizeVaultRelPath,
   canonicalRoot,
   DEMO_ROOT,
   IN_TAURI,
+  writeVaultTextFile,
   type VaultWatchEvent,
 } from "./lib/vault";
 import { buildNotes, refreshedNoteMeta, resolveTarget } from "./lib/graph";
@@ -60,7 +63,7 @@ import {
   type SyncProgress,
   type SyncReport,
 } from "./lib/sync";
-import { parsePeerInput } from "./lib/pairing";
+import { normalizeSyncPort, parsePeerInput } from "./lib/pairing";
 import { generateDeviceName } from "./lib/deviceName";
 import type { KeyboardFocus } from "./lib/keyboardNav";
 import {
@@ -76,6 +79,8 @@ import { stat } from "@tauri-apps/plugin-fs";
 import { planKeyMigration } from "./lib/migrate";
 import { invalidatePdfThumb } from "./lib/pdfThumb";
 import { forgetRecentVault, rememberRecentVault } from "./lib/recentVaults";
+import { planTextCache } from "./lib/textCachePlan";
+import { resetSearchEligibility } from "./lib/searchMatch";
 import {
   resetVaultTaskMemo,
   updateTaskLine,
@@ -107,7 +112,9 @@ import {
   canonicalizeSourceUrl,
   truncateUtf8,
   activityForNavigation,
+  utf8ByteLength,
   type DeepResearchPhase,
+  type DeepResearchLaunchStage,
   type DeepResearchResult,
   type DeepResearchContext,
   type ResearchChangeSet,
@@ -117,13 +124,19 @@ import {
 } from "./lib/deepResearch";
 import {
   currentPiSessionId,
-  sendToPi,
+  sendResearchPrompt,
   interruptPi,
   listenDeepResearch,
   applyChangeSet,
   resolveApplyPlan,
 } from "./lib/deepResearchRun";
 import { explainResearchTimeout } from "./lib/deepResearchDiagnostics";
+import {
+  archiveWebPage,
+  queueAcceptedResearchSources,
+  researchArchiveRelPaths,
+  type ArchiveFetchedPage,
+} from "./lib/webArchive";
 
 const CALENDAR_FILE = "calendar.json";
 
@@ -160,9 +173,17 @@ export interface DeepResearchRunState {
   runId: string;
   query: string;
   phase: DeepResearchPhase;
+  /** Exact launch boundary, so a stuck run is diagnosable before timeout. */
+  launchStage: DeepResearchLaunchStage;
   /** When the run was started (ms epoch), 0 while idle. Drives the
    *  inactivity timeout and the troubleshooting kit's elapsed times. */
   startedAt: number;
+  /** UTF-8 size of the prompt Mesa attempted to submit to Pi. */
+  promptBytes: number;
+  /** When the prompt body + explicit Enter were accepted by the PTY bridge. */
+  promptSentAt: number | null;
+  /** First progress or real browser navigation observed for this run. */
+  firstSignalAt: number | null;
   /** The thoroughness the run was started with. */
   depth: ResearchDepth;
   /** The deterministic context snapshot the run was started with. */
@@ -175,8 +196,16 @@ export interface DeepResearchRunState {
   currentRound: number;
   /** The sub-question currently being researched. */
   currentSubQuestion: string | null;
-  /** Sources seen so far, with live status. */
-  sources: { url: string; title?: string; status: "reading" | "done" }[];
+  /** Sources seen so far. Only final validated sources receive archive state. */
+  sources: {
+    url: string;
+    title?: string;
+    status: "reading" | "done";
+    archiveStatus?: "saving" | "saved" | "failed";
+    archiveRelPath?: string;
+    archiveKind?: "page" | "link";
+    archiveError?: string;
+  }[];
   /** Latest report snapshot sent while Pi is assembling the deliverable. */
   reportDraft: string;
   /** The validated, normalized result once the model finishes. */
@@ -307,6 +336,10 @@ function initialSettings(): Settings {
       delete parsed.graphMinDegree;
       delete parsed.syncPeers;
       settings = { ...DEFAULT_SETTINGS, ...parsed };
+      settings.syncPort = normalizeSyncPort(
+        settings.syncPort,
+        DEFAULT_SETTINGS.syncPort
+      );
     }
   } catch {
     /* ignore */
@@ -417,6 +450,11 @@ interface AppState {
   /** Folders created this session that are still empty (not yet on disk scans),
    *  so the sidebar shows them immediately after "New folder". */
   emptyFolders: string[];
+  /** Textual files whose content the vault-open text budget left uncached, so
+   *  full-text search can only match them by name. Zero for every vault that
+   *  fits the budget; surfaced in the search UI so incomplete results are
+   *  never silent. */
+  unindexedTextFiles: number;
 
   setTheme: (t: ThemeId) => void;
   setDragView: (d: PaneDrag | null) => void;
@@ -530,6 +568,23 @@ export const useAppStore = create<AppState>((set, get) => {
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let unwatch: (() => void) | undefined;
   let externalRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  // `fileFor` was a linear `find` over every file in the vault, and it is asked
+  // on selection, on every viewer render, and up to three times per path inside
+  // the watcher loop. At 4,165 files that is 11.2 us a call; a bulk external
+  // change (4,500 lookups) spent 34.7 ms in it, versus 0.25 ms indexed. Rebuilt
+  // only when the `files` array identity changes — every mutation replaces it —
+  // so the index can never answer for a stale file list.
+  let fileIndexFrom: VaultFile[] | null = null;
+  let fileIndex = new Map<string, VaultFile>();
+  const fileIndexFor = (files: VaultFile[]): Map<string, VaultFile> => {
+    if (fileIndexFrom !== files) {
+      fileIndexFrom = files;
+      fileIndex = new Map();
+      // `find` returns the FIRST match; keep that exact semantic.
+      for (const f of files) if (!fileIndex.has(f.relPath)) fileIndex.set(f.relPath, f);
+    }
+    return fileIndex;
+  };
   const pendingContentReads = new Map<string, Promise<string>>();
   // Hover-preview peeks: short-lived, capped, and separate from contentCache
   // (a truncated peek must never be mistaken for the file's real content).
@@ -537,13 +592,6 @@ export const useAppStore = create<AppState>((set, get) => {
   const pendingPeekReads = new Map<string, Promise<string>>();
   const PEEK_TTL_MS = 10_000;
   const PEEK_CACHE_MAX = 32;
-  // Debounce for the Shift+Tab overlay toggle. The overlay, app shell, and
-  // xterm Pi terminal each listen for Shift+Tab; without a debounce, a single
-  // keypress could fire two listeners (open then close) and the overlay would
-  // refuse to stay open. This coalesces toggles within TOGGLE_DEBOUNCE_MS.
-  let lastOverlayToggleAt = 0;
-  const TOGGLE_DEBOUNCE_MS = 300;
-
   // --- Deep Research run bookkeeping (module-scope, not React state). -------
   let drSeq = 0;
   let drUnlisten: (() => void) | null = null;
@@ -560,6 +608,90 @@ export const useAppStore = create<AppState>((set, get) => {
     const cur = get().deepResearch;
     if (cur) set({ deepResearch: { ...cur, ...patch } });
   };
+
+  const drPatchSource = (
+    runId: string,
+    sourceUrl: string,
+    patch: Partial<DeepResearchRunState["sources"][number]>
+  ): boolean => {
+    const cur = get().deepResearch;
+    if (!cur || cur.runId !== runId) return false;
+    const index = cur.sources.findIndex((source) => source.url === sourceUrl);
+    if (index < 0) return false;
+    const sources = cur.sources.slice();
+    sources[index] = { ...sources[index], ...patch };
+    set({ deepResearch: { ...cur, sources } });
+    return true;
+  };
+
+  /**
+   * Save only the final validated source set. Merely visited/search-result
+   * pages never reach this queue. Archiving is independent of proposal apply:
+   * it preserves the evidence that produced the proposal, while note changes
+   * still wait for explicit review.
+   */
+  async function drArchiveAcceptedSources(
+    runId: string,
+    root: string,
+    sources: DeepResearchResult["sources"],
+    archiveStartedAt: number
+  ): Promise<void> {
+    const relPaths = researchArchiveRelPaths(
+      sources.map((source) => source.url),
+      archiveStartedAt
+    );
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < sources.length) {
+        const index = nextIndex++;
+        const source = sources[index];
+        const relPath = relPaths[index];
+        if (!source || !relPath) continue;
+        try {
+          const archived = await archiveWebPage(
+            source.url,
+            {
+              fetchPage: (url) =>
+                invoke<ArchiveFetchedPage>("browse_fetch", { url }),
+              writeText: async (targetRelPath, html) => {
+                await writeVaultTextFile(root, targetRelPath, html, {
+                  expectedMissing: true,
+                });
+              },
+            },
+            { relPath }
+          );
+          bumpActivityAmount(
+            archived.relPath,
+            1.2,
+            "create",
+            archived.linkRecord
+              ? "Deep Research saved a source link"
+              : "Deep Research archived an accepted source"
+          );
+          // Never register a file against a different vault if the user
+          // switches vaults while the background queue is finishing.
+          if (get().vaultPath === root) {
+            await registerExternalFile(archived.relPath);
+          }
+          drPatchSource(runId, source.url, {
+            archiveStatus: "saved",
+            archiveRelPath: archived.relPath,
+            archiveKind: archived.linkRecord ? "link" : "page",
+            archiveError: archived.warning,
+          });
+        } catch (error) {
+          drPatchSource(runId, source.url, {
+            archiveStatus: "failed",
+            archiveError:
+              error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    };
+    const workerCount = Math.min(3, sources.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  }
 
   async function drStopListening() {
     if (drTimeout) clearTimeout(drTimeout);
@@ -583,9 +715,11 @@ export const useAppStore = create<AppState>((set, get) => {
   function drFinish(runId: string, rawResult: unknown) {
     const cur = get().deepResearch;
     if (!cur || cur.runId !== runId) return;
+    drPatch({ launchStage: "finishing" });
     if (!rawResult || typeof rawResult !== "object") {
       drPatch({
         phase: "error",
+        launchStage: "error",
         error:
           "Pi called deep_research_finish but its result payload was not a structured object. " +
           "The model produced the finish call without a valid JSON envelope — check the Pi terminal " +
@@ -598,6 +732,7 @@ export const useAppStore = create<AppState>((set, get) => {
     if (!result.report.markdown.trim()) {
       drPatch({
         phase: "error",
+        launchStage: "error",
         error:
           "Pi finished the run but the validated result contains no report markdown " +
           "(report.markdown was empty or not a string after validation). Check the Pi terminal " +
@@ -610,6 +745,7 @@ export const useAppStore = create<AppState>((set, get) => {
       void drStopListening();
       drPatch({
         phase: "error",
+        launchStage: "error",
         error:
           "Pi finished, but its report failed the thesis-grade research contract:\n- " +
           qualityIssues.join("\n- ") +
@@ -629,16 +765,32 @@ export const useAppStore = create<AppState>((set, get) => {
       now: new Date(),
       limits,
     });
+    const finalSources = queueAcceptedResearchSources(
+      cur.sources,
+      result.sources
+    );
+    const root = get().vaultPath;
+    const archiveStartedAt = Date.now();
     void drStopListening();
     drPatch({
       phase: "review",
+      launchStage: "review",
       result,
       changeSet,
       subQuestions: result.subQuestions && result.subQuestions.length ? result.subQuestions : cur.subQuestions,
       currentSubQuestion: null,
       currentRound: cur.depth.rounds,
+      sources: finalSources,
       reportDraft: result.report.markdown,
     });
+    if (root && IN_TAURI && result.sources.length > 0) {
+      void drArchiveAcceptedSources(
+        runId,
+        root,
+        result.sources,
+        archiveStartedAt
+      );
+    }
   }
 
   async function drStartListening(runId: string) {
@@ -698,8 +850,10 @@ export const useAppStore = create<AppState>((set, get) => {
         sources = sources.slice(0, cur.depth.maxSources);
         set({
           deepResearch: {
-            ...cur,
-            phase: phase === "planning" || phase === "synthesizing" ? phase : "researching",
+          ...cur,
+          phase: phase === "planning" || phase === "synthesizing" ? phase : "researching",
+          launchStage: "active",
+          firstSignalAt: cur.firstSignalAt ?? Date.now(),
             activity: [...cur.activity, activity].slice(-300),
             subQuestions,
             currentSubQuestion,
@@ -741,6 +895,8 @@ export const useAppStore = create<AppState>((set, get) => {
       set({
         deepResearch: {
           ...cur,
+          launchStage: "active",
+          firstSignalAt: cur.firstSignalAt ?? Date.now(),
           activity: [...cur.activity, activity].slice(-300),
           sources,
         },
@@ -774,6 +930,7 @@ export const useAppStore = create<AppState>((set, get) => {
         void drStopListening();
         drPatch({
           phase: "error",
+          launchStage: "error",
           error: explainResearchTimeout({ run: cur, piSessionLive: Boolean(sid) }),
         });
         if (sid) void requestSharedPiRestart();
@@ -797,12 +954,9 @@ export const useAppStore = create<AppState>((set, get) => {
   async function registerExternalFile(rel: string): Promise<void> {
     const root = get().vaultPath;
     if (!root || get().fileFor(rel)) return;
-    // Skip hidden files and dot-prefixed names — scanVault ignores them too.
+    // One definition of what belongs in a vault, shared with scanVault's walk.
+    if (!isIndexableVaultRelPath(rel)) return;
     const base = rel.replace(/.*\//, "");
-    if (base.startsWith(".")) return;
-    // Skip files inside node_modules or .git — scanVault ignores those dirs.
-    const parts = rel.split("/");
-    if (parts.some((p) => p === "node_modules" || p === ".git")) return;
     const ext = extOf(base);
     const isMarkdown = /^(md|markdown)$/i.test(ext);
     const path = `${root.replace(/\/+$/, "")}/${rel}`;
@@ -921,117 +1075,196 @@ export const useAppStore = create<AppState>((set, get) => {
     if (!rootRaw) return;
     const active = get().activePath;
     const seen = new Set<string>();
-    for (const evt of events) {
-      for (const p of evt.paths) {
-        let rel = normalizeVaultRelPath(
-          p,
-          rootRaw,
-          get().files.map((f) => f.relPath)
-        );
-        if (!rel) {
-          await refreshMissingExternalFiles(rootRaw);
-          rel = normalizeVaultRelPath(
-            p,
-            rootRaw,
-            get().files.map((f) => f.relPath)
-          );
-        }
-        if (!rel || seen.has(rel)) continue;
-        seen.add(rel);
-
-        // Dot-prefixed files are invisible to Mesa (scanVault skips them).
-        // This includes Mesa's own verified-write artifacts (.x.mesa-*.tmp),
-        // which would otherwise trigger a full rescan fallback on every save.
-        const relBase = rel.replace(/.*\//, "");
-        if (relBase.startsWith(".")) continue;
-
-        // --- Deletion ---
-        if (evt.kind === "remove") {
-          if (get().fileFor(rel)) {
-            removeExternalFile(rel);
+    // Modify-path results are accumulated and committed ONCE for the batch.
+    // Committing per file spread the whole content cache and notes map each
+    // time, so a bulk external change — a device sync landing, an agent
+    // rewriting a folder, a git checkout inside the vault — cost O(files ×
+    // cacheKeys) copies plus one React cascade per file over the whole sidebar.
+    // Measured at this vault's dimensions (2,452 cached files): 1,500 changed
+    // files spent 576 ms in object copying alone; batched, 0.5 ms. `seen`
+    // guarantees each rel is handled at most once per batch, and nothing in the
+    // loop reads back the values queued here, so one commit is equivalent.
+    const pendingContent = new Map<string, string>();
+    const pendingNotes = new Map<string, NoteMeta>();
+    let filesDirty = false;
+    // `normalizeVaultRelPath` only consults the vault's relPath list for an
+    // absolute path that does NOT sit under the vault root — the uncommon case
+    // (an aliased/symlinked root, or a tool reporting a resolved path). Building
+    // that list per path anyway copied every file in the vault each time: 45.5 ms
+    // per 1,500-path batch here, versus 0.8 ms when it is built only when it is
+    // actually needed. Memoized on the `files` array identity, which every
+    // mutation replaces, so it can never be consulted stale.
+    let knownFrom: VaultFile[] | null = null;
+    let knownRelPaths: string[] = [];
+    const knownRels = (): string[] => {
+      const cur = get().files;
+      if (knownFrom !== cur) {
+        knownFrom = cur;
+        knownRelPaths = cur.map((f) => f.relPath);
+      }
+      return knownRelPaths;
+    };
+    // A full rescan is `scanVault` over the whole vault. One per batch picks up
+    // everything on disk at that moment, so a second one inside the same loop
+    // can only repeat work; anything created after it is left to the debounced
+    // refresh. Unbounded rescans inside an event handler are what turned a
+    // burst of unrecognized paths into a freeze.
+    let rescanned = false;
+    const rescanOnce = async (): Promise<void> => {
+      if (rescanned) return;
+      rescanned = true;
+      await refreshMissingExternalFiles(rootRaw);
+    };
+    const flush = () => {
+      if (!pendingContent.size && !pendingNotes.size && !filesDirty) return;
+      const next: Partial<AppState> = {};
+      if (pendingContent.size) {
+        // Read at flush time, so creates and deletes that committed during the
+        // loop are already in the base. `seen` means a rel is never both queued
+        // here and removed in the same batch.
+        const cache = { ...get().contentCache };
+        for (const [rel, text] of pendingContent) cache[rel] = text;
+        next.contentCache = cache;
+      }
+      if (pendingNotes.size) {
+        const notes = { ...get().notes };
+        for (const [rel, meta] of pendingNotes) notes[rel] = meta;
+        next.notes = notes;
+      }
+      // Stat refreshes mutate the VaultFile objects in place; the array copy
+      // exists only to give React a new identity to re-render from.
+      if (filesDirty) next.files = [...get().files];
+      set(next);
+    };
+    try {
+      for (const evt of events) {
+        for (const p of evt.paths) {
+          // Cheap form first: a path under the vault root resolves on the
+          // root-prefix branch without the list being read at all.
+          let rel = normalizeVaultRelPath(p, rootRaw);
+          if (!rel) rel = normalizeVaultRelPath(p, rootRaw, knownRels());
+          if (!rel) {
+            await rescanOnce();
+            rel = normalizeVaultRelPath(p, rootRaw, knownRels());
+            // Created after this batch's rescan: let the debounced refresh find
+            // it instead of scanning the whole vault again mid-loop. Previously
+            // such a path was simply dropped.
+            if (!rel) scheduleExternalRefresh(rootRaw);
           }
-          continue;
-        }
+          if (!rel || seen.has(rel)) continue;
+          seen.add(rel);
 
-        // --- Create or Modify ---
-        let file = get().fileFor(rel);
-        if (!file) {
-          // a brand-new file appeared on disk — register it
-          await registerExternalFile(rel);
-          file = get().fileFor(rel);
+          // Anything scanVault would not index is invisible to Mesa, so there is
+          // nothing here to refresh. This covers Mesa's own verified-write
+          // artifacts (.x.mesa-*.tmp) and, unlike the basename-only check it
+          // replaces, everything under a dot-directory — `.git/index` and its
+          // siblings used to reach the rescan fallback and scan the whole vault
+          // once per path. See `isIndexableVaultRelPath`.
+          if (!isIndexableVaultRelPath(rel)) continue;
+
+          // --- Deletion ---
+          if (evt.kind === "remove") {
+            if (get().fileFor(rel)) {
+              removeExternalFile(rel);
+            }
+            continue;
+          }
+
+          // --- Create or Modify ---
+          let file = get().fileFor(rel);
           if (!file) {
-            await refreshMissingExternalFiles(rootRaw);
+            // a brand-new file appeared on disk — register it
+            await registerExternalFile(rel);
             file = get().fileFor(rel);
-          }
-          scheduleExternalRefresh(rootRaw);
-          if (file) {
-            let detail = "";
-            let added = 0;
-            if (file.isMarkdown) {
-              const text = await readNote(file);
-              detail = text.slice(0, 160);
-              added = changedLineStats("", text).added;
+            if (!file) {
+              await rescanOnce();
+              file = get().fileFor(rel);
             }
-            bumpActivityAmount(rel, 1.3, "create", undefined, detail, {
-              added,
-              removed: 0,
-            });
+            scheduleExternalRefresh(rootRaw);
+            if (file) {
+              let detail = "";
+              let added = 0;
+              if (file.isMarkdown) {
+                const text = await readNote(file);
+                detail = text.slice(0, 160);
+                added = changedLineStats("", text).added;
+              }
+              bumpActivityAmount(rel, 1.3, "create", undefined, detail, {
+                added,
+                removed: 0,
+              });
+            }
+            continue;
           }
-          continue;
-        }
 
-        // Existing file — refresh content/metadata
-        if (file.isMarkdown) {
-          const text = await readNote(file);
-          const old = get().contentCache[rel] ?? "";
-          if (text === old) continue; // unchanged, or our own in-app save
-          // brighter flicker for bigger edits
-          const mag = Math.min(1.6, 0.5 + Math.abs(text.length - old.length) / 180);
-          bumpActivityAmount(
-            rel,
-            mag,
-            "write",
-            undefined,
-            changedSnippet(old, text),
-            changedLineStats(old, text)
-          );
-          // refresh everything except the doc currently being typed in-app
-          if (rel !== active) {
-            const notes = { ...get().notes };
-            const cur = notes[rel];
-            if (cur) {
-              notes[rel] = {
-                ...cur,
-                rawLinks: extractLinks(text),
-                tags: extractTags(text),
-                aliases: extractAliases(text),
-              };
+          // Existing file — refresh content/metadata
+          if (file.isMarkdown) {
+            const text = await readNote(file);
+            const old = get().contentCache[rel] ?? "";
+            if (text === old) continue; // unchanged, or our own in-app save
+            // brighter flicker for bigger edits
+            const mag = Math.min(1.6, 0.5 + Math.abs(text.length - old.length) / 180);
+            bumpActivityAmount(
+              rel,
+              mag,
+              "write",
+              undefined,
+              changedSnippet(old, text),
+              changedLineStats(old, text)
+            );
+            // refresh everything except the doc currently being typed in-app
+            if (rel !== active) {
+              const cur = get().notes[rel];
+              if (cur) {
+                pendingNotes.set(rel, {
+                  ...cur,
+                  rawLinks: extractLinks(text),
+                  tags: extractTags(text),
+                  aliases: extractAliases(text),
+                });
+              }
+              pendingContent.set(rel, text);
             }
-            set({
-              notes,
-              contentCache: { ...get().contentCache, [rel]: text },
-            });
-          }
-        } else {
-          // Non-markdown file was modified (e.g. an image was replaced).
-          // Refresh its stat so sidebar sorting stays accurate.
-          if (file.ext === "pdf") {
-            // Stale hover thumbnails must not survive an on-disk change.
-            invalidatePdfThumb(file.path);
-          }
-          try {
-            const s = await stat(file.path);
-            file.size = s.size;
-            file.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
-            // Trigger a re-render by creating a new array reference
-            set({
-              files: [...get().files],
-            });
-          } catch {
-            /* stat failed — leave as-is */
+          } else {
+            // Non-markdown file was modified (e.g. an image was replaced).
+            // Refresh its stat so sidebar sorting stays accurate.
+            if (file.ext === "pdf") {
+              // Stale hover thumbnails must not survive an on-disk change.
+              invalidatePdfThumb(file.path);
+            }
+            // A textual file Mesa already holds text for is refreshed exactly like
+            // markdown above — see `needsCachedTextRefresh`. Without this the cache
+            // kept the old bytes for the rest of the session, so search matched
+            // text that was no longer on disk, the editor opened the stale copy,
+            // and saving it overwrote the newer file. The document currently being
+            // typed in is left alone, the same rule the markdown branch uses.
+            if (
+              rel !== active &&
+              needsCachedTextRefresh(file, get().contentCache[rel])
+            ) {
+              const text = await readNote(file);
+              // Mesa's own saves land here too; an unchanged read must not churn
+              // the cache identity that every text consumer subscribes to.
+              if (text !== get().contentCache[rel]) {
+                pendingContent.set(rel, text);
+              }
+            }
+            try {
+              const s = await stat(file.path);
+              file.size = s.size;
+              file.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
+              // Re-render once for the batch, not once per file.
+              filesDirty = true;
+            } catch {
+              /* stat failed — leave as-is */
+            }
           }
         }
       }
+    } finally {
+      // Applies whatever the batch got through even if a later path throws —
+      // the per-file commits this replaced had that property too.
+      flush();
     }
   }
 
@@ -1234,6 +1467,7 @@ export const useAppStore = create<AppState>((set, get) => {
     keyboardFocus: { region: "center", rightIndex: 0 },
     collapsedFolders: {},
     emptyFolders: [],
+    unindexedTextFiles: 0,
 
     showHoverPreview: (target, x, y) => set({ hoverPreview: { target, x, y } }),
     hideHoverPreview: () => {
@@ -1262,14 +1496,18 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     setSetting: (key, value) => {
-      const settings = { ...get().settings, [key]: value };
+      const safeValue =
+        key === "syncPort"
+          ? normalizeSyncPort(value, get().settings.syncPort)
+          : value;
+      const settings = { ...get().settings, [key]: safeValue };
       commitSettings(settings);
-      if (key === "syncEnabled" && value === false) {
+      if (key === "syncEnabled" && safeValue === false) {
         void stopSyncServer().catch(() => {});
         set({ syncListening: false, syncBusy: false, syncStatus: "Sync disabled." });
       }
       if (key === "enableTabs") {
-        if (value === false) {
+        if (safeValue === false) {
           set({ openTabs: [] });
         } else {
           const active = get().activePath;
@@ -1691,6 +1929,10 @@ export const useAppStore = create<AppState>((set, get) => {
       // The task memo keys on relPath, so without this the outgoing vault's
       // note contents stay reachable until the dashboard next runs a pass.
       resetVaultTaskMemo();
+      // Same reason: the search eligibility memo keys on relPath and holds the
+      // text it answered for, so the outgoing vault's strings would stay
+      // reachable through it.
+      resetSearchEligibility();
 
       // Crash recovery first, so a file restored from a stale save backup is
       // scanned like any other. Never throws; never blocks opening the vault.
@@ -1704,9 +1946,17 @@ export const useAppStore = create<AppState>((set, get) => {
       const files = await scanVault(root);
       // read note contents in parallel — far faster startup on large vaults
       const contents = new Map<string, string>();
+      // Search reads the content cache for EVERY scanned file, so caching only
+      // markdown left every other textual file (.txt/.html/.py/.json/…)
+      // matchable by name alone — and inconsistently so, since opening one
+      // cached it lazily and changed later results. `planTextCache` budgets
+      // those extra reads from the scan's own size metadata; `searchMatch.ts`
+      // is what keeps scanning the larger corpus cheap.
+      const textPlan = planTextCache(files, isTextualVaultFile);
       await Promise.all(
         files
           .filter((f) => f.isMarkdown)
+          .concat(textPlan.extra)
           .map(async (f) => {
             contents.set(f.relPath, await readNote(f));
           })
@@ -1755,6 +2005,7 @@ export const useAppStore = create<AppState>((set, get) => {
         activePath: null,
         content: "",
         emptyFolders: [],
+        unindexedTextFiles: textPlan.skipped,
         loading: false,
         status: `${Object.keys(notes).length} notes`,
       });
@@ -2013,12 +2264,7 @@ export const useAppStore = create<AppState>((set, get) => {
         // (no two Pi agent instances). Opening the Steam overlay closes Pi.
         piOverlayOpen: open ? false : s.piOverlayOpen,
       })),
-    // Debounced toggle so multiple Shift+Tab listeners (app shell + overlay +
-    // xterm) can't double-fire on a single press and snap the overlay shut.
     toggleOverlay: () => {
-      const now = performance.now();
-      if (now - lastOverlayToggleAt < TOGGLE_DEBOUNCE_MS) return;
-      lastOverlayToggleAt = now;
       const next = !get().overlayOpen;
       set((s) => ({
         overlayOpen: next,
@@ -2047,7 +2293,11 @@ export const useAppStore = create<AppState>((set, get) => {
             runId: createRunId(),
             query: "",
             phase: "idle",
+            launchStage: "idle",
             startedAt: 0,
+            promptBytes: 0,
+            promptSentAt: null,
+            firstSignalAt: null,
             depth: clampDepth(
               RESEARCH_DEPTH_PRESETS[
                 (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS) in RESEARCH_DEPTH_PRESETS
@@ -2084,18 +2334,18 @@ export const useAppStore = create<AppState>((set, get) => {
       const root = get().vaultPath;
       if (!trimmed) {
         get().openDeepResearch(false);
-        drPatch({ phase: "error", error: "Enter a research question first." });
+        drPatch({ phase: "error", launchStage: "error", error: "Enter a research question first." });
         return;
       }
       if (!root) {
         get().openDeepResearch(false);
-        drPatch({ phase: "error", error: "Open a vault before running Deep Research." });
+        drPatch({ phase: "error", launchStage: "error", error: "Open a vault before running Deep Research." });
         return;
       }
       // Never stack runs: a run already streaming must be cancelled first.
       const existing = get().deepResearch;
       if (existing && (existing.phase === "planning" || existing.phase === "researching" || existing.phase === "synthesizing")) {
-        drPatch({ phase: existing.phase, error: "A Deep Research run is already in progress — cancel it first." });
+        drPatch({ phase: existing.phase, launchStage: existing.launchStage, error: "A Deep Research run is already in progress — cancel it first." });
         return;
       }
 
@@ -2128,7 +2378,11 @@ export const useAppStore = create<AppState>((set, get) => {
           runId,
           query: trimmed,
           phase: "planning",
+          launchStage: "preparing",
           startedAt: Date.now(),
+          promptBytes: 0,
+          promptSentAt: null,
+          firstSignalAt: null,
           depth,
           context,
           activity: [{ kind: "status", message: "Preparing research context…", at: Date.now() }],
@@ -2153,6 +2407,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!IN_TAURI) {
         drPatch({
           phase: "error",
+          launchStage: "error",
           error:
             "Deep Research needs the desktop app's Pi agent. The browser demo has no native Pi session.",
         });
@@ -2160,8 +2415,14 @@ export const useAppStore = create<AppState>((set, get) => {
       }
       // Mount a Pi surface only when the launcher is not already inside one.
       // This avoids opening a duplicate Pi modal behind the slide-out wing.
-      if (!currentPiSessionId() && !opts?.piSurfaceAvailable) set({ agentOpen: true });
+      if (!currentPiSessionId() && !opts?.piSurfaceAvailable) {
+        drPatch({ launchStage: "starting-pi" });
+        set({ agentOpen: true });
+      } else if (!currentPiSessionId()) {
+        drPatch({ launchStage: "starting-pi" });
+      }
       if (currentPiSessionId()) {
+        drPatch({ launchStage: "restarting-pi" });
         await requestSharedPiRestart();
       }
       let sessionId: string | null = null;
@@ -2173,6 +2434,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!sessionId) {
         drPatch({
           phase: "error",
+          launchStage: "error",
           error:
             "Pi did not start in time. Open the Pi agent (Ctrl/Cmd+Shift+Space), let it finish starting, then run Deep Research again.",
         });
@@ -2182,10 +2444,11 @@ export const useAppStore = create<AppState>((set, get) => {
 
       // Arm the result listener BEFORE sending the prompt so a fast model
       // can't finish before Mesa is listening.
+      drPatch({ launchStage: "bridge-ready" });
       try {
         await drStartListening(runId);
       } catch (e) {
-        drPatch({ phase: "error", error: `Could not start the Deep Research progress bridge: ${String(e)}` });
+        drPatch({ phase: "error", launchStage: "error", error: `Could not start the Deep Research progress bridge: ${String(e)}` });
         if (currentPiSessionId()) await requestSharedPiRestart();
         return;
       }
@@ -2197,12 +2460,32 @@ export const useAppStore = create<AppState>((set, get) => {
         folder: get().settings.researchFolder || "Research",
         depth,
       });
+      drPatch({
+        launchStage: "submitting",
+        promptBytes: utf8ByteLength(prompt),
+        activity: [
+          ...(get().deepResearch?.activity ?? []),
+          { kind: "status" as const, message: "Submitting the research task to Pi…", at: Date.now() },
+        ].slice(-300),
+      });
       try {
-        await sendToPi(sessionId, prompt + "\n");
-        drPatch({ phase: "researching" });
+        await sendResearchPrompt(sessionId, prompt);
+        drPatch({
+          phase: "researching",
+          launchStage: "waiting-for-model",
+          promptSentAt: Date.now(),
+          activity: [
+            ...(get().deepResearch?.activity ?? []),
+            {
+              kind: "status" as const,
+              message: "Research task submitted to Pi; waiting for the first model or browser signal…",
+              at: Date.now(),
+            },
+          ].slice(-300),
+        });
       } catch (e) {
         await drStopListening();
-        drPatch({ phase: "error", error: `Could not send the research task to Pi: ${String(e)}` });
+        drPatch({ phase: "error", launchStage: "error", error: `Could not submit the research task to Pi: ${String(e)}` });
         if (currentPiSessionId()) await requestSharedPiRestart();
       }
     },
@@ -2214,7 +2497,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const sid = currentPiSessionId();
       if (sid) await interruptPi(sid);
       await drStopListening();
-      drPatch({ phase: "cancelled", error: null, changeSet: null });
+      drPatch({ phase: "cancelled", launchStage: "cancelled", error: null, changeSet: null });
       if (sid) await requestSharedPiRestart();
     },
 
@@ -2223,7 +2506,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!cur || !cur.changeSet) return;
       const root = get().vaultPath;
       if (!root) {
-        drPatch({ phase: "error", error: "The vault is no longer open." });
+        drPatch({ phase: "error", launchStage: "error", error: "The vault is no longer open." });
         return;
       }
       // Version-check the change set against the CURRENT vault before writing.
@@ -2234,16 +2517,16 @@ export const useAppStore = create<AppState>((set, get) => {
         notes: get().notes,
       });
       if (!plan.ok) {
-        drPatch({ phase: "error", error: plan.error, changeSet: null });
+        drPatch({ phase: "error", launchStage: "error", error: plan.error, changeSet: null });
         return;
       }
-      drPatch({ phase: "applying" });
+      drPatch({ phase: "applying", launchStage: "applying" });
       const outcome = await applyChangeSet({ root, plan });
       if (!outcome.ok) {
-        drPatch({ phase: "error", error: outcome.error ?? "Apply failed.", changeSet: null });
+        drPatch({ phase: "error", launchStage: "error", error: outcome.error ?? "Apply failed.", changeSet: null });
         return;
       }
-      drPatch({ phase: "done", appliedRelPaths: outcome.appliedRelPaths });
+      drPatch({ phase: "done", launchStage: "done", appliedRelPaths: outcome.appliedRelPaths });
       // Refresh the vault scan, content cache, backlinks, and graph so the new
       // notes and links appear (and the graph lights up) immediately.
       if (root) await refreshMissingExternalFiles(root);
@@ -2743,7 +3026,7 @@ export const useAppStore = create<AppState>((set, get) => {
       return read;
     },
 
-    fileFor: (relPath) => get().files.find((f) => f.relPath === relPath),
+    fileFor: (relPath) => fileIndexFor(get().files).get(relPath),
   };
 });
 

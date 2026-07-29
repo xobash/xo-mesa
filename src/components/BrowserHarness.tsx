@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
-import { archiveRelPath, resolveNavTarget, webSearchUrl } from "../lib/agent";
+import { resolveNavTarget, webSearchUrl } from "../lib/agent";
 import { rectsDiffer, rectUsable, roundRect, type HarnessRect } from "../lib/harness";
 import { IN_TAURI, writeVaultTextFile } from "../lib/vault";
 import { bumpActivityAmount } from "../lib/activity";
+import { archiveWebPage } from "../lib/webArchive";
 
 // The Pi browser harness. It renders inside a "wing" that slides out from
 // BEHIND the Pi agent window (see AgentSurface) — it never covers the
@@ -528,46 +529,51 @@ export function BrowserHarness({
       return;
     }
     setArchiveStatus("Archiving...");
-    const rel = archiveRelPath(target);
-    let html = "";
-    const cached = lastPageRef.current;
-    if (cached?.body && cached.finalUrl && IN_TAURI) {
-      // Legacy path already fetched the body — reuse it.
-      html = cached.body;
-    } else if (IN_TAURI) {
-      // Native mode keeps no fetched body around; grab one now through the
-      // shared native client (works even for sites the webview cannot fetch).
-      try {
-        const page = await invoke<BrowsePage>("browse_fetch", { url: target });
-        html = page.body ?? "";
-        if (!html) throw new Error(`no text body (${page.contentType || "unknown"})`);
-      } catch (e) {
-        html = `<!doctype html>
-<meta charset="utf-8">
-<title>Archived link</title>
-<h1>Archived link</h1>
-<p><a href="${target}">${target}</a></p>
-<p>Mesa could not fetch the page body. Error: ${String(e)}</p>`;
-      }
-    } else {
-      try {
-        const res = await fetch(target);
-        html = await res.text();
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      } catch (e) {
-        html = `<!doctype html>
-<meta charset="utf-8">
-<title>Archived link</title>
-<h1>Archived link</h1>
-<p><a href="${target}">${target}</a></p>
-<p>Mesa could not fetch the page body from this webview. Error: ${String(e)}</p>`;
-      }
+    try {
+      const cached = lastPageRef.current;
+      const result = await archiveWebPage(
+        target,
+        {
+          fetchPage: async (url) => {
+            if (IN_TAURI) return invoke<BrowsePage>("browse_fetch", { url });
+            const res = await fetch(url);
+            const body = await res.text();
+            if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+            return {
+              finalUrl: res.url || url,
+              status: res.status,
+              contentType: res.headers.get("content-type") ?? "",
+              frameBlocked: false,
+              body,
+            };
+          },
+          writeText: async (relPath, html) => {
+            await writeVaultTextFile(vaultPath, relPath, html, { expectedMissing: true });
+          },
+        },
+        {
+          cachedPage:
+            cached?.body && cached.finalUrl === target ? cached : null,
+        }
+      );
+      bumpActivityAmount(
+        result.relPath,
+        1.2,
+        "create",
+        result.linkRecord ? "Pi archived a source link" : "Pi archived a web page"
+      );
+      await openVault(vaultPath);
+      await openFile(result.relPath);
+      setArchiveStatus(
+        result.linkRecord
+          ? `Saved source link ${result.relPath}`
+          : `Archived ${result.relPath}`
+      );
+    } catch (error) {
+      setArchiveStatus(
+        `Archive failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
-    await writeVaultTextFile(vaultPath, rel, html);
-    bumpActivityAmount(rel, 1.2, "create", "Pi archived a web page");
-    await openVault(vaultPath);
-    await openFile(rel);
-    setArchiveStatus(`Archived ${rel}`);
   };
 
   // Reliability note: Tauri's `WebviewWindow` constructor is fire-and-forget

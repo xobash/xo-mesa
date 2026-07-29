@@ -42,3 +42,15 @@ area, or CodeMirror editor.
 
 The pure ordering and focus logic lives in `src/lib/keyboardNav.ts` with tests
 in `src/lib/keyboardNav.test.ts`.
+
+## Overlay Calendar
+
+Calendar month dates form a keyboard-operable grid:
+
+- `Tab` enters the grid at the selected date.
+- Arrow keys move one day or one week.
+- `Home` and `End` move to the Sunday or Saturday of the current row.
+- `Enter` or `Space` selects the focused date.
+
+Each date exposes its full date, selected/today state, and event/task/holiday
+labels to assistive technology.

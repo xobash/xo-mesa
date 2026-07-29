@@ -76,7 +76,12 @@ because a later edit on another page overtook it.
 
 Large documents keep the previous visible page pixels during rerenders but use
 only one effect-local scratch canvas for the incoming paint, rather than
-retaining a second full-resolution canvas for every page. Page completion stays
+retaining a second full-resolution canvas for every page. First meaningful page
+paint is prioritized: `PdfView` mounts page 1 first, the hook renders only
+mounted canvases, and the remaining page shells mount in small batches after
+page 1 is visible. This is a scheduling/UI responsiveness change only; the
+rendered document still comes from the same byte-backed pdf.js proxy, and
+editing/saving still waits on Mesa's verified byte path. Page completion stays
 out of React state except for the first-page handoff from the native warm-start
 surface. Edit Text indexes extracted runs by page once, so hit-box rendering is
 linear in the extracted runs instead of rescanning the whole document for every
@@ -93,6 +98,57 @@ post-save validation cannot distinguish from a healthy file. Every editing
 tool therefore fails closed on an encrypted document with a clear
 "Mesa keeps it read-only" message before any bytes are touched. Viewing,
 zooming, and page geometry are unaffected.
+
+## What Mesa Renders, and When
+
+Mesa rasterizes the pages you are looking at, not the whole document. Page 1 is
+painted as soon as the document parses; the pages around your scroll position
+are painted just ahead of you; and pages you have scrolled well away from hand
+their pixel memory back. Scrolling back repaints them rather than trusting a
+canvas whose bitmap was released, so a page is either correct or being drawn —
+never stale.
+
+This is what makes long documents usable. Measured on a 748-page Army field
+manual (20 MiB) and a 357-page one (8.7 MiB), against the previous
+paint-everything behaviour:
+
+| | 357-page manual | 748-page manual |
+| --- | --- | --- |
+| Time to first page | 308 ms → **237 ms** | 2,705 ms → **248 ms** |
+| Pages rasterized on open | 714 → **4** | 12,308 planned → **4** |
+| Canvas memory | 964 MB → **13 MB** | ~2 GB (never completed) → **5 MB** |
+| Main-thread long tasks | 509 ms → **0 ms** | — → **0 ms** |
+
+Page geometry does not depend on painting: every page is measured once (page
+size only, no rasterization) so the scroll bar is honest immediately and pages
+do not shift under you as they paint.
+
+## Opening a PDF When Memory Is Tight
+
+Two things dominate an open on a machine that is already swapping, and neither
+shows up on an idle one.
+
+The webview's own PDF renderer used to be started for every open, to cover the
+gap before Mesa's first page appeared. That is a second full PDF stack over the
+same file: the OS renderer reads and maps the document again, alongside the
+copy Mesa holds and the copy inside the pdf.js worker. Mesa now waits 120 ms
+first, so for ordinary documents — which reach their first page well inside
+that — the duplicate is never started at all. A genuinely slow open still gets
+the cover, unchanged.
+
+Opening an N-byte PDF also used to allocate 3N: the read, a defensive copy of
+it, and the copy pdf.js transfers into its worker. The middle copy bought
+nothing — the buffer comes straight off disk and nothing else refers to it — so
+Mesa adopts it instead. Bytes that arrive from anywhere less certain (edit
+results, save round-trips) are still copied.
+
+Each PDF viewer keeps one pdf.js worker and reuses it for the documents you
+open in it. Booting a worker costs 44-75 ms and was the entire "parsing" phase
+for a small PDF; reusing one drops it to 1-5 ms, so opening the second and
+later PDFs in a session is near-instant. The worker is per-viewer rather than
+shared globally so that one malformed document cannot affect a PDF open in
+another window, and a failed parse throws its worker away so the next document
+starts from a clean one.
 
 ## Undo Depth on Large Documents
 

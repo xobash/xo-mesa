@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useAppStore } from "../store";
 import { backlinksFor } from "../lib/graph";
 import { SORT_LABELS } from "../lib/sort";
+import { countWords } from "../lib/wordCount";
 
 export function StatusBar() {
   const activePath = useAppStore((s) => s.activePath);
@@ -12,13 +13,21 @@ export function StatusBar() {
   const syncListening = useAppStore((s) => s.syncListening);
   const linkCount = useAppStore((s) => s.openTabs.length);
 
-  const words = content.trim() ? content.trim().split(/\s+/).length : 0;
+  // This bar subscribes to the live editor text, so everything derived from it
+  // runs per keystroke. `countWords` scans without allocating; the asset count
+  // is memoized because `files` does not change while typing (it changes only
+  // on a vault scan or a create/delete), so filtering 4,000+ entries into a
+  // throwaway array on every character was pure waste.
+  const words = countWords(content);
   const backlinks = useMemo(
     () => (activePath ? backlinksFor(notes, activePath).length : 0),
     [notes, activePath]
   );
   const noteCount = Object.keys(notes).length;
-  const assetCount = files.filter((f) => !f.isMarkdown).length;
+  const assetCount = useMemo(
+    () => files.reduce((n, f) => (f.isMarkdown ? n : n + 1), 0),
+    [files]
+  );
 
   return (
     <footer className="statusbar">

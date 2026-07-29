@@ -26,6 +26,8 @@ import {
   stalePageNumbers,
   type StalePages,
 } from "../lib/pdfStalePages";
+import { pdfPageWindow } from "../lib/pdfPageWindow";
+import { countPdfPerf, markPdfPerf, startPdfPerfRun } from "./pdfPerf";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -48,6 +50,14 @@ interface PdfApplyOptions {
   pages?: number[];
   structural?: boolean;
 }
+
+/** Pages kept painted on either side of the ones the viewer says are on screen,
+ *  so ordinary scrolling always lands on pixels that are already there. */
+const PAINT_AHEAD_PAGES = 3;
+/** Painted pages are only released once they fall outside this wider band. The
+ *  gap between the two bounds is hysteresis: scrolling back and forth across a
+ *  page boundary must not thrash a page between painted and released. */
+const RELEASE_AFTER_PAGES = 8;
 
 type PdfTransform = (current: Uint8Array) => Promise<Uint8Array>;
 
@@ -126,7 +136,15 @@ export function usePdfEditor(
   // Page completion is imperative canvas bookkeeping. Keep the complete set
   // available without publishing a new React state object after every page;
   // only page 1 changes visible UI (it retires the native warm-start iframe).
-  const renderedPagesRef = useRef<Set<number>>(new Set());
+  //
+  // Keyed by the scale the pixels were painted at, which is what makes a render
+  // pass idempotent: re-running one repaints nothing, so mounting more page
+  // canvases (or any other reason the effect re-runs) costs only the pages that
+  // are actually missing. A page leaves this map the moment its pixels stop
+  // being trustworthy — an edit marks it stale, or React hands us a different
+  // canvas element, whose bitmap starts blank.
+  const paintedPagesRef = useRef<Map<number, number>>(new Map());
+  const allPagesPaintedRef = useRef(false);
   const [history, setHistory] = useState<Uint8Array[]>([]);
   const [future, setFuture] = useState<Uint8Array[]>([]);
   const viewports = useRef<Map<number, pdfjs.PageViewport>>(new Map());
@@ -154,6 +172,42 @@ export function usePdfEditor(
     Map<number, (el: HTMLCanvasElement | null) => void>
   >(new Map());
   const canvasVersionRaf = useRef<number | null>(null);
+  const pdfPerfRunRef = useRef<number | null>(null);
+  // One pdf.js worker per viewer, reused across the documents that viewer opens.
+  // Booting a worker measured 44-75 ms and was the ENTIRE cost of the "parse"
+  // phase for small documents (reusing one drops it to 1-5 ms). It is scoped to
+  // the viewer, not shared globally, on purpose: a document that wedges its
+  // worker must not be able to wedge a PDF open in another window, and this hook
+  // shows one document at a time anyway. A failed parse throws the worker away
+  // so the next document still starts from a clean one.
+  const pdfWorkerRef = useRef<pdfjs.PDFWorker | null>(null);
+
+  const pdfWorker = useCallback((): pdfjs.PDFWorker => {
+    if (!pdfWorkerRef.current) {
+      pdfWorkerRef.current = new pdfjs.PDFWorker();
+    }
+    return pdfWorkerRef.current;
+  }, []);
+
+  /** Drop the worker after anything that leaves its state in doubt. */
+  const discardPdfWorker = useCallback(() => {
+    const worker = pdfWorkerRef.current;
+    pdfWorkerRef.current = null;
+    worker?.destroy();
+  }, []);
+  // Pages the viewer currently has on (or near) screen, 0-based. Null until the
+  // viewer reports — meaning "no information yet", which is treated as "page 1",
+  // never as "every page": a 748-page document must not rasterize itself just
+  // because the observer has not fired.
+  const onscreenPagesRef = useRef<ReadonlySet<number> | null>(null);
+  const [onscreenVersion, setOnscreenVersion] = useState(0);
+  const onscreenRaf = useRef<number | null>(null);
+  // Intrinsic page sizes at scale 1, so the viewer can reserve correct layout
+  // for pages it has not painted yet and geometry stops depending on paint.
+  const pageSizesRef = useRef<Map<number, { width: number; height: number }>>(
+    new Map()
+  );
+  const [pageSizeVersion, setPageSizeVersion] = useState(0);
 
   const resetDocumentState = useCallback(() => {
     bytesRef.current = null;
@@ -174,7 +228,8 @@ export function usePdfEditor(
     setStatus("");
     setPageCount(0);
     setFields([]);
-    renderedPagesRef.current.clear();
+    paintedPagesRef.current.clear();
+    allPagesPaintedRef.current = false;
     setFirstPagePainted(false);
     lastRenderedDocRef.current = null;
     stalePaintPagesRef.current = null;
@@ -184,6 +239,12 @@ export function usePdfEditor(
     viewports.current.clear();
     canvasRefs.current.clear();
     canvasRefCallbacks.current.clear();
+    onscreenPagesRef.current = null;
+    pageSizesRef.current.clear();
+    if (onscreenRaf.current !== null) {
+      cancelAnimationFrame(onscreenRaf.current);
+      onscreenRaf.current = null;
+    }
     if (canvasVersionRaf.current !== null) {
       cancelAnimationFrame(canvasVersionRaf.current);
       canvasVersionRaf.current = null;
@@ -245,11 +306,23 @@ export function usePdfEditor(
     );
   }, []);
 
-  const setSavedBytes = useCallback((next: Uint8Array) => {
-    const snapshot = copyPdfBytes(next);
-    savedBytesRef.current = snapshot;
-    bytesRef.current = snapshot;
-    setBytes(snapshot);
+  /**
+   * Take ownership of bytes the caller holds exclusively, without copying them.
+   *
+   * Opening an N-byte PDF used to allocate 3N: the read itself, a defensive
+   * snapshot, and the copy pdf.js transfers into its worker. The snapshot buys
+   * nothing when the buffer came straight from `readFile`/`arrayBuffer` and no
+   * one else holds a reference — and on a machine that is already swapping, a
+   * spare 20 MB of short-lived allocation per open is paid for in page faults.
+   *
+   * The caller must own `next` outright and never mutate it afterwards. Every
+   * other producer keeps making its own copy explicitly: edit transforms go
+   * through `setCurrentBytes`, and the save path snapshots before it publishes.
+   */
+  const adoptSavedBytes = useCallback((next: Uint8Array) => {
+    savedBytesRef.current = next;
+    bytesRef.current = next;
+    setBytes(next);
     setDirty(false);
   }, []);
 
@@ -265,6 +338,39 @@ export function usePdfEditor(
   const markStale = useCallback((next: ReadonlySet<number> | "all") => {
     stalePaintPagesRef.current = addStalePages(stalePaintPagesRef.current, next);
     staleTextPagesRef.current = addStalePages(staleTextPagesRef.current, next);
+    // Stale pixels are not paint credit. Dropping the entries here is what lets
+    // the render pass skip by "already painted" without ever skipping a page an
+    // edit just invalidated.
+    if (next === "all") {
+      paintedPagesRef.current.clear();
+      allPagesPaintedRef.current = false;
+      return;
+    }
+    for (const page of next) paintedPagesRef.current.delete(page);
+    allPagesPaintedRef.current = false;
+  }, []);
+
+  /** Tell the hook which pages are on screen. Coalesced to one frame: a scroll
+   *  fires this continuously, and each distinct value would otherwise cancel and
+   *  restart the render pass. */
+  const setOnscreenPages = useCallback((pages: ReadonlySet<number>) => {
+    const prev = onscreenPagesRef.current;
+    if (prev && prev.size === pages.size) {
+      let same = true;
+      for (const page of pages) {
+        if (!prev.has(page)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
+    onscreenPagesRef.current = pages;
+    if (onscreenRaf.current !== null) return;
+    onscreenRaf.current = requestAnimationFrame(() => {
+      onscreenRaf.current = null;
+      setOnscreenVersion((v) => v + 1);
+    });
   }, []);
 
   const bumpCanvasVersionSoon = useCallback(() => {
@@ -282,11 +388,29 @@ export function usePdfEditor(
         cb = (el: HTMLCanvasElement | null) => {
           if (!el) {
             canvasRefs.current.delete(pageIdx);
+            // No canvas, no painted pixels to credit this page with.
+            paintedPagesRef.current.delete(pageIdx);
+            allPagesPaintedRef.current = false;
             return;
           }
           const prev = canvasRefs.current.get(pageIdx);
           canvasRefs.current.set(pageIdx, el);
-          if (prev !== el) bumpCanvasVersionSoon();
+          if (prev !== el) {
+            // A different canvas element starts blank however painted the old
+            // one was, so this page owes a repaint.
+            paintedPagesRef.current.delete(pageIdx);
+            allPagesPaintedRef.current = false;
+            // Drop the 300x150 bitmap every canvas is born with. Unpainted, it
+            // is 180 kB of nothing — 135 MB across a 748-page document — and the
+            // page's box comes from CSS now, not from the bitmap.
+            el.width = 0;
+            el.height = 0;
+            markPdfPerf(pdfPerfRunRef.current, "canvas-mounted", {
+              page: pageIdx + 1,
+              mountedCanvases: canvasRefs.current.size,
+            });
+            bumpCanvasVersionSoon();
+          }
         };
         canvasRefCallbacks.current.set(pageIdx, cb);
       }
@@ -308,8 +432,16 @@ export function usePdfEditor(
     return () => {
       documentGenerationRef.current++;
       operationPathRef.current = null;
-      docRef.current?.destroy();
+      const doc = docRef.current;
       docRef.current = null;
+      const worker = pdfWorkerRef.current;
+      pdfWorkerRef.current = null;
+      // The document's teardown talks to the worker ("Terminate"), so the worker
+      // has to outlive it. Destroying the worker first strands that exchange and
+      // leaks the thread.
+      void Promise.resolve(doc?.destroy())
+        .catch(() => undefined)
+        .finally(() => worker?.destroy());
     };
   }, []);
 
@@ -334,19 +466,27 @@ export function usePdfEditor(
     loadedPathRef.current = file.path;
     let cancelled = false;
     if (isNewDocument) {
+      pdfPerfRunRef.current = startPdfPerfRun(file);
       resetDocumentState();
+      markPdfPerf(pdfPerfRunRef.current, "state-reset");
       setStatus("Loading PDF...");
     }
     (async () => {
       try {
         // readFile/arrayBuffer both hand us a fresh buffer nothing else holds,
-        // so setSavedBytes' defensive snapshot is the only copy on the open path.
+        // so it is adopted rather than copied — see adoptSavedBytes.
         let data: Uint8Array;
+        markPdfPerf(pdfPerfRunRef.current, "bytes-read-start", {
+          source: IN_TAURI ? "tauri-fs" : "fetch",
+        });
         if (IN_TAURI && file) data = await readFile(file.path);
         else {
           const r = await fetch(urlForPath(file!.path));
           data = new Uint8Array(await r.arrayBuffer());
         }
+        markPdfPerf(pdfPerfRunRef.current, "bytes-read-end", {
+          bytes: data.byteLength,
+        });
         if (cancelled) return;
         if (!isNewDocument) {
           // Same document, changed on disk. Serialize through the byte queue so
@@ -359,7 +499,7 @@ export function usePdfEditor(
               // a reload tick (a watcher mtime update, or React's double-invoked
               // mount effect) beat it here. This is still the initial open, not an
               // external rewrite, so adopt the bytes without announcing a reload.
-              setSavedBytes(data);
+              adoptSavedBytes(data);
               return;
             }
             if (pdfBytesEqual(data, saved)) return; // our own save echo
@@ -378,14 +518,15 @@ export function usePdfEditor(
             markStale("all");
             setHistorySnapshots([]);
             setFutureSnapshots([]);
-            setSavedBytes(data);
+            adoptSavedBytes(data);
             setStatus("Reloaded — this PDF changed on disk.");
           });
           return;
         }
         // Form fields are extracted lazily (edit mode only) by the effect
         // below — pdf-lib's full main-thread parse has no place on the open path.
-        setSavedBytes(data);
+        adoptSavedBytes(data);
+        markPdfPerf(pdfPerfRunRef.current, "bytes-adopted");
       } catch (e) {
         if (!cancelled && isNewDocument) {
           setStatus(`Could not open PDF: ${String(e)}`);
@@ -404,7 +545,7 @@ export function usePdfEditor(
     resetDocumentState,
     setHistorySnapshots,
     setFutureSnapshots,
-    setSavedBytes,
+    adoptSavedBytes,
   ]);
 
   // Parse the document once per byte-state. Rendering, zooming, and text
@@ -421,8 +562,15 @@ export function usePdfEditor(
     (async () => {
       try {
         // pdf.js transfers this buffer to its worker, so it gets its own copy.
+        markPdfPerf(pdfPerfRunRef.current, "pdfjs-parse-start", {
+          bytes: bytes.byteLength,
+        });
+        // Passing our own worker also changes who owns it: pdf.js only destroys
+        // the worker it created itself, so `doc.destroy()` below tears down the
+        // document and leaves this worker warm for the next one.
         const next = await pdfjs.getDocument({
           data: sanitizePdfBytes(bytes).slice(0),
+          worker: pdfWorker(),
         }).promise;
         if (cancelled) {
           void next.destroy();
@@ -432,9 +580,14 @@ export function usePdfEditor(
         docRef.current = next;
         setPageCount(next.numPages);
         setDoc(next);
+        markPdfPerf(pdfPerfRunRef.current, "pdfjs-parse-end", {
+          pages: next.numPages,
+        });
       } catch (err) {
         if (!cancelled && !isPdfjsCancellation(err)) {
           console.error("[mesa] PDF parse failed:", err);
+          // Whatever this document did to the worker, the next one starts fresh.
+          discardPdfWorker();
           setRenderError(true);
         }
       }
@@ -442,7 +595,7 @@ export function usePdfEditor(
     return () => {
       cancelled = true;
     };
-  }, [enabled, bytes]);
+  }, [enabled, bytes, pdfWorker, discardPdfWorker]);
 
   // Fillable form fields — pdf-lib parses the whole document on the main
   // thread, so this only runs when the caller actually wants fields (edit mode).
@@ -452,9 +605,15 @@ export function usePdfEditor(
       return;
     }
     let cancelled = false;
+    markPdfPerf(pdfPerfRunRef.current, "form-fields-start");
     void getFormFields(bytes).then(
       (next) => {
-        if (!cancelled) setFields(next);
+        if (!cancelled) {
+          setFields(next);
+          markPdfPerf(pdfPerfRunRef.current, "form-fields-end", {
+            fields: next.length,
+          });
+        }
       },
       () => {
         if (!cancelled) setFields([]);
@@ -492,14 +651,95 @@ export function usePdfEditor(
         // scratch, so a cancelled render can never race its successor on the
         // same canvas.
         const renderCanvas = document.createElement("canvas");
-        const pageNumbers =
+        const mountedPageNumbers = Array.from(canvasRefs.current.keys())
+          .map((pageIdx) => pageIdx + 1)
+          .filter((pageNumber) => pageNumber >= 1 && pageNumber <= doc.numPages)
+          .sort((a, b) => a - b);
+        const targetPageNumbers =
           stalePageNumbers(stalePages, doc.numPages) ??
           Array.from({ length: doc.numPages }, (_, pageIdx) => pageIdx + 1);
+        const mountedPages = new Set(mountedPageNumbers);
+        const window = pdfPageWindow(onscreenPagesRef.current, doc.numPages, {
+          ahead: PAINT_AHEAD_PAGES,
+          keep: RELEASE_AFTER_PAGES,
+        });
+        // Hand back the pixel memory of pages that have scrolled well out of
+        // reach before painting new ones, so the peak is the window and not the
+        // document. Their paint credit goes with them: the canvas is genuinely
+        // blank afterwards, so scrolling back must repaint rather than trust it.
+        for (const [pageIdx] of paintedPagesRef.current) {
+          if (window.keep.has(pageIdx + 1)) continue;
+          const canvas = canvasRefs.current.get(pageIdx);
+          if (canvas) {
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+          paintedPagesRef.current.delete(pageIdx);
+          allPagesPaintedRef.current = false;
+          countPdfPerf(pdfPerfRunRef.current, "pagesReleased");
+        }
+        // Three filters, all load-bearing. A page with no canvas cannot be
+        // painted at all; a page outside the window is not worth painting; and a
+        // page already holding this scale's pixels has nothing to gain from
+        // being painted again — that last one keeps the pass idempotent, so the
+        // mount of page 200 costs one page instead of re-rasterizing the 199 in
+        // front of it.
+        const pageNumbers = targetPageNumbers.filter(
+          (pageNumber) =>
+            mountedPages.has(pageNumber) &&
+            window.paint.has(pageNumber) &&
+            paintedPagesRef.current.get(pageNumber - 1) !== renderScale
+        );
+        // Reported from both exits. The window can be finished by a pass that
+        // still had pages to paint OR by one that found nothing left to do —
+        // mounting a canvas reopens the question without creating any work.
+        const noteWindowComplete = () => {
+          if (allPagesPaintedRef.current) return;
+          const complete = [...window.paint].every(
+            (pageNumber) =>
+              !mountedPages.has(pageNumber) ||
+              paintedPagesRef.current.get(pageNumber - 1) === renderScale
+          );
+          if (!complete) return;
+          allPagesPaintedRef.current = true;
+          markPdfPerf(pdfPerfRunRef.current, "window-painted", {
+            paintedPages: paintedPagesRef.current.size,
+            windowPages: window.paint.size,
+            totalPages: doc.numPages,
+          });
+        };
+        if (!pageNumbers.length) {
+          markPdfPerf(pdfPerfRunRef.current, "render-pass-skipped", {
+            mountedCanvases: canvasRefs.current.size,
+          });
+          noteWindowComplete();
+          return;
+        }
+        countPdfPerf(pdfPerfRunRef.current, "renderPasses");
+        countPdfPerf(pdfPerfRunRef.current, "pagesPlanned", pageNumbers.length);
+        markPdfPerf(pdfPerfRunRef.current, "render-pass-start", {
+          pages: pageNumbers.length,
+          mountedCanvases: canvasRefs.current.size,
+          totalPages: doc.numPages,
+          documentChange: isDocumentChange,
+        });
         for (const i of pageNumbers) {
+          if (i === 1) markPdfPerf(pdfPerfRunRef.current, "page-1-render-start");
           const page = await doc.getPage(i);
           if (cancelled) return;
           const viewport = page.getViewport({ scale: renderScale });
           viewports.current.set(i - 1, viewport);
+          // Record the page's box as soon as it is known, so the viewer can
+          // reserve space for the pages around it without waiting for the
+          // background measure pass to reach them.
+          if (!pageSizesRef.current.has(i - 1)) {
+            const unit = page.getViewport({ scale: 1 });
+            pageSizesRef.current.set(i - 1, {
+              width: unit.width,
+              height: unit.height,
+            });
+            setPageSizeVersion((v) => v + 1);
+          }
           const canvas = canvasRefs.current.get(i - 1);
           if (!canvas) continue;
           renderCanvas.width = viewport.width;
@@ -509,6 +749,8 @@ export function usePdfEditor(
           activeTask = page.render({ canvasContext: renderCtx, viewport });
           await activeTask.promise;
           activeTask = null;
+          countPdfPerf(pdfPerfRunRef.current, "pageRasters");
+          if (i === 1) markPdfPerf(pdfPerfRunRef.current, "page-1-raster-end");
           if (cancelled) return;
           if (i === 1 && (await paintedBlankUnexpectedly(renderCtx, renderCanvas, page))) {
             if (cancelled) return;
@@ -520,14 +762,22 @@ export function usePdfEditor(
           const ctx = canvas.getContext("2d");
           if (!ctx) continue;
           ctx.drawImage(renderCanvas, 0, 0);
-          renderedPagesRef.current.add(i - 1);
+          // Credit the page only once its pixels are actually on the visible
+          // canvas, and only for the scale they were drawn at.
+          paintedPagesRef.current.set(i - 1, renderScale);
           if (i === 1) {
             setFirstPagePainted(true);
             setStatus("");
+            markPdfPerf(pdfPerfRunRef.current, "first-meaningful-page");
           } else if (doc.numPages > 8) {
             await nextFrame();
           }
         }
+        markPdfPerf(pdfPerfRunRef.current, "render-pass-end", {
+          renderedPages: paintedPagesRef.current.size,
+          totalPages: doc.numPages,
+        });
+        noteWindowComplete();
         setRenderError(false);
       } catch (err) {
         if (!cancelled && !isPdfjsCancellation(err)) {
@@ -540,7 +790,57 @@ export function usePdfEditor(
       cancelled = true;
       activeTask?.cancel();
     };
-  }, [enabled, doc, renderScale, canvasVersion]);
+  }, [enabled, doc, renderScale, canvasVersion, onscreenVersion]);
+
+  // Measure every page once, at scale 1, without painting anything. The viewer
+  // needs each page's box to reserve correct layout for pages it has not painted
+  // (otherwise the scroll height is a lie and the observer reporting which pages
+  // are on screen has nothing sound to report), and pointer mapping needs the
+  // viewport of any page the user can reach. Measuring is metadata only — no
+  // rasterization, no pixel memory — and it runs after first paint, in chunks,
+  // yielding between them so it never competes with the page being read.
+  useEffect(() => {
+    if (!enabled || !doc || !firstPagePainted) return;
+    if (pageSizesRef.current.size >= doc.numPages) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        markPdfPerf(pdfPerfRunRef.current, "page-measure-start", {
+          totalPages: doc.numPages,
+        });
+        for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
+          if (cancelled) return;
+          if (pageSizesRef.current.has(pageNumber - 1)) continue;
+          const page = await doc.getPage(pageNumber);
+          if (cancelled) return;
+          const unit = page.getViewport({ scale: 1 });
+          pageSizesRef.current.set(pageNumber - 1, {
+            width: unit.width,
+            height: unit.height,
+          });
+          countPdfPerf(pdfPerfRunRef.current, "pagesMeasured");
+          if (pageNumber % 16 === 0) {
+            setPageSizeVersion((v) => v + 1);
+            await nextFrame();
+          }
+        }
+        if (cancelled) return;
+        setPageSizeVersion((v) => v + 1);
+        markPdfPerf(pdfPerfRunRef.current, "page-measure-end", {
+          measured: pageSizesRef.current.size,
+        });
+      } catch (err) {
+        // Measurement is an optimization, never a reason to fail the document:
+        // without it the viewer falls back to estimating from a known page.
+        if (!cancelled && !isPdfjsCancellation(err)) {
+          console.warn("[mesa] PDF page measure failed:", err);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, doc, firstPagePainted]);
 
   // Extract at scale 1 only. pdf.js extraction is the expensive half (81.3 ms
   // for a 40-page document), and it does not depend on zoom — only the
@@ -567,6 +867,10 @@ export function usePdfEditor(
     let published = false;
     (async () => {
       try {
+        markPdfPerf(pdfPerfRunRef.current, "text-extraction-start", {
+          scopedPages: scopedPages?.length ?? null,
+          totalPages: doc.numPages,
+        });
         const nextSources: PdfTextRunSource[] = [];
         const pageNumbers =
           scopedPages ??
@@ -614,6 +918,9 @@ export function usePdfEditor(
         extractedPageCountRef.current = doc.numPages;
         published = true;
         setTextRunSources(merged);
+        markPdfPerf(pdfPerfRunRef.current, "text-extraction-end", {
+          runs: merged.length,
+        });
       } catch {
         if (!cancelled) {
           textRunSourcesRef.current = [];
@@ -669,7 +976,8 @@ export function usePdfEditor(
             : new Set(options.pages.map((page) => Math.trunc(page)))
         );
         if (options.structural) {
-          renderedPagesRef.current.clear();
+          paintedPagesRef.current.clear();
+          allPagesPaintedRef.current = false;
           setFirstPagePainted(false);
         }
         setHistorySnapshots([...historyRef.current, beforeSnapshot]);
@@ -694,7 +1002,8 @@ export function usePdfEditor(
         await assertValidPdfBytes(previous);
         if (!isCurrentDocumentGeneration(document)) return;
         markStale("all");
-        renderedPagesRef.current.clear();
+        paintedPagesRef.current.clear();
+        allPagesPaintedRef.current = false;
         setFirstPagePainted(false);
         setHistorySnapshots(history.slice(0, -1));
         setFutureSnapshots([...futureRef.current, copyPdfBytes(current)]);
@@ -717,7 +1026,8 @@ export function usePdfEditor(
         await assertValidPdfBytes(next);
         if (!isCurrentDocumentGeneration(document)) return;
         markStale("all");
-        renderedPagesRef.current.clear();
+        paintedPagesRef.current.clear();
+        allPagesPaintedRef.current = false;
         setFirstPagePainted(false);
         setFutureSnapshots(future.slice(0, -1));
         setHistorySnapshots([...historyRef.current, copyPdfBytes(current)]);
@@ -798,8 +1108,14 @@ export function usePdfEditor(
     canRedo: future.length > 0,
     viewports,
     canvasRefs,
-    renderedPages: renderedPagesRef.current,
+    /** Pages holding painted pixels, mapped to the scale they were painted at. */
+    paintedPages: paintedPagesRef.current,
+    /** Intrinsic page boxes at scale 1, for reserving layout before paint. */
+    pageSizes: pageSizesRef.current,
+    pageSizeVersion,
+    setOnscreenPages,
     firstPagePainted,
+    perfRunId: pdfPerfRunRef.current,
     bindCanvas,
     apply,
     undo,

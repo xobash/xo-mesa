@@ -9,22 +9,75 @@ import {
 
 describe("parseSearchQuery", () => {
   it("extracts ext: and type: filters", () => {
-    expect(parseSearchQuery("ext:pdf budget")).toEqual({ term: "budget", ext: "pdf" });
+    expect(parseSearchQuery("ext:pdf budget")).toEqual({
+      term: "budget",
+      ext: "pdf",
+      quoted: false,
+    });
     expect(parseSearchQuery("type:md alpha beta")).toEqual({
       term: "alpha beta",
       ext: "md",
+      quoted: false,
     });
   });
 
   it("treats a lone .ext token as a filter", () => {
-    expect(parseSearchQuery(".png")).toEqual({ term: "", ext: "png" });
-    expect(parseSearchQuery("logo .svg")).toEqual({ term: "logo", ext: "svg" });
+    expect(parseSearchQuery(".png")).toEqual({ term: "", ext: "png", quoted: false });
+    expect(parseSearchQuery("logo .svg")).toEqual({
+      term: "logo",
+      ext: "svg",
+      quoted: false,
+    });
   });
 
   it("returns plain terms unchanged", () => {
     expect(parseSearchQuery("hello world")).toEqual({
       term: "hello world",
       ext: null,
+      quoted: false,
+    });
+  });
+
+  it("unwraps a quoted phrase", () => {
+    expect(parseSearchQuery('"hidden assumptions"')).toEqual({
+      term: "hidden assumptions",
+      ext: null,
+      quoted: true,
+    });
+    // whitespace inside a phrase collapses the same way a bare term does
+    expect(parseSearchQuery('"  spaced   out  "')).toEqual({
+      term: "spaced out",
+      ext: null,
+      quoted: true,
+    });
+  });
+
+  it("keeps a filter alongside a quoted phrase", () => {
+    expect(parseSearchQuery('ext:txt "hidden assumptions"')).toEqual({
+      term: "hidden assumptions",
+      ext: "txt",
+      quoted: true,
+    });
+  });
+
+  it("does not treat an unbalanced or inner quote as a phrase", () => {
+    expect(parseSearchQuery('"open ended')).toEqual({
+      term: '"open ended',
+      ext: null,
+      quoted: false,
+    });
+    expect(parseSearchQuery('say "hi" there')).toEqual({
+      term: 'say "hi" there',
+      ext: null,
+      quoted: false,
+    });
+  });
+
+  it("leaves ext:-looking text inside a phrase alone", () => {
+    expect(parseSearchQuery('"ext:pdf is a filter"')).toEqual({
+      term: "ext:pdf is a filter",
+      ext: null,
+      quoted: true,
     });
   });
 });

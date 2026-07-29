@@ -2,6 +2,20 @@
 
 Mesa renders saved webpages as webpages, not as unstyled source dumps.
 
+There are two capture entry points:
+
+- the Pi browser's manual **Archive** action;
+- Deep Research's default automatic archive of only the final validated
+  `result.sources` set.
+
+Both use `src/lib/webArchive.ts`, write through the vault's verified-write
+path, and store files under `Web Archives/`. A fetched page receives a
+browser-compatible saved-from marker and an original-URL `<base>` when it does
+not already define one. That lets local rendering resolve relative page URLs.
+When the body cannot be fetched, Mesa writes a local source-link record instead
+of pretending a full page was captured. These records open in the same HTML
+viewer.
+
 Saved browser pages usually contain an `.html` file plus a sibling asset folder
 such as `Example_files/`. They also often contain root-relative URLs from the
 original website, like `/_next/static/...`.
@@ -41,4 +55,5 @@ The browser/demo fallback path is:
 
 The shared fallback helper is `src/lib/html.ts`; both `HtmlView` and hover
 previews keep it for non-Tauri rendering. Regression coverage lives in
-`src/lib/html.test.ts`.
+`src/lib/html.test.ts`. Capture/metadata/fallback coverage lives in
+`src/lib/webArchive.test.ts`.

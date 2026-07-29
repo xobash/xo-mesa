@@ -5,7 +5,9 @@ import {
   canonicalRoot,
   decodePeekBytes,
   flushableNoteText,
+  isIndexableVaultRelPath,
   isTextualVaultFile,
+  needsCachedTextRefresh,
   normalizeVaultRelPath,
   readNote,
   scanVault,
@@ -214,6 +216,175 @@ describe("flushableNoteText", () => {
     // decode of the PDF's bytes), the flush must still refuse.
     expect(flushableNoteText(pdf, "%PDF-1.7 �� garbage")).toBeNull();
     expect(flushableNoteText(demoFile("photo.png", "png"), "")).toBeNull();
+  });
+});
+
+describe("isIndexableVaultRelPath", () => {
+  it("rejects everything under a dot-directory, at any depth", () => {
+    // The defect: the watcher checked only the BASENAME for a leading dot, so
+    // `.git/index` read as an ordinary file named `index`. It was absent from
+    // `files`, `registerExternalFile` refused it, and the fallback ran a full
+    // scanVault — once per path, for every file a git operation touches.
+    expect(isIndexableVaultRelPath(".git/index")).toBe(false);
+    expect(isIndexableVaultRelPath(".git/refs/heads/main")).toBe(false);
+    expect(isIndexableVaultRelPath(".git/objects/ab/1234")).toBe(false);
+    expect(isIndexableVaultRelPath(".obsidian/workspace.json")).toBe(false);
+    expect(isIndexableVaultRelPath("Notes/.hidden/file.md")).toBe(false);
+  });
+
+  it("rejects Mesa's own in-flight write artifacts", () => {
+    // These fire on every verified save; treating one as a new vault file is
+    // what the dot rule has always prevented.
+    expect(isIndexableVaultRelPath(".Note.md.mesa-tmp")).toBe(false);
+    expect(isIndexableVaultRelPath("Notes/.Note.md.mesa-tmp")).toBe(false);
+  });
+
+  it("rejects node_modules at any depth", () => {
+    expect(isIndexableVaultRelPath("node_modules/pkg/index.js")).toBe(false);
+    expect(isIndexableVaultRelPath("Projects/app/node_modules/pkg/x.js")).toBe(false);
+  });
+
+  it("accepts ordinary vault files, including dots inside a name", () => {
+    expect(isIndexableVaultRelPath("Note.md")).toBe(true);
+    expect(isIndexableVaultRelPath("Notes/Deep/Beta.txt")).toBe(true);
+    expect(isIndexableVaultRelPath("My Notes v1.2 final.md")).toBe(true);
+    expect(isIndexableVaultRelPath("data/rows.csv")).toBe(true);
+    // A folder merely CONTAINING "node_modules" is a real folder.
+    expect(isIndexableVaultRelPath("about node_modules/notes.md")).toBe(true);
+  });
+
+  it("rejects empty and malformed rel paths", () => {
+    expect(isIndexableVaultRelPath("")).toBe(false);
+    expect(isIndexableVaultRelPath("/")).toBe(false);
+    expect(isIndexableVaultRelPath("Notes//Beta.md")).toBe(false);
+  });
+
+  it("agrees with what scanVault actually indexes", async () => {
+    // The whole point is that these two cannot drift. The demo vault is a real
+    // scanVault run, so every path it returns must be indexable.
+    const scanned = await scanVault(DEMO_ROOT);
+    expect(scanned.length).toBeGreaterThan(0);
+    for (const f of scanned) {
+      expect(isIndexableVaultRelPath(f.relPath), f.relPath).toBe(true);
+    }
+  });
+});
+
+describe("normalizeVaultRelPath: deferring the known-paths list", () => {
+  // The watcher used to build an array of every relPath in the vault for every
+  // single event path. The list is only ever consulted for an absolute path
+  // that is not under the vault root, so it is now built only after the cheap
+  // call fails. That is a pure optimization ONLY if the two forms agree.
+  const root = "/Users/x/Vault";
+  const known = [
+    "Notes/Alpha.md",
+    "Notes/Deep/Beta.txt",
+    "data/rows.csv",
+    "Top.md",
+  ];
+
+  const cases = [
+    // under the root — must resolve without ever reading the list
+    `${root}/Notes/Alpha.md`,
+    `${root}/Top.md`,
+    `${root}/Brand New File.md`,
+    `${root}/Notes/Deep/Beta.txt`,
+    root,
+    // aliased/symlinked root — only the list can resolve these
+    `/private${root}/Notes/Alpha.md`,
+    `/private${root}/data/rows.csv`,
+    `/elsewhere/Notes/Deep/Beta.txt`,
+    // absolute and unresolvable
+    "/somewhere/else/Unknown.md",
+    "/",
+    // relative forms
+    "Notes/Alpha.md",
+    "./Top.md",
+    "",
+    // URL + Windows spellings
+    `file://${root}/Notes/Alpha.md`,
+    "C:/Users/x/Vault/Top.md",
+    "\\\\Users\\x\\Vault\\Top.md",
+  ];
+
+  it("agrees with always passing the list, on every path shape", () => {
+    for (const p of cases) {
+      const oneCall = normalizeVaultRelPath(p, root, known);
+      const cheap = normalizeVaultRelPath(p, root);
+      const deferred = cheap || normalizeVaultRelPath(p, root, known);
+      expect(deferred, `mismatch for ${JSON.stringify(p)}`).toBe(oneCall);
+    }
+  });
+
+  it("resolves a path under the root without consulting the list at all", () => {
+    // Passing a deliberately wrong list must not change the answer for a path
+    // the root prefix already explains — that is what makes deferring safe.
+    expect(normalizeVaultRelPath(`${root}/Notes/Alpha.md`, root, [])).toBe(
+      "Notes/Alpha.md"
+    );
+    expect(normalizeVaultRelPath(`${root}/Notes/Alpha.md`, root)).toBe(
+      "Notes/Alpha.md"
+    );
+  });
+
+  it("still needs the list for an aliased root", () => {
+    // The case that must keep working: the cheap call cannot resolve it.
+    expect(normalizeVaultRelPath(`/private${root}/Top.md`, root)).toBe("");
+    expect(normalizeVaultRelPath(`/private${root}/Top.md`, root, known)).toBe(
+      "Top.md"
+    );
+  });
+});
+
+describe("needsCachedTextRefresh", () => {
+  it("refreshes every textual file Mesa is holding text for, not just markdown", () => {
+    // The regression: vault open caches all textual files within the budget,
+    // but the watcher refreshed `isMarkdown` only. An external edit to one of
+    // these left the stale copy searchable, openable, and re-writable.
+    for (const [name, ext] of [
+      ["Prompt.txt", "txt"],
+      ["build.py", "py"],
+      ["data.json", "json"],
+      ["page.html", "html"],
+      ["rows.csv", "csv"],
+      ["notes.rtf", "rtf"],
+    ] as const) {
+      expect(needsCachedTextRefresh(demoFile(name, ext), "cached")).toBe(true);
+    }
+    expect(needsCachedTextRefresh(demoFile("Note.md", "md", true), "cached")).toBe(
+      true
+    );
+  });
+
+  it("leaves an uncached file alone so the budget is not quietly bypassed", () => {
+    // Nothing is stale when nothing is held, and `ensureContent`'s lazy read
+    // already yields current text. Reading here would pull in exactly the files
+    // `planTextCache` chose to skip.
+    expect(needsCachedTextRefresh(demoFile("Prompt.txt", "txt"), undefined)).toBe(
+      false
+    );
+    expect(needsCachedTextRefresh(demoFile("Note.md", "md", true), undefined)).toBe(
+      false
+    );
+  });
+
+  it("never re-reads a binary file as text", () => {
+    // Same gate as the write side: a PDF/image decoded through the text
+    // pipeline is corrupt, so it must not be pulled into the cache even if
+    // something already poisoned that entry.
+    expect(needsCachedTextRefresh(demoFile("Report.pdf", "pdf"), undefined)).toBe(
+      false
+    );
+    expect(
+      needsCachedTextRefresh(demoFile("Report.pdf", "pdf"), "%PDF-1.7 garbage")
+    ).toBe(false);
+    expect(needsCachedTextRefresh(demoFile("photo.png", "png"), "")).toBe(false);
+  });
+
+  it("treats a deliberately emptied cached file as cached", () => {
+    // `""` is a real cached value (the file is empty on disk); only `undefined`
+    // means "not held".
+    expect(needsCachedTextRefresh(demoFile("Prompt.txt", "txt"), "")).toBe(true);
   });
 });
 

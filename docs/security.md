@@ -155,4 +155,10 @@ source does not import them by name. Use `npm audit fix --package-lock-only`
 when it provides a compatible fix, inspect the diff, synchronize installed
 modules with `npm install`/`npm ci`, and verify with `npm audit`.
 
+The current lockfile also excludes the compromised-package watchlist families
+that have shown up in recent npm malware incidents (`chalk`, `ansi-styles`,
+`@ctrl/tinycolor`, `@tanstack/*`, `@mistralai/*`, `nx`, `eslint`, `prettier`).
+That absence is enforced by `src/lib/supplyChainContract.test.ts`, so any future
+reintroduction fails the normal test path instead of relying on memory.
+
 [postcss-advisory]: https://github.com/advisories/GHSA-r28c-9q8g-f849

@@ -3,6 +3,7 @@ import {
   localISO,
   applyTemplate,
   monthMatrix,
+  calendarGridKeyTarget,
   weekMatrix,
   parseEvents,
   serializeEvents,
@@ -62,6 +63,25 @@ describe("monthMatrix Sunday-first", () => {
     const m = monthMatrix(2026, 5, 0); // June 2026; Jun 1 is Mon → grid starts May 31 (Sun)
     expect(m[0][0]).toBe("2026-05-31");
     expect(m.flat()).toContain("2026-06-30");
+  });
+});
+
+describe("calendarGridKeyTarget", () => {
+  it("moves across days and weeks, including month boundaries", () => {
+    expect(calendarGridKeyTarget("2026-07-01", "ArrowLeft")).toBe("2026-06-30");
+    expect(calendarGridKeyTarget("2026-07-31", "ArrowRight")).toBe("2026-08-01");
+    expect(calendarGridKeyTarget("2026-07-08", "ArrowUp")).toBe("2026-07-01");
+    expect(calendarGridKeyTarget("2026-07-28", "ArrowDown")).toBe("2026-08-04");
+  });
+
+  it("moves to the Sunday-first row endpoints", () => {
+    expect(calendarGridKeyTarget("2026-07-28", "Home")).toBe("2026-07-26");
+    expect(calendarGridKeyTarget("2026-07-28", "End")).toBe("2026-08-01");
+  });
+
+  it("ignores unrelated keys and malformed dates", () => {
+    expect(calendarGridKeyTarget("2026-07-28", "Enter")).toBeNull();
+    expect(calendarGridKeyTarget("2026-02-31", "ArrowRight")).toBeNull();
   });
 });
 

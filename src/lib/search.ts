@@ -1,16 +1,35 @@
+import { buildRawMatcher, canScanRawFor, scanRaw } from "./searchMatch";
+
 export interface ParsedQuery {
   term: string;
   ext: string | null;
+  /** True when the term came from an explicitly quoted phrase. */
+  quoted: boolean;
 }
 
 /**
  * Parse a search query, extracting an `ext:`/`type:` filter (and a bare
  * `.pdf` token) from the free-text term.
- *   "ext:pdf budget"  -> { term: "budget", ext: "pdf" }
- *   "type:md alpha"    -> { term: "alpha", ext: "md" }
- *   ".png"             -> { term: "", ext: "png" }
+ *   "ext:pdf budget"    -> { term: "budget", ext: "pdf" }
+ *   "type:md alpha"      -> { term: "alpha", ext: "md" }
+ *   ".png"               -> { term: "", ext: "png" }
+ *   '"exact phrase"'     -> { term: "exact phrase", quoted: true }
+ *
+ * Matching has always been plain substring matching, so a multi-word query is
+ * already a phrase search. Quotes are accepted so that typing the phrase the
+ * way people expect — with quotes around it — searches for the phrase rather
+ * than for a term that literally contains quote characters. Inside quotes the
+ * `ext:` and `.ext` tokens are NOT stripped, so a phrase may contain them.
  */
 export function parseSearchQuery(q: string): ParsedQuery {
+  const quotedMatch = /^\s*"([^"]*)"\s*$/.exec(q);
+  if (quotedMatch) {
+    return {
+      term: quotedMatch[1].trim().replace(/\s+/g, " "),
+      ext: null,
+      quoted: true,
+    };
+  }
   let ext: string | null = null;
   let term = q.replace(/\b(?:ext|type):([A-Za-z0-9]+)/gi, (_m, e: string) => {
     ext = e.toLowerCase();
@@ -21,7 +40,12 @@ export function parseSearchQuery(q: string): ParsedQuery {
     if (!ext) ext = e.toLowerCase();
     return " ";
   });
-  return { term: term.trim().replace(/\s+/g, " "), ext };
+  // A quoted phrase alongside a filter: "ext:md \"exact phrase\"".
+  const inner = /^\s*"([^"]*)"\s*$/.exec(term);
+  if (inner) {
+    return { term: inner[1].trim().replace(/\s+/g, " "), ext, quoted: true };
+  }
+  return { term: term.trim().replace(/\s+/g, " "), ext, quoted: false };
 }
 
 /** The subset of `VaultFile` vault search reads. */
@@ -107,6 +131,12 @@ export function searchVault(
     term.length >= 2
       ? new RegExp(term.replace(REGEX_SPECIAL, "\\$&"), "g")
       : null;
+  // One reusable matcher for the whole pass. It runs against RAW text, so no
+  // per-file lowercased copy is allocated — the cost that made searching a
+  // vault whose text is fully cached unaffordable. `null` (non-ASCII term) and
+  // text containing U+0130 fall back to the exact lowercase path; see
+  // `searchMatch.ts` for why the two are equivalent.
+  const rawMatcher = term ? buildRawMatcher(term) : null;
 
   const hits: SearchHit[] = [];
   const candidates: SearchFile[] = [];
@@ -115,8 +145,20 @@ export function searchVault(
     if (ext && f.ext.toLowerCase() !== ext) continue;
     const nameHit = term ? f.name.toLowerCase().includes(term) : true;
     const raw = cache[f.relPath] ?? "";
-    const text = raw.toLowerCase();
-    const idx = term ? text.indexOf(term) : -1;
+
+    let idx = -1;
+    let count = 0;
+    if (term) {
+      if (rawMatcher && canScanRawFor(f.relPath, raw)) {
+        const scan = scanRaw(raw, rawMatcher, term.length);
+        idx = scan.first;
+        count = counter ? scan.count : 0;
+      } else {
+        const text = raw.toLowerCase();
+        idx = text.indexOf(term);
+        count = counter ? (text.match(counter) || []).length : 0;
+      }
+    }
     if (term && idx < 0 && !nameHit) continue;
     candidates.push(f);
 
@@ -130,7 +172,6 @@ export function searchVault(
     } else if (!term) {
       snippet = f.relPath;
     }
-    const count = counter ? (text.match(counter) || []).length : 0;
     hits.push({ rel: f.relPath, title: f.name, ext: f.ext, snippet, count });
   }
 

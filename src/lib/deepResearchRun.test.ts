@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteMeta, VaultFile } from "../types";
 import { buildApplyPlan, type ProposedOp } from "./deepResearch";
-import { applyChangeSet, resolveApplyPlan } from "./deepResearchRun";
+import { applyChangeSet, resolveApplyPlan, sendResearchPrompt } from "./deepResearchRun";
+import { invoke } from "@tauri-apps/api/core";
 
 // --- Mocks -------------------------------------------------------------------
 // deepResearchRun imports Tauri IPC + vault fs helpers. We replace the vault
@@ -17,7 +18,7 @@ vi.mock("./vault", async () => {
   const actual = await vi.importActual<typeof import("./vault")>("./vault");
   return {
     ...actual,
-    IN_TAURI: false,
+    IN_TAURI: true,
     writeNote: async (file: VaultFile, content: string, expectedCurrentContent?: string) => {
       if (expectedCurrentContent !== undefined && memfs.get(file.path) !== expectedCurrentContent) {
         throw new Error("current bytes changed before verified write");
@@ -59,6 +60,18 @@ function note(relPath: string): NoteMeta {
 
 beforeEach(() => {
   memfs.clear();
+  vi.mocked(invoke).mockClear();
+  vi.mocked(invoke).mockResolvedValue(undefined as never);
+});
+
+describe("sendResearchPrompt", () => {
+  it("submits the body with an explicit terminal Enter", async () => {
+    await sendResearchPrompt("session-1", "# research\nline two");
+    expect(vi.mocked(invoke).mock.calls).toEqual([
+      ["terminal_write", { sessionId: "session-1", input: "# research\nline two" }],
+      ["terminal_write", { sessionId: "session-1", input: "\r" }],
+    ]);
+  });
 });
 
 // --- resolveApplyPlan (version-check wrapper) --------------------------------

@@ -64,11 +64,64 @@ describe("pdf module layering", () => {
   });
 
   it("tracks all painted pages without publishing React state per page", () => {
+    // Painted pixels are credited per page, keyed by the scale they were drawn
+    // at, and only after they reach the visible canvas.
     expect(usePdfEditorSrc).toContain(
-      "renderedPagesRef.current.add(i - 1)"
+      "paintedPagesRef.current.set(i - 1, renderScale)"
     );
     expect(usePdfEditorSrc).toContain("setFirstPagePainted(true)");
+    expect(usePdfEditorSrc).toContain('markPdfPerf(pdfPerfRunRef.current, "first-meaningful-page")');
     expect(usePdfEditorSrc).not.toContain("setRenderedPages((prev)");
+    expect(usePdfEditorSrc).not.toContain("setPaintedPages((prev)");
+  });
+
+  it("keeps first-page PDF paint off the all-pages mount path", () => {
+    expect(pdfViewSrc).toContain("const [mountedPageCount, setMountedPageCount]");
+    // Page 1's shell is admitted in the same commit that learns the page count
+    // (render-phase reset keyed by path), never one commit later.
+    expect(pdfViewSrc).toContain("if (mountedForPath !== (file?.path ?? null))");
+    expect(pdfViewSrc).toContain(
+      "pageCount > 0 ? Math.min(pageCount, Math.max(mountedPageCount, 1)) : 0"
+    );
+    expect(pdfViewSrc).toContain("Array.from({ length: shellCount }");
+    expect(usePdfEditorSrc).toContain(
+      "const mountedPageNumbers = Array.from(canvasRefs.current.keys())"
+    );
+    expect(usePdfEditorSrc).toContain("const targetPageNumbers =");
+    expect(usePdfEditorSrc).toContain("targetPageNumbers.filter(");
+  });
+
+  it("refuses pointer mapping through a canvas whose pixels were released", () => {
+    // The viewport a page was last painted with outlives the release of its
+    // bitmap. Scaling a click by a zero-width canvas maps every point onto the
+    // page origin, so an annotation would land in the corner.
+    expect(pdfViewSrc).toContain("if (canvas.width <= 0 || canvas.height <= 0) return null;");
+  });
+
+  it("keeps the render pass idempotent so mounting pages cannot restart it", () => {
+    // Both halves of the invariant: a page already holding this scale's pixels
+    // is skipped, and anything that invalidates those pixels drops the credit.
+    expect(usePdfEditorSrc).toContain(
+      "paintedPagesRef.current.get(pageNumber - 1) !== renderScale"
+    );
+    expect(usePdfEditorSrc).toContain("for (const page of next) paintedPagesRef.current.delete(page)");
+    expect(usePdfEditorSrc).toContain("paintedPagesRef.current.delete(pageIdx)");
+  });
+
+  it("does not stand up a second PDF stack before Mesa's own first page", () => {
+    // The native read-only renderer is a SECOND full PDF stack over the same
+    // file: the OS renderer maps the document again, alongside Mesa's copy and
+    // the pdf.js worker's. It covers a slow open, so it must stay — but it must
+    // not be started for opens that land in tens of milliseconds.
+    expect(pdfViewSrc).toContain("const NATIVE_WARM_START_DELAY_MS");
+    expect(pdfViewSrc).toContain(
+      "!loadFailed && !renderError && !firstPagePainted && warmStartDue"
+    );
+  });
+
+  it("adopts the freshly read PDF buffer rather than snapshotting it", () => {
+    expect(usePdfEditorSrc).toContain("const adoptSavedBytes = useCallback");
+    expect(usePdfEditorSrc).not.toContain("const setSavedBytes = useCallback");
   });
 
   it("keeps stable hooks for the living browser PDF workflow", () => {

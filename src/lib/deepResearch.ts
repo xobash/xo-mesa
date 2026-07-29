@@ -152,6 +152,23 @@ export type DeepResearchPhase =
   | "error"
   | "cancelled";
 
+/** Which boundary the current run has reached before research activity exists. */
+export type DeepResearchLaunchStage =
+  | "idle"
+  | "preparing"
+  | "restarting-pi"
+  | "starting-pi"
+  | "bridge-ready"
+  | "submitting"
+  | "waiting-for-model"
+  | "active"
+  | "finishing"
+  | "review"
+  | "applying"
+  | "done"
+  | "error"
+  | "cancelled";
+
 /** Live, user-visible activity during a run — what the agent is doing now. */
 export type ResearchActivityKind =
   | "plan"       // sub-question set announced
@@ -305,6 +322,96 @@ export function canonicalizeSourceUrl(raw: string): string | null {
   return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${path}${qs}`;
 }
 
+export interface ResearchSourcePresentation {
+  /** Canonical URL copied to the clipboard. */
+  url: string;
+  /** Compact browser-tab-style site identity. */
+  siteName: string;
+  host: string;
+  /** Human-readable page title, never an opaque URL fallback. */
+  pageTitle: string;
+  /** Direct site favicon; the UI falls back to `initial` when unavailable. */
+  faviconUrl: string;
+  initial: string;
+}
+
+const RESEARCH_SITE_NAMES: Record<string, string> = {
+  "wikipedia.org": "Wikipedia",
+  "theguardian.com": "The Guardian",
+  "dailymail.co.uk": "Daily Mail",
+  "nytimes.com": "The New York Times",
+  "washingtonpost.com": "The Washington Post",
+  "bbc.com": "BBC",
+  "bbc.co.uk": "BBC",
+  "reuters.com": "Reuters",
+  "apnews.com": "Associated Press",
+  "archive.org": "Internet Archive",
+  "youtube.com": "YouTube",
+};
+
+const COUNTRY_SECOND_LEVELS = new Set(["co.uk", "org.uk", "ac.uk", "com.au", "com.ca", "co.nz"]);
+
+function researchSiteName(host: string): string {
+  for (const [domain, name] of Object.entries(RESEARCH_SITE_NAMES)) {
+    if (host === domain || host.endsWith(`.${domain}`)) return name;
+  }
+  const parts = host.split(".").filter(Boolean);
+  const suffix = parts.slice(-2).join(".");
+  const coreIndex = COUNTRY_SECOND_LEVELS.has(suffix) ? parts.length - 3 : parts.length - 2;
+  const core = parts[Math.max(0, coreIndex)] || host;
+  return core
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function researchPageTitle(url: URL, rawTitle?: string): string {
+  const title = (rawTitle ?? "").trim();
+  const titleLooksLikeAddress =
+    /^https?:\/\//i.test(title) ||
+    title === url.hostname ||
+    title.startsWith(`${url.hostname}/`) ||
+    (!title.includes(" ") && title.includes("/"));
+  if (title && !titleLooksLikeAddress) return title;
+
+  const segments = url.pathname.split("/").filter(Boolean);
+  const tail = segments[segments.length - 1] ?? "";
+  if (!tail || /^(index|default)(\.[a-z0-9]+)?$/i.test(tail)) return researchSiteName(url.hostname);
+  let decoded = tail;
+  try {
+    decoded = decodeURIComponent(tail);
+  } catch {
+    /* keep the encoded path segment */
+  }
+  const readable = decoded
+    .replace(/\.[a-z0-9]{1,8}$/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return readable || researchSiteName(url.hostname);
+}
+
+/**
+ * Turn a canonical source into a browser-tab-style identity. This is display
+ * only: the exact canonical URL remains available for one-click copy.
+ */
+export function presentResearchSource(rawUrl: string, rawTitle?: string): ResearchSourcePresentation | null {
+  const canonical = canonicalizeSourceUrl(rawUrl);
+  if (!canonical) return null;
+  const url = new URL(canonical);
+  const host = url.hostname.replace(/^www\./, "");
+  const siteName = researchSiteName(host);
+  return {
+    url: canonical,
+    siteName,
+    host,
+    pageTitle: researchPageTitle(url, rawTitle),
+    faviconUrl: `${url.protocol}//${url.host}/favicon.ico`,
+    initial: (siteName.match(/[A-Za-z0-9]/)?.[0] ?? "•").toUpperCase(),
+  };
+}
+
 /**
  * If `url` is a recognizable web-search results page, return the decoded
  * search query; otherwise `null`. Used to label OBSERVED browser-harness
@@ -355,6 +462,156 @@ export function activityForNavigation(rawUrl: string, at: number): ResearchActiv
     /* keep the canonical URL as the label */
   }
   return { kind: "source", message: `Opened ${label}`, sourceUrl: url, sourceTitle: label, observed: true, at };
+}
+
+// ---------------------------------------------------------------------------
+// Truthful live research graph
+// ---------------------------------------------------------------------------
+
+export type ResearchGraphNodeKind =
+  | "query"
+  | "plan"
+  | "round"
+  | "subquestion"
+  | "search"
+  | "source"
+  | "note"
+  | "synthesize";
+
+export interface ResearchGraphNode {
+  id: string;
+  kind: ResearchGraphNodeKind;
+  label: string;
+  /** Pre-wrapped, complete label lines; graph text is never ellipsized. */
+  lines: string[];
+  height: number;
+  observed: boolean;
+  latest: boolean;
+  x: number;
+  y: number;
+}
+
+export interface ResearchGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface ResearchGraphModel {
+  width: number;
+  height: number;
+  nodes: ResearchGraphNode[];
+  edges: ResearchGraphEdge[];
+  omitted: number;
+}
+
+const GRAPH_ACTIVITY_KINDS = new Set<ResearchActivityKind>([
+  "plan",
+  "round",
+  "subquestion",
+  "search",
+  "source",
+  "note",
+  "synthesize",
+]);
+
+function graphLabel(activity: ResearchActivity): string {
+  if (activity.kind === "source") return activity.sourceTitle || activity.sourceUrl || activity.message;
+  if (activity.kind === "subquestion") return activity.subQuestion || activity.message;
+  return activity.message;
+}
+
+function graphColumn(kind: ResearchGraphNodeKind): number {
+  switch (kind) {
+    case "query": return 0;
+    case "plan":
+    case "round": return 1;
+    case "subquestion": return 2;
+    case "search":
+    case "source":
+    case "note": return 3;
+    case "synthesize": return 4;
+  }
+}
+
+function wrapGraphLabel(label: string, maxChars = 23): string[] {
+  const words = label.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  const flush = () => {
+    if (line) lines.push(line);
+    line = "";
+  };
+  for (const original of words) {
+    let word = original;
+    while (word.length > maxChars) {
+      flush();
+      lines.push(word.slice(0, maxChars));
+      word = word.slice(maxChars);
+    }
+    if (!word) continue;
+    if (line && `${line} ${word}`.length > maxChars) flush();
+    line += `${line ? " " : ""}${word}`;
+  }
+  flush();
+  return lines.length ? lines : ["(empty)"];
+}
+
+/**
+ * Build only from the user's query and real progress/navigation events.
+ * Planned-but-not-announced sub-questions and untouched source slots never
+ * become graph nodes. The graph is deliberately a chronological evidence
+ * trail, not a decorative forecast of what Pi might do next.
+ */
+export function buildResearchGraph(
+  query: string,
+  activity: ResearchActivity[],
+  maxActivityNodes = 48
+): ResearchGraphModel {
+  const actual = activity.filter((a) => GRAPH_ACTIVITY_KINDS.has(a.kind));
+  const visible = actual.length <= maxActivityNodes
+    ? actual
+    : [...actual.slice(0, 4), ...actual.slice(-(maxActivityNodes - 4))];
+  const omitted = actual.length - visible.length;
+  const entries: Array<{ kind: ResearchGraphNodeKind; label: string; observed: boolean; sourceIndex: number }> = [
+    { kind: "query", label: query.trim() || "(empty question)", observed: false, sourceIndex: -1 },
+    ...visible.map((a, i) => ({
+      kind: a.kind as ResearchGraphNodeKind,
+      label: graphLabel(a),
+      observed: Boolean(a.observed),
+      sourceIndex: i,
+    })),
+  ];
+
+  const nodes: ResearchGraphNode[] = [];
+  const columnOffsets = [42, 42, 42, 42, 42];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const column = graphColumn(entry.kind);
+    const lines = wrapGraphLabel(entry.label);
+    const height = Math.max(52, 30 + lines.length * 11);
+    const y = columnOffsets[column];
+    columnOffsets[column] += height + 16;
+    nodes.push({
+      id: i === 0 ? "query" : `activity-${entry.sourceIndex}`,
+      kind: entry.kind,
+      label: entry.label.trim() || entry.kind,
+      lines,
+      height,
+      observed: entry.observed,
+      latest: i === entries.length - 1 && i > 0,
+      x: 34 + column * 148,
+      y,
+    });
+  }
+
+  const edges = nodes.slice(1).map((node, i) => ({
+    id: `edge-${i}`,
+    source: nodes[i].id,
+    target: node.id,
+  }));
+  const height = Math.max(220, ...columnOffsets.map((offset) => offset + 10));
+  return { width: 700, height, nodes, edges, omitted };
 }
 
 /** Canonicalize + dedupe a list of raw sources; drops malformed/duplicate. */
