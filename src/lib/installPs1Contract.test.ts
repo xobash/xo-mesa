@@ -1,0 +1,37 @@
+import { describe, expect, it } from "vitest";
+import installer from "../../install.ps1?raw";
+import readme from "../../README.md?raw";
+
+describe("Windows irm installer contract", () => {
+  it("is the documented Windows quick-start path", () => {
+    expect(readme).toContain("irm https://raw.githubusercontent.com/xobash/xo-mesa/main/install.ps1 | iex");
+  });
+
+  it("clones or safely updates an existing Mesa checkout before launch", () => {
+    expect(installer).toContain("https://github.com/xobash/xo-mesa.git");
+    expect(installer).toContain('(Split-Path $currentDir -Leaf) -eq "xo-mesa"');
+    // The local worktree is stashed, then the updater only fast-forwards; it
+    // never rewrites local history or discards uncommitted source changes.
+    expect(installer).toContain("stash push --include-untracked");
+    expect(installer).toMatch(/git .*-C \$installDir fetch origin main/);
+    expect(installer).toMatch(/git .*-C \$installDir merge --ff-only origin\/main/);
+    expect(installer).toContain("stash pop $preservedStash");
+    expect(installer).toMatch(/git .*clone \$repoUrl \$installDir/);
+    expect(installer).toContain("& .\\run.cmd");
+  });
+
+  it("can bootstrap Git before the repository exists", () => {
+    expect(installer).toContain("function Ensure-Git");
+    expect(installer).toContain("winget install --id Git.Git");
+    expect(installer).toContain("Refresh-MesaBootstrapPath");
+  });
+
+  it("is safe to run through `iex` — no top-level `exit` closes the caller's session", () => {
+    // `irm ... | iex` runs this text in the USER'S runspace, so any top-level
+    // `exit` terminates their PowerShell window (reads as a crash). The body
+    // must instead live in one `& { ... }` script block and return normally.
+    expect(installer).toMatch(/^&\s*\{/m); // wrapped in a script block
+    expect(installer).not.toMatch(/^\s*exit\b/m); // no exit statement anywhere
+    expect(installer).not.toContain("exit $LASTEXITCODE");
+  });
+});

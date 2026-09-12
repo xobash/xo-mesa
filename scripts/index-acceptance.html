@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="UTF-8"><title>Mesa index acceptance</title></head>
+<body><div id="root"></div><aside id="index-checks" style="position:fixed;bottom:28px;right:12px;z-index:99999;background:#fff;color:#111;padding:8px;border:1px solid #888;max-width:420px;font:12px monospace"><button id="reopen">Reopen demo</button><button id="metrics">Read index metrics</button><output id="result"></output></aside>
+<script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from '../src/App';
+import { useAppStore } from '../src/store';
+import { DEMO_ROOT } from '../src/lib/vault';
+import { workingSetStats } from '../src/lib/documentWorkingSet';
+import '../src/styles.css';
+localStorage.setItem('mesa:toured', '1');
+const fixtureRoot = new URL(location.href).searchParams.get('vault') || DEMO_ROOT;
+document.querySelector('#reopen').textContent = 'Reopen test vault';
+const report = () => {
+ const events = window.__MESA_PERF__?.events ?? [];
+ const index = events.filter(e => e.name === 'vault-markdown-complete').slice(-1)[0];
+ document.querySelector('#result').textContent = JSON.stringify({ index: index?.detail, search: events.filter(e => e.name === 'search-complete').slice(-1)[0]?.detail, ...workingSetStats(useAppStore.getState().contentCache) });
+};
+document.querySelector('#metrics').onclick = report;
+document.querySelector('#reopen').onclick = async () => { await useAppStore.getState().openVault(fixtureRoot); report(); };
+createRoot(document.querySelector('#root')).render(React.createElement(App));
+</script></body></html>

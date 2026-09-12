@@ -1,0 +1,1059 @@
+import { describe, expect, it } from "vitest";
+import type { NoteMeta, VaultFile } from "../types";
+import {
+  DEFAULT_DEEP_RESEARCH_LIMITS,
+  RESEARCH_DEPTH_PRESETS,
+  DEPTH_LIMITS,
+  clampDepth,
+  limitsForDepth,
+  buildResearchContext,
+  redactResearchContent,
+  buildResearchPrompt,
+  canonicalizeSourceUrl,
+  dedupeSources,
+  searchQueryOf,
+  activityForNavigation,
+  buildResearchGraph,
+  presentResearchSource,
+  parseResultEnvelope,
+  buildChangeSet,
+  buildApplyPlan,
+  safeNoteTitle,
+  safeFolderName,
+  makeLinkTarget,
+  titleSlug,
+  validateResearchResult,
+  researchReportQualityIssues,
+  utf8ByteLength,
+  truncateUtf8,
+  createRunId,
+  type DeepResearchResult,
+  type ProposedNote,
+} from "./deepResearch";
+
+function md(relPath: string): VaultFile {
+  const name = relPath.split("/").pop()!.replace(/\.md$/i, "");
+  return { path: `/vault/${relPath}`, relPath, name, ext: "md", isMarkdown: true };
+}
+
+function note(relPath: string, rawLinks: string[] = [], tags: string[] = []): NoteMeta {
+  return { relPath, title: relPath.split("/").pop()!.replace(/\.md$/i, ""), rawLinks, tags, aliases: [] };
+}
+
+const providerCredentialFixture = ["sk", "-proj-", "mesa_test_fixture_1234567890"].join("");
+const githubCredentialFixture = ["gh", "p_", "mesa_test_fixture_1234567890"].join("");
+const privateKeyFixture = [
+  "-----BEGIN ",
+  "PRIVATE KEY-----\nfixture\n",
+  "-----END ",
+  "PRIVATE KEY-----",
+].join("");
+const assignment = (name: string, value: string) => `${name}=${value}`;
+
+// --- URL canonicalization + dedup ------------------------------------------
+describe("canonicalizeSourceUrl", () => {
+  it("strips tracking params, www, fragment, and trailing slash", () => {
+    expect(
+      canonicalizeSourceUrl("HTTPS://www.Example.com/path/?utm_source=x&b=2&a=1#frag")
+    ).toBe("https://example.com/path?a=1&b=2");
+  });
+  it("rejects non-http(s) URLs", () => {
+    expect(canonicalizeSourceUrl("file:///etc/passwd")).toBeNull();
+    expect(canonicalizeSourceUrl("javascript:alert(1)")).toBeNull();
+    expect(canonicalizeSourceUrl("ftp://x/y")).toBeNull();
+  });
+  it("rejects malformed URLs", () => {
+    expect(canonicalizeSourceUrl("not a url")).toBeNull();
+    expect(canonicalizeSourceUrl("")).toBeNull();
+  });
+});
+
+describe("dedupeSources", () => {
+  it("drops duplicate canonical URLs and keeps first valid title", () => {
+    const out = dedupeSources([
+      { url: "https://a.com/x?utm_source=y", title: "A" },
+      { url: "https://www.a.com/x", title: "A dup" },
+      { url: "not-a-url", title: "bad" },
+      { url: "https://b.com/y", title: "B" },
+    ]);
+    expect(out.map((s) => s.url)).toEqual(["https://a.com/x", "https://b.com/y"]);
+    expect(out[0].title).toBe("A");
+  });
+});
+
+describe("presentResearchSource", () => {
+  it("turns opaque source URLs into a browser-style site and page identity", () => {
+    const source = presentResearchSource(
+      "https://en.wikipedia.org/wiki/Jeffrey_Epstein?utm_source=test",
+      "en.wikipedia.org/wiki/Jeffrey_Epstein"
+    );
+    expect(source).toEqual({
+      url: "https://en.wikipedia.org/wiki/Jeffrey_Epstein",
+      siteName: "Wikipedia",
+      host: "en.wikipedia.org",
+      pageTitle: "Jeffrey Epstein",
+      faviconUrl: "https://en.wikipedia.org/favicon.ico",
+      initial: "W",
+    });
+  });
+
+  it("keeps a real source title and provides a readable known-site label", () => {
+    const source = presentResearchSource(
+      "https://www.theguardian.com/books/2017/jun/01/example",
+      "A documented history of the subject"
+    );
+    expect(source?.siteName).toBe("The Guardian");
+    expect(source?.pageTitle).toBe("A documented history of the subject");
+  });
+
+  it("rejects non-web sources", () => {
+    expect(presentResearchSource("file:///tmp/private", "Private")).toBeNull();
+  });
+});
+
+describe("buildResearchGraph", () => {
+  it("does not invent planned or source nodes before real activity exists", () => {
+    const graph = buildResearchGraph("How do tides work?", [
+      { kind: "status", message: "Waiting for the model", at: 1_000 },
+    ]);
+    expect(graph.nodes.map((n) => n.kind)).toEqual(["query"]);
+    expect(graph.edges).toEqual([]);
+  });
+
+  it("builds a chronological graph from announced and observed actions", () => {
+    const graph = buildResearchGraph("How do tides work?", [
+      { kind: "plan", message: "Cause\nEvidence", at: 1_000 },
+      { kind: "subquestion", message: "Researching cause", subQuestion: "What causes tides?", at: 2_000 },
+      { kind: "search", message: "Searched for “tide causes”", observed: true, sourceUrl: "https://search.test", at: 3_000 },
+      { kind: "source", message: "Opened source", sourceTitle: "NOAA tides", sourceUrl: "https://noaa.test", at: 4_000 },
+      { kind: "note", message: "Finished source", sourceUrl: "https://noaa.test", at: 5_000 },
+    ]);
+    expect(graph.nodes.map((n) => n.kind)).toEqual(["query", "plan", "subquestion", "search", "source", "note"]);
+    expect(graph.nodes.find((n) => n.kind === "search")?.observed).toBe(true);
+    expect(graph.edges).toHaveLength(5);
+    expect(graph.edges[0]).toEqual({ id: "edge-0", source: "query", target: "activity-0" });
+  });
+
+  it("keeps complete labels at readable size and spaces same-column nodes apart", () => {
+    const longLabel =
+      "This complete source description must wrap across every required line without being truncated";
+    const graph = buildResearchGraph("Question", [
+      { kind: "source", message: "Opened one", sourceTitle: longLabel, at: 1_000 },
+      { kind: "source", message: "Opened two", sourceTitle: "Second source", at: 2_000 },
+    ]);
+    const first = graph.nodes[1];
+    const second = graph.nodes[2];
+    expect(first.label).toBe(longLabel);
+    expect(first.truncated).toBe(true);
+    expect(first.lines[first.lines.length - 1]?.endsWith("...")).toBe(true);
+    expect(second.y).toBeGreaterThanOrEqual(first.y + first.height + 16);
+  });
+
+  it("reflows dense activity into bounded circular nodes", () => {
+    const graph = buildResearchGraph(
+      "Question",
+      Array.from({ length: 47 }, (_, i) => ({
+        kind: "source" as const,
+        message: `Opened source ${i + 1}`,
+        sourceTitle: `Source ${i + 1}`,
+        at: 1_000 + i,
+      })),
+      48,
+      { width: 640, height: 360 }
+    );
+
+    expect(graph.width).toBe(640);
+    expect(graph.height).toBe(360);
+    expect(graph.nodeWidth).toBeLessThan(130);
+    expect(graph.nodes.every((node) => node.radius > 0)).toBe(true);
+    expect(
+      graph.nodes.every(
+        (node) =>
+          node.x - node.hoverRadius >= 0 &&
+          node.x + node.hoverRadius <= graph.width &&
+          node.y - node.hoverRadius >= 0 &&
+          node.y + node.hoverRadius <= graph.height
+      )
+    ).toBe(true);
+    expect(new Set(graph.nodes.map((node) => `${node.x}:${node.y}`)).size).toBe(graph.nodes.length);
+    expect(graph.nodes.map((node) => node.step)).toEqual(
+      Array.from({ length: graph.nodes.length }, (_, i) => i + 1)
+    );
+    expect(graph.nodes.every((node) => node.lines[0]?.startsWith(`${node.step} `))).toBe(true);
+
+    for (let i = 0; i < graph.nodes.length; i++) {
+      for (let j = i + 1; j < graph.nodes.length; j++) {
+        const a = graph.nodes[i];
+        const b = graph.nodes[j];
+        expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
+          a.hoverRadius + b.hoverRadius
+        );
+      }
+    }
+
+    const firstRowY = graph.nodes[0].y;
+    const firstRow = graph.nodes.filter((node) => node.y === firstRowY);
+    const secondRowY = graph.nodes.find((node) => node.y !== firstRowY)?.y;
+    const secondRow = graph.nodes.filter((node) => node.y === secondRowY);
+    expect(firstRow.map((node) => node.x)).toEqual(
+      [...firstRow].map((node) => node.x).sort((a, b) => a - b)
+    );
+    expect(secondRow.map((node) => node.x)).toEqual(
+      [...secondRow].map((node) => node.x).sort((a, b) => b - a)
+    );
+  });
+
+  it("recomputes the collision-free chronological grid for the measured graph section", () => {
+    const activity = Array.from({ length: 30 }, (_, i) => ({
+      kind: (i % 3 === 0 ? "search" : i % 3 === 1 ? "source" : "note") as "search" | "source" | "note",
+      message: `Research action ${i + 1}`,
+      at: i + 1,
+    }));
+    const narrow = buildResearchGraph("Question", activity, 48, { width: 320, height: 240 });
+    const wide = buildResearchGraph("Question", activity, 48, { width: 900, height: 500 });
+
+    expect(narrow.nodes.map((node) => `${node.x}:${node.y}`)).not.toEqual(
+      wide.nodes.map((node) => `${node.x}:${node.y}`)
+    );
+    expect(Math.max(...wide.nodes.map((node) => node.radius))).toBeGreaterThan(
+      Math.max(...narrow.nodes.map((node) => node.radius))
+    );
+    for (const graph of [narrow, wide]) {
+      expect(graph.nodes.every((node) => node.labelMaxWidth <= graph.nodeWidth)).toBe(true);
+      expect(graph.nodes.every((node) => node.labelY < graph.height)).toBe(true);
+    }
+  });
+
+  it("joins canonical source records with activity nodes", () => {
+    const graph = buildResearchGraph(
+      "Question",
+      [{
+        kind: "source",
+        message: "Opened source",
+        sourceTitle: "Observed research page",
+        sourceUrl: "https://www.example.com/research/?utm_source=pi",
+        at: 1,
+      }],
+      48,
+      { width: 640, height: 360 },
+      [{ url: "https://example.com/research?utm_source=mesa", title: "Research page", status: "reading", observed: true }]
+    );
+
+    const source = graph.nodes.find((node) => node.sourceUrl === "https://example.com/research");
+    expect(graph.nodes.filter((node) => node.kind === "source")).toHaveLength(1);
+    expect(source).toMatchObject({
+      kind: "source",
+      label: "Research page",
+      sourceStatus: "reading",
+      sourceObserved: true,
+    });
+  });
+
+  it("condenses a long query node without losing the full text", () => {
+    const query =
+      "Map every Epstein-Speckel-Seckel source relationship, origin story, contradiction, and confidence caveat across the current vault and external sources";
+    const graph = buildResearchGraph(query, []);
+    expect(graph.nodes).toHaveLength(1);
+    expect(graph.nodes[0].label).toBe(query);
+    expect(graph.nodes[0].truncated).toBe(true);
+    expect(graph.nodes[0].lines[graph.nodes[0].lines.length - 1]?.endsWith("...")).toBe(true);
+  });
+});
+
+// --- observed navigation (queries + sources the harness actually visited) ----
+describe("searchQueryOf", () => {
+  it("extracts the query from common search engines", () => {
+    expect(searchQueryOf("https://duckduckgo.com/?q=aleister+crowley&ia=web")).toBe("aleister crowley");
+    expect(searchQueryOf("https://html.duckduckgo.com/html/?q=test")).toBe("test");
+    expect(searchQueryOf("https://www.google.com/search?q=epstein+timeline&hl=en")).toBe("epstein timeline");
+    expect(searchQueryOf("https://www.bing.com/search?q=abc")).toBe("abc");
+    expect(searchQueryOf("https://search.brave.com/search?q=abc")).toBe("abc");
+    expect(searchQueryOf("https://www.startpage.com/sp/search?query=abc")).toBe("abc");
+  });
+  it("returns null for ordinary pages, non-search engine paths, and bad URLs", () => {
+    expect(searchQueryOf("https://en.wikipedia.org/wiki/Aleister_Crowley")).toBeNull();
+    expect(searchQueryOf("https://google.com/maps?q=pizza")).toBeNull(); // not /search
+    expect(searchQueryOf("https://duckduckgo.com/")).toBeNull(); // no query
+    expect(searchQueryOf("javascript:alert(1)")).toBeNull();
+    expect(searchQueryOf("not a url")).toBeNull();
+  });
+});
+
+describe("activityForNavigation", () => {
+  it("labels a search-engine navigation as an observed search with its query", () => {
+    const a = activityForNavigation("https://duckduckgo.com/?q=sex+magick+history", 123);
+    expect(a).toMatchObject({ kind: "search", observed: true, at: 123 });
+    expect(a?.message).toContain("sex magick history");
+  });
+  it("labels an ordinary page navigation as an observed source", () => {
+    const a = activityForNavigation("https://en.wikipedia.org/wiki/Thelema?utm_source=x", 5);
+    expect(a).toMatchObject({ kind: "source", observed: true, at: 5 });
+    expect(a?.sourceUrl).toBe("https://en.wikipedia.org/wiki/Thelema");
+    expect(a?.message).toBe("Opened en.wikipedia.org/wiki/Thelema");
+  });
+  it("rejects non-web navigations", () => {
+    expect(activityForNavigation("about:blank", 1)).toBeNull();
+    expect(activityForNavigation("file:///etc/passwd", 1)).toBeNull();
+    expect(activityForNavigation("", 1)).toBeNull();
+  });
+});
+
+// --- naming ------------------------------------------------------------------
+describe("safeNoteTitle / safeFolderName", () => {
+  it("sanitizes to a non-empty, filesystem-safe base name", () => {
+    expect(safeNoteTitle('What is "X"?: a/b')).toBe("What is X a-b");
+    expect(safeNoteTitle("con")).toBe("Research");
+    expect(safeNoteTitle("   ")).toBe("Research");
+  });
+  it("falls back for a reserved/empty folder name", () => {
+    expect(safeFolderName("Research")).toBe("Research");
+    expect(safeFolderName("NUL")).toBe("Research");
+  });
+});
+
+describe("titleSlug / makeLinkTarget", () => {
+  it("slugifies for dedupe comparison", () => {
+    expect(titleSlug("Deep Research — Foo Bar!")).toBe("deep-research-foo-bar");
+  });
+  it("builds a vault-relative md link target", () => {
+    expect(makeLinkTarget("Research", "My Note")).toBe("Research/My Note.md");
+    expect(makeLinkTarget("", "Root Note")).toBe("Root Note.md");
+  });
+});
+
+// --- context builder -----------------------------------------------------------
+describe("buildResearchContext", () => {
+  const files = [md("a.md"), md("b.md"), md("c.md"), md("sub/d.md"), md(".secret/x.md"), md(".hidden.md")];
+  const notes: Record<string, NoteMeta> = {
+    "a.md": note("a.md", ["b.md"], ["research", "ai"]),
+    "b.md": note("b.md", ["a.md"], ["research"]),
+    "c.md": note("c.md", [], ["other"]),
+    "sub/d.md": note("sub/d.md", [], ["ai"]),
+    ".secret/x.md": note(".secret/x.md", [], []),
+    ".hidden.md": note(".hidden.md", [], []),
+  };
+  const content: Record<string, string> = {
+    "a.md": "alpha body about mesa graph and pi agent",
+    "b.md": "beta links back",
+    "c.md": "gamma unrelated",
+    "sub/d.md": "delta ai note",
+    ".secret/x.md": "hidden credential stuff",
+    ".hidden.md": "hidden root note",
+  };
+
+  it("always includes the active file and selected files, deduped", () => {
+    const out = buildResearchContext({
+      query: "mesa",
+      activePath: "a.md",
+      selectedPaths: ["a.md", "c.md"],
+      files, notes, content,
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+    });
+    const paths = out.notes.map((n) => n.relPath);
+    expect(paths).toContain("a.md");
+    expect(paths).toContain("c.md");
+    expect(paths.filter((p) => p === "a.md")).toHaveLength(1);
+  });
+
+  it("excludes dot-folder / hidden artifact paths", () => {
+    const out = buildResearchContext({
+      query: "credential",
+      activePath: null,
+      selectedPaths: [],
+      files, notes, content,
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+      scope: "vault",
+    });
+    const paths = out.notes.map((n) => n.relPath);
+    expect(paths).not.toContain(".secret/x.md");
+    expect(paths).not.toContain(".hidden.md");
+  });
+
+  it("excludes credential-named notes and redacts credential-shaped values in normal notes", () => {
+    const files2 = [md("topic.md"), md("credentials.md"), md("API_KEYS.md")];
+    const notes2 = {
+      "topic.md": note("topic.md"),
+      "credentials.md": note("credentials.md"),
+      "API_KEYS.md": note("API_KEYS.md"),
+    };
+    const out = buildResearchContext({
+      query: "topic credentials",
+      activePath: "topic.md",
+      selectedPaths: ["credentials.md", "API_KEYS.md"],
+      files: files2,
+      notes: notes2,
+      content: {
+        "topic.md": `Useful prose. ${assignment("API_KEY", providerCredentialFixture)}`,
+        "credentials.md": assignment("password", "fixture-value"),
+        "API_KEYS.md": assignment("token", "fixture-value"),
+      },
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+    });
+    expect(out.notes.map((n) => n.relPath)).toEqual(["topic.md"]);
+    expect(out.notes[0].content).toMatch(/\[REDACTED(?: CREDENTIAL)?\]/);
+    expect(out.notes[0].content).not.toContain("abcdefghijklmnop");
+    expect(out.notes[0].redacted).toBe(true);
+  });
+
+  it("vault scope pulls related notes via backlinks, outgoing links, tags, and search", () => {
+    const out = buildResearchContext({
+      query: "mesa",
+      activePath: "a.md",
+      selectedPaths: [],
+      files, notes, content,
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+      scope: "vault",
+    });
+    expect(out.scope).toBe("vault");
+    const paths = out.notes.map((n) => n.relPath);
+    expect(paths).toContain("b.md"); // backlink + outgoing
+    expect(paths).toContain("sub/d.md"); // shared #ai tag
+  });
+
+  it("defaults to workspace scope: active + selected + link neighborhood, NO vault sweep", () => {
+    const out = buildResearchContext({
+      query: "mesa",
+      activePath: "a.md",
+      selectedPaths: [],
+      files, notes, content,
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+    });
+    expect(out.scope).toBe("workspace");
+    // a.md (active) + b.md (its backlink/outgoing neighbor) only — the
+    // shared-tag note (sub/d.md) and content-search matches stay out.
+    expect(out.notes.map((n) => n.relPath)).toEqual(["a.md", "b.md"]);
+    expect(out.omittedNotes).toBe(0);
+  });
+
+  it("enforces the note cap and reports truncation", () => {
+    const out = buildResearchContext({
+      query: "a",
+      activePath: "a.md",
+      selectedPaths: [],
+      files, notes, content,
+      limits: { ...DEFAULT_DEEP_RESEARCH_LIMITS, maxContextNotes: 2 },
+      scope: "vault",
+    });
+    expect(out.notes.length).toBeLessThanOrEqual(2);
+    expect(out.truncated).toBe(true);
+    expect(out.omittedNotes).toBeGreaterThan(0);
+  });
+
+  it("enforces the byte cap and reports truncation", () => {
+    const big = "x".repeat(5000);
+    const out = buildResearchContext({
+      query: "a",
+      activePath: "a.md",
+      selectedPaths: [],
+      files: [md("a.md")], notes: { "a.md": note("a.md") },
+      content: { "a.md": big },
+      limits: { ...DEFAULT_DEEP_RESEARCH_LIMITS, maxNoteBytes: 100, maxTotalBytes: 200 },
+    });
+    expect(out.totalBytes).toBeLessThanOrEqual(200);
+    expect(out.truncated).toBe(true);
+  });
+
+  it("excludes the query terms from returned content? no — content is included verbatim", () => {
+    const out = buildResearchContext({
+      query: "mesa",
+      activePath: "a.md",
+      selectedPaths: [],
+      files, notes, content,
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+    });
+    const a = out.notes.find((n) => n.relPath === "a.md");
+    expect(a?.content).toContain("alpha body");
+  });
+});
+
+describe("redactResearchContent", () => {
+  it("removes private-key blocks and common provider-token shapes", () => {
+    const out = redactResearchContent(
+      `before\n${privateKeyFixture}\n${githubCredentialFixture}\nafter`
+    );
+    expect(out.redacted).toBe(true);
+    expect(out.content).not.toContain("BEGIN PRIVATE KEY");
+    expect(out.content).not.toContain(githubCredentialFixture);
+    expect(out.content).toContain("before");
+    expect(out.content).toContain("after");
+  });
+});
+
+describe("UTF-8 byte limits", () => {
+  it("truncates on code-point boundaries by bytes, not JavaScript code units", () => {
+    expect(utf8ByteLength("😀a")).toBe(5);
+    expect(truncateUtf8("😀a", 4)).toBe("😀");
+    expect(truncateUtf8("😀a", 3)).toBe("");
+  });
+});
+
+// --- prompt -----------------------------------------------------------------
+describe("buildResearchPrompt", () => {
+  it("instructs read-only research, the tools, and no direct vault writes", () => {
+    const ctx = buildResearchContext({
+      query: "q",
+      activePath: null, selectedPaths: [],
+      files: [], notes: {}, content: {},
+      limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+    });
+    const p = buildResearchPrompt({ runId: "r1", query: "my query", context: ctx, folder: "Research", depth: RESEARCH_DEPTH_PRESETS.standard });
+    expect(p).toContain("deep_research_progress");
+    expect(p).toContain("deep_research_finish");
+    expect(p).toContain("Do not use the write or edit tools");
+    expect(p).toContain("browse");
+    expect(p).toContain("my query");
+    expect(p).toContain("[[");
+    expect(p).toContain("sub-questions");
+  });
+
+  it("embeds the requested depth and the rich reporting instructions", () => {
+    const ctx = buildResearchContext({
+      query: "q", activePath: null, selectedPaths: [],
+      files: [], notes: {}, content: {}, limits: DEFAULT_DEEP_RESEARCH_LIMITS,
+    });
+    const p = buildResearchPrompt({
+      runId: "r1", query: "q", context: ctx, folder: "Research",
+      depth: { rounds: 4, subQuestions: 7, maxSources: 20, maxGeneratedNotes: 9 },
+    });
+    expect(p).toContain("exactly 4 research rounds");
+    expect(p).toContain("exactly 7 sub-questions");
+    expect(p).toContain("up to 20 sources");
+    expect(p).toContain('kind: "plan"');
+    expect(p).toContain('kind: "round"');
+    expect(p).toContain('kind: "source"');
+    expect(p).toContain('kind: "subquestion"');
+    expect(p).toContain('kind: "synthesize"');
+    expect(p).toContain("methodology");
+    expect(p).toContain("draftMarkdown");
+    expect(p).toContain("high-confidence, source-backed addition");
+  });
+});
+
+// --- envelope parsing + validation -------------------------------------------
+describe("extractEnvelope / parseResultEnvelope", () => {
+  it("parses a valid envelope from model text", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "Report", markdown: "# Hi [[A]]" },
+      notes: [],
+      sources: [{ url: "https://a.com/x", title: "A" }],
+      claims: [],
+      related: [],
+    };
+    const env = JSON.stringify({ type: "mesa_deep_research", runId: "r1", result });
+    const out = parseResultEnvelope(`some prose\n\`\`\`json\n${env}\n\`\`\`\ntrailing`, "r1");
+    expect(out.ok).toBe(true);
+    if (out.ok) expect(out.result.report.title).toBe("Report");
+  });
+
+  it("rejects an envelope for a different run id", () => {
+    const env = JSON.stringify({
+      type: "mesa_deep_research", runId: "other",
+      result: { version: 1, report: { title: "t", markdown: "m" }, notes: [], sources: [], claims: [], related: [] },
+    });
+    const out = parseResultEnvelope(env, "r1");
+    expect(out.ok).toBe(false);
+  });
+
+  it("rejects malformed / missing envelope", () => {
+    expect(parseResultEnvelope("no json here", "r1").ok).toBe(false);
+    expect(parseResultEnvelope('{"type":"nope"}', "r1").ok).toBe(false);
+  });
+
+  it("rejects a result missing the report markdown", () => {
+    const env = JSON.stringify({
+      type: "mesa_deep_research", runId: "r1",
+      result: { version: 1, report: { title: "t", markdown: "" }, notes: [], sources: [], claims: [], related: [] },
+    });
+    const out = parseResultEnvelope(env, "r1");
+    expect(out.ok).toBe(false);
+  });
+});
+
+describe("validateResearchResult", () => {
+  it("preserves uncertainty and conflicting claims, dedupes sources", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R", markdown: "# R" },
+      notes: [],
+      sources: [
+        { url: "https://a.com/x?utm_medium=z", title: "A" },
+        { url: "https://a.com/x", title: "A again" },
+      ],
+      claims: [
+        { text: "fact", kind: "verified", sourceUrl: "https://a.com/x" },
+        { text: "maybe", kind: "inference" },
+        { text: "disagree", kind: "conflict" },
+        { text: "unknown", kind: "unknown" },
+      ],
+      related: [],
+    };
+    const out = validateResearchResult(result);
+    expect(out.sources).toHaveLength(1);
+    expect(out.claims.map((c) => c.kind)).toEqual(["verified", "inference", "conflict", "unknown"]);
+  });
+
+  it("caps output sizes to the limits", () => {
+    const notes: ProposedNote[] = Array.from({ length: 30 }, (_, i) => ({
+      title: `N${i}`, markdown: `# N${i}`, sourceUrl: null, links: [],
+    }));
+    const result: DeepResearchResult = {
+      version: 1, report: { title: "R", markdown: "# R" },
+      notes, sources: [], claims: [], related: [],
+    };
+    const out = validateResearchResult(result, { ...DEFAULT_DEEP_RESEARCH_LIMITS, maxGeneratedNotes: 5 });
+    expect(out.notes.length).toBeLessThanOrEqual(5);
+  });
+
+  it("enforces the total generated-output byte budget", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R", markdown: "12345678" },
+      notes: [
+        { title: "N1", markdown: "😀😀", sourceUrl: null, links: [] },
+        { title: "N2", markdown: "abcdef", sourceUrl: null, links: [] },
+      ],
+      sources: [], claims: [], related: [],
+    };
+    const out = validateResearchResult(result, {
+      ...DEFAULT_DEEP_RESEARCH_LIMITS,
+      maxGeneratedTotalBytes: 12,
+    });
+    const total = utf8ByteLength(out.report.markdown) +
+      out.notes.reduce((sum, n) => sum + utf8ByteLength(n.markdown), 0);
+    expect(total).toBeLessThanOrEqual(12);
+  });
+
+  it("redacts credential-shaped values from every generated artifact", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R", markdown: `# R\n\n${assignment("API_KEY", providerCredentialFixture)}` },
+      notes: [{
+        title: "N",
+        markdown: assignment("password", "fixture-value"),
+        sourceUrl: null,
+        links: [],
+      }],
+      sources: [{ url: "https://a.com/x", title: "A" }],
+      claims: [],
+      related: [{
+        relPath: "existing.md",
+        reason: "x",
+        update: {
+          markdown: assignment("access_token", "fixture-value"),
+          sourceUrls: ["https://a.com/x"],
+          confidence: "high",
+        },
+      }],
+    };
+    const out = validateResearchResult(result);
+    expect(out.report.markdown).not.toContain("abcdefghijklmnop");
+    expect(out.notes[0].markdown).not.toContain("fixture-value");
+    expect(out.related[0].update?.markdown).not.toContain("fixture-value");
+  });
+
+  it("drops source notes without a surviving source and normalizes useful related updates", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R", markdown: "# R" },
+      notes: [
+        { title: "Good", markdown: "# Good", sourceUrl: "https://a.com/x", links: [] },
+        { title: "Bad", markdown: "# Bad", sourceUrl: "https://missing.example/x", links: [] },
+      ],
+      sources: [{ url: "https://a.com/x?utm_source=test", title: "A" }],
+      claims: [],
+      related: [{
+        relPath: "existing.md",
+        reason: "new evidence",
+        update: {
+          markdown: "A useful source-backed addition with enough detail for the note.",
+          sourceUrls: ["https://www.a.com/x#section", "file:///private/key"],
+          confidence: "high",
+        },
+      }],
+    };
+    const out = validateResearchResult(result);
+    expect(out.notes.map((n) => n.title)).toEqual(["Good"]);
+    expect(out.related[0].update).toEqual({
+      markdown: "A useful source-backed addition with enough detail for the note.",
+      sourceUrls: ["https://a.com/x"],
+      confidence: "high",
+    });
+  });
+});
+
+describe("researchReportQualityIssues", () => {
+  const depth = { rounds: 2, subQuestions: 2, maxSources: 8, maxGeneratedNotes: 4 };
+  it("accepts the thesis-grade report structure with per-question findings and citations", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      subQuestions: ["Q1", "Q2"],
+      report: {
+        title: "R",
+        markdown: "# R\n\n## Abstract\nAnswer.\n\n## Methodology\nTwo rounds.\n\n## Findings\n### Q1\nEvidence [A](https://a.com/x).\n\n### Q2\nMore evidence [A](https://a.com/x).\n\n## Synthesis\nConclusion.\n\n## Confidence and limitations\nHigh with limits.\n\n## Disagreements\nNone.\n\n## Open questions\nNext work.",
+      },
+      notes: [],
+      sources: [{ url: "https://a.com/x", title: "A" }],
+      claims: [{ text: "verified", kind: "verified", sourceUrl: "https://a.com/x" }],
+      related: [],
+    };
+    expect(researchReportQualityIssues(result, depth)).toEqual([]);
+  });
+
+  it("reports missing methodology, findings coverage, and citations", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      subQuestions: ["Q1", "Q2"],
+      report: { title: "R", markdown: "# R\n\n## Abstract\nThin." },
+      notes: [], sources: [{ url: "https://a.com/x", title: "A" }], claims: [], related: [],
+    };
+    const issues = researchReportQualityIssues(result, depth);
+    expect(issues).toContain("missing Methodology section");
+    expect(issues).toContain("findings cover 0/2 sub-questions");
+    expect(issues).toContain("findings contain no inline source URL citations");
+  });
+
+  it("rejects an uncited finding subsection", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      subQuestions: ["Q1", "Q2"],
+      report: { title: "R", markdown: "# R\n\n## Abstract\nAnswer.\n\n## Methodology\nTwo rounds.\n\n## Findings\n### Q1\n[A](https://a.com/x).\n\n### Q2\nUnsupported.\n\n## Synthesis\nConclusion.\n\n## Confidence and limitations\nLimits.\n\n## Disagreements\nNone.\n\n## Open questions\nNone." },
+      notes: [],
+      sources: [{ url: "https://a.com/x", title: "A" }],
+      claims: [{ text: "verified", kind: "verified", sourceUrl: "https://a.com/x" }],
+      related: [],
+    };
+    expect(researchReportQualityIssues(result, depth)).toContain(
+      'findings subsection for sub-question "Q2" has no source URL citation'
+    );
+  });
+});
+
+
+describe("report prompt and findings boundaries", () => {
+  function example(count = 5): DeepResearchResult {
+    const context = buildResearchContext({ query: "q", activePath: null, selectedPaths: [], files: [], notes: {}, content: {}, limits: DEFAULT_DEEP_RESEARCH_LIMITS });
+    const prompt = buildResearchPrompt({ runId: "r", query: "q", folder: "Research", context, depth: { rounds: 2, subQuestions: count, maxSources: 16, maxGeneratedNotes: 8 } });
+    return JSON.parse(prompt.match(/```json\n([\s\S]+?)\n```/)![1]);
+  }
+  const depth = { rounds: 2, subQuestions: 5, maxSources: 16, maxGeneratedNotes: 8 };
+  it("supplies a complete validator-compatible example for the requested depth", () => {
+    expect(researchReportQualityIssues(example(), depth)).toEqual([]);
+  });
+  it("accepts numbered, bold and Unicode question headings without merging different questions", () => {
+    const result = example();
+    const question = "What are the earliest documented Western Hermetic, alchemical, and ceremonial magical practices, and how were they transmitted and structured?";
+    result.subQuestions![0] = `1. ${question}`;
+    result.report.markdown = result.report.markdown.replace("### Sub-question 1", `### **1. ${question}**`);
+    result.subQuestions![1] = "祈りの歴史";
+    result.report.markdown = result.report.markdown.replace("### Sub-question 2", "### 祈りの歴史");
+    expect(researchReportQualityIssues(result, depth)).toEqual([]);
+    result.report.markdown = result.report.markdown.replace("### 祈りの歴史", "### 瞑想の歴史");
+    expect(researchReportQualityIssues(result, depth)).toContain('missing findings subsection for sub-question "祈りの歴史"');
+  });
+  it("does not borrow a citation from Synthesis or count headings outside Findings", () => {
+    const result = example();
+    result.report.markdown = result.report.markdown.replace("### Sub-question 5\nEvidence with [inline citation](https://example.com/page).", "### Sub-question 5\nUnsupported.").replace("## Synthesis", "## Synthesis\n[A](https://example.com/page)");
+    expect(researchReportQualityIssues(result, depth)).toContain('findings subsection for sub-question "Sub-question 5" has no source URL citation');
+    result.report.markdown = result.report.markdown.replace("## Findings", "## Appendix");
+    expect(researchReportQualityIssues(result, depth)).toContain("findings cover 0/5 sub-questions");
+  });
+  it("ignores required headings inside a fenced example", () => {
+    const result = example();
+    result.report.markdown = "```markdown\n" + result.report.markdown + "\n```";
+    expect(researchReportQualityIssues(result, depth)).toContain("missing Findings section");
+  });
+});
+
+// --- change set ---------------------------------------------------------------
+describe("buildChangeSet", () => {
+  const existingFiles = [md("existing.md"), md("Research/old.md")];
+  const notes: Record<string, NoteMeta> = {
+    "existing.md": note("existing.md"),
+    "Research/old.md": note("Research/old.md"),
+  };
+  const content: Record<string, string> = {
+    "existing.md": "# Existing\n\nSome text.",
+    "Research/old.md": "# Old",
+  };
+
+  it("creates a report note in the folder with wiki-links to sources and related", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "My Report", markdown: "# My Report\n\nFindings." },
+      notes: [{ title: "Source A", markdown: "# A", sourceUrl: "https://a.com/x", links: [] }],
+      sources: [{ url: "https://a.com/x", title: "Source A" }],
+      claims: [],
+      related: [{ relPath: "existing.md", reason: "relevant" }],
+    };
+    const cs = buildChangeSet({
+      runId: "r1", result, folder: "Research",
+      existingFiles, notes, content, now: new Date("2026-07-17T12:00:00Z"),
+    });
+    const report = cs.ops.find((o) => o.kind === "create" && o.title === "My Report");
+    expect(report).toBeTruthy();
+    expect(report!.relPath.startsWith("Research/")).toBe(true);
+    expect(report!.content).toContain("[[Research/Source A.md]]");
+    expect(report!.content).toContain("[[existing.md]]");
+    expect(report!.content).toContain("https://a.com/x");
+  });
+
+  it("dedupes a generated note whose slug already exists and links instead", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R2", markdown: "# R2" },
+      notes: [{ title: "Old", markdown: "# dup", sourceUrl: null, links: [] }],
+      sources: [], claims: [], related: [],
+    };
+    const cs = buildChangeSet({
+      runId: "r2", result, folder: "Research",
+      existingFiles, notes, content, now: new Date("2026-07-17T12:00:00Z"),
+    });
+    // "Research/old.md" already exists → the proposed "Old" note must not be recreated.
+    const created = cs.ops.filter((o) => o.kind === "create" && o.relPath === "Research/Old.md");
+    expect(created).toHaveLength(0);
+    expect(cs.ops.some((o) => o.kind === "create" && o.title === "R2")).toBe(true);
+  });
+
+  it("dedupes a source note by canonical source URL", () => {
+    const files2 = [...existingFiles, md("Research/Source A.md")];
+    const content2 = { ...content, "Research/Source A.md": "# A\n\nSource: https://a.com/x" };
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R3", markdown: "# R3" },
+      notes: [{ title: "Source A", markdown: "# new", sourceUrl: "https://a.com/x?utm_source=z", links: [] }],
+      sources: [{ url: "https://a.com/x", title: "Source A" }],
+      claims: [], related: [],
+    };
+    const cs = buildChangeSet({
+      runId: "r3", result, folder: "Research",
+      existingFiles: files2, notes, content: content2, now: new Date("2026-07-17T12:00:00Z"),
+    });
+    expect(cs.ops.filter((o) => o.kind === "create" && o.title === "Source A")).toHaveLength(0);
+  });
+
+  it("never treats a relation reason or backlink stub as a useful note update", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R4", markdown: "# R4" },
+      notes: [], sources: [], claims: [],
+      related: [{ relPath: "existing.md", reason: "x" }],
+    };
+    const cs = buildChangeSet({
+      runId: "r4", result, folder: "Research",
+      existingFiles, notes, content, now: new Date("2026-07-17T12:00:00Z"),
+    });
+    expect(cs.ops.filter((o) => o.kind === "update")).toHaveLength(0);
+  });
+
+  it("proposes a substantive, source-backed update for a high-confidence related note", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R Useful", markdown: "# R Useful" },
+      notes: [],
+      sources: [{ url: "https://a.com/x", title: "Primary A" }],
+      claims: [],
+      related: [{
+        relPath: "existing.md",
+        reason: "changes the existing conclusion",
+        update: {
+          markdown: "New primary evidence changes the conclusion and explains why the prior assumption no longer holds.",
+          sourceUrls: ["https://a.com/x"],
+          confidence: "high",
+        },
+      }],
+    };
+    const cs = buildChangeSet({
+      runId: "r-useful", result, folder: "Research",
+      existingFiles, notes, content, now: new Date("2026-07-17T12:00:00Z"),
+    });
+    const update = cs.ops.find((o) => o.kind === "update" && o.relPath === "existing.md");
+    expect(update?.content).toContain("New primary evidence changes the conclusion");
+    expect(update?.content).toContain("[Primary A](https://a.com/x)");
+    expect(update?.content).toContain("[[Research/R Useful.md]]");
+    expect(update?.expectedBytes).toBe(content["existing.md"]);
+  });
+
+  it("avoids duplicate links when a related note already links to the report", () => {
+    const content2 = { ...content, "existing.md": "# Existing\n\nSee [[Research/My Report.md]]." };
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "My Report", markdown: "# My Report" },
+      notes: [], claims: [],
+      related: [{
+        relPath: "existing.md",
+        reason: "x",
+        update: {
+          markdown: "A substantive addition that is long enough to qualify as a useful related-note update.",
+          sourceUrls: ["https://a.com/x"],
+          confidence: "high",
+        },
+      }],
+      sources: [{ url: "https://a.com/x", title: "A" }],
+    };
+    const cs = buildChangeSet({
+      runId: "r5", result, folder: "Research",
+      existingFiles, notes, content: content2, now: new Date("2026-07-17T12:00:00Z"),
+    });
+    const update = cs.ops.find((o) => o.kind === "update" && o.relPath === "existing.md");
+    expect(update).toBeTruthy();
+    expect(update!.content.match(/\[\[Research\/My Report\.md\]\]/g)!.length).toBe(1);
+  });
+
+  it("sanitizes generated file and folder names", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: 'Bad: "Name" / Test?', markdown: "# x" },
+      notes: [], sources: [], claims: [], related: [],
+    };
+    const cs = buildChangeSet({
+      runId: "r6", result, folder: "Research",
+      existingFiles, notes, content, now: new Date("2026-07-17T12:00:00Z"),
+    });
+    const report = cs.ops.find((o) => o.kind === "create");
+    expect(report!.relPath).not.toMatch(/[:*?"<>|\\]/);
+    expect(report!.relPath.split("/").every((seg) => seg && !seg.startsWith("."))).toBe(true);
+  });
+});
+
+// --- apply plan (transaction) ---------------------------------------------------
+describe("buildApplyPlan", () => {
+  const files = [md("a.md")];
+  const notes: Record<string, NoteMeta> = { "a.md": note("a.md") };
+
+  it("requires expected bytes for updates and captures originals for rollback", () => {
+    const ops = [
+      { kind: "create" as const, relPath: "Research/r.md", title: "R", content: "# R" },
+      { kind: "update" as const, relPath: "a.md", title: "A", content: "# A2", expectedBytes: "# A" },
+    ];
+    const plan = buildApplyPlan({ ops, existingContent: { "a.md": "# A" }, files, notes });
+    expect(plan.ok).toBe(true);
+    if (plan.ok) {
+      const upd = plan.steps.find((s) => s.relPath === "a.md");
+      expect(upd?.expectedBytes).toBe("# A");
+      expect(upd?.originalContent).toBe("# A");
+    }
+  });
+
+  it("rejects an update whose expected bytes no longer match (stale file)", () => {
+    const ops = [
+      { kind: "update" as const, relPath: "a.md", title: "A", content: "# A2", expectedBytes: "# OLD" },
+    ];
+    const plan = buildApplyPlan({ ops, existingContent: { "a.md": "# NEW" }, files, notes });
+    expect(plan.ok).toBe(false);
+    if (!plan.ok) expect(plan.error).toMatch(/stale|changed/i);
+  });
+
+  it("rejects an update without an explicit version precondition", () => {
+    const plan = buildApplyPlan({
+      ops: [{ kind: "update", relPath: "a.md", title: "A", content: "# A2" }],
+      existingContent: { "a.md": "# A" },
+      files,
+      notes,
+    });
+    expect(plan.ok).toBe(false);
+    if (!plan.ok) expect(plan.error).toMatch(/version precondition/i);
+  });
+
+  it("rejects an update targeting a note that no longer exists", () => {
+    const ops = [
+      { kind: "update" as const, relPath: "gone.md", title: "G", content: "# G", expectedBytes: "# G" },
+    ];
+    const plan = buildApplyPlan({ ops, existingContent: {}, files, notes });
+    expect(plan.ok).toBe(false);
+  });
+
+  it("orders creates before updates and plans rollback in reverse", () => {
+    const ops = [
+      { kind: "update" as const, relPath: "a.md", title: "A", content: "# A2", expectedBytes: "# A" },
+      { kind: "create" as const, relPath: "Research/r.md", title: "R", content: "# R" },
+      { kind: "create" as const, relPath: "Research/s.md", title: "S", content: "# S" },
+    ];
+    const plan = buildApplyPlan({ ops, existingContent: { "a.md": "# A" }, files, notes });
+    expect(plan.ok).toBe(true);
+    if (plan.ok) {
+      const kinds = plan.steps.map((s) => s.kind);
+      expect(kinds.indexOf("create")).toBeLessThan(kinds.indexOf("update"));
+      const rollbackCreates = plan.rollback.filter((r) => r.kind === "remove").map((r) => r.relPath);
+      expect(rollbackCreates).toEqual(["Research/s.md", "Research/r.md"]);
+    }
+  });
+
+  it("rejects any op outside the vault or with an unsafe path", () => {
+    const ops = [
+      { kind: "create" as const, relPath: "../escape.md", title: "E", content: "# E" },
+    ];
+    const plan = buildApplyPlan({ ops, existingContent: {}, files, notes });
+    expect(plan.ok).toBe(false);
+  });
+});
+
+// --- depth presets + clamping ---------------------------------------------------
+describe("clampDepth / limitsForDepth / presets", () => {
+  it("clamps depth to the allowed ranges", () => {
+    const d = clampDepth({ rounds: 99, subQuestions: 0, maxSources: 999, maxGeneratedNotes: -3 });
+    expect(d.rounds).toBe(DEPTH_LIMITS.rounds.max);
+    expect(d.subQuestions).toBe(DEPTH_LIMITS.subQuestions.min);
+    expect(d.maxSources).toBe(DEPTH_LIMITS.maxSources.max);
+    expect(d.maxGeneratedNotes).toBe(DEPTH_LIMITS.maxGeneratedNotes.min);
+  });
+
+  it("merges depth into limits, overriding source/note caps only", () => {
+    const merged = limitsForDepth(DEFAULT_DEEP_RESEARCH_LIMITS, { rounds: 3, subQuestions: 6, maxSources: 20, maxGeneratedNotes: 10 });
+    expect(merged.maxSources).toBe(20);
+    expect(merged.maxGeneratedNotes).toBe(10);
+    expect(merged.maxContextNotes).toBe(DEFAULT_DEEP_RESEARCH_LIMITS.maxContextNotes);
+    expect(merged.maxTotalBytes).toBe(DEFAULT_DEEP_RESEARCH_LIMITS.maxTotalBytes);
+  });
+
+  it("presets are ordered quick < standard < deep in thoroughness", () => {
+    expect(RESEARCH_DEPTH_PRESETS.quick.maxSources).toBeLessThan(RESEARCH_DEPTH_PRESETS.standard.maxSources);
+    expect(RESEARCH_DEPTH_PRESETS.standard.maxSources).toBeLessThan(RESEARCH_DEPTH_PRESETS.deep.maxSources);
+    expect(RESEARCH_DEPTH_PRESETS.quick.subQuestions).toBeLessThan(RESEARCH_DEPTH_PRESETS.deep.subQuestions);
+    expect(RESEARCH_DEPTH_PRESETS.quick.rounds).toBeLessThan(RESEARCH_DEPTH_PRESETS.deep.rounds);
+  });
+});
+
+// --- run id -----------------------------------------------------------------
+describe("createRunId", () => {
+  it("creates unique run ids", () => {
+    const a = createRunId();
+    const b = createRunId();
+    expect(a).not.toBe(b);
+  });
+});
+
+// --- Pi session safety contract (source-pinned) -------------------------------
+// The Deep Research write-block is only live while Pi runs with the
+// deep-research extension. A session restart on context drift would silently
+// shed that extension mid-run. These pins keep AgentPanel's reuse conservative
+// and keep the DR launch wired into the spawn env/args.
+import agentPanelSrc from "../components/AgentPanel.tsx?raw";
+
+describe("Pi session Deep Research safety contract", () => {
+  it("never silently restarts the shared Pi session on context-text drift", () => {
+    // The old code stopped the session whenever contextText changed before
+    // first user input — that would drop the DR write-block mid-run.
+    expect(agentPanelSrc).toContain("Never silently kill a live Pi session");
+    expect(agentPanelSrc).not.toMatch(
+      /contextText !== contextText &&\s*\n?\s*!SHARED_PI_SESSION\.userInputSeen/
+    );
+  });
+
+  it("loads the deep-research extension while a run is active", () => {
+    expect(agentPanelSrc).toContain("piDeepResearchLaunch");
+    // The env constant itself lives in lib/agent.ts (piDeepResearchLaunch).
+    expect(agentPanelSrc).toContain("drActive");
+  });
+
+  it("opens Deep Research as Pi's own slide-out wing without a duplicate overlay window", () => {
+    expect(agentPanelSrc).toContain("openDeepResearch(false)");
+    expect(agentPanelSrc).toContain("deepResearchSurface === researchHostId");
+    expect(agentPanelSrc).toContain("setDeepResearchSurface(researchOpen ? null : researchHostId)");
+    expect(agentPanelSrc).toContain("<DeepResearchPanel piSurfaceAvailable />");
+    expect(agentPanelSrc).toContain('"dr-wing" +');
+    expect(agentPanelSrc).toContain('researchDetachArmed ? " tear-off-armed" : ""');
+    expect(agentPanelSrc).toContain("browserAutoDismissedRef.current");
+    expect(agentPanelSrc).toContain("host.contains(terminalElement)");
+  });
+});

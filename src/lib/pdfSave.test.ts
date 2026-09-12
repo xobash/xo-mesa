@@ -1,0 +1,163 @@
+import { describe, expect, it } from "vitest";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+import { persistPdfBytes, type PdfSaveFs } from "./pdfSave";
+
+async function makePdf(text: string): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([300, 200]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText(text, { x: 24, y: 140, size: 18, font });
+  return doc.save();
+}
+
+function makeFs(initial: Uint8Array): {
+  fs: PdfSaveFs;
+  files: Map<string, Uint8Array>;
+} {
+  const files = new Map<string, Uint8Array>([["/vault/test.pdf", initial.slice(0)]]);
+  const fs: PdfSaveFs = {
+    async readFile(path) {
+      const found = files.get(path);
+      if (!found) throw new Error(`Missing file: ${path}`);
+      return found.slice(0);
+    },
+    async writeFile(path, data) {
+      files.set(path, data.slice(0));
+    },
+    async remove(path) {
+      files.delete(path);
+    },
+    async exists(path) {
+      return files.has(path);
+    },
+  };
+  return { fs, files };
+}
+
+describe("persistPdfBytes", () => {
+  it("writes the target bytes and removes temp artifacts", async () => {
+    const original = await makePdf("before");
+    const next = await makePdf("after");
+    const { fs, files } = makeFs(original);
+
+    await persistPdfBytes("/vault/test.pdf", next, fs);
+
+    expect(files.get("/vault/test.pdf")).toEqual(next);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
+  it("saves an edit to a PDF carrying trailing bytes after its %%EOF", async () => {
+    // Real documents pick up debris after %%EOF (incremental-update leftovers,
+    // a server footer, a scanner tag). pdf-lib parses and edits them happily,
+    // so Mesa opens and edits them — the save must not then refuse because the
+    // ORIGINAL fails Mesa's own format opinion. Validation belongs on the bytes
+    // Mesa authored, not on the user's existing file.
+    const clean = await makePdf("before");
+    const trailing = new Uint8Array(clean.length + 5000);
+    trailing.set(clean, 0);
+    trailing.fill(0x20, clean.length);
+    const edited = await makePdf("after");
+    const { fs, files } = makeFs(trailing);
+
+    await persistPdfBytes("/vault/test.pdf", edited, fs, {
+      expectedCurrentBytes: trailing,
+    });
+
+    expect(files.get("/vault/test.pdf")).toEqual(edited);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
+  it("still rejects candidate bytes that are not a valid PDF", async () => {
+    const original = await makePdf("before");
+    const { fs, files } = makeFs(original);
+
+    await expect(
+      persistPdfBytes("/vault/test.pdf", new Uint8Array([1, 2, 3]), fs)
+    ).rejects.toThrow(/verification failed/i);
+    // The original is untouched and no debris is left behind.
+    expect(files.get("/vault/test.pdf")).toEqual(original);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
+  it("enforces the caller's expected on-disk PDF bytes inside the transaction", async () => {
+    const opened = await makePdf("opened");
+    const external = await makePdf("external");
+    const edited = await makePdf("edited");
+    const { fs, files } = makeFs(external);
+
+    await expect(
+      persistPdfBytes("/vault/test.pdf", edited, fs, {
+        expectedCurrentBytes: opened,
+      })
+    ).rejects.toThrow(/changed before the verified write/i);
+
+    expect(files.get("/vault/test.pdf")).toEqual(external);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
+  it("restores the original bytes when the final write is truncated", async () => {
+    const original = await makePdf("before");
+    const next = await makePdf("after");
+    const { files } = makeFs(original);
+    let targetWrites = 0;
+    const fs: PdfSaveFs = {
+      async readFile(path) {
+        const found = files.get(path);
+        if (!found) throw new Error(`Missing file: ${path}`);
+        return found.slice(0);
+      },
+      async writeFile(path, data) {
+        if (path === "/vault/test.pdf") {
+          targetWrites++;
+          if (targetWrites === 1) {
+            files.set(path, new Uint8Array());
+            return;
+          }
+        }
+        files.set(path, data.slice(0));
+      },
+      async remove(path) {
+        files.delete(path);
+      },
+      async exists(path) {
+        return files.has(path);
+      },
+    };
+
+    await expect(persistPdfBytes("/vault/test.pdf", next, fs)).rejects.toThrow(
+      "Final PDF write verification failed."
+    );
+    expect(files.get("/vault/test.pdf")).toEqual(original);
+    expect([...files.keys()]).toEqual(["/vault/test.pdf"]);
+  });
+
+  it("removes a newly-created PDF when final verification fails", async () => {
+    const next = await makePdf("after");
+    const files = new Map<string, Uint8Array>();
+    const fs: PdfSaveFs = {
+      async readFile(path) {
+        const found = files.get(path);
+        if (!found) throw new Error(`Missing file: ${path}`);
+        return found.slice(0);
+      },
+      async writeFile(path, data) {
+        if (path === "/vault/test.pdf") {
+          files.set(path, new Uint8Array());
+          return;
+        }
+        files.set(path, data.slice(0));
+      },
+      async remove(path) {
+        files.delete(path);
+      },
+      async exists(path) {
+        return files.has(path);
+      },
+    };
+
+    await expect(persistPdfBytes("/vault/test.pdf", next, fs)).rejects.toThrow(
+      "Final PDF write verification failed."
+    );
+    expect(files.has("/vault/test.pdf")).toBe(false);
+  });
+});

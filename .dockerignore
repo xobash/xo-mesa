@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-ssr
+src-tauri/target
+src-tauri/gen
+.git
+*.log
+REQUESTS.local.md
+vite.config.ts.timestamp-*.mjs
