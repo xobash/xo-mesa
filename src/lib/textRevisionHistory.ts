@@ -28,13 +28,21 @@ function readAll(): TextRevision[] {
   }
 }
 
-function writeAll(entries: TextRevision[]): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+function writeAll(entries: TextRevision[]): boolean {
+  if (typeof localStorage === "undefined") return false;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    return true;
+  } catch {
+    // Revision history is a convenience copy, never part of the verified vault
+    // transaction. Quota/private-mode failures must not retroactively turn a
+    // byte-verified disk save into a failed save state.
+    return false;
+  }
 }
 
 function trim(entries: TextRevision[]): TextRevision[] {
-  const newest = [...entries].sort((a, b) => b.savedAt - a.savedAt);
+  const newest = [...entries].sort(compareNewestFirst);
   const perFile = new Map<string, number>();
   const kept: TextRevision[] = [];
   let chars = 0;
@@ -47,7 +55,12 @@ function trim(entries: TextRevision[]): TextRevision[] {
     perFile.set(key, count + 1);
     chars += entry.content.length;
   }
-  return kept.sort((a, b) => b.savedAt - a.savedAt);
+  return kept.sort(compareNewestFirst);
+}
+
+function compareNewestFirst(a: TextRevision, b: TextRevision): number {
+  if (a.savedAt !== b.savedAt) return b.savedAt - a.savedAt;
+  return b.id.localeCompare(a.id);
 }
 
 export function recordTextRevision(
@@ -67,8 +80,7 @@ export function recordTextRevision(
     savedAt: now,
     content,
   };
-  writeAll(trim([revision, ...entries]));
-  return revision;
+  return writeAll(trim([revision, ...entries])) ? revision : null;
 }
 
 export function listTextRevisions(root: string, relPath: string): TextRevision[] {

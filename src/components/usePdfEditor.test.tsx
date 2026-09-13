@@ -63,7 +63,7 @@ vi.mock("../lib/pdfHistory", async () => {
   };
 });
 
-vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url", () => ({
   default: "mock-worker",
 }));
 
@@ -91,7 +91,7 @@ const pdfjsState = vi.hoisted(() => ({
   loadingTasksDestroyed: 0,
 }));
 
-vi.mock("pdfjs-dist", () => {
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => {
   const PAGE_HEIGHT = 200;
   return {
     GlobalWorkerOptions: { workerSrc: "" },
@@ -1180,8 +1180,8 @@ describe("pdf.js worker lifecycle", () => {
     const doc = await makePdf("W-warm");
     fsState.files.set("/w-warm.pdf", doc);
     const spare = new (
-      await import("pdfjs-dist")
-    ).PDFWorker() as unknown as import("pdfjs-dist").PDFWorker;
+      await import("pdfjs-dist/legacy/build/pdf.mjs")
+    ).PDFWorker() as unknown as import("pdfjs-dist/legacy/build/pdf.mjs").PDFWorker;
     await act(async () => {
       primePdfWorker(() => spare);
       await new Promise((resolve) => setTimeout(resolve, 0));

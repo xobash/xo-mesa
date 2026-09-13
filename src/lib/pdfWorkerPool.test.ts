@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PDFWorker } from "pdfjs-dist";
+import type { PDFWorker } from "pdfjs-dist/legacy/build/pdf.mjs";
 import {
   clearPdfWorkerSpare,
   primePdfWorker,

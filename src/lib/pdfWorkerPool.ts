@@ -1,4 +1,4 @@
-import type { PDFWorker } from "pdfjs-dist";
+import type { PDFWorker } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 /**
  * One warm, never-used pdf.js worker, booted before a PDF open needs it.

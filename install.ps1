@@ -96,7 +96,7 @@
       }
       & git @gitLongPaths -C $installDir merge --ff-only origin/main
       if ($LASTEXITCODE -ne 0) {
-        throw "Mesa has local commits that cannot fast-forward to GitHub. No source update was applied."
+        throw "Mesa has local commits or old checkout history that cannot fast-forward from GitHub. No source update was applied, and nothing was pushed."
       }
     } catch {
       if ($preservedStash) {

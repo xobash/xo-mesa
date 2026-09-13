@@ -31,7 +31,7 @@ tauri-plugin-dialog = "2"
 tiny_http = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-portable-pty = "0.8"
+portable-pty = "0.9"
 
 # P2P device sync is end-to-end encrypted over TLS (LocalSend-style):
 # - rcgen mints a persistent self-signed cert/key per device (the identity).

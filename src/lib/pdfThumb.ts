@@ -11,9 +11,9 @@ import { backgroundWork } from "./backgroundWorkGovernor";
 // matches `usePdfEditor.ts`. Importing it dynamically instead made Rollup emit
 // a separate chunk whose entire body was this one string, costing the first
 // thumbnail an extra request.
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
-type PdfJsModule = typeof import("pdfjs-dist");
+type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
 
 export interface PdfThumbSnapshot {
   width: number;
@@ -44,9 +44,9 @@ let pdfjsPromise: Promise<PdfJsModule> | null = null;
  * document the user is reading. When one does wedge it, the worker is thrown
  * away so the next thumbnail starts from a clean one.
  */
-let thumbWorker: import("pdfjs-dist").PDFWorker | null = null;
+let thumbWorker: import("pdfjs-dist/legacy/build/pdf.mjs").PDFWorker | null = null;
 
-function thumbWorkerFor(pdfjs: PdfJsModule): import("pdfjs-dist").PDFWorker {
+function thumbWorkerFor(pdfjs: PdfJsModule): import("pdfjs-dist/legacy/build/pdf.mjs").PDFWorker {
   if (!thumbWorker || thumbWorker.destroyed) {
     thumbWorker = new pdfjs.PDFWorker();
   }
@@ -66,7 +66,7 @@ function discardThumbWorker(): void {
 function loadPdfjs(): Promise<PdfJsModule> {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
-      const pdfjs = await import("pdfjs-dist");
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
       pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
       return pdfjs;
     })();

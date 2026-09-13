@@ -15,6 +15,8 @@ describe("Windows irm installer contract", () => {
     expect(installer).toContain("stash push --include-untracked");
     expect(installer).toMatch(/git .*-C \$installDir fetch origin main/);
     expect(installer).toMatch(/git .*-C \$installDir merge --ff-only origin\/main/);
+    expect(installer).not.toMatch(/\bgit\b[^\r\n]*\bpush\b(?!\s+--include-untracked)/);
+    expect(installer).toContain("nothing was pushed");
     expect(installer).toContain("stash pop $preservedStash");
     expect(installer).toMatch(/git .*clone \$repoUrl \$installDir/);
     expect(installer).toContain("& .\\run.cmd");

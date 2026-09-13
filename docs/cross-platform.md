@@ -18,6 +18,24 @@ WebView2 and macOS 13.3+ while still compiling away JavaScript syntax that an
 older supported webview would not parse. Do not use Vite's `esnext` target for
 desktop bundles; it is a moving build-host promise, not a Mesa support matrix.
 
+The native acceptance matrix is the concrete set of machines/runtimes Mesa uses
+to prove that promise:
+
+| Matrix target | Runtime floor | Acceptance role |
+| --- | --- | --- |
+| Windows 11 current WebView2 | Evergreen WebView2 111+ | Current Windows release confidence |
+| Windows 10 oldest WebView2 | Evergreen WebView2 111+ | Oldest Windows support proof |
+| macOS current WKWebView | Current Safari/WKWebView | Current macOS release confidence |
+| macOS 13.3 oldest WKWebView | Safari/WKWebView 16.4 | Oldest macOS support proof |
+| Linux current WebKitGTK smoke | WebKitGTK 4.1 | Lower-priority build and launch smoke |
+
+Generate and check records with:
+
+```bash
+npm run acceptance:native-template > native-acceptance.local.md
+npm run acceptance:native-check -- native-acceptance.local.md
+```
+
 Priority order for first-class support: **Windows first, Linux last** (macOS is
 the current dev platform and already works).
 
@@ -330,9 +348,15 @@ checks on **both macOS and Windows**:
 | Drive disconnect/reconnect | Failed saves retain edits; failed opens retain the prior workspace; retry succeeds |
 | Sleep/wake and network loss | No duplicate discovery listeners; incomplete sync stays visible and retryable |
 | Two-device sync baseline | A real Mac/Windows or oldest/current-platform pair pairs, transfers both directions, restarts, and reruns with no duplicate or missing files |
+| Offline third-device sync | A previously paired third device misses changes while offline, returns later, and converges without duplicate, missing, or overwritten files |
 | Two-device sync interruption | During real transfer, network loss, peer restart, app quit, sleep/wake, and retry preserve completed files and leave incomplete work visible |
-| Two-device sync conflict review | Simultaneous edits, deletes, renames, restores, locked files, and disk-full failures preserve every source version; reviewed text and retained originals reopen correctly |
+| Sync simultaneous edits | Two devices edit the same text file before syncing; both source versions survive and the conflict review save preserves the reviewed baseline and retained original |
+| Sync delete, restore, and rename | Deletes, recovery restores, renames, and rename-plus-edit races preserve user bytes and retract stale local journal intent when restored bytes return |
+| Sync certificate change | A peer certificate change stops sync before file data moves, explains the trust problem, and requires deliberate re-trust |
+| Interrupted sync journal | A killed or interrupted Mesa instance leaves a journal/report state that retries cleanly without deleting restored files or replaying stale intents |
 | Window/keyboard interactions | Native drag/dock, shortcuts, focus, scaling and PDF gestures work on the actual OS |
+| Assistive technology and scaling | Keyboard-only use, VoiceOver/Narrator, high DPI, and small displays can reach save, sync, recovery, history, navigation, and PDF controls without overlap or trapped focus |
+| Interruption and return flows | After failed save, failed sync, modal close/reopen, app restart, and vault reopen, the same actionable next step remains visible until resolved |
 | Long session | Repeated document and sync use does not grow resources without bound |
 
 Do not mark a row passed from a source assertion, browser fixture or another OS's

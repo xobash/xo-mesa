@@ -24,10 +24,36 @@ describe("text revision history", () => {
     expect(revisions[revisions.length - 1]?.content).toBe("v5");
   });
 
+  it("keeps deterministic newest-first order when saves share a timestamp", () => {
+    vi.spyOn(Math, "random")
+      .mockReturnValueOnce(0.1)
+      .mockReturnValueOnce(0.9)
+      .mockReturnValueOnce(0.5);
+
+    recordTextRevision("/vault", "Note.md", "first", 10);
+    recordTextRevision("/vault", "Note.md", "second", 10);
+    recordTextRevision("/vault", "Note.md", "third", 10);
+
+    expect(listTextRevisions("/vault", "Note.md").map((revision) => revision.content)).toEqual([
+      "second",
+      "third",
+      "first",
+    ]);
+  });
+
   it("does not store duplicate consecutive content", () => {
     recordTextRevision("/vault", "Note.md", "same", 1);
     recordTextRevision("/vault", "Note.md", "same", 2);
 
     expect(listTextRevisions("/vault", "Note.md")).toHaveLength(1);
+  });
+
+  it("fails closed when browser history storage is full without throwing", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded", "QuotaExceededError");
+    });
+
+    expect(recordTextRevision("/vault", "Note.md", "saved text", 1)).toBeNull();
+    setItem.mockRestore();
   });
 });

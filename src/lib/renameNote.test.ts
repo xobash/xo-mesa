@@ -199,6 +199,100 @@ describe("renameNote type preservation", () => {
     expect(s.status).toContain("updated 2 inbound links");
   });
 
+  it("repairs prose links but preserves embeds and literal Markdown examples", async () => {
+    useAppStore.setState({
+      contentCache: {
+        ...useAppStore.getState().contentCache,
+        "refs.md": [
+          "Live [[a]] and [details](a.md).",
+          "`inline [[a]] and [details](a.md)`",
+          "![[a]] and ![image](a.md) stay embeds.",
+          "```md",
+          "[[a]] and [details](a.md)",
+          "```",
+        ].join("\n"),
+      },
+    });
+    await useAppStore.getState().renameNote("a.md", "alpha");
+    const update = renamed.writes.find((write) => write.rel === "refs.md");
+    expect(update?.content).toBe([
+      "Live [[alpha]] and [details](alpha.md).",
+      "`inline [[a]] and [details](a.md)`",
+      "![[a]] and ![image](a.md) stay embeds.",
+      "```md",
+      "[[a]] and [details](a.md)",
+      "```",
+    ].join("\n"));
+  });
+
+  it("repairs Markdown links with parenthesized paths and URL-encodes the new target", async () => {
+    useAppStore.setState({
+      files: [
+        ...useAppStore.getState().files,
+        file("Reports/Alpha Draft.md"),
+      ],
+      notes: {
+        ...useAppStore.getState().notes,
+        "refs.md": {
+          relPath: "refs.md",
+          title: "refs",
+          rawLinks: ["Reports/Alpha Draft.md"],
+          tags: [],
+          aliases: [],
+        },
+        "Reports/Alpha Draft.md": {
+          relPath: "Reports/Alpha Draft.md",
+          title: "Alpha Draft",
+          rawLinks: [],
+          tags: [],
+          aliases: [],
+        },
+      },
+      contentCache: {
+        ...useAppStore.getState().contentCache,
+        "refs.md": "See [report](Reports/Alpha%20Draft.md#Findings).",
+      },
+    });
+
+    await useAppStore.getState().renameNote("Reports/Alpha Draft.md", "Alpha (final)");
+
+    const update = renamed.writes.find((write) => write.rel === "refs.md");
+    expect(update?.content).toBe("See [report](Reports/Alpha%20%28final%29.md#Findings).");
+  });
+
+  it("does not rebuild the note resolver for every inbound link while repairing a rename", async () => {
+    const links = Array.from({ length: 40 }, (_, i) => `[[a#Part|A ${i}]]`).join(" ");
+    useAppStore.setState({
+      contentCache: {
+        ...useAppStore.getState().contentCache,
+        "refs.md": links,
+        "folder/refs.md": "no matching link",
+      },
+      notes: {
+        ...useAppStore.getState().notes,
+        "refs.md": {
+          relPath: "refs.md",
+          title: "refs",
+          rawLinks: ["a"],
+          tags: [],
+          aliases: [],
+        },
+        "folder/refs.md": {
+          relPath: "folder/refs.md",
+          title: "refs",
+          rawLinks: [],
+          tags: [],
+          aliases: [],
+        },
+      },
+    });
+
+    await useAppStore.getState().renameNote("a.md", "alpha");
+
+    expect(renamed.writes.find((write) => write.rel === "refs.md")?.content).toContain("[[alpha#Part|A 39]]");
+    expect(renamed.writes).toHaveLength(1);
+  });
+
   it("keeps the rename when an inbound-link write fails and reports the partial update", async () => {
     renamed.writeFail = "external edit";
     await useAppStore.getState().renameNote("a.md", "alpha");

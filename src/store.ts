@@ -69,7 +69,7 @@ import {
   type VaultWatchEvent,
 } from "./lib/vault";
 import { hydrateVaultMetadata } from "./lib/vaultMetadata";
-import { refreshedNoteMeta, resolveTarget } from "./lib/graph";
+import { makeResolver, refreshedNoteMeta, resolveTarget } from "./lib/graph";
 import { childRelPath, duplicateRelPath, ancestorFolders, safeBaseName } from "./lib/fsnames";
 import { extractLinks, extractTags, extractAliases } from "./lib/markdownExtract";
 import {
@@ -96,7 +96,52 @@ import {
 } from "./lib/daily";
 
 const WIKI_LINK_RE = /(!?)\[\[([^\]\n]+?)\]\]/g;
-const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*?)\]\(([^)\s]+?)\)/g;
+const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*?)\]\(((?:\\.|[^\\\s()])+(?:\((?:\\.|[^\\\n()])*\)(?:\\.|[^\\\s()])*)*)\)/g;
+
+/**
+ * Apply a link rewrite only to Markdown prose. Regexes are useful for the
+ * link token itself, but not for deciding where a token is meaningful: a
+ * literal example in a fenced or inline code span must never be "repaired".
+ * Embeds are intentionally left alone by the token rewriters below.
+ */
+function rewriteMarkdownProse(
+  content: string,
+  rewriteLine: (line: string) => string
+): string {
+  let fence: "`" | "~" | null = null;
+  return content
+    .split(/(\n)/)
+    .map((part) => {
+      if (part === "\n") return part;
+      const opening = part.match(/^\s*(`{3,}|~{3,})/);
+      if (opening) {
+        const marker = opening[1][0] as "`" | "~";
+        if (!fence) fence = marker;
+        else if (fence === marker) fence = null;
+        return part;
+      }
+      if (fence) return part;
+
+      // Keep every inline code span byte-for-byte. Matching the delimiter run
+      // (rather than a single backtick) also handles Markdown's ``code ` x``.
+      let out = "";
+      let cursor = 0;
+      while (cursor < part.length) {
+        const start = part.indexOf("`", cursor);
+        if (start < 0) return out + rewriteLine(part.slice(cursor));
+        out += rewriteLine(part.slice(cursor, start));
+        let endRun = start;
+        while (part[endRun] === "`") endRun++;
+        const delimiter = part.slice(start, endRun);
+        const close = part.indexOf(delimiter, endRun);
+        if (close < 0) return out + part.slice(start);
+        out += part.slice(start, close + delimiter.length);
+        cursor = close + delimiter.length;
+      }
+      return out;
+    })
+    .join("");
+}
 
 function rewriteInboundLinks(
   sourceRel: string,
@@ -106,9 +151,10 @@ function rewriteInboundLinks(
   notes: Record<string, NoteMeta>
 ): { text: string; changed: boolean } {
   const sourceDir = sourceRel.includes("/") ? sourceRel.slice(0, sourceRel.lastIndexOf("/")) : "";
+  const resolveNote = makeResolver(notes);
   const resolve = (target: string) =>
-    resolveTarget(notes, target) === oldRel ||
-    resolveTarget(notes, normalizeRelativeTarget(sourceDir, target)) === oldRel;
+    resolveNote(target) === oldRel ||
+    resolveNote(normalizeRelativeTarget(sourceDir, target)) === oldRel;
   const replacementTarget = (rawTarget: string): string => {
     const slashy = rawTarget.replace(/\\/g, "/");
     const hadExt = /\.(md|markdown)$/i.test(slashy.split("#")[0] ?? "");
@@ -122,7 +168,7 @@ function rewriteInboundLinks(
     return hadExt ? base : stripExt(base);
   };
   let changed = false;
-  const text = content
+  const text = rewriteMarkdownProse(content, (prose) => prose
     .replace(WIKI_LINK_RE, (match, bang: string, body: string) => {
       if (bang) return match;
       const pipe = body.indexOf("|");
@@ -137,9 +183,10 @@ function rewriteInboundLinks(
     })
     .replace(MARKDOWN_LINK_RE, (match, bang: string, label: string, raw: string) => {
       if (bang || /^(https?:|mailto:|tel:|data:|#)/i.test(raw)) return match;
-      let decoded = raw;
+      const rawTarget = raw.replace(/\\([()\\])/g, "$1");
+      let decoded = rawTarget;
       try {
-        decoded = decodeURIComponent(raw);
+        decoded = decodeURIComponent(rawTarget);
       } catch {
         /* keep raw */
       }
@@ -149,9 +196,12 @@ function rewriteInboundLinks(
       if (!target || !/\.(md|markdown)$/i.test(target) || !resolve(target)) return match;
       changed = true;
       const nextTarget = replacementTarget(target) + heading;
-      const encoded = nextTarget.replace(/ /g, "%20");
+      const encoded = nextTarget
+        .replace(/ /g, "%20")
+        .replace(/\(/g, "%28")
+        .replace(/\)/g, "%29");
       return `[${label}](${encoded})`;
-    });
+    }));
   return { text, changed };
 }
 
@@ -761,7 +811,12 @@ export const useAppStore = create<AppState>((set, get) => {
       }
       await writeNote(file, pending, expectedContent);
       if (pending !== expectedContent) {
-        recordTextRevision(get().vaultPath ?? "", target.relPath, expectedContent);
+        // History is deliberately outside the verified-save transaction. A
+        // full browser quota must never make the already-read-back vault write
+        // appear failed or leave this dirty entry queued for a duplicate save.
+        queueMicrotask(() => {
+          recordTextRevision(get().vaultPath ?? "", target.relPath, expectedContent);
+        });
       }
       const resolvedIssue = clearTextSaveIssues([key]);
       if (

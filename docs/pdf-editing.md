@@ -102,7 +102,10 @@ zooming, and page geometry are unaffected.
 
 ## Pipeline Research
 
-Mesa keeps the byte-backed `pdfjs-dist` path. Mozilla's PDF.js viewer uses the
+Mesa keeps the byte-backed PDF.js path. Mesa imports the matching
+`pdfjs-dist/legacy/build` display library and worker so the documented Safari
+16.4 and WebView2 111 floor receives PDF.js's compatibility shims (including
+`Promise.withResolvers`). Mozilla's PDF.js viewer uses the
 same core idea needed here: CSS-only zoom for immediate interaction, bounded
 page rendering, and a later repaint at the settled scale. Its official viewer
 and display-layer examples are the reference implementation:

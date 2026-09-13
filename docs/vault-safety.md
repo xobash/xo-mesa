@@ -132,7 +132,12 @@ perfectly.
   revision waits for the in-flight revision, and each successful write advances
   the exact expected disk baseline used by the next verified write. A failure
   stays dirty and retryable. Before a successful text save replaces a prior
-  disk version, Mesa records that prior text in bounded local revision history
+  disk version, Mesa records that prior text in bounded local revision history.
+  History storage is best-effort and runs after verified-save success: a full
+  browser-storage quota cannot report the on-disk save as failed or cause a
+  duplicate retry. Revisions are listed newest-first with a deterministic
+  tie-breaker, so rapid saves with the same clock timestamp still restore the
+  intended local snapshot.
   (20 versions per file, capped by a shared local character budget). Settings
   can restore a revision for the active text file through the same verified
   save queue, so restoration still refuses stale disk baselines.
@@ -159,10 +164,13 @@ Two operations that LOOK like text operations are held to the same rule:
   treating the destination as an overwrite. The store's `renameNote` uses it
   for every file type and preserves the file's real extension. Markdown note renames
   also update inbound wiki and Markdown links that resolve to the old note
-  through verified text writes, preserving aliases, headings, and relative
-  path style where the existing link used one. If an inbound-link write sees a
-  concurrent external edit, the rename remains byte-safe and Mesa reports the
-  partial link update instead of overwriting the edited file. Its previous
+  through verified text writes, preserving aliases, headings, balanced
+  parenthesized Markdown destinations, URL-encoded spaces, and relative path
+  style where the existing link used one. Link repair skips embeds, fenced
+  code, and inline code examples. Each rename builds one note resolver and
+  reuses it for all inbound references in that operation. If an inbound-link
+  write sees a concurrent external edit, the rename remains byte-safe and Mesa
+  reports the partial link update instead of overwriting the edited file. Its previous
   implementation read the file as text, wrote the text under the new name,
   and removed the original; for a binary the text read yields "" by design,
   so renaming a PDF replaced it with an empty markdown file. Pinned by

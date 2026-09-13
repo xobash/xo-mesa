@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   readFile: async () => new Uint8Array(),
 }));
 
-vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url", () => ({
   default: "mock-worker",
 }));
 
@@ -25,7 +25,7 @@ const state = vi.hoisted(() => ({
   releaseDestroy: null as null | (() => void),
 }));
 
-vi.mock("pdfjs-dist", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
   PDFWorker: class {
     destroyed = false;

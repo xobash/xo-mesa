@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as pdfjs from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+// The legacy display build supplies the runtime compatibility shims required
+// by Mesa's supported Safari 16.4 / WebView2 111 floor (notably
+// Promise.withResolvers). Keep the worker from the same distribution: mixing
+// modern display code with a legacy worker is an unsupported PDF.js pairing.
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 import { exists, readFile, remove, rename, writeFile } from "@tauri-apps/plugin-fs";
 import { IN_TAURI, urlForPath } from "../lib/vault";
 import type { VaultFile } from "../types";

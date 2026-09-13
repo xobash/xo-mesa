@@ -8,22 +8,54 @@ const requiredWorkflows = [
   "Drive disconnect and reconnect",
   "Sleep, wake, and network loss",
   "Two-device sync baseline",
+  "Offline third-device sync",
   "Two-device sync interruption",
-  "Two-device sync conflict review",
+  "Sync simultaneous edits",
+  "Sync delete, restore, and rename",
+  "Sync certificate change",
+  "Interrupted sync journal",
   "Window and keyboard interactions",
+  "Assistive technology and scaling",
+  "Interruption and return flows",
   "Long session resources",
   "Signing, notarization, and OS prompts",
+];
+
+const matrixTargets = [
+  "Windows 11 current WebView2",
+  "Windows 10 oldest WebView2",
+  "macOS current WKWebView",
+  "macOS 13.3 oldest WKWebView",
+  "Linux current WebKitGTK smoke",
 ];
 
 const requiredFields = [
   "Date",
   "Tester",
   "Mesa commit",
-  "Platform",
+  "Matrix target",
   "OS version",
   "Machine",
   "Install path",
   "Vault used",
+];
+
+const inventoryItems = [
+  "Baseline pair and bidirectional transfer",
+  "Offline third-device convergence",
+  "Simultaneous text edit conflict",
+  "Delete and restore",
+  "Rename plus edit",
+  "Peer certificate change",
+  "Interrupted journal or app kill",
+  "Retry evidence and final status",
+  "Save/history visible beside the document",
+  "Delete/recovery visible beside deletion",
+  "Save/sync problem stayed visible until resolved",
+  "Keyboard-only path",
+  "VoiceOver/Narrator path",
+  "High-DPI/small-display path",
+  "Modal interruption and return",
 ];
 
 const insufficientEvidence = [
@@ -32,8 +64,27 @@ const insufficientEvidence = [
   /\bbrowser fixture\b/i,
   /\bbrowser-demo\b/i,
   /\bunit tests?\b/i,
+  /\btests passed\b/i,
+  /\bvitest\b/i,
+  /\btypecheck\b/i,
+  /\bnpm run build\b/i,
   /\bsource-contract\b/i,
   /\banother operating system\b/i,
+];
+
+const nativeEvidence = [
+  /\bscreenshot\b/i,
+  /\bscreen recording\b/i,
+  /\bvideo\b/i,
+  /\bphoto\b/i,
+  /\blog\b/i,
+  /\bdiagnostics\b/i,
+  /\bhash\b/i,
+  /\bfile count\b/i,
+  /\bfingerprint\b/i,
+  /\bobserved\b/i,
+  /\breopened\b/i,
+  /\bdevice\b/i,
 ];
 
 const path = process.argv[2];
@@ -56,6 +107,11 @@ for (const field of requiredFields) {
   if (!match || !match[1].trim()) failures.push(`${field}: missing value`);
 }
 
+const matrixMatch = /^Matrix target:\s*(.*)$/m.exec(text);
+if (matrixMatch?.[1]?.trim() && !matrixTargets.includes(matrixMatch[1].trim())) {
+  failures.push(`Matrix target: must be one of ${matrixTargets.join("; ")}`);
+}
+
 for (const workflow of requiredWorkflows) {
   const escaped = workflow.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`^\\|\\s*${escaped}\\s*\\|([^\\n]*)$`, "m").exec(text);
@@ -74,6 +130,19 @@ for (const workflow of requiredWorkflows) {
     if (insufficientEvidence.some(rule => rule.test(combined))) {
       failures.push(`${workflow}: pass cites non-native evidence`);
     }
+    if (!nativeEvidence.some(rule => rule.test(combined))) {
+      failures.push(`${workflow}: pass must name concrete native evidence (screenshot, log, diagnostics, hashes, file counts, fingerprint, or observed/reopened result)`);
+    }
+  }
+}
+
+for (const item of inventoryItems) {
+  const escaped = item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^-\\s*${escaped}:\\s*(.*)$`, "m").exec(text);
+  if (!match) {
+    failures.push(`${item}: missing inventory line`);
+  } else if (!match[1].trim()) {
+    failures.push(`${item}: missing inventory evidence`);
   }
 }
 

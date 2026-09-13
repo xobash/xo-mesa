@@ -30,10 +30,10 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
     return body.slice();
   },
 }));
-vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url", () => ({
   default: "mock-worker",
 }));
-vi.mock("pdfjs-dist", () => ({
+vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
   PDFWorker: class {
     id = ++state.workersCreated;

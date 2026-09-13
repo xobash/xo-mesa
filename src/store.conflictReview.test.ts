@@ -31,3 +31,17 @@ it('stores and restores bounded local text revisions through the store', async (
   expect(await readNote(note)).toBe('first version');
   expect(useAppStore.getState().content).toBe('first version');
 });
+it('keeps a verified save successful when local revision storage is full', async () => {
+  const note = await createNote(DEMO_ROOT, 'Quota proof.md', 'first version');
+  useAppStore.setState({ vaultPath: DEMO_ROOT, files: [note], notes: {}, contentCache: { [note.relPath]: 'first version' }, activePath: note.relPath, content: 'first version' });
+  const original = Storage.prototype.setItem;
+  Storage.prototype.setItem = () => { throw new DOMException('Quota exceeded', 'QuotaExceededError'); };
+  try {
+    useAppStore.getState().setContentFromEditor('second version');
+    await useAppStore.getState().flushSave();
+    expect(await readNote(note)).toBe('second version');
+    expect(useAppStore.getState().textSaveState.failed).toBe(0);
+  } finally {
+    Storage.prototype.setItem = original;
+  }
+});

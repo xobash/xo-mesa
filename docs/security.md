@@ -168,6 +168,23 @@ into the lockfile; `src/lib/supplyChainContract.test.ts` pins that boundary.
 `cargo audit` remains the registry-backed gate for newly published RustSec
 vulnerabilities.
 
+Current Rust advisory warnings that are known and tracked rather than waived
+silently:
+
+| Advisory | Dependency path | Mesa usage | Acceptance and removal path |
+| --- | --- | --- | --- |
+| `glib 0.18.5` (`RUSTSEC-2024-0429`, unsound `VariantStrIter` iterator impls) | Linux-only GTK/WebKitGTK stack: `tauri`/`tauri-runtime-wry` -> `wry`/`webkit2gtk`/`gtk` -> `glib` | Mesa does not import `glib` or call `VariantStrIter`; it arrives through Tauri's Linux webview/menu stack. | Not user-approved as safe. Current removal path is an upstream Tauri/wry/WebKitGTK binding line that uses a patched `glib`; after that upgrade, rerun Linux smoke and native acceptance. |
+| `proc-macro-error 1.0.4` (`RUSTSEC-2024-0370`, unmaintained) | Linux GTK macro chain: `gtk3-macros`/`glib-macros` -> `proc-macro-error` | Build-time proc macro dependency only; Mesa does not import it directly. | Not user-approved as safe. Current removal path is the same Tauri/wry/GTK binding upgrade that removes the old `glib` line. |
+| `unic-char-property`, `unic-char-range`, `unic-common`, `unic-ucd-ident`, `unic-ucd-version` `0.9.0` (`RUSTSEC-2025-0075`, `RUSTSEC-2025-0080`, `RUSTSEC-2025-0081`, `RUSTSEC-2025-0098`, `RUSTSEC-2025-0100`, unmaintained) | Tauri URL-pattern support: `tauri-utils 2.9.3` -> `urlpattern 0.3.0` -> `unic-*` | Mesa does not import these crates directly; they support Tauri's URL pattern parsing and capability/runtime machinery. | Not user-approved as safe. Current removal path is a Tauri update that updates `urlpattern` or replaces the `unic` dependency chain; then rerun capability, window, and native acceptance checks. |
+
+The `serial 0.4.0` warning was removed by upgrading `portable-pty` from `0.8`
+to `0.9`; Mesa now uses `serial2` through that path. The latest compatible
+`cargo update --dry-run --verbose` did not offer updates that remove the
+remaining warnings; it only found unrelated compatible patch updates
+(`crc32fast` and `jiff` family). Replacing the remaining warnings requires
+Tauri/wry/WebKitGTK and Tauri URL-pattern dependency changes, not a quiet
+Mesa-only lockfile update.
+
 [postcss-advisory]: https://github.com/advisories/GHSA-r28c-9q8g-f849
 
 Vitest and `@vitest/mocker` must remain at version 4.1.11 or newer to exclude

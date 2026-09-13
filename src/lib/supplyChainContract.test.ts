@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import cargoLockText from "../../src-tauri/Cargo.lock?raw";
+import securityDoc from "../../docs/security.md?raw";
 import packageLockText from "../../package-lock.json?raw";
 
 const packageLock = JSON.parse(packageLockText) as {
@@ -91,5 +92,25 @@ describe("Rust supply-chain contract", () => {
     expect(
       cargoPackageBlocks("ring").some((block) => cargoBlockVersion(block) === "0.16.20")
     ).toBe(false);
+  });
+
+  it("documents every currently tracked Rust advisory warning without implying user approval", () => {
+    for (const advisory of [
+      "RUSTSEC-2024-0429",
+      "RUSTSEC-2024-0370",
+      "RUSTSEC-2025-0075",
+      "RUSTSEC-2025-0080",
+      "RUSTSEC-2025-0081",
+      "RUSTSEC-2025-0098",
+      "RUSTSEC-2025-0100",
+    ]) {
+      expect(securityDoc).toContain(advisory);
+    }
+    expect(cargoPackageBlocks("serial")).toHaveLength(0);
+    expect(cargoPackageBlocks("portable-pty").some((block) => cargoBlockVersion(block) === "0.9.0")).toBe(true);
+    expect(securityDoc).toContain("Mesa does not import `glib`");
+    expect(securityDoc).toContain("Not user-approved as safe");
+    expect(securityDoc).toContain("The `serial 0.4.0` warning was removed");
+    expect(securityDoc).toContain("tauri-utils 2.9.3");
   });
 });
