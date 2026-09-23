@@ -1,0 +1,14 @@
+# The browser-preview image uses only this explicit build context.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!index.html
+!vite.config.ts
+!tsconfig.json
+!tsconfig.node.json
+!src/
+!src/**
+!public/
+!public/**
