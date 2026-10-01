@@ -1,0 +1,23 @@
+# The browser-preview image uses only this explicit build context.
+**
+!Dockerfile
+!nginx.conf
+!.dockerignore
+!package.json
+!package-lock.json
+!index.html
+!vite.config.ts
+!tsconfig.json
+!tsconfig.node.json
+!src/
+!src/**
+!public/
+!public/**
+!scripts/
+!scripts/third-party-notices.mjs
+!scripts/docker-context.check.mjs
+!scripts/bundle-boundaries.check.mjs
+!src-tauri/
+!src-tauri/Cargo.lock
+**/AGENTS.md
+**/*.local.*

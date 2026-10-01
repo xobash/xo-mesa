@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+dist-ssr/
+build/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/.build-cache-path
+
+# Environment / credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs / test output
+*.log
+coverage/
+test-results/
+playwright-report/
+tmp/
+
+# Local editor / OS state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local-only files
+*.local
+*.local.*
+.backups/
