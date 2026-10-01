@@ -1,4 +1,4 @@
-export interface PdfPerfEvent {
+interface PdfPerfEvent {
   at: number;
   name: string;
   detail?: Record<string, string | number | boolean | null>;

@@ -14,10 +14,10 @@ export const STARTUP_TEXT_READ_CONCURRENCY = 16;
  * batch's decode/intern work on the JS side. Beyond a small number it only
  * raises peak memory.
  */
-export const STARTUP_CHUNK_CONCURRENCY = 3;
+const STARTUP_CHUNK_CONCURRENCY = 3;
 
 /** Split `items` into fixed-size groups, preserving order. */
-export function chunk<T>(items: readonly T[], size: number): T[][] {
+function chunk<T>(items: readonly T[], size: number): T[][] {
   const step = Math.max(1, Math.trunc(size) || 1);
   const out: T[][] = [];
   for (let i = 0; i < items.length; i += step) {

@@ -214,6 +214,7 @@ struct ActivityServer {
     running: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
     info: ActivityInfo,
+    extension_dir: std::path::PathBuf,
 }
 
 /// A `/browse` request can wait for a rendered snapshot for several seconds.
@@ -285,10 +286,7 @@ fn make_token() -> Result<String, String> {
 /// Materialize the bundled Pi extensions; returns
 /// (activity_path, goal_path, context_path, browser_path, deep_research_path).
 fn write_extensions() -> Result<(String, String, String, String, String), String> {
-    // Never reuse a predictable shared temp directory. The old path let a
-    // local process pre-place a symlink and make startup overwrite an
-    // arbitrary file. A newly-created directory plus create_new files makes
-    // both the directory and every extension fail closed on a collision.
+    // A unique directory and create_new files fail closed on a collision.
     let dir = std::env::temp_dir().join(format!("mesa-pi-{}-{}", std::process::id(), nanos()));
     std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
     let write = |path: &std::path::Path, source: &str| -> Result<(), String> {
@@ -321,10 +319,9 @@ fn write_extensions() -> Result<(String, String, String, String, String), String
 }
 
 fn auth_ok(req: &Request, token: &str) -> bool {
-    let expected = format!("Bearer {}", token);
     req.headers()
         .iter()
-        .any(|h| h.field.equiv("Authorization") && h.value.as_str() == expected)
+        .any(|h| h.field.equiv("Authorization") && crate::bearer::matches(h.value.as_str(), token))
 }
 
 fn json_response(req: Request, json: String) {
@@ -698,10 +695,15 @@ pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
         browser_extension_path,
         deep_research_extension_path,
     };
+    let extension_dir = std::path::Path::new(&info.extension_path)
+        .parent()
+        .ok_or_else(|| "extension directory unavailable".to_string())?
+        .to_path_buf();
     *guard = Some(ActivityServer {
         running,
         handles,
         info: info.clone(),
+        extension_dir,
     });
     Ok(info)
 }
@@ -731,6 +733,7 @@ pub fn activity_stop() -> Result<(), String> {
         for h in st.handles {
             let _ = h.join();
         }
+        std::fs::remove_dir_all(&st.extension_dir).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

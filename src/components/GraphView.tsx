@@ -670,13 +670,8 @@ export function GraphView() {
   function clampNodeVelocities(dragging: GraphNode | null): void {
     const nodes = forceNodesRef.current;
     if (!nodes.length) return;
-    // Gentle velocity bounding during drag. The goal is the opposite of what
-    // the old code did: a hub's neighbors should follow *calmly*, not get a
-    // *higher* cap that lets them fling (the prior `hubCap = baseCap + 6`
-    // amplified hub-drag jitter — INDEX's 227 neighbors would leap every frame).
-    // d3/Obsidian/Logseq all let the link force pull neighbors in gently with
-    // modest per-tick velocity; a high cap + the hard resolveOverlaps snap
-    // (now gated off during drag) is what produced the "going haywire" feel.
+    // During drag, a hub's neighbors follow the link force with a modest
+    // velocity cap; overlap resolution stays suspended until drag ends.
     const baseCap = nodes.length > 700 ? 4 : nodes.length > 350 ? 5 : 6;
     for (const n of nodes) {
       if (n === dragging) continue;
@@ -1051,9 +1046,8 @@ export function GraphView() {
       // the sidebar open/close animation nudging the pane width per frame).
       // A large growth jump — this pane just opened into the stack and went
       // from its tiny first-layout box to full size, or a torn-off window got
-      // resized — would smear the old few-pixel bitmap into full-width bands
-      // for the whole debounce window (the "striped graph on open" bug, every
-      // theme's bloom colors). Realloc + redraw immediately for big jumps; a
+      // resized — would smear a few-pixel bitmap into full-width bands
+      // for the whole debounce window. Realloc + redraw immediately for big jumps; a
       // handful of reallocs during a 0.2s open is nowhere near the per-frame
       // realloc cost the debounce exists to avoid.
       const dpr = window.devicePixelRatio || 1;
@@ -1176,7 +1170,7 @@ export function GraphView() {
     return () => {
       if (timer != null) window.clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Timelapse state changes drive this effect.
   }, [timelapseOn]);
 
   // ---- animation loop ----------------------------------------------------
@@ -2183,7 +2177,7 @@ export function GraphView() {
       cancelAnimationFrame(raf);
       if (activityClearTimerRef.current) clearTimeout(activityClearTimerRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- The animation loop owns a single mount lifetime.
   }, []);
 
   // ---- pointer interactions ----------------------------------------------

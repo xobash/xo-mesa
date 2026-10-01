@@ -103,8 +103,8 @@ ok "Rust $(cargo --version | awk '{print $2}')"
 # ─────────────────────────────────────────────────────────────────────────────
 # 4) JavaScript dependencies (local to ./node_modules).
 # ─────────────────────────────────────────────────────────────────────────────
-info "Installing JS dependencies (npm install)…"
-npm install
+info "Installing JS dependencies (npm ci)…"
+npm ci
 ok "JS dependencies installed"
 
 # 4b) Guard against a stale Rust build cache. Cargo and Tauri bake this folder's

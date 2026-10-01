@@ -50,7 +50,7 @@ async function drainCompactions(): Promise<void> {
 }
 
 const BUCKETS = 256;
-export const DOCUMENT_WORKING_SET_CHARS = 8 * 1024 * 1024;
+const DOCUMENT_WORKING_SET_CHARS = 8 * 1024 * 1024;
 class WorkingSet {
   values = new Map<Entry, string>();
   chars = 0;

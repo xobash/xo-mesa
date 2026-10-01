@@ -66,4 +66,8 @@ does not read a multi-megabyte page into the session text cache and saved page
 code cannot run. The browser demo has no asset protocol, so it prepares a
 complete, script-stripped `srcDoc`, keeps that value only in the mounted card,
 and declines documents larger than about four million characters. HTML is
-never prewarmed through the ordinary 16 KiB text-peek path.
+never prewarmed through the ordinary 16 KiB text-peek path. Regression coverage
+lives in `src/lib/html.test.ts`,
+`src/lib/html.test.ts`, component viewer tests, and
+`src/components/PreviewCard.test.tsx`. Capture/metadata/fallback coverage lives
+in `src/lib/webArchive.test.ts`.

@@ -27,7 +27,6 @@ const expected = [
   "!scripts/bundle-boundaries.check.mjs",
   "!src-tauri/",
   "!src-tauri/Cargo.lock",
-  "**/AGENTS.md",
   "**/*.local.*",
 ];
 if (JSON.stringify(rules) !== JSON.stringify(expected)) {

@@ -27,7 +27,7 @@ export interface RowRange {
 
 /** Rows rendered beyond each edge of the viewport, so a scroll never exposes
  *  an unrendered gap before React commits the next window. */
-export const ROW_OVERSCAN = 8;
+const ROW_OVERSCAN = 8;
 
 /** Height of one tree row in CSS pixels, used until a real row is measured. */
 export const DEFAULT_ROW_HEIGHT = 23;

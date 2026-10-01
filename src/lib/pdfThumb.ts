@@ -192,7 +192,9 @@ export function warmPdfThumb(path: string): Promise<PdfThumbSnapshot> {
   const cacheKey = `${path}\0${version}`;
   const cached = lruGet(thumbCache, cacheKey);
   if (cached) return cached;
+  // The rejection handler compares its own promise with the cache entry.
   let promise: Promise<PdfThumbSnapshot>;
+  // eslint-disable-next-line prefer-const -- The rejection handler checks this promise's cache identity.
   promise = thumbRenderQueue.enqueue(path, () => backgroundWork.run("thumbnail", () => renderPdfThumb(path))).catch((err) => {
     // Invalidation followed by a fresh request can leave this older job
     // finishing late; never let its failure delete the replacement entry.

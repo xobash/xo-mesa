@@ -51,7 +51,7 @@ surfaces.
   Windows, macOS, and Linux; `Cmd+Shift+Tab` is intentionally left to the OS.
 
 The pure ordering and focus logic lives in `src/lib/keyboardNav.ts` with tests
-in Mesa.
+in `src/lib/keyboardNav.test.ts`.
 
 ## Command Palette
 

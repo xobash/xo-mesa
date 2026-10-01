@@ -96,7 +96,7 @@ const HTML_ENTITY: Record<string, string> = {
   nbsp: " ",
 };
 
-export function readableSearchSnippet(raw: string): string {
+function readableSearchSnippet(raw: string): string {
   return raw
     .replace(/!\[\[([^\]\n]+?)\]\]/g, (_m, target: string) => readableWikiTarget(target))
     .replace(/\[\[([^\]\n]+?)\]\]/g, (_m, target: string) => readableWikiTarget(target))
@@ -310,15 +310,15 @@ export function createSearchScan(
     if (!nameHit && !documentMayMatch(cache, f.relPath, term)) return;
     const raw = cache[f.relPath] ?? "";
 
-    let idx = -1;
-    let count = 0;
+    const idx = -1;
+    const count = 0;
     if (term) {
       // U+0130 lowercases to `i` plus a combining dot. It can only contribute
       // to the one-character ASCII query "i"; a longer ASCII literal cannot
       // cross that non-ASCII combining mark. Every other ASCII matcher can
       // scan raw text safely without first making `canScanRawFor` walk a
-      // 3.9 M-char file atomically merely to find U+0130. Raw offsets also fix
-      // the old lowered-index/raw-snippet mismatch described in searchMatch.
+      // 3.9 M-char file atomically merely to find U+0130. Snippet offsets must
+      // always index the raw text.
       const canUseRaw =
         rawMatcher && (term !== "i" || canScanRawFor(f.relPath, raw));
       if (canUseRaw) {

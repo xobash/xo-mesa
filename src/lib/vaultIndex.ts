@@ -17,12 +17,12 @@ export interface VaultIndexStorage { load(root: string): Promise<Snapshot | null
 const epochs = new Map<string, number>();
 const MAX_PERSISTED_CHARS = 32 * 1024 * 1024;
 /** One browser profile budget, rather than four independent vault allowances. */
-export const GLOBAL_INDEX_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
+const GLOBAL_INDEX_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
 export interface VaultIndexStorageStats { bytes: number; snapshots: number; budgetBytes: number }
 function snapshotBytes(snapshot: Snapshot): number {
   return snapshot.entries.reduce((total, [, entry]) => total + entry.document.bytes.byteLength + entry.document.bloom.byteLength + JSON.stringify([entry.digest, entry.note, entry.imageTarget, entry.document.tasks]).length * 2, 0);
 }
-export function snapshotMetadata(snapshot: Snapshot): SnapshotMetadata {
+function snapshotMetadata(snapshot: Snapshot): SnapshotMetadata {
   return { root: snapshot.root, bytes: snapshotBytes(snapshot), cachedAt: snapshot.cachedAt };
 }
 /** Keep the newest metadata records inside the shared cache budget. */
@@ -60,7 +60,7 @@ const database = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
   request.onerror = () => { finished = true; clearTimeout(timer); reject(request.error); };
   request.onsuccess = () => { clearTimeout(timer); if (finished) request.result.close(); else { finished = true; request.result.onversionchange = () => request.result.close(); resolve(request.result); } };
 });
-export const vaultIndexStorage: VaultIndexStorage = {
+const vaultIndexStorage: VaultIndexStorage = {
   async load(root) {
     const db = await database();
     try { return await new Promise((resolve, reject) => {
@@ -140,7 +140,7 @@ async function integrity(entry: Omit<RecordEntry, 'integrity'>): Promise<string>
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
 }
 /** Bound read/worker batches by bytes as well as document count. */
-export function indexReadBatches(files: readonly VaultFile[]): VaultFile[][] {
+function indexReadBatches(files: readonly VaultFile[]): VaultFile[][] {
   const groups: VaultFile[][] = [];
   let group: VaultFile[] = [], bytes = 0;
   for (const file of files) {

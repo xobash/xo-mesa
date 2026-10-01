@@ -537,6 +537,7 @@ export const FileTree = memo(function FileTree() {
   // Measure a real row rather than trusting the constant: the reserved height
   // and every row's `top` are derived from it, so a theme or font change that
   // alters the row box must move them with it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- Row geometry is measured after every render.
   useLayoutEffect(() => {
     const row = treeRef.current?.querySelector(".tree-file, .tree-folder");
     if (!row) return;
@@ -607,7 +608,7 @@ export const FileTree = memo(function FileTree() {
     setRevealTarget(liveActive);
     // Only react to the reveal trigger; the store is read directly above so
     // activePath/collapse changes cannot re-run (or stale-close over) this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Reveal is keyed by the explicit trigger and reads current store state.
   }, [revealTick]);
 
   // Scroll by row INDEX, not `scrollIntoView` on a node: the target row is

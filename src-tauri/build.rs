@@ -1,3 +1,21 @@
 fn main() {
-    tauri_build::build()
+    tauri_build::try_build(
+        tauri_build::Attributes::new().app_manifest(
+            tauri_build::AppManifest::new().commands(&[
+                "sync_start", "sync_stop", "sync_status", "sync_local_addr",
+                "sync_identity", "sync_fetch_manifest", "sync_run", "sync_cancel",
+                "sync_retire_peer", "sync_discovery_start", "sync_discovery_stop",
+                "activity_start", "activity_set_context", "deep_research_respond",
+                "activity_stop", "browse_fetch", "diagnostics_process_tree",
+                "harness_navigate", "harness_bounds", "harness_visibility",
+                "harness_history", "harness_status", "harness_nudge",
+                "terminal_start", "terminal_attach", "terminal_snapshot",
+                "terminal_resize", "terminal_write", "terminal_stop",
+                "vault_scan", "vault_read_text", "vault_text_fingerprints",
+                "vault_rename_no_replace", "vault_authorize", "vault_authorize_artifacts",
+                "quit_guard_arm", "quit_guard_disarm", "quit_after_save",
+                "vault_watch", "vault_unwatch",
+            ]),
+        ),
+    ).expect("failed to build Mesa permissions")
 }

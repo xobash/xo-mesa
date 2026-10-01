@@ -2,11 +2,11 @@
 //
 // Two halves live here:
 //
-// **Server.** A small HTTPS server bound to 0.0.0.0 so other devices on your
+// **Server.** A small HTTPS server bound to the device network interfaces so other devices on your
 // LAN or Tailscale network can reach it. The transport is TLS: on first run
 // each device mints a persistent self-signed certificate (its "identity") and
-// serves over HTTPS, so vault contents and the certificate-bound credential are encrypted on
-// the wire. Requests are handled by a small worker pool, manifest hashes are
+// serves over HTTPS. A nonce-bound HMAC proof of the sync key precedes every
+// client manifest or file request. Requests are handled by a small worker pool, manifest hashes are
 // streamed + cached (see `sync_core::HashCache`), and writes are verified,
 // create-if-missing commits so a dropped connection or racing writer can
 // never truncate or overwrite a note.
@@ -20,8 +20,7 @@
 // **Client engine.** `sync_run` performs an entire two-way sync natively:
 // remote manifest over pinned TLS, local manifest (streamed, cached, never
 // through the webview), diff, then bounded-concurrency transfers over ONE
-// pooled client — instead of the old one-TLS-handshake-per-file loop that
-// made large vaults crawl and abort on the first error. Every file failure is
+// pooled client. Every file failure is
 // collected (never aborts the rest), every step emits `sync://log` +
 // `sync://progress` events for the in-app console, all requests have
 // timeouts, and pulled bytes are verified against the manifest hash before an
@@ -52,8 +51,10 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use rcgen::CertifiedKey;
+use ring::{hmac, rand::{SecureRandom, SystemRandom}};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use socket2::{Domain, Protocol, Socket, Type};
 use tauri::{Emitter, Manager};
 use tokio::net::TcpListener;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -387,13 +388,12 @@ fn hyper_json(body: String) -> HyperResponse<HyperBody> {
 }
 
 fn hyper_auth_ok(req: &HyperRequest<Incoming>, token: &str) -> bool {
-    let expected = Sha256::digest(format!("Bearer {}", token).as_bytes());
     req.headers()
         .get(hyper::header::AUTHORIZATION)
         .is_some_and(|value| {
             value
                 .to_str()
-                .map(|value| Sha256::digest(value.as_bytes()) == expected)
+                .map(|value| crate::bearer::matches(value, token))
                 .unwrap_or(false)
         })
 }
@@ -401,23 +401,49 @@ fn hyper_auth_ok(req: &HyperRequest<Incoming>, token: &str) -> bool {
 // A credential is scoped to the server certificate. First contact may trust
 // the wrong certificate, but it must never reveal the reusable shared key.
 fn scoped_sync_credential(key: &str, fingerprint: &str) -> String {
-    const BLOCK: usize = 64;
-    let mut secret = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        secret[..32].copy_from_slice(&Sha256::digest(key.as_bytes()));
-    } else {
-        secret[..key.len()].copy_from_slice(key.as_bytes());
+    let key = hmac::Key::new(hmac::HMAC_SHA256, key.as_bytes());
+    hex_bytes(hmac::sign(&key, format!("mesa-sync-cert-v1:{fingerprint}").as_bytes()).as_ref())
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn nonce() -> Result<[u8; 32], String> {
+    let mut value = [0u8; 32];
+    SystemRandom::new().fill(&mut value).map_err(|_| "Could not create sync challenge.".to_string())?;
+    Ok(value)
+}
+
+fn server_proof(key: &str, challenge: &[u8; 32], fingerprint: &str) -> hmac::Tag {
+    let secret = hmac::Key::new(hmac::HMAC_SHA256, key.as_bytes());
+    let mut message = b"mesa-sync-server-v1:".to_vec();
+    message.extend_from_slice(challenge);
+    message.extend_from_slice(fingerprint.as_bytes());
+    hmac::sign(&secret, &message)
+}
+
+fn verify_server_proof(key: &str, challenge: &[u8; 32], fingerprint: &str, proof: &[u8]) -> bool {
+    let secret = hmac::Key::new(hmac::HMAC_SHA256, key.as_bytes());
+    let mut message = b"mesa-sync-server-v1:".to_vec();
+    message.extend_from_slice(challenge);
+    message.extend_from_slice(fingerprint.as_bytes());
+    hmac::verify(&secret, &message, proof).is_ok()
+}
+
+fn parse_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
+    if value.len() != N * 2 { return None; }
+    let mut result = [0u8; N];
+    for (index, byte) in result.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
     }
-    let mut inner = [0x36u8; BLOCK];
-    let mut outer = [0x5cu8; BLOCK];
-    for i in 0..BLOCK {
-        inner[i] ^= secret[i];
-        outer[i] ^= secret[i];
-    }
-    let inner_hash =
-        Sha256::digest([&inner[..], b"mesa-sync-cert-v1:", fingerprint.as_bytes()].concat());
-    let digest = Sha256::digest([&outer[..], inner_hash.as_slice()].concat());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    Some(result)
+}
+
+#[derive(Serialize, Deserialize)]
+struct IdentityProof {
+    proof: String,
+    nonce: String,
 }
 
 #[derive(Default)]
@@ -505,9 +531,24 @@ async fn handle_hyper(
 ) -> HyperResponse<HyperBody> {
     let method = req.method().clone();
     if method == HyperMethod::GET && req.uri().path() == "/sync/identity" {
-        // No vault data or credential. The TLS handshake supplies the actual
-        // certificate, which the client binds before sending authorization.
-        return hyper_response(StatusCode::OK, Bytes::new());
+        let challenge = req.uri().query()
+            .and_then(|query| query.strip_prefix("nonce="))
+            .and_then(parse_hex::<32>);
+        let Some(challenge) = challenge else {
+            return hyper_response(StatusCode::BAD_REQUEST, "invalid challenge");
+        };
+        let identity = match get_identity(&app) {
+            Ok(identity) => identity,
+            Err(_) => return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, "identity unavailable"),
+        };
+        let server_nonce = match nonce() {
+            Ok(value) => value,
+            Err(_) => return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, "challenge unavailable"),
+        };
+        return hyper_json(serde_json::to_string(&IdentityProof {
+            proof: hex_bytes(server_proof(&token, &challenge, &identity.fingerprint).as_ref()),
+            nonce: hex_bytes(&server_nonce),
+        }).expect("identity proof is serializable"));
     }
     if auth_limiter.blocked(peer) {
         return hyper_response(StatusCode::TOO_MANY_REQUESTS, "too many attempts");
@@ -935,6 +976,20 @@ fn sync_server_config(id: &Identity) -> Result<Arc<rustls::ServerConfig>, String
         .map_err(|e| e.to_string())
 }
 
+fn ipv6_listener(port: u16) -> Result<std::net::TcpListener, String> {
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))
+        .map_err(|e| format!("could not create IPv6 sync listener: {e}"))?;
+    socket.set_only_v6(true)
+        .map_err(|e| format!("could not configure IPv6 sync listener: {e}"))?;
+    socket.bind(&SocketAddr::from(([0u16; 8], port)).into())
+        .map_err(|e| format!("could not bind IPv6 sync listener: {e}"))?;
+    socket.listen(128)
+        .map_err(|e| format!("could not listen on IPv6: {e}"))?;
+    socket.set_nonblocking(true)
+        .map_err(|e| format!("could not configure IPv6 sync listener: {e}"))?;
+    Ok(socket.into())
+}
+
 #[tauri::command]
 pub fn sync_start(
     app: tauri::AppHandle,
@@ -959,6 +1014,7 @@ pub fn sync_start(
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("could not configure TLS sync server: {e}"))?;
+    let ipv6 = ipv6_listener(port);
     let running = Arc::new(AtomicBool::new(true));
     let root = Arc::new(PathBuf::from(vault));
     let token = Arc::new(token);
@@ -993,12 +1049,29 @@ pub fn sync_start(
                     return;
                 }
             };
+            let ipv6 = match ipv6 {
+                Ok(socket) => match TcpListener::from_std(socket) {
+                    Ok(listener) => Some(listener),
+                    Err(error) => {
+                        emit_log(&app_for_thread, "warn", format!("[serve] IPv6 sync unavailable: {error}"));
+                        None
+                    }
+                },
+                Err(error) => {
+                    emit_log(&app_for_thread, "warn", format!("[serve] {error}"));
+                    None
+                }
+            };
             let acceptor = TlsAcceptor::from(tls_config);
             let connection_slots = Arc::new(tokio::sync::Semaphore::new(SERVER_CONNECTION_LIMIT));
             let auth_limiter = Arc::new(AuthLimiter::default());
             while running_for_thread.load(Ordering::Relaxed) {
-                let accepted =
-                    tokio::time::timeout(Duration::from_millis(250), listener.accept()).await;
+                let accepted = tokio::time::timeout(Duration::from_millis(250), async {
+                    tokio::select! {
+                        result = listener.accept() => result,
+                        result = async { ipv6.as_ref().expect("IPv6 branch enabled").accept().await }, if ipv6.is_some() => result,
+                    }
+                }).await;
                 let Ok(Ok((stream, peer))) = accepted else {
                     continue;
                 };
@@ -1173,9 +1246,10 @@ pub fn sync_identity(app: tauri::AppHandle) -> Result<String, String> {
 // client must decide whether to trust the peer's certificate. We accept the
 // self-signed cert but pin its SHA-256 fingerprint: if the caller already knows
 // the expected fingerprint we reject any mismatch *at the TLS handshake* (before
-// a credential or vault byte is sent); otherwise an unauthenticated probe records
-// the observed identity, then authenticated requests enforce that pin. Handshake signatures are still
-// verified normally, so possession of the private key is proven.
+// a credential or vault byte is sent). On first contact a challenge records
+// the observed identity and verifies the key proof before authenticated
+// requests enforce that pin. Handshake signatures verify possession of the
+// private key.
 
 #[derive(Debug)]
 struct PinnedServerCert {
@@ -1326,7 +1400,8 @@ async fn establish_sync_credential(
 ) -> Result<(reqwest::Client, String, String), String> {
     let observed = Arc::new(Mutex::new(None));
     let probe = build_pinned_client(pin, observed.clone())?;
-    let url = format!("{}/sync/identity", base.trim_end_matches('/'));
+    let challenge = nonce()?;
+    let url = format!("{}/sync/identity?nonce={}", base.trim_end_matches('/'), hex_bytes(&challenge));
     let response = tokio::select! {
         _ = wait_for_cancel() => return Err(cancelled_error()),
         result = probe.get(&url).timeout(Duration::from_secs(30)).send() => result.map_err(friendly_err)?,
@@ -1337,6 +1412,23 @@ async fn establish_sync_credential(
     let fingerprint = take_fingerprint(&observed);
     if fingerprint.len() != 64 {
         return Err("Peer TLS identity was not available.".into());
+    }
+    let mut body = Vec::new();
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|_| "Peer does not know this sync key".to_string())?;
+        if body.len().saturating_add(chunk.len()) > 4096 {
+            return Err("Peer does not know this sync key".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let identity: IdentityProof = serde_json::from_slice(&body)
+        .map_err(|_| "Peer does not know this sync key".to_string())?;
+    let proof = parse_hex::<32>(&identity.proof)
+        .ok_or_else(|| "Peer does not know this sync key".to_string())?;
+    if parse_hex::<32>(&identity.nonce).is_none()
+        || !verify_server_proof(key, &challenge, &fingerprint, &proof) {
+        return Err("Peer does not know this sync key".into());
     }
     // A fresh client enforces this exact fingerprint on every authenticated
     // connection, including reconnects and redirects.
@@ -2441,7 +2533,7 @@ pub fn sync_discovery_start(
     let host = local_lan_ip().unwrap_or_else(|_| "0.0.0.0".to_string());
     let own = DiscoveryPacket {
         mesa_discovery: true,
-        version: "1.0".to_string(),
+        version: "2.0".to_string(),
         name: if name.trim().is_empty() {
             "Mesa device".to_string()
         } else {
@@ -2510,6 +2602,99 @@ pub fn sync_discovery_stop() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    async fn proof_server(key: &'static str) -> (String, String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let identity = Identity {
+            cert_pem: cert.pem(),
+            key_pem: signing_key.serialize_pem(),
+            fingerprint: sha256_hex(cert.der().as_ref()),
+        };
+        let fingerprint = identity.fingerprint.clone();
+        let acceptor = TlsAcceptor::from(sync_server_config(&identity).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("https://{}", listener.local_addr().unwrap());
+        let transfers = Arc::new(AtomicUsize::new(0));
+        let counts = transfers.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let acceptor = acceptor.clone();
+                let identity = identity.clone();
+                let counts = counts.clone();
+                tokio::spawn(async move {
+                    let Ok(tls) = acceptor.accept(stream).await else { return };
+                    let service = service_fn(move |req: HyperRequest<Incoming>| {
+                        let identity = identity.clone();
+                        let counts = counts.clone();
+                        async move {
+                            let path = req.uri().path();
+                            let body = if path == "/sync/identity" {
+                                let challenge = req.uri().query().and_then(|q| q.strip_prefix("nonce="))
+                                    .and_then(parse_hex::<32>).unwrap();
+                                serde_json::to_string(&IdentityProof {
+                                    proof: hex_bytes(server_proof(key, &challenge, &identity.fingerprint).as_ref()),
+                                    nonce: hex_bytes(&[1u8; 32]),
+                                }).unwrap()
+                            } else if path == "/sync/manifest" {
+                                "{\"files\":[]}".to_string()
+                            } else {
+                                if req.method() == HyperMethod::PUT {
+                                    counts.fetch_add(1, Ordering::SeqCst);
+                                }
+                                "ok".to_string()
+                            };
+                            Ok::<_, std::convert::Infallible>(HyperResponse::new(Full::new(Bytes::from(body))))
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(tls), service).await;
+                });
+            }
+        });
+        (base, fingerprint, transfers, task)
+    }
+
+    #[tokio::test]
+    async fn unknown_key_refuses_peer_before_any_transfer() {
+        let (base, _, transfers, task) = proof_server("peer-key").await;
+        let result = establish_sync_credential(&base, "local-key", None).await;
+        assert!(result.err().unwrap().contains("Peer does not know this sync key"));
+        assert_eq!(transfers.load(Ordering::SeqCst), 0);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn proved_peer_can_fetch_manifest_and_wrong_pin_is_refused() {
+        let (base, fingerprint, transfers, task) = proof_server("shared-key").await;
+        let (client, credential, observed) = establish_sync_credential(&base, "shared-key", None).await.unwrap();
+        assert_eq!(observed, fingerprint);
+        assert!(fetch_manifest_with(&client, &base, &credential).await.unwrap().files.is_empty());
+        let wrong_pin = establish_sync_credential(&base, "shared-key", Some("0".repeat(64)))
+            .await.err().unwrap();
+        assert!(wrong_pin.contains("security certificate changed"));
+        assert_eq!(transfers.load(Ordering::SeqCst), 0);
+        task.abort();
+    }
+
+    #[test]
+    fn hmac_matches_rfc_4231_case_2() {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, b"Jefe");
+        assert_eq!(hex_bytes(hmac::sign(&key, b"what do ya want for nothing?").as_ref()),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+    }
+
+    #[test]
+    fn identity_proof_requires_key_challenge_and_certificate() {
+        let challenge = [7u8; 32];
+        let proof = server_proof("correct-key", &challenge, &"a".repeat(64));
+        assert!(verify_server_proof("correct-key", &challenge, &"a".repeat(64), proof.as_ref()));
+        assert!(!verify_server_proof("wrong-key", &challenge, &"a".repeat(64), proof.as_ref()));
+        assert!(!verify_server_proof("correct-key", &[8u8; 32], &"a".repeat(64), proof.as_ref()));
+        assert!(!verify_server_proof("correct-key", &challenge, &"b".repeat(64), proof.as_ref()));
+    }
 
     #[test]
     fn first_contact_credential_is_certificate_bound() {

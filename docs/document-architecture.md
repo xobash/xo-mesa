@@ -138,6 +138,12 @@ exceed the slice target. Worker fallback parses on the UI thread. Highlight
 search and catalog-wide image refresh can also inspect the complete preview.
 These limits are distinct from replacing and sanitizing all markup on each edit.
 
+Run `npm run test:markdown` for the real worker protocol regression and `npm test`
+for DOM, XSS, cancellation, reference and selection tests. The 10,000-block
+regression requires a one-block edit to sanitize one block and reuse 9,999.
+Visit `/scripts/markdown-acceptance.html` with `npm run dev` for the synthetic
+browser fixture, then use Edit one paragraph and Rapid edits. This verifies the
+browser pipeline; it is not native macOS or Windows acceptance.
 
 ## Application workflow ownership
 

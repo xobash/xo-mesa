@@ -636,8 +636,7 @@ export function usePdfEditor(
   ]);
 
   // Parse the document once per byte-state. Rendering, zooming, and text
-  // extraction all reuse this proxy — previously every zoom settle and canvas
-  // remount re-copied the full bytes and re-parsed the entire document.
+  // extraction all reuse this proxy without reparsing at each zoom settle.
   useEffect(() => {
     if (!enabled || !bytes) {
       docRef.current?.destroy();
@@ -857,8 +856,8 @@ export function usePdfEditor(
           return;
         }
         // Create pixel backing only after planning proves there is paint work.
-        // Observer/canvas updates often produce a skipped pass; the old path
-        // allocated a default 300x150 canvas (180 kB) for every one anyway.
+        // Observer/canvas updates often produce a skipped pass, which needs no
+        // pixel backing.
         // The visible page canvases retain their previous pixels until each
         // replacement is complete, so one effect-local scratch still prevents
         // white flashes and bounds duplicate backing to the largest page.

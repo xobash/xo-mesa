@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/mesa-wordmark-v5.png" alt="Mesa" width="440" />
+  <img src="docs/mesa-wordmark.png" alt="Mesa" width="440" />
 </p>
 
 <p align="center">
   <strong>A local desktop workspace for research, documents, tools, and action.</strong><br />
-  <a href="#quick-start">Quick Start</a>&nbsp;·&nbsp;<a href="#features">Features</a>&nbsp;·&nbsp;<a href="#local-first-guarantees">Local-first</a>&nbsp;·&nbsp;<a href="#requirements">Requirements</a>&nbsp;·&nbsp;<a href="#development">Development</a>&nbsp;
+  <a href="#quick-start">Quick Start</a>&nbsp;·&nbsp;<a href="#features">Features</a>&nbsp;·&nbsp;<a href="#local-first-guarantees">Local-first</a>&nbsp;·&nbsp;<a href="#requirements">Requirements</a>&nbsp;·&nbsp;<a href="#development">Development</a>&nbsp;·&nbsp;<a href="#contributing">Contributing</a>
 </p>
 
 <p align="center">
@@ -28,8 +28,9 @@ require an account or a hosted cloud service.
 
 ## Quick Start
 
-Each installer creates or updates a Mesa checkout, installs missing
-requirements, and starts Mesa.
+Each installer creates or updates a Mesa checkout, checks the required tools,
+installs supported missing tools where possible, and starts Mesa after the
+checks pass.
 
 > The first start builds the desktop shell. This step can take several minutes
 > on a new machine.
@@ -41,7 +42,8 @@ curl -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/main/install.sh | ba
 ```
 
 The installer clones a new checkout or fast-forward updates an existing one.
-It installs missing prerequisites and starts Mesa.
+It checks the required tools, attempts supported installations, and starts Mesa
+when the tools are ready.
 
 ### Windows 10 and Windows 11
 
@@ -75,7 +77,7 @@ still needs build tools and can take several minutes on the first run.
 - **Flexible workspace** — Dock and detach documents, search, tasks, calendar,
   terminal tools, and research.
 - **Overlay & Embedded Pi agent** — Keep calendar, scratchpad, whiteboard, and
-  Pi close at hand in Mesa's overlay, with the same Pi terminal session shared
+  [Pi](https://pi.dev), an optional coding agent, close at hand in Mesa's overlay, with the same Pi terminal session shared
   across the workspace and native windows.
 - **Deep Research** — Gather sources, validate reports, and review proposed
   file changes before Mesa applies them.
@@ -97,7 +99,8 @@ still needs build tools and can take several minutes on the first run.
 - Mesa verifies writes and preserves a recovery copy after a failed save.
 - Sync conflicts create separate files. Mesa does not silently overwrite either
   version.
-- Direct device sync uses TLS and a sync key.
+- Direct device sync verifies that a peer knows the sync key before any file
+  manifest or file transfer; TLS certificate pinning binds that proof to the peer.
 
 Read the [security model](docs/security.md), [vault safety contract](docs/vault-safety.md),
 [sync guide](docs/sync.md), and [Deep Research contract](docs/deep-research.md).
@@ -133,6 +136,7 @@ npm run mesa
 Use these checks during development:
 
 ```bash
+npm test
 npm run typecheck
 npm run build
 npm run mesa:build
@@ -140,6 +144,11 @@ npm run mesa:build
 
 `npm run dev` starts a browser demo. `npm run mesa` starts a debug desktop
 session for development. The setup scripts use a release build.
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development setup, verification steps, and pull request guidance.
 
 ## License
 

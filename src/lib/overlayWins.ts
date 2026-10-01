@@ -29,8 +29,8 @@ export interface OverlayMinSize {
 }
 
 /** Overlay chrome margins: side padding, clock header, dock footer. */
-export const OVERLAY_PAD = 12;
-export const OVERLAY_TOP = 56;
+const OVERLAY_PAD = 12;
+const OVERLAY_TOP = 56;
 export const OVERLAY_BOTTOM = 96;
 const MIN_W = 280;
 const MIN_H = 220;

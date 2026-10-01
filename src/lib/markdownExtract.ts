@@ -8,8 +8,7 @@
  * the vault, so it must NOT pull in the rendering stack — markdown-it +
  * dompurify and friends are ~120 kB minified and are only needed when markdown
  * is actually turned into HTML. The renderer lives in `markdown.ts` and imports
- * from here, never the other way around; `markdownLoadContract.test.ts` pins
- * the direction.
+ * from here, never the other way around.
  */
 
 export const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;

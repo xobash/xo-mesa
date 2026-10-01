@@ -12,13 +12,13 @@ jobs:
     runs-on: macos-latest
     environment: release
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri
       - run: npm ci
@@ -49,11 +49,12 @@ jobs:
           security list-keychains -d user -s "$keychain"
           printf '%s' "$APPLE_API_KEY_BASE64" | base64 -D > "$RUNNER_TEMP/mesa-notary-key.p8"
           chmod 600 "$RUNNER_TEMP/mesa-notary-key.p8"
-          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/mesa-notary-key.p8" >> "$GITHUB_ENV"
-          echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
-          echo "APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
-          echo "APPLE_API_KEY=$APPLE_API_KEY" >> "$GITHUB_ENV"
       - name: Build and verify signed notarized universal app
+        env:
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/mesa-notary-key.p8
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: bash scripts/release-macos.sh
       - name: Record artifact checksums
         run: |
@@ -61,7 +62,7 @@ jobs:
           cd src-tauri/target/universal-apple-darwin/release/bundle
           find . -type f \( -name '*.dmg' -o -name '*.app.tar.gz' \) -exec shasum -a 256 {} + | sort > release-checksums.txt
           test -s release-checksums.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mesa-macos-${{ github.sha }}
           path: |

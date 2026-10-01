@@ -1,13 +1,6 @@
 // Bulk vault text reads — many files per IPC round-trip.
 //
-// `vaultscan.rs` collapsed the vault LISTING into one round-trip. The READS
-// were never given the same treatment: `openVault` still issued one
-// `plugin:fs|read_text_file` invoke per file — 721 markdown reads before the
-// first paint plus ~1,673 search-corpus reads streaming behind it on the
-// 4,165-file reference vault, ~2,400 round-trips for a single vault open.
-//
-// That count matters far more than it looks, because of what an invoke costs on
-// Windows specifically:
+// Vault-open text reads are batched to bound native IPC round-trips. On Windows:
 //
 //   * Every Tauri invoke uses the custom-protocol IPC on every platform except
 //     Android (`tauri/scripts/ipc-protocol.js`).
@@ -15,13 +8,10 @@
 //     raised on the app's UI thread (`wry/src/webview2/mod.rs`).
 //   * The commands are async, so responses arrive from a worker thread; wry
 //     then posts a window message to the main HWND, and its dispatcher calls
-//     `RedrawWindow(.., RDW_INTERNALPAINT)` for EVERY dispatched response.
+//     `RedrawWindow(.., RDW_INTERNALPAINT)` for each dispatched response
+//     (wry WebView2 window dispatcher).
 //
-// So on Windows each per-file read is a message-pump item plus a forced paint
-// invalidation, serialized against WM_KEYDOWN/WM_PAINT. The search-corpus half
-// runs while the user is already typing, so the round-trip count is not just
-// vault-open latency there — it is input latency. macOS has no equivalent
-// forced-redraw step, which is why per-file reads measured acceptable there.
+// Each read response can compete with input and paint messages on Windows.
 //
 // This command reads a batch of vault-relative paths in ONE round-trip and
 // returns their bytes in a single framed binary response (`tauri::ipc::Response`
@@ -506,7 +496,7 @@ mod tests {
     /// contains invalid UTF-8, CRLF, empty files and 40 MB outliers. Run with:
     ///   MESA_PARITY_VAULT="/path/to/vault" MESA_PARITY_OUT=/tmp/frames \
     ///     cargo test --release --lib vaultread::tests::parity_dump -- --ignored --nocapture
-    /// then `npx vitest run --config tmp/opt/vitest.config.mts vaultreadparity`.
+    /// Inspect the emitted frames with the same decoder used by `vaultReadContract.test.ts`.
     #[test]
     #[ignore]
     fn parity_dump_for_real_vault() {

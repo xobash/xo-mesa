@@ -53,8 +53,7 @@ export interface PdfTextRun {
 /**
  * Project an extracted run to `scale`.
  *
- * The viewport transform is linear in the scale, so this reproduces the values
- * the old extract-at-render-scale code produced: verified against it over
+ * The viewport transform is linear in the scale. Geometry parity is verified over
  * 106,368 field comparisons across four zoom levels, maximum deviation
  * 4.55e-13 px (floating-point noise). The `Math.max` clamps are applied AFTER
  * scaling — applying them at scale 1 and multiplying would change the geometry

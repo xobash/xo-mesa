@@ -22,9 +22,7 @@
  * With those two handled, `toLowerCase()` is a pure per-code-unit map and an
  * ASCII term's character class is equivalent by construction.
  *
- * Matching on raw text also fixes a latent defect: the old code took `idx` from
- * the LOWERED string and sliced the RAW string with it, so a note containing
- * U+0130 before the hit produced a snippet cut at the wrong offset.
+ * Snippet offsets refer to raw text, including when U+0130 occurs before a hit.
  */
 
 /** The one code point whose lowercase is longer than itself. Text containing
@@ -51,7 +49,7 @@ export function buildRawMatcher(termLower: string): RegExp | null {
   if (!termLower) return null;
   // Non-ASCII terms carry the full complexity of Unicode case folding; they are
   // rare and stay on the exact path rather than being approximated here.
-  // eslint-disable-next-line no-control-regex
+  // eslint-disable-next-line no-control-regex -- The fast path accepts ASCII terms only.
   if (!/^[\x00-\x7f]+$/.test(termLower)) return null;
 
   let pattern = "";
@@ -110,7 +108,7 @@ export function scanRaw(raw: string, re: RegExp, width: number): RawScan {
  * enough to yield well within one frame while avoiding thousands of tiny
  * substring allocations for ordinary large files.
  */
-export const RAW_SCAN_CHUNK_CHARS = 64 * 1024;
+const RAW_SCAN_CHUNK_CHARS = 64 * 1024;
 
 export interface IncrementalRawScan {
   /** Inspect one bounded text window. True means that the file is complete. */

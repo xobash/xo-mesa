@@ -459,12 +459,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               // Stale hover thumbnails must not survive an on-disk change.
               invalidatePdfThumb(file.path);
             }
-            // A textual file Mesa already holds text for is refreshed exactly like
-            // markdown above — see `needsCachedTextRefresh`. Without this the cache
-            // kept the old bytes for the rest of the session, so search matched
-            // text that was no longer on disk, the editor opened the stale copy,
-            // and saving it overwrote the newer file. The document currently being
-            // typed in is left alone, the same rule the markdown branch uses.
+            // Refresh cached text for external edits without replacing the
+            // document currently being typed in.
             if (
               !textSaves.isDirty(file.path) &&
               needsCachedTextRefresh(file, get().contentCache[rel])

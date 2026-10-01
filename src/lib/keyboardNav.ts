@@ -1,7 +1,7 @@
 import type { NoteMeta, Settings, VaultFile } from "../types";
 import { fileComparator } from "./sort";
 
-export type KeyboardRegion = "sidebar" | "center" | "right";
+type KeyboardRegion = "sidebar" | "center" | "right";
 
 export interface KeyboardFocus {
   region: KeyboardRegion;

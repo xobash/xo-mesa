@@ -12,7 +12,7 @@ export interface VerifiedWriteFs {
   authorizeArtifacts?(paths: string[]): Promise<void>;
 }
 
-export type VerifiedWriteStage =
+type VerifiedWriteStage =
   | "Backup"
   | "Temporary"
   | "Final"

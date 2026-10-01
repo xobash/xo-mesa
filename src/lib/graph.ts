@@ -164,7 +164,7 @@ export interface GraphFilterOptions {
 }
 
 /** Default filters: text documents + orphans, no tag/phantom/attachment nodes. */
-export const DEFAULT_GRAPH_FILTERS: GraphFilterOptions = {
+const DEFAULT_GRAPH_FILTERS: GraphFilterOptions = {
   showTags: false,
   existingOnly: true,
   showOrphans: true,

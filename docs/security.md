@@ -13,7 +13,7 @@ deliberate trade-offs rather than oversights.
 |---|---|---|
 | Rendered markdown → app DOM | note bytes may be untrusted (imported vault, synced peer, agent-written) | DOMPurify sanitize before DOM insertion — see below |
 | Saved `.html` files → viewer | a saved web page may contain active content | isolated **opaque-origin** sandboxed `<iframe>`; page scripts cannot read the asset protocol or app origin |
-| LAN sync server (`sync.rs`, `0.0.0.0`) | reachable by peers on your network | native-only client; no browser CORS/PNA opt-in; constant-time `Bearer` check (SHA-256 digest compare), pinned TLS, `safe_join` path guard, 1 GiB PUT cap, per-file hash verify |
+| LAN sync server (`sync.rs`, `0.0.0.0` and `[::]`) | reachable from every attached IPv4 and IPv6 network | native-only client; no browser CORS/PNA opt-in; nonce-bound key proof before manifest or file transfer, constant-time bearer check, pinned TLS, `safe_join` path guard, 1 GiB PUT cap, per-file hash verify |
 | Loopback activity/context/harness server (`activity.rs`, `127.0.0.1`) | other local processes | per-run bearer token; `/context` exposes only Mesa's bounded path/layout prompt to the bundled extension; harness snapshot route verifies the same token in-body (no-cors cannot send headers) and caps body/fragment ingress before parsing |
 | Pi terminal (`terminal.rs`) | spawns real processes | argv-based `CommandBuilder` — never a shell string, so no command injection from injected args; model-facing workspace context uses vault-relative paths only, while absolute paths remain local to tool/process execution |
 | Detached Pi window (`agent-*`) | second trusted app webview adopts the live PTY | same local Mesa bundle/capabilities as the main window; carries only the existing session id and selected path; explicit window permissions are limited to show/focus/close/drag lifecycle operations; never navigates to remote content |
@@ -70,6 +70,10 @@ returning. The policy:
   blocks, and vault-relative `src`/`href` (so `MarkdownView` can still rewrite
   them to asset URLs).
 
+The exported `sanitizeHtml` and the full render path are pinned by
+`src/lib/markdown.test.ts` (`sanitizeHtml / renderMarkdown XSS defense`), which
+asserts both that the vectors are stripped and that the app's own markup
+survives. Tests run under jsdom so DOMPurify exercises a real DOM.
 
 ### Denial of service on the same surface
 
@@ -87,12 +91,16 @@ this can block the app; the normal preview worker also needs bounded parser work
 segment at 50, making the scan linear (~4 ms at 98 kB — a 415× improvement on
 that input). The only behavior change is that email addresses with a local-part
 longer than the RFC maximum no longer autolink; ordinary emails, URLs, `www.`
-hosts, and explicit `mailto:` links are unaffected.
+hosts, and explicit `mailto:` links are unaffected. Pinned by the
+`renderMarkdown DoS resistance` test in `src/lib/markdown.test.ts`, which is
+verified to FAIL against 5.0.1.
 
 Mesa also uses the patched `markdown-it` 14.3 series for its two independent
 quadratic linkification paths (soft-broken email lines and repeated unknown
-schemes). See the
+schemes). The real-worker regression exercises both adversarial inputs. See the
 [upstream parser advisory](https://github.com/markdown-it/markdown-it/security/advisories/GHSA-253c-mchw-3w2r).
+The test-only jsdom transport locks `undici` at 7.30.0 to address its
+[WebSocket decompression advisory](https://github.com/nodejs/undici/security/advisories/GHSA-3wwx-pv8p-q78v).
 Neither fix changes Mesa's local-first data flow.
 
 The general rule: treat anything reachable from note bytes as attacker-shaped.
@@ -104,8 +112,11 @@ When adding a renderer feature, prefer bounded quantifiers over greedy scans.
 Tauri IPC, scoped asset URLs, PDF workers, and the data/blob content required by
 the local viewers. It denies plugins/objects, hostile base URLs, and framing of
 the Mesa document. `style-src 'unsafe-inline'` is required for React styles.
-`script-src 'unsafe-inline'` remains necessary for Mesa's controlled saved-page
-reader bridge and inlined scripts in saved HTML. `connect-src https:` permits
+`script-src 'unsafe-inline'` remains necessary for the BrowserHarness reader
+bridge and for user-provided scripts in the browser preview's saved-HTML
+`srcdoc` frame. A `srcdoc` frame inherits its parent's CSP, so a hash for the
+controlled bridge alone would block saved-page scripts. Desktop `HtmlView` and
+`DocumentView` load saved HTML by asset URL rather than `srcdoc`. `connect-src https:` permits
 HTTPS requests from those saved pages when they run in sandboxed frames; the
 native Pi browser and sync clients use Rust networking instead. Both allowances
 remain broad because saved pages may come from any source the user opens. The
@@ -144,11 +155,13 @@ and browser-reader flows before it is considered accepted.
 `npm audit` and `cargo audit` are release gates, not durable claims that can be
 copied from an older run. Re-run them against the current lockfiles and
 registries before release, review the exact dependency path and advisory, apply
-the smallest compatible lockfile change, then run the build and audit again.
+the smallest compatible lockfile change, then run the full test/build suite and
+audit again.
 
 The July 2026 [PostCSS path-traversal advisory][postcss-advisory] affected
 PostCSS through `8.5.17`; Mesa resolved the Vite-transitive dependency from
-`8.5.15` to `8.5.23` (the first patched release was `8.5.18`). The lockfile minimum remains
+`8.5.15` to `8.5.23` (the first patched release was `8.5.18`). The lockfile
+minimum is pinned by `src/lib/supplyChainContract.test.ts`. This remains
 dev/build tooling rather than packaged application code, but high-severity
 findings are remediated instead of waived on that basis.
 
@@ -162,11 +175,12 @@ modules with `npm install`/`npm ci`, and verify with `npm audit`.
 The current lockfile also excludes the compromised-package watchlist families
 that have shown up in recent npm malware incidents (`chalk`, `ansi-styles`,
 `@ctrl/tinycolor`, `@tanstack/*`, `@mistralai/*`, `nx`, `eslint`, `prettier`).
-Review the lockfile for reintroduction before each release.
+That absence is enforced by `src/lib/supplyChainContract.test.ts`, so any future
+reintroduction fails the normal test path instead of relying on memory.
 
 The sync server uses Hyper plus Tokio-Rustls on Rustls 0.23. The old
 `tiny_http -> rustls 0.20.9 -> ring 0.16.20` HTTPS path is not allowed back
-into the lockfile.
+into the lockfile; `src/lib/supplyChainContract.test.ts` pins that boundary.
 `cargo audit` remains the registry-backed gate for newly published RustSec
 vulnerabilities.
 
@@ -188,3 +202,8 @@ Tauri/wry/WebKitGTK and Tauri URL-pattern dependency changes, not a quiet
 Mesa-only lockfile update.
 
 [postcss-advisory]: https://github.com/advisories/GHSA-r28c-9q8g-f849
+
+Vitest and `@vitest/mocker` must remain at version 4.1.11 or newer to exclude
+[GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9).
+The offline supply-chain test enforces this floor; the registry audit catches
+new advisories. This is development tooling, not bundled application code.

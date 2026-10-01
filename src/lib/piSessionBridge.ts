@@ -52,7 +52,7 @@ export function getPiSessionSnapshot(): PiSessionSnapshot {
  * was actually stopped and will respawn on the next ensure.
  */
 let restartImpl: (() => Promise<boolean>) | null = null;
-let restartListeners = new Set<() => void>();
+const restartListeners = new Set<() => void>();
 
 export function registerSharedPiRestart(fn: () => Promise<boolean>): void {
   restartImpl = fn;

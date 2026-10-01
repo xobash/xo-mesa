@@ -7,10 +7,10 @@
  *
  * - `tao` registers its window class with a NULL background brush and only
  *   fills a real colour in `WM_ERASEBKGND` when one was configured
- *   (`tao-0.35.3/src/platform_impl/windows/event_loop.rs:1104-1116`).
+ *   (tao Windows event loop `WM_ERASEBKGND` handler).
  * - The WebView2 controller's `DefaultBackgroundColor` is white unless wry is
  *   told otherwise, which it only does when `background_color` is set
- *   (`wry-0.55.1/src/webview2/mod.rs:389-448`).
+ *   (wry WebView2 controller background-color setup).
  *
  * So a dark Mesa flashes white for as long as WebView2 takes to boot and paint
  * — on every launch, and again on every tear-out, which happens directly under
@@ -34,7 +34,7 @@ export const MESA_WINDOW_BACKGROUND: [number, number, number] = [0x16, 0x17, 0x1
  * `theme: "dark"` is not cosmetic. Tauri applies a window's theme to the
  * webview's `prefers-color-scheme` (`preferred_theme` →
  * `ICoreWebView2Profile::SetPreferredColorScheme`,
- * `wry-0.55.1/src/webview2/mod.rs:1835`), and `useApplyTheme` resolves the
+ * wry WebView2 preferred-theme setup), and `useApplyTheme` resolves the
  * System palette from exactly that media query. Windows created without it
  * follow the OS instead. `tauri.conf.json` already pins `"theme": "Dark"` for
  * `main`.

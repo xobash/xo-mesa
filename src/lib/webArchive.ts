@@ -64,7 +64,7 @@ export function prepareArchivedHtml(rawHtml: string, sourceUrl: string): string 
   return `${marker}\n${base}\n${rawHtml}`;
 }
 
-export function archiveLinkRecord(sourceUrl: string, error: unknown): string {
+function archiveLinkRecord(sourceUrl: string, error: unknown): string {
   const safeUrl = escapeHtml(sourceUrl);
   const safeError = escapeHtml(error instanceof Error ? error.message : String(error));
   return `<!doctype html>

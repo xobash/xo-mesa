@@ -3,6 +3,11 @@
 Mesa syncs your own devices over LAN or Tailscale. Every transfer is
 **end-to-end encrypted over TLS** (LocalSend-style), so vault contents and your
 sync key are never sent in the clear.
+The receiver listens on all attached IPv4 and IPv6 networks, including
+Tailscale interfaces when available. The sync key and TLS checks apply to
+every incoming connection.
+Discovery advertises protocol version 2.0; both devices need a build that
+supports the key-proof handshake.
 
 ## Path and request safety
 
@@ -40,9 +45,10 @@ HTTPS using that certificate. Because the certificate is self-signed, a normal
 CA check would reject it, so the client instead **pins the certificate's SHA-256
 fingerprint**:
 
-- **Trust-on-first-use.** The first time you contact a peer, Mesa records the
-  fingerprint it presents during an unauthenticated TLS probe and remembers it
-  on that peer. Mesa then pins that exact certificate for authenticated requests.
+- **Trust-on-first-use.** The first time you contact a peer, Mesa observes its
+  certificate fingerprint during a TLS challenge. The peer must prove it knows
+  the sync key before Mesa requests a manifest or transfers a file. Mesa then
+  remembers and pins that certificate for authenticated requests.
 - **Enforced thereafter.** Every later sync — and every individual file transfer
   within a sync — pins that fingerprint. A mismatch aborts the TLS handshake
   *before* any credential or vault data is sent, which detects an active man-in-the-middle
@@ -56,14 +62,16 @@ public certificate cannot impersonate it — possession of the private key is
 proven during the handshake.
 
 **Authorization (sync key).** TLS encrypts the channel; the sync key authorizes
-*who* may read or write the vault. Mesa first makes an unauthenticated TLS
-request to learn the certificate fingerprint. It then sends a bearer credential
+*who* may read or write the vault. Mesa first sends a fresh random challenge
+over TLS. The peer returns an HMAC-SHA-256 proof bound to that challenge and
+the observed certificate fingerprint. Mesa verifies it in constant time
+before requesting vault metadata or transferring files. It then sends a bearer credential
 derived with HMAC-SHA-256 from the shared key and that fingerprint, over a
 connection pinned to the same certificate. The shared key itself is never sent
 to a first-contact peer. A false peer can obtain only a credential bound to its
 own certificate, which cannot authenticate to the real device. First-contact
 certificate trust still needs out-of-band verification: an active relay could
-proxy a live session before you verify the fingerprint. Use
+proxy a live peer's challenge and requests before you verify the fingerprint. Use
 the same key on every device. **Generate key** creates 32 random bytes. The
 receiver refuses keys shorter than 32 characters. Five failed requests from
 one address pause further requests from that address for one minute. The key

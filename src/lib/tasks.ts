@@ -1,6 +1,6 @@
 import { cacheChangedKeysSince, cacheTaskStableSince, documentRevision, indexedDocumentTasks } from "./documentWorkingSet";
 import { parseTasks, DUE_RE, type TaskItem, type TaskBucket } from "./taskParsing";
-export { parseTasks, classifyTask, taskProject, type TaskItem, type TaskKind, type TaskBucket } from "./taskParsing";
+export { parseTasks, classifyTask, taskProject, type TaskItem, type TaskBucket } from "./taskParsing";
 
 /** The note metadata `collectVaultTasks` reads (structural — see `NoteMeta`). */
 export interface TaskNoteMeta {

@@ -5,10 +5,8 @@
  * text runs — and both need the identical rule: a page-scoped edit invalidates
  * only the page it touched, while anything that can shift page indices
  * (structural edits, undo/redo, an external reload) invalidates the whole
- * document. Keeping one implementation is what stops the two from drifting:
- * the render side previously OVERWROTE its pending set instead of merging, so
- * two quick annotations on different pages repainted only the second one and
- * the first edit stayed invisible until some later full repaint.
+ * document. Both consumers merge pending page sets through this implementation
+ * so quick edits on different pages remain visible.
  *
  * `null`  — nothing recorded yet; the consumer does the whole document.
  * `"all"` — something happened that makes every page suspect.

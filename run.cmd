@@ -173,7 +173,7 @@ if errorlevel 1 (
 echo   ok WebView2 runtime present
 
 echo   . Installing JS dependencies...
-call npm install
+call npm ci
 if errorlevel 1 exit /b 1
 
 REM Guard against a stale Rust build cache. Cargo and Tauri bake this folder's

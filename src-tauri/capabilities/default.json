@@ -2,7 +2,12 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capabilities granted to the main window and spawned document windows.",
-  "windows": ["main", "doc-*", "panel-*", "agent-*"],
+  "windows": [
+    "main",
+    "doc-*",
+    "panel-*",
+    "agent-*"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
@@ -29,6 +34,34 @@
     {
       "identifier": "fs:scope",
       "allow": []
-    }
+    },
+    "allow-sync-start",
+    "allow-sync-stop",
+    "allow-sync-status",
+    "allow-sync-local-addr",
+    "allow-sync-identity",
+    "allow-sync-fetch-manifest",
+    "allow-sync-run",
+    "allow-sync-cancel",
+    "allow-sync-retire-peer",
+    "allow-sync-discovery-start",
+    "allow-sync-discovery-stop",
+    "allow-activity-start",
+    "allow-activity-set-context",
+    "allow-deep-research-respond",
+    "allow-activity-stop",
+    "allow-browse-fetch",
+    "allow-diagnostics-process-tree",
+    "allow-vault-scan",
+    "allow-vault-read-text",
+    "allow-vault-text-fingerprints",
+    "allow-vault-rename-no-replace",
+    "allow-vault-authorize",
+    "allow-vault-authorize-artifacts",
+    "allow-quit-guard-arm",
+    "allow-quit-guard-disarm",
+    "allow-quit-after-save",
+    "allow-vault-watch",
+    "allow-vault-unwatch"
   ]
 }

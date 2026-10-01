@@ -84,7 +84,7 @@ const RESERVED_DEVICE_RE = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i;
 export function safeBaseName(name: string): string {
   const cleaned = name
     .trim()
-    // eslint-disable-next-line no-control-regex
+    // eslint-disable-next-line no-control-regex -- Names must reject ASCII control characters.
     .replace(/[\\/:*?"<>|\x00-\x1f]/g, "")
     .replace(/[. ]+$/, "");
   if (!cleaned) return "";

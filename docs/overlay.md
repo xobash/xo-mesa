@@ -108,7 +108,7 @@ things so a scratch surface can never quietly cost you something:
   is refused, and the last good version stays intact.
 
 The rules live in `src/lib/localNotes.ts` and are pinned by
-local storage error handling, including quota-error spellings that differ
+`src/lib/localNotes.test.ts`, including the quota-error spellings that differ
 across WebView2 (Windows), WKWebView (macOS), and WebKitGTK (Linux).
 
 ## Calendar

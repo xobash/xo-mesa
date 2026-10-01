@@ -331,7 +331,7 @@ export function SearchSurface({
   }, []);
   const previewTarget = useMemo(
     () => (active ? ({ kind: "note", id: active.rel } as const) : null),
-    [active?.rel]
+    [active]
   );
 
   const onKeyDown = (e: React.KeyboardEvent) => {

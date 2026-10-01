@@ -15,7 +15,7 @@ interface Dependencies {
   log(level: SyncLogEntry['level'], message: string): void;
 }
 
-export function syncStatusLine(name: string, report: SyncReport): string {
+function syncStatusLine(name: string, report: SyncReport): string {
   const failed = report.failed.filter(file => file.error !== 'cancelled');
   let message = `${report.cancelled ? 'Sync cancelled with' : failed.length ? 'Sync incomplete with' : 'Synced with'} ${name} — ↓${report.pulled} ↑${report.pushed}`;
   if (report.conflicts) message += ` · ${report.conflicts} conflict ${report.conflicts === 1 ? 'copy' : 'copies'} to review`;

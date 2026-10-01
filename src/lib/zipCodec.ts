@@ -96,6 +96,8 @@ export function inspectZipForImport(data: Uint8Array): ZipImportEntry[] {
 export function unzipForImport(data: Uint8Array, signal?: AbortSignal): Promise<Record<string, Uint8Array>> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    // Abort must be registered before worker creation and can call this later-assigned handle.
+    // eslint-disable-next-line prefer-const
     let terminate: AsyncTerminable | undefined;
     const abort = () => {
       terminate?.();

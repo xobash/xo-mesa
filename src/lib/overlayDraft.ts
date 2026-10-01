@@ -32,7 +32,7 @@ export function writeOverlayDraft(key: string, draft: OverlayDraft): LocalNoteWr
   return result;
 }
 
-export interface BoardStroke { color: string; points: Array<[number, number]> }
+interface BoardStroke { color: string; points: Array<[number, number]> }
 export interface BoardDocument { version: 1; background?: string; strokes: BoardStroke[] }
 export function parseBoardDocument(content: string): BoardDocument {
   if (!content) return { version: 1, strokes: [] };

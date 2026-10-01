@@ -1,4 +1,4 @@
-export interface TerminalReplayEvent {
+interface TerminalReplayEvent {
   kind: "output" | "resize";
   data?: string;
   rows?: number;

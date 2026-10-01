@@ -20,7 +20,7 @@ export function StatusBar() {
   const saveState = useAppStore((s) => s.textSaveState);
   const textSaveIssues = useAppStore((s) => s.textSaveIssues);
   const retryTextSaveIssue = useAppStore((s) => s.retryTextSaveIssue);
-  const useDiskTextForSaveIssue = useAppStore(
+  const applyDiskTextForSaveIssue = useAppStore(
     (s) => s.useDiskTextForSaveIssue
   );
 
@@ -128,7 +128,7 @@ export function StatusBar() {
                   disabled={issue.busy !== null}
                   aria-label={`Use disk copy of ${issue.relPath}`}
                   title="Replace unsaved changes after confirmation"
-                  onClick={() => void useDiskTextForSaveIssue(issue.key)}
+                  onClick={() => void applyDiskTextForSaveIssue(issue.key)}
                 >
                   {issue.busy === "disk" ? "Reading…" : "Use disk copy"}
                 </button>

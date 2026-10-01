@@ -1,11 +1,13 @@
 // Worker-safe parsing. Output is untrusted until sanitizeHtml runs in the DOM realm.
 import MarkdownIt from "markdown-it";
+import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
+import type Token from "markdown-it/lib/token.mjs";
 import { IMAGE_EXT, parseFrontmatter } from "./markdownExtract";
 
 const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false });
 
 // --- inline rule: wiki links & embeds -------------------------------------
-function wikilink(state: any, silent: boolean): boolean {
+function wikilink(state: StateInline, silent: boolean): boolean {
   const src: string = state.src;
   let pos: number = state.pos;
   let embed = false;
@@ -48,14 +50,14 @@ function wikilink(state: any, silent: boolean): boolean {
 
 md.inline.ruler.before("image", "wikilink", wikilink);
 
-md.renderer.rules.wiki_link = (tokens: any, idx: number): string => {
+md.renderer.rules.wiki_link = (tokens: Token[], idx: number): string => {
   const t = tokens[idx];
   const target = md.utils.escapeHtml(t.content);
   const alias = md.utils.escapeHtml(t.meta.alias || t.content);
   return `<a href="#" class="wikilink" data-target="${target}">${alias}</a>`;
 };
 
-md.renderer.rules.wiki_image = (tokens: any, idx: number): string => {
+md.renderer.rules.wiki_image = (tokens: Token[], idx: number): string => {
   const t = tokens[idx];
   const target = md.utils.escapeHtml(t.content);
   const alias = md.utils.escapeHtml(t.meta.alias || t.content);
@@ -63,7 +65,7 @@ md.renderer.rules.wiki_image = (tokens: any, idx: number): string => {
   return `<img class="md-embed" data-embed="${target}" alt="${alias}" />`;
 };
 
-md.renderer.rules.wiki_embed = (tokens: any, idx: number): string => {
+md.renderer.rules.wiki_embed = (tokens: Token[], idx: number): string => {
   const t = tokens[idx];
   const target = md.utils.escapeHtml(t.content);
   return `<span class="wikilink embed" data-target="${target}">⧉ ${target}</span>`;

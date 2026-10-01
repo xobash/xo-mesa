@@ -178,7 +178,9 @@ perfectly.
   text consumer a lossy "document"; the activity bridge calls `ensureContent`
   for whatever path an agent touches, which is how a binary could get in.
 
-
+Regression net: `isTextualVaultFile` / `flushableNoteText` / `writeNote`
+fail-closed in `src/lib/vault.test.ts`; queue and lifecycle behavior in
+`src/lib/textSaveCoordinator.test.ts` and the vault recovery/write suites.
 
 Two operations that LOOK like text operations are held to the same rule:
 
@@ -204,7 +206,8 @@ Two operations that LOOK like text operations are held to the same rule:
   edited file. Its previous
   implementation read the file as text, wrote the text under the new name,
   and removed the original; for a binary the text read yields "" by design,
-  so renaming a PDF replaced it with an empty markdown file.
+  so renaming a PDF replaced it with an empty markdown file. Pinned by
+  `src/lib/renameNote.test.ts`.
 - **Delete** is recoverable. Mesa moves files and folders into a hidden
   `.mesa-trash/` recovery area on the same vault volume and removes them from
   the workspace only after that move succeeds. A locked file, permission error,
@@ -226,7 +229,7 @@ Two operations that LOOK like text operations are held to the same rule:
   saved over the current note. A note switch now replaces the editor state
   (fresh history) and a same-note external refresh is dispatched outside the
   history, so undo can neither cross files nor resurrect stale pre-watcher
-  text.
+  text. Pinned by `src/components/editorUndoBoundary.test.tsx`.
 
 ## External changes while a PDF is open
 

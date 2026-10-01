@@ -10,25 +10,31 @@ permissions:
   contents: read
 
 jobs:
-  # Frontend type-check, build, and public release gate on Linux.
+  # Fast gate: type-check, unit tests, and the web build on Linux.
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run test:bootstrap
+      - run: npm run test:index
+      - run: npm run test:markdown
+      - run: npm run test:notices
       - run: npm run build
       - run: npm run audit:public
-      # Registry-backed advisory gate for current dependency disclosures.
+      # Registry-backed advisory gate. Kept separate from the offline
+      # `supplyChainContract.test.ts` pins, which catch a bad lockfile but
+      # cannot see an advisory published after the pin was written.
       - run: npm audit --audit-level=moderate
 
-  # Rust unit tests + lints. Roughly half the tests (terminal history, UTF-8
-  # read boundaries, harness snapshot parsing) have no TypeScript mirror, so
-  # without this job they only ever run on a developer's machine.
+  # Rust unit tests and lints cover native behavior on each supported OS.
   #
   # Windows and macOS are in the matrix, not just Linux: the PTY resolver's
   # PATHEXT lookup, the Node-shebang launch path and the cmd.exe wrapper
@@ -42,11 +48,11 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri
       - name: Install Linux system dependencies (WebKitGTK)
@@ -66,20 +72,20 @@ jobs:
   rust-advisory:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri
-      - run: cargo install cargo-audit --locked
+      - run: cargo install cargo-audit --version 0.22.2 --locked
       - run: cargo audit --file src-tauri/Cargo.lock
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
       - run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
       - run: node scripts/third-party-notices.mjs --check-native
 
-  # Native desktop bundles. Windows first, Linux last (project priority).
+  # Native desktop bundles for each supported OS.
   desktop:
     needs: [frontend, rust, rust-advisory]
     strategy:
@@ -94,13 +100,13 @@ jobs:
             name: linux
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: src-tauri
       - name: Add macOS universal build targets
@@ -118,13 +124,13 @@ jobs:
             libayatana-appindicator3-dev
       - run: npm ci
       - name: Build the desktop app
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
         with:
           args: ${{ matrix.name == 'macos' && '--target universal-apple-darwin' || matrix.name == 'windows' && '--bundles msi,nsis' || '' }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mesa-${{ matrix.name }}
           path: |
             src-tauri/target/release/bundle/**/*
             src-tauri/target/universal-apple-darwin/release/bundle/**/*
-          if-no-files-found: ignore
+          if-no-files-found: error

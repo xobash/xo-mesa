@@ -76,6 +76,8 @@ export function DiagnosticsModal() {
   }, [open, tick]);
 
   const snapshot = useMemo(() => {
+    // The timer refreshes metrics that are sampled outside React state.
+    void tick;
     const timeline = getMesaPerfTimeline();
     const working = workingSetStats(cache);
     const markdown = files.filter((file) => file.isMarkdown).length;
@@ -152,7 +154,7 @@ export function DiagnosticsModal() {
       health,
       vaultScan,
     };
-  }, [cache, files, tick]);
+  }, [cache, files, tick, loading, indexingTextFiles, unindexedTextFiles, syncBusy, textSaveState.pending, deepResearch]);
 
   if (!open) return null;
 

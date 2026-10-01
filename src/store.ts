@@ -74,7 +74,6 @@ import {
   THEME_KEY,
   initialRecents,
   initialTheme,
-  migrateLegacyKeys,
   type ThemeId
 } from "./lib/persistedUi";
 import { forgetRecentVault } from "./lib/recentVaults";
@@ -172,8 +171,6 @@ export interface DeepResearchRunState {
   /** Monotonic id so a stale event from a previous run is ignored. */
   seq: number;
 }
-
-migrateLegacyKeys();
 
 export const THEMES: { id: ThemeId; label: string; blurb: string }[] = [
   { id: "system", label: "System", blurb: "Neutral, follows OS light/dark" },

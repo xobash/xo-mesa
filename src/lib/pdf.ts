@@ -456,7 +456,10 @@ export async function setFormField(
   const f = form.getFieldMaybe(name);
   if (!f) return bytes;
   if (f instanceof PDFTextField) f.setText(value);
-  else if (f instanceof PDFCheckBox) value === "true" ? f.check() : f.uncheck();
+  else if (f instanceof PDFCheckBox) {
+    if (value === "true") f.check();
+    else f.uncheck();
+  }
   else if (f instanceof PDFDropdown) f.select(value);
   else if (f instanceof PDFRadioGroup) f.select(value);
   try {

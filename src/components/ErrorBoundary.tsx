@@ -20,7 +20,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // eslint-disable-next-line no-console
+    // eslint-disable-next-line no-console -- Boundary failures need a local diagnostic trace.
     console.error("Mesa crashed:", error, info.componentStack);
   }
 

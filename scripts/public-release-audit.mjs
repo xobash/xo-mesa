@@ -36,7 +36,7 @@ for (const path of approved) {
 
 const forbiddenContent = [
   { pattern: /(?:\/Users\/|[A-Z]:\\Users\\)[^\s/\\]+/i, label: "personal filesystem path" },
-  { pattern: /\/Volumes\/(?!NAS(?:\/|["']))[A-Za-z0-9][^\s/"']*/, label: "named external volume" },
+  { pattern: /\/Volumes\/[A-Za-z0-9][^\s/"']*/, label: "named external volume" },
   { pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/, label: "private key" },
   { pattern: /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}\b/, label: "access token" },
   { pattern: /\bAKIA[0-9A-Z]{16}\b/, label: "access key" },
@@ -61,11 +61,12 @@ function hasPrivateIpv4(text) {
 const approvedGenericIgnoreFiles = new Set([".gitignore", ".dockerignore"]);
 
 for (const path of tracked) {
-  if (/\.test\.[cm]?[jt]sx?$|\.perf\.|\.pdf$/i.test(path)) {
+  const testFile = /\.test\.[cm]?[jt]sx?$/i.test(path);
+  if ((testFile && !/^src\/.+\.test\.tsx?$/.test(path)) || /\.perf\.|\.pdf$/i.test(path)) {
     failures.push(`${path}: test fixture or example PDF is not a public release input`);
   }
   if (/(^|\/)\.[^/]*ignore$/.test(path) && !approvedGenericIgnoreFiles.has(path)) {
-    failures.push(`${path}: private exclusion file`);
+    failures.push(`${path}: unapproved ignore file`);
   }
   if (!approvedSet.has(path)) continue;
   const content = git(["show", `:${path}`], null);

@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -42,5 +43,12 @@ export default defineConfig({
         },
       },
     },
+  },
+  test: {
+    // Local checkpoint copies and scratch work must never run as part of the
+    // suite — a stray test there silently changes the counts a green claim is
+    // judged by. `tmp/` is gitignored scratch (corpora, measurement harnesses),
+    // so it is excluded for the same reason as `.backups/`.
+    exclude: ["**/node_modules/**", "**/dist/**", "**/.backups/**", "**/tmp/**"],
   },
 });

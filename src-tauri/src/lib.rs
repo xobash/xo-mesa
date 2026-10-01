@@ -7,6 +7,7 @@
 // browser engine, a few hundred KB of Rust glue.
 
 mod activity;
+mod bearer;
 mod browse;
 mod diagnostics;
 mod harness;

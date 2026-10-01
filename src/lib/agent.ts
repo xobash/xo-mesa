@@ -14,7 +14,7 @@ export interface AgentContext {
 
 /** Keep the repeated per-turn context small on local models. The active
  * document always appears first and is never removed by this limit. */
-export const MAX_CONTEXT_OTHER_OPEN_PATHS = 12;
+const MAX_CONTEXT_OTHER_OPEN_PATHS = 12;
 
 function pathSeparatorFor(root: string): "/" | "\\" {
   return root.includes("\\") && !root.includes("/") ? "\\" : "/";

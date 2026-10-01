@@ -62,10 +62,6 @@ export function recordResourceSample(input: {
   return sample;
 }
 
-export function getResourceSamples(): ResourceSample[] {
-  return [...samples];
-}
-
 export function clearResourceSamples(): void {
   samples.length = 0;
 }

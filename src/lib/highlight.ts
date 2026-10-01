@@ -5,7 +5,7 @@
  * by a small per-language spec. Pure (no DOM) so it's unit-tested.
  */
 
-export type TokType = "plain" | "comment" | "string" | "number" | "keyword";
+type TokType = "plain" | "comment" | "string" | "number" | "keyword";
 export interface Token {
   type: TokType;
   value: string;

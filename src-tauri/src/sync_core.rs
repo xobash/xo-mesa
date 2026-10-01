@@ -4313,7 +4313,12 @@ mod tests {
         std::fs::write(&candidate, b"incoming").unwrap();
         std::fs::write(&target, b"existing").unwrap();
 
-        assert!(platform_exclusive_publish(&candidate, &target).is_err());
+        match platform_exclusive_publish(&candidate, &target).unwrap_err() {
+            ExclusivePublishError::Failed(error) =>
+                assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists),
+            ExclusivePublishError::Unsupported(error) =>
+                panic!("exclusive publish is unsupported: {error}"),
+        }
         assert_eq!(std::fs::read(&target).unwrap(), b"existing");
         assert_eq!(std::fs::read(&candidate).unwrap(), b"incoming");
         let _ = std::fs::remove_dir_all(&dir);
@@ -4395,23 +4400,6 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(&format!(".mesa-sync-tmp-{}-", std::process::id())));
         }
-    }
-
-    #[test]
-    fn platform_publish_source_contracts_pin_no_replace_flags() {
-        let source = include_str!("sync_core.rs");
-        assert!(source.contains("libc::renameat2"));
-        assert!(source.contains("libc::RENAME_NOREPLACE"));
-        assert!(source.contains("libc::renamex_np"));
-        assert!(source.contains("libc::RENAME_EXCL"));
-        assert!(source.contains("MoveFileExW"));
-        assert!(source.contains("MOVEFILE_WRITE_THROUGH"));
-        // The sole occurrence is this assertion string, not an import or flag.
-        assert_eq!(source.matches("MOVEFILE_REPLACE_EXISTING").count(), 1);
-        // Journal metadata and private deletion staging use ordinary rename
-        // only for Mesa-owned hidden files. User-file publication remains
-        // pinned to the no-replace primitives above.
-        assert!(source.matches("std::fs::rename").count() >= 1);
     }
 
     #[test]

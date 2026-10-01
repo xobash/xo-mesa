@@ -160,7 +160,7 @@ const READER_BRIDGE = `<script>
 /** Prepare fetched HTML for the sandboxed reader iframe: resolve relative
  * URLs via <base>, drop meta-CSP (it would block our bridge script), and
  * inject the navigation bridge. (Legacy/demo path only.) */
-export function buildReaderHtml(rawHtml: string, baseUrl: string): string {
+function buildReaderHtml(rawHtml: string, baseUrl: string): string {
   const safeBase = baseUrl.replace(/"/g, "%22");
   let html = rawHtml
     // meta CSP inside the document would block the injected bridge script.
@@ -650,7 +650,7 @@ export function BrowserHarness({
     navigate(externalNav.url);
     // navigate() is recreated per render but only state setters are captured;
     // keying on seq keeps this to exactly one navigation per agent request.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Request sequence owns this navigation effect.
   }, [externalNav]);
 
   // Reader-mode pages postMessage link clicks / form submits back to us.

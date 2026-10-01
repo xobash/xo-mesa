@@ -19,5 +19,4 @@
 !scripts/bundle-boundaries.check.mjs
 !src-tauri/
 !src-tauri/Cargo.lock
-**/AGENTS.md
 **/*.local.*

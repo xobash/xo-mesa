@@ -29,6 +29,13 @@ to prove that promise:
 | macOS 13.3 oldest WKWebView | Safari/WKWebView 16.4 | Oldest macOS support proof |
 | Linux current WebKitGTK smoke | WebKitGTK 4.1 | Lower-priority build and launch smoke |
 
+Generate and check records with:
+
+```bash
+npm run acceptance:native-template > native-acceptance.local.md
+npm run acceptance:native-check -- native-acceptance.local.md
+```
+
 Priority order for first-class support: **Windows first, Linux last** (macOS is
 the current dev platform and already works).
 
@@ -181,7 +188,7 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   reads alone were ~2,400 round-trips per vault open on the reference vault and
   are now 20, with the search-corpus share of them running while the user is
   already typing.
-- **Sync server** (`src-tauri/src/sync.rs`) binds `0.0.0.0` and serves HTTPS
+- **Sync server** (`src-tauri/src/sync.rs`) binds `0.0.0.0` and `[::]` and serves HTTPS
   through Hyper + Tokio-Rustls on Rustls 0.23. `tiny_http` remains only for
   plain loopback helper/test servers and must not regain its old TLS feature.
 - **File watching** prefers Mesa's native `vault_watch`
@@ -200,7 +207,7 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   project path is past 90 characters, prints both remedies (move the folder, or
   run one `reg add` from an admin terminal). It reports rather than applies:
   that key is a machine-wide admin change, and it never blocks the run.
-
+  Pinned by `src/lib/runCmdContract.test.ts`.
 - **App exit** — `lib.rs` handles `RunEvent::Exit` to kill every PTY child and
   stop the activity server. On Windows each ConPTY leader is assigned to a
   kill-on-close Job Object immediately after spawn. Closing the Job Object
@@ -307,12 +314,32 @@ artifacts, not end-user release artifacts. For distribution:
 - **macOS** — Apple Developer ID signing + notarization.
 - **Linux** — AppImage/`.deb` are typically distributed unsigned; optionally GPG-sign.
 
+See `docs/release.md` for the manual release inputs, signing/notarization
+requirements, privacy audit, and publishing sequence.
 
 [`tauri-action`]: https://github.com/tauri-apps/tauri-action
 
 ## Repeatable acceptance
 
-Run `npm run typecheck` and `npm run build` before checking the desktop app on each supported OS.
+Run `npm run typecheck`, `npm test`, `npm run test:bootstrap`, and `npm run build`.
+The bootstrap check executes the actual macOS/Linux wrapper with isolated fake
+Git/launch commands; it validates control flow and preservation, not clean-machine
+package installation. Windows bootstrap execution still requires Windows.
+
+Use `npm run acceptance:native-template > native-acceptance.local.md` to create
+the local acceptance record for a real desktop run. The generated file is
+gitignored by the `*.local.md` rule because it may name machines, vaults,
+install paths, and OS prompts. Run
+`npm run acceptance:native-check -- native-acceptance.local.md` before using a
+record as release evidence; the checker requires every row to have a result and
+evidence and rejects passed rows backed only by CI, browser, unit-test,
+source-contract, or another-OS evidence.
+
+For browser interaction, start `npm run dev` and visit `/scripts/acceptance.html`.
+This development-only fixture creates two synthetic demo notes. Compare them in
+Sync, combine their text, save, and open the original, retained previous version,
+and conflict copy. Check Keep both, Tab/Escape, narrow layout, and console errors.
+Reload resets the two test-note contents. The fixture never opens a personal vault.
 
 A release acceptance record must distinguish browser checks from these native
 checks on **both macOS and Windows**:
@@ -338,3 +365,4 @@ checks on **both macOS and Windows**:
 
 Do not mark a row passed from a source assertion, browser fixture or another OS's
 build. Signing/notarization and OS permission prompts are separate release checks.
+See `docs/native-acceptance.md` for the evidence boundary and record format.

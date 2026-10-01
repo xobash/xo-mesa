@@ -20,8 +20,10 @@ const SANITIZE_CONFIG: Config = {
 
 /**
  * Sanitize rendered-markdown HTML for safe injection into the trusted app
- * document. DOMPurify requires a DOM; production callers run in the Tauri
- * webview.
+ * document. Exported so both the renderer and its tests exercise the exact
+ * same policy. In a DOM-less environment (e.g. a node-only test) DOMPurify is
+ * unsupported and returns the input unchanged; every real caller (the Tauri
+ * webview, and the jsdom-backed sanitizer tests) has a DOM.
  */
 export function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, SANITIZE_CONFIG);

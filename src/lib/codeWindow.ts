@@ -8,8 +8,8 @@ export interface CodeVisibleRange {
   end: number;
 }
 
-export const LARGE_CODE_CHAR_THRESHOLD = 250_000;
-export const LARGE_CODE_LINE_THRESHOLD = 5_000;
+const LARGE_CODE_CHAR_THRESHOLD = 250_000;
+const LARGE_CODE_LINE_THRESHOLD = 5_000;
 export const CODE_ROW_HEIGHT = 20;
 
 export function buildCodeLineIndex(text: string): CodeLineIndex {

@@ -99,6 +99,19 @@ preconditions and crash recovery remain the save boundary.
 
 ## Verification and measurement
 
+- `npm test -- documentWorkingSet vaultIndex indexCodec indexSearch tasks search`
+  covers exact text, eviction, snapshot edits, reuse, invalidation, failures and
+  search/task parity.
+- `npm run test:index` executes the actual worker with edits, deletions, Unicode
+  and cancellation through a Node message bridge.
+- `npm run bench:index` compares plain and indexed caches in three alternating
+  isolated processes. It uses 1,600 synthetic documents, visits every document,
+  forces GC, and measures retained JS heap plus ArrayBuffers and 2,000 cache edits.
+  This intentionally compressible fixture demonstrates the architecture; it is
+  not a representative-vault promise or native app memory measurement.
+- `/scripts/index-acceptance.html` on the development server opens the browser
+  demo and exposes reuse, search-worker and decoded-pool counters. Exercise edits,
+  immediate navigation, reopen, search and tasks through the application UI.
 - The top-bar Diagnostics window shows the live decoded working-set size,
   indexed/plain cache mode, still-indexing count, and name-only skipped/failed
   count for the active renderer.

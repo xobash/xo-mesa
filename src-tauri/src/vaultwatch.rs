@@ -4,7 +4,7 @@
 //! `Channel::send` is
 //! a JS source string `eval`'d into the webview **on the UI thread**, and wry
 //! forces a `RedrawWindow` after each dispatched IPC response
-//! (`wry-0.55.1/src/webview2/mod.rs`). So a `git checkout`, a device sync, or a
+//! (wry WebView2 window dispatcher). So a `git checkout`, a device sync, or a
 //! Pi agent writing hundreds of files inside the vault turns into hundreds of
 //! evals + forced repaints serialized against `WM_KEYDOWN`/`WM_PAINT` — input
 //! stall and dropped frames for the duration of the storm. Worse, `.git/`

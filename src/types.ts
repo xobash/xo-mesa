@@ -183,7 +183,7 @@ export interface GraphNode extends SimulationNodeDatum {
 }
 
 /** Visual category of a graph node — determines shape and colour. */
-export type GraphNodeKind =
+type GraphNodeKind =
   | "note"        // markdown notes — the primary graph content
   | "tag"         // a #tag, shown as its own node with edges from notes
   | "phantom"     // a placeholder for an unresolved [[link]] (no file yet)

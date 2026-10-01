@@ -129,11 +129,11 @@ const TERMINAL_RESIZE_HISTORY_COST: usize = 4;
 /// A `terminal://output` event is delivered to a webview by *evaluating a JS
 /// source string*: `Listeners::emit_js_filter` builds one with
 /// `event::emit_js_script` and hands it to `Webview::eval`
-/// (`tauri-2.11.3/src/event/listener.rs:269-294`, `src/webview/mod.rs:1974`).
+/// (Tauri `Listeners::emit_js_filter` and `Webview::eval`).
 /// On Windows that eval is marshalled onto the app's UI thread — the same
 /// thread that dispatches `WM_KEYDOWN`, `WM_PAINT`, and resize — and wry's
 /// dispatcher additionally calls `RedrawWindow(.., RDW_INTERNALPAINT)` after
-/// every dispatched item (`wry-0.55.1/src/webview2/mod.rs:1012-1035`).
+/// every dispatched item (wry WebView2 window dispatcher).
 ///
 /// One event per PTY read therefore turns a bulk Pi response into thousands of
 /// UI-thread script compiles plus thousands of forced paint invalidations. A

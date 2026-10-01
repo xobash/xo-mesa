@@ -1036,7 +1036,7 @@ async function uniqueRel(root: string, rel: string): Promise<string> {
   return candidate;
 }
 
-export interface DroppedImportFailure {
+interface DroppedImportFailure {
   /** Basename only: enough to identify the source without exposing its path. */
   name: string;
   message: string;
@@ -1302,8 +1302,7 @@ export async function watchVault(
       stop();
     };
   } catch (e) {
-    // Surface watcher setup failures — a silent catch here previously hid the
-    // missing `watch` cargo feature for a long time. Never throw.
+    // Watcher setup failures remain visible to diagnostics without throwing.
     console.error("[mesa] watchVault failed to start:", e);
     return () => {};
   }

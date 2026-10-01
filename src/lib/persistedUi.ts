@@ -1,5 +1,4 @@
 import { canonicalRoot } from "./vault";
-import { planKeyMigration } from "./migrate";
 
 export const LAST_VAULT_KEY = "mesa:lastVault";
 export const THEME_KEY = "mesa:theme";
@@ -23,22 +22,6 @@ export function initialRecents(): string[] {
     });
   } catch {
     return [];
-  }
-}
-
-export function migrateLegacyKeys(): void {
-  try {
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key) keys.push(key);
-    }
-    for (const { from, to } of planKeyMigration(keys, "telperion:", "mesa:", key => localStorage.getItem(key) !== null)) {
-      const value = localStorage.getItem(from);
-      if (value !== null) localStorage.setItem(to, value);
-    }
-  } catch {
-    // localStorage is optional; session defaults remain usable.
   }
 }
 
