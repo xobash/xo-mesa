@@ -83,6 +83,9 @@ try {
     & cmd.exe /d /c "`"$probe`"" | Out-Null
     Assert-True ($LASTEXITCODE -eq $case[1]) "WebView2 probe returned $LASTEXITCODE for $($case[0])"
   }
+  # Failure cases intentionally leave a nonzero native command status.
+  # Clear it only after every assertion passes so callers see the suite result.
+  $global:LASTEXITCODE = 0
   Write-Output 'Windows installer behavior passed.'
 } finally {
   Set-Location $priorDirectory

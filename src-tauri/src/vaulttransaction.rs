@@ -103,6 +103,19 @@ fn flush_folder(root: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     Ok(())
 }
+fn flush_parents(root: &Path, target: &Path) -> Result<(), String> {
+    let mut folder = target.parent().ok_or("research target has no parent")?;
+    loop {
+        if !folder.starts_with(root) {
+            return Err("research parent escaped the vault".into());
+        }
+        flush_folder(folder)?;
+        if folder == root {
+            return Ok(());
+        }
+        folder = folder.parent().ok_or("research parent escaped the vault")?;
+    }
+}
 fn save_record(root: &Path, record: &Record, first: bool) -> Result<(), String> {
     let bytes = serde_json::to_vec(record).map_err(|e| e.to_string())?;
     let path = root.join(RECORD);
@@ -164,6 +177,8 @@ fn rollback(root: &Path, record: &Record) -> Result<(), String> {
                         let _ = crate::sync_core::move_file_no_replace(&rescue, &path);
                         return Err(format!("{} changed during recovery", entry.rel));
                     }
+                    // Make both the source unlink and rescued bytes durable.
+                    flush_parents(root, &path)?;
                     flush_folder(root)
                 }
             }
@@ -262,7 +277,16 @@ fn apply(
         let result = (|| {
             let path = target(root, &entry.rel)?;
             crate::sync_core::ensure_real_parent(&path).map_err(|e| e.to_string())?;
-            write_atomic(&path, &entry.after, &expected(entry.before.as_deref()))
+            write_atomic(&path, &entry.after, &expected(entry.before.as_deref()))?;
+            if read(&path)?.as_deref() != Some(entry.after.as_slice()) {
+                return Err(format!(
+                    "{} changed before research verification",
+                    entry.rel
+                ));
+            }
+            // The leaf write flushes its folder; also flush new ancestor
+            // entries before the durable completion marker can discard intent.
+            flush_parents(root, &path)
         })();
         if let Err(error) = result {
             return match rollback(root, &record) {
@@ -397,6 +421,36 @@ mod tests {
         recover(&root).unwrap();
         assert_eq!(fs::read(root.join("old.md")).unwrap(), b"updated");
         assert!(!root.join(RECORD).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn nested_creation_recovers_after_interruption() {
+        let root = folder("nested");
+        let changes = vec![Change {
+            rel_path: "reports/topic/new.md".into(),
+            content: "reviewed content".into(),
+            expected_content: None,
+        }];
+        assert!(apply(&root, changes, Some(1)).is_err());
+        assert_eq!(
+            fs::read(root.join("reports/topic/new.md")).unwrap(),
+            b"reviewed content"
+        );
+        recover(&root).unwrap();
+        assert!(!root.join("reports/topic/new.md").exists());
+        assert!(!root.join(RECORD).exists());
+        let rescued: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".mesa-research-created-")
+            })
+            .collect();
+        assert_eq!(rescued.len(), 1);
+        assert_eq!(fs::read(rescued[0].path()).unwrap(), b"reviewed content");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

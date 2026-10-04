@@ -278,7 +278,8 @@ further writes until the conflict is resolved.
 These are recoverable multi-file changes, not simultaneous filesystem
 publication. Other applications may observe intermediate files. Records are
 limited to 256 changes and 16 MiB of combined original and proposed bytes.
-Unix file and directory flushes are enabled; Windows directory metadata
+Unix file and directory flushes include newly created parent directories
+and both folders involved in rollback moves. Windows directory metadata
 durability remains unverified. The browser demo uses compensating rollback
 and does not provide native crash recovery.
 
