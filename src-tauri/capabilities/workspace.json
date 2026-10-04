@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "workspace-owner",
+  "description": "Destructive filesystem, credential and sync lifecycle commands belong to the main workspace.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "fs:allow-remove",
+    "fs:allow-rename",
+    "allow-sync-secrets-read",
+    "allow-sync-secrets-write",
+    "allow-sync-start",
+    "allow-sync-stop",
+    "allow-sync-run",
+    "allow-sync-retire-peer",
+    "allow-sync-discovery-start",
+    "allow-sync-discovery-stop",
+    "allow-quit-guard-arm",
+    "allow-quit-guard-disarm",
+    "allow-quit-after-save",
+    "allow-vault-apply-research"
+  ]
+}

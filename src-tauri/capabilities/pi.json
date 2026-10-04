@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pi",
+  "description": "Terminal and browser harness commands for the main and detached Pi windows.",
+  "windows": [
+    "main",
+    "agent-*"
+  ],
+  "permissions": [
+    "allow-harness-navigate",
+    "allow-harness-bounds",
+    "allow-harness-visibility",
+    "allow-harness-history",
+    "allow-harness-status",
+    "allow-harness-nudge",
+    "allow-terminal-start",
+    "allow-terminal-attach",
+    "allow-terminal-snapshot",
+    "allow-terminal-resize",
+    "allow-terminal-write",
+    "allow-terminal-stop"
+  ]
+}

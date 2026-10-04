@@ -1,0 +1,3 @@
+*.pdf binary
+# Preserve upstream license text verbatim, including its whitespace.
+public/THIRD_PARTY_NOTICES.txt -text -whitespace
