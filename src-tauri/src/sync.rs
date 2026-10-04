@@ -130,7 +130,9 @@ fn require_sync_key(key: &str) -> Result<(), String> {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         && key
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .collect::<std::collections::HashSet<_>>()
             .len()
             >= 16

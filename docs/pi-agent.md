@@ -82,7 +82,9 @@ failed or slow adoption cannot discard the working terminal. On macOS the native
 an overlay-style title bar and hidden duplicate title; Windows and Linux retain
 their ordinary OS window frame. Mesa's Tauri capability explicitly permits the
 post-handshake `setFocus`, `close`, and title-bar drag operations; the
-base read-only window permission set is not sufficient for those mutations.
+`core:window:default` read-only window operations do not authorize those
+mutations; the explicit permissions do. Approved-vault editing and workspace
+controls have separate capability grants.
 Once PTY adoption succeeds, focus and the initial context mirror are
 best-effort conveniences: failure cannot close the working child. Native
 dock-back is also disarmed until the user presses the Pi drag region and makes

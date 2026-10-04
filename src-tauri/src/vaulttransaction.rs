@@ -95,6 +95,8 @@ fn expected(bytes: Option<&[u8]>) -> ExpectedCurrent {
     }
 }
 fn flush_folder(root: &Path) -> Result<(), String> {
+    #[cfg(not(unix))]
+    let _ = root;
     #[cfg(unix)]
     fs::File::open(root)
         .and_then(|f| f.sync_all())
