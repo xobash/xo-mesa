@@ -87,6 +87,7 @@ src-tauri/src/diagnostics.rs
 src-tauri/src/harness.rs
 src-tauri/src/lib.rs
 src-tauri/src/main.rs
+src-tauri/src/secrets.rs
 src-tauri/src/sync.rs
 src-tauri/src/sync_core.rs
 src-tauri/src/terminal.rs
@@ -96,6 +97,7 @@ src-tauri/src/vaultscan.rs
 src-tauri/src/vaultscope.rs
 src-tauri/src/vaulttransaction.rs
 src-tauri/src/vaultwatch.rs
+src-tauri/src/vaultwrite.rs
 src-tauri/tauri.conf.json
 src-tauri/tauri.windows.conf.json
 src-tauri/tauri.windows.offline.conf.json

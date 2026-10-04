@@ -35,6 +35,19 @@ for (const path of approved) {
   if (!trackedSet.has(path)) failures.push(`${path}: approved path is missing`);
 }
 
+// The native crate root declares required source modules. An allowlist that
+// omits one must fail before publication, even when the local checkout builds.
+const nativeRoot = "src-tauri/src/lib.rs";
+if (trackedSet.has(nativeRoot)) {
+  const source = git(["show", `:${nativeRoot}`]);
+  for (const match of source.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
+    const base = `src-tauri/src/${match[1]}`;
+    if (!trackedSet.has(`${base}.rs`) && !trackedSet.has(`${base}/mod.rs`)) {
+      failures.push(`${nativeRoot}: required native module ${match[1]} is missing`);
+    }
+  }
+}
+
 const forbiddenContent = [
   { pattern: /(?:\/Users\/|[A-Z]:\\Users\\)[^\s/\\]+/i, label: "personal filesystem path" },
   { pattern: /\/home\/[A-Za-z_][A-Za-z0-9_-]+\//, label: "personal home path" },
