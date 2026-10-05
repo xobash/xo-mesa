@@ -201,3 +201,106 @@ mod tests {
         assert_eq!(fs::read(vault.0.join("nested/to.pdf")).unwrap(), payload);
     }
 }
+
+/// Permanently remove only an explicit recovery item in an approved vault.
+fn purge_recovery(root: &Path, rel: &str) -> Result<(), String> {
+    if rel.contains('\\')
+        || rel
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == ".." || p.contains(':'))
+    {
+        return Err("invalid recovery path".into());
+    }
+    let parts: Vec<_> = rel.split('/').collect();
+    let trash = parts
+        .iter()
+        .position(|part| *part == ".mesa-trash")
+        .ok_or("not recovery storage")?;
+    if trash + 1 >= parts.len() || parts[..trash].iter().any(|p| p.starts_with('.')) {
+        return Err("select a recovery item, not its storage root".into());
+    }
+    let mut path = root.to_path_buf();
+    for part in parts {
+        path.push(part);
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("recovery path must not contain symlinks".into());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err("recovery path must not contain reparse points".into());
+            }
+        }
+    }
+    let canonical = fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    if !canonical.starts_with(fs::canonicalize(root).map_err(|e| e.to_string())?) {
+        return Err("recovery path escapes the vault".into());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(&path)
+    } else {
+        fs::remove_file(&path)
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn vault_purge_recovery(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    root: String,
+    trash_rel_path: String,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("only the main workspace may purge recovery".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = crate::vaultscope::require_approved(&app, &root)?;
+        let _guard = crate::vaultwrite::WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        purge_recovery(&root, &trash_rel_path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod purge_tests {
+    use super::*;
+    #[test]
+    fn purge_is_limited_to_recovery_and_preserves_live_files() {
+        let root = std::env::temp_dir().join(format!("mesa-purge-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".mesa-trash/100/sub")).unwrap();
+        fs::write(root.join("live.md"), b"live").unwrap();
+        fs::write(root.join(".mesa-trash/100/sub/note.md"), b"deleted").unwrap();
+        for rel in [
+            "live.md",
+            ".mesa-trash",
+            ".mesa-trash/../live.md",
+            "/.mesa-trash/100",
+            ".mesa-trash/100/../../live.md",
+        ] {
+            assert!(purge_recovery(&root, rel).is_err(), "{rel}");
+        }
+        purge_recovery(&root, ".mesa-trash/100/sub").unwrap();
+        assert_eq!(fs::read(root.join("live.md")).unwrap(), b"live");
+        assert!(!root.join(".mesa-trash/100/sub").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn purge_refuses_symlink_ancestors() {
+        let root = std::env::temp_dir().join(format!("mesa-purge-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("outside")).unwrap();
+        fs::write(root.join("outside/keep.md"), b"keep").unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join(".mesa-trash")).unwrap();
+        assert!(purge_recovery(&root, ".mesa-trash/keep.md").is_err());
+        assert_eq!(fs::read(root.join("outside/keep.md")).unwrap(), b"keep");
+        let _ = fs::remove_dir_all(root);
+    }
+}

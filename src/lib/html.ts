@@ -1,3 +1,5 @@
+import DOMPurify from "dompurify";
+
 export type AssetUrlConverter = (path: string) => string;
 export type TextAssetReader = (path: string) => Promise<string>;
 
@@ -342,4 +344,23 @@ async function replaceAsync(
     last = (match.index ?? 0) + match[0].length;
   });
   return out + input.slice(last);
+}
+
+/** A dedicated frame policy is applied before any saved markup is parsed. */
+export function savedHtmlFrameDocument(html: string, active = false): string {
+  const policy = active
+    ? "default-src 'none'; script-src 'unsafe-inline' https: asset: http://asset.localhost https://asset.localhost; style-src 'unsafe-inline' https: asset: http://asset.localhost https://asset.localhost; img-src data: blob: https: asset: http://asset.localhost https://asset.localhost; font-src data: https: asset: http://asset.localhost https://asset.localhost; connect-src https:; media-src data: blob: https: asset: http://asset.localhost https://asset.localhost; frame-src 'none'; object-src 'none'; form-action https:; base-uri https: asset: http://asset.localhost https://asset.localhost"
+    : "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' asset: http://asset.localhost https://asset.localhost; img-src data: blob: asset: http://asset.localhost https://asset.localhost; font-src data: asset: http://asset.localhost https://asset.localhost; media-src data: blob: asset: http://asset.localhost https://asset.localhost; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
+  let markup = html;
+  if (!active) {
+    if (!DOMPurify.isSupported) throw new Error("Safe HTML rendering is unavailable.");
+    markup = DOMPurify.sanitize(html, {
+      WHOLE_DOCUMENT: true,
+      FORBID_TAGS: ["script", "iframe", "frame", "object", "embed", "base", "meta", "form"],
+      // Offline links must not navigate the frame out of its document policy.
+      FORBID_ATTR: ["href", "action", "formaction", "ping", "srcdoc", "target"],
+      ADD_TAGS: ["style"],
+    });
+  }
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"></head><body>${markup}</body></html>`;
 }

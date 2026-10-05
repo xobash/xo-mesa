@@ -22,6 +22,8 @@ ok()   { printf "  \033[32m✓\033[0m %s\n" "$1"; }
 info() { printf "  • %s\n" "$1"; }
 err()  { printf "  \033[31m✗\033[0m %s\n" "$1"; }
 
+source scripts/bootstrap-download.sh
+
 bold "▶ Mesa — setup & launch"
 
 OS="$(uname)"
@@ -81,8 +83,10 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
 if ! command -v npm >/dev/null 2>&1; then
   info "Node.js not found — installing the LTS locally via nvm (user-only)…"
-  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/install.sh | bash
-  export NVM_DIR="$HOME/.nvm"
+  mkdir -p "$NVM_DIR"
+  bootstrap_download https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/nvm.sh cd6f374433a22ec01919a834cf59d03e0ba07c226bed460a50ef5eecc38c39ef "$NVM_DIR/nvm.sh"
+  bootstrap_download https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/nvm-exec f3b7c71ac96ca4f2f75871af20070c3063d1e3fcdc44019af0635c95112e9e76 "$NVM_DIR/nvm-exec"
+  chmod 700 "$NVM_DIR/nvm-exec"
   . "$NVM_DIR/nvm.sh"
   nvm install --lts
   nvm use --lts
@@ -95,7 +99,18 @@ ok "Node $(node -v), npm $(npm -v)"
 if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
 if ! command -v cargo >/dev/null 2>&1; then
   info "Installing Rust locally via rustup (user-only, no sudo)…"
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+  case "$OS:$(uname -m)" in
+    Darwin:arm64) rust_target=aarch64-apple-darwin; rust_hash=20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5 ;;
+    Darwin:x86_64) rust_target=x86_64-apple-darwin; rust_hash=9c331076f62b4d0edeae63d9d1c9442d5fe39b37b05025ec8d41c5ed35486496 ;;
+    Linux:x86_64) rust_target=x86_64-unknown-linux-gnu; rust_hash=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;;
+    Linux:aarch64) rust_target=aarch64-unknown-linux-gnu; rust_hash=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;;
+    *) err "No verified Rust bootstrap for this architecture."; exit 1 ;;
+  esac
+  rust_init="$(mktemp)"
+  bootstrap_download "https://static.rust-lang.org/rustup/archive/1.28.2/$rust_target/rustup-init" "$rust_hash" "$rust_init"
+  chmod 700 "$rust_init"
+  "$rust_init" -y --no-modify-path
+  rm -f "$rust_init"
   . "$HOME/.cargo/env"
 fi
 ok "Rust $(cargo --version | awk '{print $2}')"

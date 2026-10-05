@@ -39,6 +39,7 @@ console.log(`# Mesa Native Acceptance Record
 Date: ${today}
 Tester:
 Mesa commit:
+Artifact SHA-256:
 Matrix target:
 OS version:
 Machine:

@@ -1681,6 +1681,18 @@ export async function listRecoveryEntries(root: string): Promise<RecoveryEntry[]
   return found.sort((a, b) => a.originalRelPath.localeCompare(b.originalRelPath));
 }
 
+/** Purge one listed item; the native command enforces main-window and vault authority. */
+export async function purgeRecoveryEntry(root: string, entry: RecoveryEntry): Promise<void> {
+  const parts = entry.trashRelPath.split("/");
+  const trash = parts.indexOf(".mesa-trash");
+  if (trash < 0 || trash === parts.length - 1 || parts.some(p => !p || p === "." || p === ".." || p.includes("\\") || p.includes(":"))) {
+    throw new Error("Invalid recovery item path.");
+  }
+  if (root.startsWith(DEMO_ROOT)) return;
+  if (!IN_TAURI) throw new Error("Permanent recovery removal requires the desktop app.");
+  await invoke("vault_purge_recovery", { root, trashRelPath: entry.trashRelPath });
+}
+
 export async function restoreRecoveryEntry(
   root: string,
   entry: RecoveryEntry

@@ -1,13 +1,41 @@
-name: macOS release candidate
+name: Release candidate
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Signed immutable release tag
+        required: true
+      commit:
+        description: Exact forty-character release commit
+        required: true
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  gate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.3
+      - run: node scripts/release-gate.mjs
+        env:
+          MESA_RELEASE_TAG: ${{ inputs.tag }}
+          MESA_RELEASE_SHA: ${{ inputs.commit }}
+          GH_TOKEN: ${{ github.token }}
   macos:
+    needs: gate
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
     environment: release
@@ -15,11 +43,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.commit }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 22.22.3
           cache: npm
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
@@ -58,18 +89,97 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
         run: bash scripts/release-macos.sh
-      - name: Record artifact checksums
-        run: |
-          set -euo pipefail
-          cd src-tauri/target/universal-apple-darwin/release/bundle
-          find . -type f \( -name '*.dmg' -o -name '*.app.tar.gz' \) -exec shasum -a 256 {} + | sort > release-checksums.txt
-          test -s release-checksums.txt
+      - run: node scripts/release-products.mjs macos
+        env:
+          MESA_RELEASE_TAG: ${{ inputs.tag }}
+          MESA_RELEASE_SHA: ${{ inputs.commit }}
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: output/release-macos/*
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: mesa-macos-${{ github.sha }}
-          path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/**/*.app.tar.gz
-            src-tauri/target/universal-apple-darwin/release/bundle/release-checksums.txt
+          name: release-macos
+          path: output/release-macos/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/mesa-release.p12" "$RUNNER_TEMP/mesa-notary-key.p8"
+          security delete-keychain "$RUNNER_TEMP/mesa-release.keychain-db" || true
+  windows:
+    needs: gate
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
+      - run: npm ci
+      - run: ./scripts/release-windows.ps1
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
+      - run: node scripts/release-products.mjs windows
+        env:
+          MESA_RELEASE_TAG: ${{ inputs.tag }}
+          MESA_RELEASE_SHA: ${{ inputs.commit }}
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: output/release-windows/*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-windows
+          path: output/release-windows/*
+          if-no-files-found: error
+          retention-days: 30
+  linux:
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libayatana-appindicator3-dev
+      - run: npm ci
+      - run: npm run mesa:build -- --bundles appimage,deb
+      - run: node scripts/release-products.mjs linux
+        env:
+          MESA_RELEASE_TAG: ${{ inputs.tag }}
+          MESA_RELEASE_SHA: ${{ inputs.commit }}
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: output/release-linux/*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-linux
+          path: output/release-linux/*
+          if-no-files-found: error
+          retention-days: 30

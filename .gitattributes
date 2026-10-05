@@ -1,3 +1,7 @@
 *.pdf binary
 # Preserve upstream license text verbatim, including its whitespace.
 public/THIRD_PARTY_NOTICES.txt -text -whitespace
+
+# Installer checksums describe the immutable LF bytes served by GitHub.
+install.sh text eol=lf
+install.ps1 text eol=lf

@@ -1437,6 +1437,113 @@ fn fingerprint_from_cert_pem(cert_pem: &str) -> Result<String, String> {
     Ok(sha256_hex(block.contents()))
 }
 
+/// Establish private identity storage before reading or creating any key.
+fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
+    use std::fs;
+    if dir.exists()
+        && fs::symlink_metadata(dir)
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_symlink()
+    {
+        return Err("sync identity directory must not be a symlink".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(dir).map_err(|e| e.to_string())?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        if fs::metadata(dir)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode()
+            & 0o777
+            != 0o700
+        {
+            return Err("sync identity directory permissions could not be restricted".into());
+        }
+    }
+    #[cfg(windows)]
+    {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        // Use the process identity SID, never a renderer-provided account name.
+        // The path travels as data through an environment variable, not code.
+        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p -AclObject $acl; $actual=Get-Acl -LiteralPath $p; if(-not $actual.AreAccessRulesProtected){throw 'Unprotected identity ACL'}; foreach($r in $actual.Access){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){throw 'Unexpected identity access'}}"#;
+        let status = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("MESA_IDENTITY_DIRECTORY", dir)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err("could not restrict sync identity ACL".into());
+        }
+    }
+    for name in ["cert.pem", "key.pem"] {
+        let path = dir.join(name);
+        if let Ok(meta) = fs::symlink_metadata(&path) {
+            if !meta.is_file() || meta.file_type().is_symlink() {
+                return Err("sync identity must contain regular files".into());
+            }
+            #[cfg(unix)]
+            if name == "key.pem" {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                    .map_err(|e| e.to_string())?;
+                if fs::metadata(&path)
+                    .map_err(|e| e.to_string())?
+                    .permissions()
+                    .mode()
+                    & 0o777
+                    != 0o600
+                {
+                    return Err("sync key permissions could not be restricted".into());
+                }
+            }
+            #[cfg(windows)]
+            {
+                // Reset old explicit file grants to the private parent ACL.
+                let status = std::process::Command::new("icacls.exe")
+                    .arg(&path)
+                    .args(["/reset", "/Q"])
+                    .status()
+                    .map_err(|e| e.to_string())?;
+                if !status.success() {
+                    return Err("could not restrict sync identity file ACL".into());
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; foreach($name in @('cert.pem','key.pem')) { $file=Join-Path $p $name; if(Test-Path -LiteralPath $file) { $acl=Get-Acl -LiteralPath $file; $rules=@($acl.Access); if($rules.Count -eq 0){throw 'Missing identity access'}; foreach($r in $rules){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected identity file access'}} } }"#;
+        let status = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("MESA_IDENTITY_DIRECTORY", dir)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err("sync identity file ACL verification failed".into());
+        }
+    }
+    Ok(())
+}
+
+fn persist_identity_key(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path).map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())
+}
+
 /// Load this device's TLS identity, generating + persisting it on first run.
 fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
     let mut guard = identity_cache().lock().map_err(|e| e.to_string())?;
@@ -1449,7 +1556,7 @@ fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
         .app_config_dir()
         .map_err(|e| e.to_string())?
         .join("sync-identity");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    protect_identity_directory(&dir)?;
     let cert_path = dir.join("cert.pem");
     let key_path = dir.join("key.pem");
 
@@ -1463,6 +1570,11 @@ fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
             fingerprint,
         }
     } else {
+        if cert_path.exists() || key_path.exists() {
+            return Err(
+                "sync identity is incomplete; restore its matching certificate and key".into(),
+            );
+        }
         let CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
             "mesa.example".to_string(),
             "localhost".to_string(),
@@ -1472,7 +1584,8 @@ fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
         let key_pem = signing_key.serialize_pem();
         let fingerprint = sha256_hex(cert.der().as_ref());
         std::fs::write(&cert_path, &cert_pem).map_err(|e| e.to_string())?;
-        std::fs::write(&key_path, &key_pem).map_err(|e| e.to_string())?;
+        persist_identity_key(&key_path, key_pem.as_bytes())?;
+        protect_identity_directory(&dir)?;
         Identity {
             cert_pem,
             key_pem,
@@ -2957,6 +3070,52 @@ pub fn sync_discovery_stop() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn identity_acl_repairs_explicit_broad_key_access() {
+        let dir = std::env::temp_dir().join(format!("mesa-identity-acl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        super::protect_identity_directory(&dir).unwrap();
+        let key = dir.join("key.pem");
+        super::persist_identity_key(&key, b"synthetic identity").unwrap();
+        let status = std::process::Command::new("icacls.exe")
+            .arg(&key)
+            .args(["/grant", "*S-1-1-0:R", "/Q"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        // The production verifier reads the effective ACL after resetting it.
+        super::protect_identity_directory(&dir).unwrap();
+        assert_eq!(std::fs::read(&key).unwrap(), b"synthetic identity");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn identity_permissions_are_private_and_repaired() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("mesa-identity-permissions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        super::protect_identity_directory(&dir).unwrap();
+        let key = dir.join("key.pem");
+        super::persist_identity_key(&key, b"synthetic identity").unwrap();
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::protect_identity_directory(&dir).unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 

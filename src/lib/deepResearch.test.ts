@@ -1,3 +1,4 @@
+import { buildApplyPlan } from "./researchApplyPlan";
 import { describe, expect, it } from "vitest";
 import type { NoteMeta, VaultFile } from "../types";
 import {
@@ -17,7 +18,6 @@ import {
   presentResearchSource,
   parseResultEnvelope,
   buildChangeSet,
-  buildApplyPlan,
   safeNoteTitle,
   safeFolderName,
   makeLinkTarget,

@@ -19,6 +19,7 @@
     "allow-quit-guard-arm",
     "allow-quit-guard-disarm",
     "allow-quit-after-save",
-    "allow-vault-apply-research"
+    "allow-vault-apply-research",
+    "allow-vault-purge-recovery"
   ]
 }

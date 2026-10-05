@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore, THEMES } from "../store";
 import {
   listRecoveryEntries,
+  purgeRecoveryEntry,
   type RecoveryEntry,
 } from "../lib/vault";
 import { Modal } from "./Modal";
@@ -139,6 +140,28 @@ export function SettingsModal() {
     } finally {
       if (contextRef.current === context) setRecoveryBusy(false);
     }
+  };
+
+  const purgeEntries = async (entries: RecoveryEntry[]) => {
+    if (!vaultPath || recoveryBusy || !entries.length) return;
+    const confirmation = entries.length === 1 ? entries[0].originalRelPath : `${entries.length} recovery items`;
+    const phrase = entries.length === 1 ? "DELETE" : "EMPTY";
+    if (window.prompt(`Permanently delete ${confirmation}? This cannot be undone. Backups may retain copies; secure erasure on SSDs cannot be guaranteed. Type ${phrase} to confirm.`) !== phrase) return;
+    if (contextRef.current !== context) return;
+    setRecoveryBusy(true); setRecoveryMessage("");
+    let deleted = 0;
+    try {
+      for (const entry of entries) {
+        if (contextRef.current !== context) return;
+        await purgeRecoveryEntry(vaultPath, entry);
+        deleted++;
+        if (contextRef.current !== context) return;
+        setRecoveryEntries(current => current?.filter(e => e.trashRelPath !== entry.trashRelPath) ?? null);
+      }
+      setRecoveryMessage(`Permanently deleted ${deleted} item${deleted === 1 ? "" : "s"}.`);
+    } catch (error) {
+      if (contextRef.current === context) setRecoveryMessage(`Deleted ${deleted} items; removal stopped: ${String(error)}`);
+    } finally { if (contextRef.current === context) setRecoveryBusy(false); }
   };
 
   const restoreRevision = async (revisionId: string) => {
@@ -309,7 +332,7 @@ export function SettingsModal() {
           <div className="setting-meta">
             <div className="setting-name">Recovery storage</div>
             <div className="setting-desc">
-              Restore local and synced deletions. Files remain in this vault’s hidden .mesa-trash folder until you remove them outside Mesa; there is no automatic expiry. Restoring an occupied name creates a separate copy.
+              Restore local and synced deletions. Files remain in this vault’s hidden .mesa-trash folder until you permanently delete them here; there is no automatic expiry. Secure erasure cannot be guaranteed on SSDs, backups, or cloud-backed storage. Restoring an occupied name creates a separate copy.
             </div>
             {recoveryMessage ? (
               <div className="setting-desc recovery-message">{recoveryMessage}</div>
@@ -336,8 +359,10 @@ export function SettingsModal() {
                     >
                       Restore
                     </button>
+                    <button className="seg-btn" disabled={recoveryBusy} onClick={() => void purgeEntries([entry])}>Permanently delete</button>
                   </div>
                 ))}
+                <button className="seg-btn" disabled={recoveryBusy} onClick={() => void purgeEntries(recoveryEntries)}>Empty recovery storage</button>
                 {visibleRecovery.length > recoveryLimit ? (
                   <button
                     className="seg-btn"

@@ -141,3 +141,14 @@ additional OS-level process coverage for a whole-app stability claim. The mixed
 workload recorder in Diagnostics adds window-local input timing: collect editing
 samples during sync, indexing, PDF operations, and detached-window use, and keep
 zero-sample workloads explicitly untested.
+
+## Public release summary
+
+Release records must also name the exact installed package Artifact SHA-256.
+Use `npm run acceptance:native-check -- record.local.md --release` to require
+every row to pass. The ordinary checker validates record completeness and
+may contain failed diagnostic rows; it is not the release gate.
+`scripts/release-acceptance.mjs` exports a strict, sanitized matrix tied to the
+candidate package hashes and commit. Publication requires this summary after
+physical acceptance; CI, another OS, an older build, or a hash alone cannot
+stand in for the required observations. See `docs/release.md`.

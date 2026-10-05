@@ -1,5 +1,37 @@
 import type { NoteMeta, VaultFile } from "../types";
-import type { ApplyPlan, ApplyStep, ProposedOp, RollbackStep } from "./deepResearch";
+
+export interface ProposedOp {
+  kind: "create" | "update";
+  relPath: string;
+  title: string;
+  content: string;
+  /** For updates: the exact bytes the file must still have at apply time. */
+  expectedBytes?: string;
+  /** New [[links]] this op introduces (for preview/dedup display). */
+  addedLinks?: string[];
+}
+
+export interface ApplyStep {
+  kind: "create" | "update";
+  relPath: string;
+  title: string;
+  content: string;
+  /** Update-only version check: bytes the file must still hold at apply time. */
+  expectedBytes?: string;
+  /** Snapshot of the file's bytes before the op (for rollback of updates). */
+  originalContent?: string;
+}
+
+export interface RollbackStep {
+  kind: "remove" | "restore";
+  relPath: string;
+  /** Restore-only: the bytes to put back. */
+  content?: string;
+}
+
+export type ApplyPlan =
+  | { ok: true; steps: ApplyStep[]; rollback: RollbackStep[] }
+  | { ok: false; error: string; failedRelPath?: string };
 
 function isSafeRelPath(rel: string): boolean {
   if (!rel || rel.includes("\\")) return false;
@@ -9,7 +41,7 @@ function isSafeRelPath(rel: string): boolean {
 }
 
 /** Validate the reviewed change set against the current in-memory vault snapshot. */
-export function resolveApplyPlan(input: {
+export function buildApplyPlan(input: {
   ops: ProposedOp[];
   existingContent: Record<string, string>;
   files: VaultFile[];

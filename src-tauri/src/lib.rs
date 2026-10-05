@@ -166,6 +166,7 @@ pub fn run() {
             vaultread::vault_read_text,
             vaultread::vault_text_fingerprints,
             vaultmove::vault_rename_no_replace,
+            vaultmove::vault_purge_recovery,
             vaultscope::vault_authorize,
             vaultscope::vault_authorize_artifacts,
             vaultscope::vault_flush_file,

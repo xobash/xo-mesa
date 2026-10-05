@@ -36,6 +36,7 @@ fn main() {
             "vault_read_text",
             "vault_text_fingerprints",
             "vault_rename_no_replace",
+            "vault_purge_recovery",
             "vault_authorize",
             "vault_authorize_artifacts",
             "vault_flush_file",

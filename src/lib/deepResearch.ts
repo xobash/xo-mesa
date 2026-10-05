@@ -1,3 +1,4 @@
+import type { ProposedOp } from "./researchApplyPlan";
 import type { NoteMeta, VaultFile } from "../types";
 import { safeBaseName } from "./fsnames";
 import { extractLinks } from "./markdownExtract";
@@ -1552,16 +1553,7 @@ export function parseResultEnvelope(
 // Change set (deterministic note/link plan)
 // ---------------------------------------------------------------------------
 
-export interface ProposedOp {
-  kind: "create" | "update";
-  relPath: string;
-  title: string;
-  content: string;
-  /** For updates: the exact bytes the file must still have at apply time. */
-  expectedBytes?: string;
-  /** New [[links]] this op introduces (for preview/dedup display). */
-  addedLinks?: string[];
-}
+export type { ProposedOp } from "./researchApplyPlan";
 
 export interface ResearchChangeSet {
   ops: ProposedOp[];
@@ -1783,100 +1775,8 @@ function uniqueRel(takenLower: Set<string>, desiredRel: string): string {
 // Transactional apply plan
 // ---------------------------------------------------------------------------
 
-export interface ApplyStep {
-  kind: "create" | "update";
-  relPath: string;
-  title: string;
-  content: string;
-  /** Update-only version check: bytes the file must still hold at apply time. */
-  expectedBytes?: string;
-  /** Snapshot of the file's bytes before the op (for rollback of updates). */
-  originalContent?: string;
-}
-
-export interface RollbackStep {
-  kind: "remove" | "restore";
-  relPath: string;
-  /** Restore-only: the bytes to put back. */
-  content?: string;
-}
-
-export type ApplyPlan =
-  | { ok: true; steps: ApplyStep[]; rollback: RollbackStep[] }
-  | { ok: false; error: string; failedRelPath?: string };
-
-function isSafeRelPath(rel: string): boolean {
-  if (!rel || rel.includes("\\")) return false;
-  const parts = rel.split("/");
-  if (parts.some((p) => !p || p === "." || p === ".." || p.startsWith("."))) return false;
-  if (rel.startsWith("/") || /^[A-Za-z]:/.test(rel)) return false;
-  return true;
-}
-
-/**
- * Plan an all-or-nothing apply. Validates every op against the CURRENT vault
- * state before anything is written: safe in-vault paths, creates before
- * updates, an update's `expectedBytes` must still match the file's current
- * bytes (a version check that fails closed when another tool rewrote the
- * file), and an update target must still exist. The rollback plan restores
- * every update's original bytes and removes every created file, in reverse.
- */
-export function buildApplyPlan(input: {
-  ops: ProposedOp[];
-  existingContent: Record<string, string>;
-  files: VaultFile[];
-  notes: Record<string, NoteMeta>;
-}): ApplyPlan {
-  const { ops, existingContent, files, notes } = input;
-  const known = new Set(files.map((f) => f.relPath));
-
-  const creates = ops.filter((o) => o.kind === "create");
-  const updates = ops.filter((o) => o.kind === "update");
-
-  const steps: ApplyStep[] = [];
-  const rollback: RollbackStep[] = [];
-
-  for (const op of [...creates, ...updates]) {
-    if (!isSafeRelPath(op.relPath)) {
-      return { ok: false, error: `Refusing unsafe vault path: ${op.relPath}`, failedRelPath: op.relPath };
-    }
-    if (op.kind === "create") {
-      steps.push({ kind: "create", relPath: op.relPath, title: op.title, content: op.content });
-      rollback.unshift({ kind: "remove", relPath: op.relPath });
-    } else {
-      if (!known.has(op.relPath) || !notes[op.relPath]) {
-        return { ok: false, error: `Note no longer exists: ${op.relPath}`, failedRelPath: op.relPath };
-      }
-      const current = existingContent[op.relPath] ?? "";
-      if (op.expectedBytes === undefined) {
-        return {
-          ok: false,
-          error: `Update is missing its version precondition: ${op.relPath}`,
-          failedRelPath: op.relPath,
-        };
-      }
-      const expected = op.expectedBytes;
-      if (current !== expected) {
-        return {
-          ok: false,
-          error: `"${op.relPath}" changed on disk since the proposal was made — review again.`,
-          failedRelPath: op.relPath,
-        };
-      }
-      steps.push({
-        kind: "update",
-        relPath: op.relPath,
-        title: op.title,
-        content: op.content,
-        expectedBytes: expected,
-        originalContent: current,
-      });
-      rollback.unshift({ kind: "restore", relPath: op.relPath, content: current });
-    }
-  }
-
-  return { ok: true, steps, rollback };
-}
+export { buildApplyPlan } from "./researchApplyPlan";
+export type { ApplyPlan, ApplyStep, RollbackStep } from "./researchApplyPlan";
 
 // ---------------------------------------------------------------------------
 // Run id

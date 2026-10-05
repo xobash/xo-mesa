@@ -413,3 +413,8 @@ macOS/WebKit boundary, not a Mesa vault-password request.
   preserved across that single restart.
 - Browser-demo QA can verify the graph shell and hover-card structure, but a
   dense native run still needs desktop Pi/browser-harness acceptance.
+
+The reviewed apply plan has one canonical validator and type boundary in
+`src/lib/researchApplyPlan.ts`. Both the runtime driver and compatibility
+exports use that function; safety tests import it directly. Native persistence
+independently enforces disk-byte preconditions at publication.

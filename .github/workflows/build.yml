@@ -25,6 +25,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - run: npm run test:release
       - run: npm run test:bootstrap
       - run: npm run test:index
       - run: npm run test:markdown
@@ -87,10 +88,10 @@ jobs:
         with:
           workspaces: src-tauri
       - run: cargo install cargo-audit --version 0.22.2 --locked
-      - run: cargo audit --file src-tauri/Cargo.lock
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
+      - run: node scripts/native-advisory-check.mjs
       - run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
       - run: node scripts/third-party-notices.mjs --check-native
 

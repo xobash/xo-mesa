@@ -1,5 +1,5 @@
 # Mesa - one-command Windows bootstrap, designed to be run as:
-#   irm https://raw.githubusercontent.com/xobash/xo-mesa/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 | iex
 #
 # `iex` executes this text INSIDE the caller's PowerShell runspace (unlike
 # `curl | bash`, which forks a child shell). That has two consequences this
@@ -13,6 +13,8 @@
   $ErrorActionPreference = "Stop"
 
   $repoUrl = "https://github.com/xobash/xo-mesa.git"
+  $releaseVersion = if ($env:MESA_VERSION) { $env:MESA_VERSION } else { "v0.1.0" }
+  if ($releaseVersion -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$') { throw "Invalid Mesa release version." }
   $currentDir = Get-Location
   $installDir = if ($env:MESA_DIR) {
     [System.IO.Path]::GetFullPath($env:MESA_DIR)
@@ -90,11 +92,15 @@
     }
 
     try {
-      & git @gitLongPaths -C $installDir fetch origin main
+      $originUrl = & git @gitLongPaths -C $installDir remote get-url origin
+      if ($LASTEXITCODE -ne 0 -or $originUrl -notin @($repoUrl, "git@github.com:xobash/xo-mesa.git")) { throw "Unexpected origin. No code was executed." }
+      & git @gitLongPaths -C $installDir fetch --no-tags origin "refs/tags/${releaseVersion}:refs/tags/${releaseVersion}"
       if ($LASTEXITCODE -ne 0) {
         throw "Could not download Mesa updates."
       }
-      & git @gitLongPaths -C $installDir merge --ff-only origin/main
+      & git @gitLongPaths -C $installDir verify-tag $releaseVersion
+      if ($LASTEXITCODE -ne 0) { throw "Release signature verification failed. Configure the trusted release signing key before retrying." }
+      & git @gitLongPaths -C $installDir merge --ff-only "refs/tags/$releaseVersion"
       if ($LASTEXITCODE -ne 0) {
         throw "Mesa has local commits or old checkout history that cannot fast-forward from GitHub. No source update was applied, and nothing was pushed."
       }
@@ -116,9 +122,16 @@
     throw "The target folder exists but is not a Git checkout: $installDir. Move it aside or set MESA_DIR to another folder."
   } else {
     Write-Host "Cloning Mesa into $installDir..."
-    git @gitLongPaths clone $repoUrl $installDir
+    git @gitLongPaths clone --branch $releaseVersion --single-branch $repoUrl $installDir
+    if ($LASTEXITCODE -ne 0) { throw "Could not clone the Mesa release." }
+    & git @gitLongPaths -C $installDir verify-tag $releaseVersion
+    if ($LASTEXITCODE -ne 0) { throw "Release signature verification failed. No code was executed." }
   }
 
+  $installedCommit = & git @gitLongPaths -C $installDir rev-parse HEAD
+  if ($LASTEXITCODE -ne 0) { throw "Could not inspect installed commit." }
+  $releaseCommit = & git @gitLongPaths -C $installDir rev-parse "refs/tags/$releaseVersion^{commit}"
+  if ($LASTEXITCODE -ne 0 -or $installedCommit -ne $releaseCommit) { throw "Checkout is ahead of the requested release. Nothing was reset; use MESA_DIR to a new empty folder." }
   Set-Location $installDir
   # Hand off to the full setup+launch script. Do NOT `exit` afterward: under
   # `iex` that would close the user's PowerShell window. run.cmd's exit code

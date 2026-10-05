@@ -1,0 +1,74 @@
+name: Publish verified release
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: Successful Release candidate workflow run ID
+        required: true
+      tag:
+        description: Exact signed release tag
+        required: true
+      commit:
+        description: Exact release commit
+        required: true
+      acceptance_json:
+        description: Sanitized release-acceptance.json from native runs against these artifacts
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release-publish
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MESA_RELEASE_TAG: ${{ inputs.tag }}
+      MESA_RELEASE_SHA: ${{ inputs.commit }}
+      MESA_CANDIDATE_RUN: ${{ inputs.candidate_run }}
+      MESA_NATIVE_ACCEPTANCE_JSON: ${{ inputs.acceptance_json }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22.22.3
+      - run: node scripts/release-gate.mjs
+      - name: Verify candidate run identity
+        run: |
+          node --input-type=module <<'JS'
+          if (!/^[0-9]+$/.test(process.env.MESA_CANDIDATE_RUN)) throw new Error('Invalid run ID');
+          const response = await fetch(`https://api.github.com/repos/xobash/xo-mesa/actions/runs/${process.env.MESA_CANDIDATE_RUN}`, { headers: { Authorization: `Bearer ${process.env.GH_TOKEN}` } });
+          if (!response.ok) throw new Error('Candidate run unavailable');
+          const run = await response.json();
+          if (run.path !== '.github/workflows/release-candidate.yml' || run.event !== 'workflow_dispatch' || run.head_branch !== 'main' || run.conclusion !== 'success') throw new Error('Not a successful protected candidate run');
+          JS
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.candidate_run }}
+          pattern: release-*
+          merge-multiple: true
+          path: output/products
+      - name: Verify all product provenance
+        run: |
+          for product in output/products/*; do
+            gh attestation verify "$product" --repo xobash/xo-mesa --signer-workflow xobash/xo-mesa/.github/workflows/release-candidate.yml
+          done
+      - run: node scripts/release-acceptance.mjs verify output/products
+      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: output/release-acceptance.json
+      - name: Publish immutable products with acceptance summary
+        run: |
+          set -euo pipefail
+          gh release create "$MESA_RELEASE_TAG" --verify-tag --draft --title "Mesa $MESA_RELEASE_TAG" --notes "Signed desktop packages. Verify SHA-256 checksums and provenance before installation. Native acceptance is recorded in release-acceptance.json."
+          gh release upload "$MESA_RELEASE_TAG" output/products/* output/release-acceptance.json
+          gh release edit "$MESA_RELEASE_TAG" --draft=false

@@ -61,7 +61,10 @@ const forbiddenContent = [
 ];
 
 function hasPersonalEmail(text) {
-  for (const [address] of text.matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi)) {
+  for (const match of text.matchAll(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi)) {
+    const address = match[0];
+    // GitHub SSH remotes use a service account, not a personal email address.
+    if (address === "git" + "@github.com" && /^:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\.git/.test(text.slice(match.index + address.length))) continue;
     const domain = address.slice(address.lastIndexOf("@") + 1).toLowerCase();
     if (/\.(?:png|jpe?g|svg|webp|avif)$/.test(domain)) continue;
     if (!domain.endsWith(".example") && domain !== "example.com" &&

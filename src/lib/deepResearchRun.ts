@@ -3,8 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import type { VaultFile, NoteMeta } from "../types";
 import { IN_TAURI, readNote, writeNote, createNote, removeVaultEntry } from "./vault";
 import { getPiSessionSnapshot } from "./piSessionBridge";
-import type { ApplyPlan, ProposedOp } from "./deepResearch";
-import { resolveApplyPlan as resolvePlan } from "./researchApplyPlan";
+import type { ApplyPlan, ProposedOp } from "./researchApplyPlan";
+import { buildApplyPlan as resolvePlan } from "./researchApplyPlan";
 
 /**
  * Deep Research — the side-effectful run driver.

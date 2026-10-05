@@ -159,7 +159,7 @@ export function DocumentView() {
     let alive = true;
     setTitle(selectedFile.name);
     document.title = selectedFile.name + " — Mesa";
-    if (!isTextualVaultFile(selectedFile)) {
+    if (!isTextualVaultFile(selectedFile) || selectedFile.ext === "html" || selectedFile.ext === "htm") {
       setContent("");
       return () => {
         alive = false;
@@ -222,12 +222,7 @@ export function DocumentView() {
             <LazyPdfView rel={rel} file={selectedFile} onDirtyChange={onPdfDirtyChange} />
           </Suspense>
         ) : kind === "html" ? (
-          <iframe
-            className="html-frame"
-            src={src}
-            sandbox="allow-scripts allow-popups allow-forms allow-modals"
-            title={title}
-          />
+          <HtmlView rel={rel} file={selectedFile} />
         ) : selectedFile.ext.toLowerCase() === "rtf" ? (
           <pre className="rtf-text">{rtfToText(content)}</pre>
         ) : isEditableTextExt(selectedFile.ext) ? (

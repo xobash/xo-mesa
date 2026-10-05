@@ -2,6 +2,7 @@
 .gitattributes
 .github/workflows/build.yml
 .github/workflows/release-candidate.yml
+.github/workflows/release.yml
 .gitignore
 CONTRIBUTING.md
 Dockerfile
@@ -41,6 +42,7 @@ public/favicon.svg
 run.cmd
 run.sh
 scripts/acceptance.html
+scripts/bootstrap-download.sh
 scripts/bundle-boundaries.check.mjs
 scripts/dev-behavior.check.mjs
 scripts/dev.mjs
@@ -54,10 +56,17 @@ scripts/launch-cache.mjs
 scripts/markdown-acceptance.html
 scripts/markdown-behavior.check.mjs
 scripts/native-acceptance-check.mjs
+scripts/native-acceptance-contract.mjs
 scripts/native-acceptance-template.mjs
+scripts/native-advisory-check.mjs
 scripts/public-files.txt
 scripts/public-release-audit.mjs
+scripts/release-acceptance.mjs
+scripts/release-gate.check.mjs
+scripts/release-gate.mjs
 scripts/release-macos.sh
+scripts/release-products.mjs
+scripts/release-windows.ps1
 scripts/third-party-notices.check.mjs
 scripts/third-party-notices.mjs
 scripts/windows-installer-behavior.check.ps1
@@ -125,6 +134,7 @@ src/components/FileTree.tsx
 src/components/GraphView.test.tsx
 src/components/GraphView.tsx
 src/components/Guide.tsx
+src/components/HtmlView.test.tsx
 src/components/HtmlView.tsx
 src/components/MarkdownView.test.tsx
 src/components/MarkdownView.tsx
@@ -142,6 +152,7 @@ src/components/RtfView.tsx
 src/components/SearchPanel.tsx
 src/components/SearchSurface.test.tsx
 src/components/SearchSurface.tsx
+src/components/SettingsModal.test.tsx
 src/components/SettingsModal.tsx
 src/components/StatusBar.test.tsx
 src/components/StatusBar.tsx
@@ -236,6 +247,7 @@ src/lib/highlight.test.ts
 src/lib/highlight.ts
 src/lib/html.test.ts
 src/lib/html.ts
+src/lib/htmlFrame.test.ts
 src/lib/hue.ts
 src/lib/indexCodec.test.ts
 src/lib/indexCodec.ts

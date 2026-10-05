@@ -28,40 +28,44 @@ require an account or a hosted cloud service.
 
 ## Quick Start
 
-Each installer creates or updates a Mesa checkout, checks the required tools,
-installs supported missing tools where possible, and starts Mesa after the
-checks pass.
+Use signed packages from [Releases](https://github.com/xobash/xo-mesa/releases)
+when a release is available. Verify its checksum and provenance before opening
+it; see [release verification](docs/release.md). Ordinary CI bundles are
+unsigned development artifacts. Mesa does not yet have a published signed
+end-user release.
 
-> The first start builds the desktop shell. This step can take several minutes
-> on a new machine. Later starts reuse the local build when source,
-> dependencies, and the Rust toolchain are unchanged.
+### Verified source bootstrap
 
-### macOS and Linux
+For a published `v0.1.0` source release, these commands check the bootstrap's
+reviewed SHA-256 before execution. The installer then verifies the signed
+release tag using Git's configured release-signing trust and launches only that
+version. Install the maintainer's verified public signing key before use;
+signature failures stop setup. These commands deliberately fail until that
+signed release exists. Source setup installs supported missing build tools and
+reuses an unchanged local release build on later starts.
+
+macOS and Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/main/install.sh | bash
+( set -e; p=$(mktemp); trap 'rm -f "$p"' EXIT; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.sh -o "$p"; if command -v shasum >/dev/null; then printf '6c4a390912e85dea27ee55824f59f858a9a18c39115fc2bcb66302db5a6702cb  %s\n' "$p" | shasum -a 256 -c -; else printf '6c4a390912e85dea27ee55824f59f858a9a18c39115fc2bcb66302db5a6702cb  %s\n' "$p" | sha256sum -c -; fi; bash "$p" )
 ```
 
-The installer clones a new checkout or fast-forward updates an existing one.
-It checks the required tools, attempts supported installations, and starts Mesa
-when the tools are ready. If an older checkout cannot fast-forward after the
-public repository reset, it keeps that folder intact and explains how to use
-a new checkout path.
-
-### Windows 10 and Windows 11
+Windows 10 and Windows 11:
 
 ```powershell
-irm https://raw.githubusercontent.com/xobash/xo-mesa/main/install.ps1 | iex
+& { $ErrorActionPreference = 'Stop'; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne '3a5155311672978ecdc002392d9c328829b31a96c6c371378ae7ffa852146f78') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
 ```
 
-The Windows installer keeps local source changes. It stops before an unresolved
-restore conflict can overwrite a source file.
+The source installers preserve existing local files and refuse non-fast-forward
+updates. Windows also preserves untracked source changes across an update and
+stops before launch if restoring them conflicts. Source builds include local
+source edits; use the signed packages for the reviewed release bytes.
 
-After Mesa starts, select the folder that you want to use as your vault.
+### Development checkout
 
-### Manual setup
-
-To inspect the setup before you run it, clone Mesa and start it yourself:
+For development before the first signed release, use a reviewed checkout from
+protected `main`. This is a source-development path with build prerequisites,
+not a signed end-user package:
 
 ```bash
 git clone https://github.com/xobash/xo-mesa.git
@@ -69,8 +73,8 @@ cd xo-mesa
 bash run.sh
 ```
 
-The setup scripts build and open an optimized desktop app. A source install
-still needs build tools and can take several minutes on the first run.
+On Windows, run `run.cmd` from the checkout. First builds can take several
+minutes; unchanged sources, dependencies, and toolchains reuse the local build.
 
 ## Features
 

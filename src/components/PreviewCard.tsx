@@ -2,7 +2,7 @@ import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "reac
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { useAppStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
-import { fileKind, IN_TAURI, isTextExt, urlForPath } from "../lib/vault";
+import { fileKind, isTextExt, urlForPath } from "../lib/vault";
 import { rtfToText } from "../lib/rtf";
 import { statusLine } from "../lib/faces";
 import { compareNames } from "../lib/sort";
@@ -10,6 +10,7 @@ import {
   hydrateSavedHtml,
   rewriteSavedHtml,
   stripSavedHtmlPreviewCode,
+  savedHtmlFrameDocument,
 } from "../lib/html";
 import type { ActivityOp } from "../lib/activity";
 import type { PreviewTarget, VaultFile } from "../types";
@@ -162,10 +163,6 @@ function PreviewCardImpl({
     // tags, styles, and body can live beyond 16 KiB, and srcDoc must never be
     // built from a truncated document. `ensureContent` shares the store cache
     // and deduplicates any in-flight full read.
-    // Native HTML previews load the real saved file directly. This avoids a
-    // multi-megabyte read and prevents hover-only bytes from entering the
-    // session-wide text cache. The browser demo needs a prepared srcDoc.
-    if (isHtml && IN_TAURI) return;
     const load = isHtml ? ensureContent(noteId) : ensurePeek(noteId);
     void load.then((text) => {
       if (alive) setLoadedContent({ rel: noteId, text });
@@ -176,7 +173,7 @@ function PreviewCardImpl({
   }, [noteId, isTextual, isHtml, ensureContent, ensurePeek]);
 
   useEffect(() => {
-    if (!noteFile || fileKind(noteFile.ext) !== "html" || IN_TAURI) {
+    if (!noteFile || fileKind(noteFile.ext) !== "html") {
       setHtmlPreview(null);
       return;
     }
@@ -188,7 +185,7 @@ function PreviewCardImpl({
     }
     const stripped = stripSavedHtmlPreviewCode(rawContent);
     const fallback = rewriteSavedHtml(stripped, noteFile.path, urlForPath);
-    setHtmlPreview({ rel, html: fallback });
+    setHtmlPreview({ rel, html: savedHtmlFrameDocument(fallback) });
     if (!rawContent) return;
     void hydrateSavedHtml(
       stripped,
@@ -197,7 +194,7 @@ function PreviewCardImpl({
       readTextFile,
       { scripts: false, previewCodeStripped: true }
     ).then((html) => {
-      if (alive) setHtmlPreview({ rel, html });
+      if (alive) setHtmlPreview({ rel, html: savedHtmlFrameDocument(html) });
     });
     return () => {
       alive = false;
@@ -278,23 +275,8 @@ function PreviewCardImpl({
       sub = "HTML";
       // Fully sandboxed: a hover peek renders markup only — no scripts,
       // popups, forms, or same-origin access can run from a preview.
-      body = IN_TAURI ? (
-        <iframe
-          className="preview-html-frame"
-          src={urlForPath(noteFile.path)}
-          sandbox=""
-          title={title}
-        />
-      ) : (
-        <iframe
-          className="preview-html-frame"
-          srcDoc={
-            htmlPreview?.rel === noteFile.relPath ? htmlPreview.html : ""
-          }
-          sandbox=""
-          title={title}
-        />
-      );
+      body = <iframe className="preview-html-frame" srcDoc={htmlPreview?.rel === noteFile.relPath ? htmlPreview.html : ""}
+        sandbox="" referrerPolicy="no-referrer" title={title} />;
     } else if (noteFile && !isTextual) {
       sub = noteFile.ext.toUpperCase();
       body = (

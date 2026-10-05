@@ -117,27 +117,23 @@ When adding a renderer feature, prefer bounded quantifiers over greedy scans.
 Tauri IPC, scoped asset URLs, PDF workers, and the data/blob content required by
 the local viewers. It denies plugins/objects, hostile base URLs, and framing of
 the Mesa document. `style-src 'unsafe-inline'` is required for React styles.
-`script-src 'unsafe-inline'` remains necessary for the BrowserHarness reader
-bridge and for user-provided scripts in the browser preview's saved-HTML
-`srcdoc` frame. A `srcdoc` frame inherits its parent's CSP, so a hash for the
-controlled bridge alone would block saved-page scripts. Desktop `HtmlView` and
-`DocumentView` load saved HTML by asset URL rather than `srcdoc`. `connect-src https:` permits
-HTTPS requests from those saved pages when they run in sandboxed frames; the
-native Pi browser and sync clients use Rust networking instead. Both allowances
-remain broad because saved pages may come from any source the user opens. The
-frames do not receive Tauri filesystem permissions. CSP is defense in depth
-rather than a substitute for DOMPurify.
+`script-src 'unsafe-inline'` supports the BrowserHarness reader bridge and
+explicitly enabled active saved content. Saved HTML uses a separate restrictive
+frame policy before any markup: default offline mode blocks scripts, external
+resources, network connections, navigation and forms. The main viewer,
+detached viewer and hover previews share this boundary. Active content requires
+per-document confirmation, keeps an opaque origin, and sends no referrer.
+The native Pi browser and sync clients use Rust networking. Frame policy and
+sandboxing supplement DOMPurify; none grants native filesystem permissions.
 Any change must replay the packaged saved-HTML, PDF, terminal, detached-window,
 and browser-reader flows before it is considered accepted.
 
 ## Residual risks (deliberate trade-offs)
 
-- **Saved-HTML viewer runs page scripts.** `HtmlView` renders `.html` vault
-  files in a sandboxed `<iframe sandbox="allow-scripts …">` without
-  `allow-same-origin`. The page keeps its own JS/CSS behavior, but its origin is
-  opaque, so `fetch` and XHR cannot read Mesa's broad asset protocol. Local
-  module scripts that require same-origin CORS may not run. See
-  `docs/saved-html.md`.
+- **Opt-in active HTML can contact websites.** Once approved, a file's
+  scripts can transmit data already present in that document. They cannot read
+  Mesa's privileged origin. Consent is lost on a new file/version/session.
+  Keep untrusted files offline; see `docs/saved-html.md`.
 - **Agent browse excludes local services.** `browse.rs` blocks private,
   loopback, link-local, and non-global addresses. Its resolver checks every
   address in a DNS answer and gives only those checked addresses to the HTTP
@@ -236,3 +232,33 @@ external edits are preserved and block unresolved recovery. Individual files
 publish atomically, but external applications can observe a partial set while
 publication is in progress. Windows directory metadata durability is not yet
 verified. See [Deep Research](deep-research.md#apply-and-rollback).
+
+## Release and private-storage controls
+
+Main requires signed commits, reviewed pull requests, resolved review threads,
+and successful frontend, native-platform, and advisory checks. Release tags
+cannot be moved or deleted; published releases are immutable. Signing and
+publication use separate reviewed environments restricted to protected main.
+Source bootstrap commands verify a published, fixed-version script hash before
+execution; the wrappers verify the signed version tag before launching its
+source. Prerequisite code is downloaded and checked against reviewed hashes;
+Windows uses installed Scoop or Winget rather than executing a remote Scoop
+bootstrap. See `docs/release.md` for trust setup and release evidence.
+
+On Unix, sync identity directories are 0700 and private keys are created 0600;
+existing permissions are repaired and verified before reading. Symlinked
+identity files are rejected. Windows protects the directory with a current-user
+SID ACL and resets existing file ACLs to inherit that private parent. Failures
+stop identity loading. The TLS key is separate from the shared pairing secret
+in the OS credential store. Windows ACL behavior still requires native acceptance.
+
+Native overwrites atomically retain the displaced destination and check those
+bytes against the reviewed baseline after publication. A race reports a
+conflict and retains both the authored destination and the displaced rescue;
+Mesa does not restore over a potentially later writer. Unsupported swap/backup
+filesystems fail without a destructive overwrite fallback. This does not lock
+external editors or prevent them writing through already-open handles later.
+
+Recovery remains the default for deletes. Permanent removal is explicit,
+confirmed, main-window-only, and restricted to selected recovery items. It
+cannot guarantee forensic erasure on SSDs, copy-on-write filesystems or backups.

@@ -305,15 +305,8 @@ exit /b 0
 :ensure_scoop
 where scoop >nul 2>nul
 if not errorlevel 1 exit /b 0
-echo   . Installing Scoop package manager ^(user-only^)...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm get.scoop.sh | iex"
-set "PATH=%SCOOP_SHIMS%;%PATH%"
-where scoop >nul 2>nul
-if errorlevel 1 (
-  echo   ! Scoop install did not complete; falling back where possible.
-  exit /b 1
-)
-exit /b 0
+echo   . Scoop is not installed. Using verified Winget packages where available.
+exit /b 1
 
 :install_winget
 where winget >nul 2>nul

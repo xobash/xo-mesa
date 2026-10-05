@@ -205,7 +205,7 @@ Two operations that LOOK like text operations are held to the same rule:
   the workspace only after that move succeeds. A locked file, permission error,
   unavailable volume, or occupied recovery destination fails closed and leaves
   the workspace state unchanged. The recovery area is dot-prefixed, so normal
-  vault scan, watch, graph, and sync paths ignore it. Settings includes a
+  vault scan, watch, graph, and sync paths ignore it. The contextual Deleted files dialog includes a
   recovery storage view that lists hidden files and whole deleted folders.
   Folder deletions restore as one folder entry, not as a pile of individual
   nested files. Restore moves the entry back to its original path, or to the
@@ -338,3 +338,26 @@ The local [vault index](vault-index.md) stores compressed copies and metadata in
 application storage. It never writes vault files and is never a recovery source
 for a failed save. Missing or invalid records rebuild from the vault. Verified
 writes and their original-byte preconditions remain authoritative.
+
+## Concurrent replacement and permanent recovery removal
+
+Desktop replacement uses Linux atomic exchange, macOS atomic swap, or Windows
+ReplaceFile with a backup destination. The actual displaced bytes are retained
+under a rescue artifact name and compared after commit. If an external edit
+arrives in the final comparison window, the save reports a conflict, retains
+that edit in the named rescue, and keeps Mesa's authored version at the target.
+Review both before retrying. Unsupported replacement primitives fail visibly;
+there is no in-place or destructive rename fallback. A later writer may still
+change either version through an existing file handle; Mesa does not claim to
+lock other editors. Crash recovery preserves rescue copies beside live targets.
+
+Deleted files offers Permanently delete for an item and Empty recovery storage
+for the full loaded list, including items hidden by the search filter. The user
+must type DELETE or EMPTY in a confirmation that explains irreversibility and
+storage limits. Empty operates on that snapshot, so newer deletions are retained.
+Partial failure stops removal and shows how many items were removed. Changing
+vault sessions stops scheduling old actions. The native command permits only
+main-window calls inside approved recovery storage and rejects traversal,
+symlinks, reparse points, and the storage root. Permanent removal affects no
+live file and does not promise SSD erasure or removal from external backups.
+Recovery has no automatic expiry; retention is an explicit user decision.

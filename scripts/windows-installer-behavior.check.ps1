@@ -20,8 +20,13 @@ function global:git {
   $call = @($args) -join ' '
   $global:mesaGitCalls += $call
   $global:LASTEXITCODE = 0
-  if ($call -match '\bstatus\b') {
+  if ($call -match 'remote get-url origin') { Write-Output 'https://github.com/xobash/xo-mesa.git'
+  } elseif ($call -match '\bstatus\b') {
     if ($global:mesaHasChanges) { Write-Output ' M note.md' }
+  } elseif ($call -match 'verify-tag' -and $global:mesaSignatureFails) {
+    $global:LASTEXITCODE = 1
+  } elseif ($call -match 'rev-parse HEAD' -and $global:mesaAhead) {
+    Write-Output 'ahead'
   } elseif ($call -match '\brev-parse\b') {
     Write-Output 'abc123'
   } elseif ($call -match '\bmerge\b' -and $global:mesaMergeFails) {
@@ -41,6 +46,8 @@ try {
   $global:mesaGitCalls = @()
   $global:mesaHasChanges = $false
   $global:mesaMergeFails = $false
+  $global:mesaSignatureFails = $false
+  $global:mesaAhead = $false
   Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1'))
   Assert-True (Test-Path $launchLog) 'fresh clone did not launch Mesa'
   Assert-True (($global:mesaGitCalls -join "`n") -match '\bclone\b') 'fresh checkout was not cloned'
@@ -52,8 +59,8 @@ try {
   Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1'))
   $calls = $global:mesaGitCalls -join "`n"
   Assert-True ($calls -match 'stash push --include-untracked') 'local changes were not preserved'
-  Assert-True ($calls -match 'fetch origin main') 'origin was not fetched'
-  Assert-True ($calls -match 'merge --ff-only origin/main') 'update was not limited to fast-forward'
+  Assert-True ($calls -match 'fetch --no-tags origin refs/tags/v0.1.0:refs/tags/v0.1.0') 'origin was not fetched'
+  Assert-True ($calls -match 'merge --ff-only refs/tags/v0.1.0') 'update was not limited to fast-forward'
   Assert-True ($calls -match 'stash pop abc123') 'local changes were not restored'
   Assert-True (Test-Path $launchLog) 'successful update did not launch Mesa'
 
@@ -66,6 +73,16 @@ try {
   Assert-True $failed 'failed fast-forward was accepted'
   Assert-True (($global:mesaGitCalls -join "`n") -match 'stash pop abc123') 'failed update did not restore local changes'
   Assert-True (-not (Test-Path $launchLog)) 'failed update launched Mesa'
+
+  $global:mesaMergeFails = $false
+  foreach ($failure in @('signature', 'ahead')) {
+    $global:mesaSignatureFails = $failure -eq 'signature'
+    $global:mesaAhead = $failure -eq 'ahead'
+    $failed = $false
+    try { Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1')) } catch { $failed = $true }
+    Assert-True $failed "untrusted $failure checkout was accepted"
+    Assert-True (-not (Test-Path $launchLog)) "untrusted $failure checkout launched Mesa"
+  }
 
   $runScript = Get-Content -Raw (Join-Path $project 'run.cmd')
   $probeAt = $runScript.IndexOf("`n:has_webview2")
@@ -96,6 +113,6 @@ try {
   ${env:ProgramFiles(x86)} = $priorProgramFilesX86
   $env:LOCALAPPDATA = $priorLocalAppData
   Remove-Item Function:\git -ErrorAction SilentlyContinue
-  Remove-Variable -Name mesaGitCalls, mesaHasChanges, mesaMergeFails -Scope Global -ErrorAction SilentlyContinue
+  Remove-Variable -Name mesaGitCalls, mesaHasChanges, mesaMergeFails, mesaSignatureFails, mesaAhead -Scope Global -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue
 }
