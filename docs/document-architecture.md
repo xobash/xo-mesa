@@ -12,7 +12,7 @@ surface, read-only code surface, or `MediaView`.
 | Markdown, plain text | `store.ensureContent` → shared text cache | CodeMirror / `MarkdownView` | Debounced `writeNote` → `persistVerifiedBytes` |
 | Code, CSV/TSV, JSON, XML, SVG source | shared text cache | `CodeView`; CSV/TSV table; windowed large-file view | Read-only |
 | RTF | shared text cache | `rtfToText` → `RtfView` | Read-only |
-| Saved HTML | shared text cache + optional sibling reads | direct local iframe; rewritten/hydrated `srcDoc` fallback | Read-only |
+| Saved HTML | shared text cache + optional sibling reads; detached views read their explicit file | sanitized/hydrated offline `srcDoc`; opaque frame with per-file/session active-content consent | Read-only |
 | Images and video | asset URL; bytes do not enter React state | native `img` / `video` | Read-only |
 | PDF | dedicated byte load in `usePdfEditor` | pdf.js worker → canvases; verified in-memory native fallback | pdf-lib byte transforms → `persistPdfBytes` → `persistVerifiedBytes` |
 | Archives | byte import only | `.zip` is extracted during drop import | each output uses `persistVerifiedBytes` |
