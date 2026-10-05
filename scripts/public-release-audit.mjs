@@ -139,9 +139,15 @@ for (const path of tracked) {
   if (path.endsWith(".md")) checkMarkdownTargets(path, text);
 }
 
+// GitHub-generated PR preview/squash commits use the same owner's numeric
+// no-reply alias. Neither alias exposes a personal email address.
+const publicAuthorEmails = new Set([
+  "xobash@users.noreply.github.com",
+  "164987616+xobash@users.noreply.github.com",
+]);
 for (const line of git(["log", "--format=%an%x09%ae%x09%ai", "--all"]).split("\n").filter(Boolean)) {
   const [name, email, date] = line.split("\t");
-  if (name !== "xobash" || email !== "xobash@users.noreply.github.com" || !date?.endsWith("+0000")) {
+  if (name !== "xobash" || !publicAuthorEmails.has(email) || !date?.endsWith("+0000")) {
     failures.push("reachable commit has non-public or non-UTC identity metadata");
     break;
   }

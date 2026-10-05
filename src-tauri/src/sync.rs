@@ -1472,6 +1472,9 @@ fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
         // The path travels as data through an environment variable, not code.
         let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p -AclObject $acl; $actual=Get-Acl -LiteralPath $p; if(-not $actual.AreAccessRulesProtected){throw 'Unprotected identity ACL'}; foreach($r in $actual.Access){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){throw 'Unexpected identity access'}}"#;
         let status = std::process::Command::new("powershell.exe")
+            // A PowerShell 7 parent passes incompatible module paths through
+            // native child processes. Let Windows PowerShell use its own modules.
+            .env_remove("PSModulePath")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("MESA_IDENTITY_DIRECTORY", dir)
             .status()
@@ -1519,6 +1522,9 @@ fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
     {
         let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; foreach($name in @('cert.pem','key.pem')) { $file=Join-Path $p $name; if(Test-Path -LiteralPath $file) { $acl=Get-Acl -LiteralPath $file; $rules=@($acl.Access); if($rules.Count -eq 0){throw 'Missing identity access'}; foreach($r in $rules){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected identity file access'}} } }"#;
         let status = std::process::Command::new("powershell.exe")
+            // A PowerShell 7 parent passes incompatible module paths through
+            // native child processes. Let Windows PowerShell use its own modules.
+            .env_remove("PSModulePath")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("MESA_IDENTITY_DIRECTORY", dir)
             .status()

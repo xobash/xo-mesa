@@ -262,3 +262,9 @@ external editors or prevent them writing through already-open handles later.
 Recovery remains the default for deletes. Permanent removal is explicit,
 confirmed, main-window-only, and restricted to selected recovery items. It
 cannot guarantee forensic erasure on SSDs, copy-on-write filesystems or backups.
+
+Windows identity ACL commands clear inherited `PSModulePath` before starting
+Windows PowerShell. A PowerShell 7 parent can otherwise pass incompatible
+security modules through a native child process; see Microsoft's
+[module-path behavior](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath).
+The same owner-only ACL repair and effective-permission verification still run.

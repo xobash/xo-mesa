@@ -60,6 +60,7 @@ scripts/native-acceptance-contract.mjs
 scripts/native-acceptance-template.mjs
 scripts/native-advisory-check.mjs
 scripts/public-files.txt
+scripts/public-release-audit.check.mjs
 scripts/public-release-audit.mjs
 scripts/release-acceptance.mjs
 scripts/release-gate.check.mjs
