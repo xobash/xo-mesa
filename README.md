@@ -43,18 +43,31 @@ complete native platform acceptance are pending.
 
 ## Install
 
-Use a development checkout until signed packages are available. The setup
-wrappers install supported missing prerequisites and launch a local release build:
+Signed release installers are pending. For now, use the one-line development
+setup for your operating system. These commands clone the source and run the
+setup wrapper, which installs supported missing prerequisites and launches a
+local release-mode build.
 
-```bash
-git clone https://github.com/xobash/xo-mesa.git
-cd xo-mesa
-bash run.sh
+**Windows — PowerShell:**
+
+```powershell
+git clone https://github.com/xobash/xo-mesa.git; if ($LASTEXITCODE -eq 0) { Set-Location xo-mesa; .\run.cmd }
 ```
 
-On Windows, run `run.cmd`. Native build tools can require system permission.
-First builds take longer; later starts reuse an unchanged build. Local source
-edits are included in that build.
+**macOS and Linux — Terminal:**
+
+```bash
+git clone https://github.com/xobash/xo-mesa.git && cd xo-mesa && bash ./run.sh
+```
+
+Already cloned the repository? From its folder, run `.\run.cmd` in Windows
+PowerShell or `bash ./run.sh` on macOS/Linux. `run.sh` is a Bash script;
+PowerShell cannot run it. Opening `.\run.sh` through a Windows file association
+can return without launching Mesa.
+
+Git must already be installed for these development commands. Native build
+tools can require system permission. First builds take longer; later starts
+reuse an unchanged build. Local source edits are included in that build.
 
 | Development target | Runtime requirement |
 | --- | --- |

@@ -74,9 +74,15 @@ npm run mesa:build:windows:offline # Windows bundle with an offline WebView2 run
 ```
 
 The first `run.sh` / `run.cmd` does all of this for you (and installs Rust
-locally if needed). The public bootstrap commands now match on every OS:
-`curl -fsSL .../install.sh | bash` on macOS/Linux and `irm .../install.ps1 | iex`
-on Windows. `install.sh` installs Git when needed, clones or fast-forwards the
+locally if needed). From an existing checkout, use `.\run.cmd` in Windows
+PowerShell and `bash ./run.sh` in a macOS/Linux terminal. PowerShell cannot
+execute the Bash wrapper; opening `.\run.sh` through a file association may
+return without launching the app.
+
+Versioned source bootstrap requires a published signed tag, the README's
+reviewed installer checksum, and configured release-signing trust. The commands
+remain pending until that release exists. Never substitute mutable main or an
+unchecked `irm ... | iex` / `curl ... | bash` download. `install.sh` installs Git when needed, clones or fast-forwards the
 checkout, and then hands off to `run.sh`; `install.ps1` does the same before
 handing off to `run.cmd`. `run.cmd` prefers user-local Scoop installs but falls
 back to `winget` for Node.js, Git, and Rust when Scoop cannot bootstrap in the
