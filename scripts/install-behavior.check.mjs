@@ -56,10 +56,10 @@ describe('verified prerequisite download', { skip: process.platform === 'win32' 
   });
 });
 
-it('README bootstrap checksums match the complete installer bytes', () => {
-  const readme = readFileSync(resolve('README.md'), 'utf8');
+it('release guide bootstrap checksums match the complete installer bytes', () => {
+  const guide = readFileSync(resolve('docs/release.md'), 'utf8');
   for (const file of ['install.sh', 'install.ps1']) {
     const hash = createHash('sha256').update(readFileSync(resolve(file))).digest('hex');
-    assert.ok(readme.includes(hash), `README checksum for ${file} is stale`);
+    assert.ok(guide.includes(hash), `Release guide checksum for ${file} is stale`);
   }
 });

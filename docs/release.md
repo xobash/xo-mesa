@@ -226,7 +226,7 @@ publication. Owner approval in `release-publish` is required. The workflow
 uploads to a draft first, then publishes the immutable release only after all
 assets and the attested summary are attached. Do not bypass a failed gate.
 
-## Download verification and source trust
+## Release verification
 
 Choose a specific release version; never execute a bootstrap from mutable main.
 Download its installer or package, compare SHA-256 with its published inventory,
@@ -245,14 +245,45 @@ background check is introduced.
 Source bootstrap requires Git signature verification configured for the
 maintainer's approved release key. Verify that key through a trusted channel;
 do not treat a key fetched beside a download as an independent trust anchor.
-The README pins each version's bootstrap digest. Update version references and
-both reviewed hashes together for a new source release. The shell bootstrap
-pins NVM 0.40.5's two runtime files and Rustup 1.28.2's architecture-specific
-binary hashes; a mismatched download stops before execution. Windows uses
-existing Scoop or Winget packages and never runs get.scoop.sh. Package managers
-and their artifact/signature checks remain part of the source toolchain trust.
-The first signed release and release key must exist before these versioned
-bootstrap commands can work. Development checkouts remain a separate path.
+
+<details>
+<summary>Versioned source installation after the first signed release</summary>
+
+### Versioned source bootstrap
+
+For a published `v0.1.0` source release, these commands check the bootstrap's
+reviewed SHA-256 before execution. The installer then verifies the signed
+release tag using Git's configured release-signing trust and launches only that
+version. Install the maintainer's verified public signing key before use;
+signature failures stop setup. These commands require the published
+signed release. Source setup installs supported missing build tools and
+reuses an unchanged local release build on later starts.
+
+macOS and Linux:
+
+```bash
+( set -e; p=$(mktemp); trap 'rm -f "$p"' EXIT; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.sh -o "$p"; if command -v shasum >/dev/null; then printf '6c4a390912e85dea27ee55824f59f858a9a18c39115fc2bcb66302db5a6702cb  %s\n' "$p" | shasum -a 256 -c -; else printf '6c4a390912e85dea27ee55824f59f858a9a18c39115fc2bcb66302db5a6702cb  %s\n' "$p" | sha256sum -c -; fi; bash "$p" )
+```
+
+Windows 10 and Windows 11:
+
+```powershell
+& { $ErrorActionPreference = 'Stop'; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne '3a5155311672978ecdc002392d9c328829b31a96c6c371378ae7ffa852146f78') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
+```
+
+The source installers preserve existing local files and refuse non-fast-forward
+updates. Windows also preserves untracked source changes across an update and
+stops before launch if restoring them conflicts. Source builds include local
+source edits; use the signed packages for the reviewed release bytes.
+
+</details>
+
+Update the version references and both reviewed hashes together for each source
+release. The shell bootstrap pins NVM 0.40.5's two runtime files and Rustup
+1.28.2's architecture-specific binary hashes; mismatched downloads stop before
+execution. Windows uses existing Scoop or Winget packages and never runs
+get.scoop.sh. Package managers and their artifact/signature checks remain part
+of the source toolchain trust. Development checkouts are a separate path.
 
 ## Native advisory review
 

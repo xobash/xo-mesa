@@ -79,7 +79,7 @@ PowerShell and `bash ./run.sh` in a macOS/Linux terminal. PowerShell cannot
 execute the Bash wrapper; opening `.\run.sh` through a file association may
 return without launching the app.
 
-Versioned source bootstrap requires a published signed tag, the README's
+Versioned source bootstrap requires a published signed tag, the [release guide's](release.md#versioned-source-bootstrap)
 reviewed installer checksum, and configured release-signing trust. The commands
 remain pending until that release exists. Never substitute mutable main or an
 unchecked `irm ... | iex` / `curl ... | bash` download. `install.sh` installs Git when needed, clones or fast-forwards the
