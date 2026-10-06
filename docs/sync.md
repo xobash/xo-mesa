@@ -49,7 +49,8 @@ is used for unnamed peers.
 self-signed certificate — its *identity* — stored in the app config directory
 (`sync-identity/identity.json`). The private bundle contains both certificate and
 key, is flushed and verified in staging, and is published once without replacing
-an existing identity. Unix also flushes the directory. Interrupted staging is
+an existing identity. Unix also flushes the directory and new configuration
+ancestors. Interrupted staging is
 ignored on restart. Windows flushes file bytes; power-loss durability of directory
 metadata is not established. Existing `cert.pem` + `key.pem` pairs migrate without
 changing the fingerprint and remain as backups. A legacy certificate-only first

@@ -1449,9 +1449,25 @@ fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        // Persist every newly created ancestor before any identity can be
+        // advertised, including a completely new app configuration directory.
+        let mut missing_parents = Vec::new();
+        for parent in dir.ancestors().skip(1) {
+            if parent.try_exists().map_err(|e| e.to_string())? {
+                break;
+            }
+            missing_parents.push(parent);
+        }
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true).mode(0o700);
         builder.create(dir).map_err(|e| e.to_string())?;
+        for created in missing_parents {
+            if let Some(parent) = created.parent() {
+                fs::File::open(parent)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
         if fs::metadata(dir)
             .map_err(|e| e.to_string())?
@@ -3186,6 +3202,22 @@ mod tests {
             }
             std::fs::remove_dir_all(dir).unwrap();
         }
+    }
+
+    #[test]
+    fn identity_recovers_with_a_new_nested_configuration_directory() {
+        let root = identity_test_dir("new-parents");
+        let dir = root
+            .join("new-config")
+            .join("new-app")
+            .join("sync-identity");
+        assert!(load_identity(&dir, Some(2)).is_err());
+        let id = load_identity(&dir, None).unwrap();
+        assert_eq!(
+            load_identity(&dir, None).unwrap().fingerprint,
+            id.fingerprint
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
