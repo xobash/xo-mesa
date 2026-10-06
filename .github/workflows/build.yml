@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'verification/**']
   pull_request:
   workflow_dispatch:
 

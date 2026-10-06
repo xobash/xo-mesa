@@ -160,8 +160,9 @@ Protect `release` and `release-publish` with owner review and deployment limited
 to protected main. Require signed commits and the five prerequisite build
 checks on main. Direct fast-forward pushes are allowed without PR approval;
 force pushes and branch deletion are blocked. When a new commit needs checks
-before main accepts it, use a temporary verification ref, then push that exact
-commit to main and remove the temporary ref.
+before main accepts it, push a temporary `verification/*` branch to run build
+checks, then push that exact commit to main and remove the temporary branch.
+Manually dispatched checks do not satisfy GitHub branch rules.
 Block changes and deletion of `v*` tags and enable immutable releases. Reviewers
 must inspect the exact version, commit, credentials and evidence, not just the
 workflow's green state. Repository administrators retain control of settings.
