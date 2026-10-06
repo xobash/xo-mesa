@@ -110,7 +110,8 @@ repository refs before publishing:
 
 ## Publishing
 
-1. Review and merge the sanitized changes through protected main; wait for all CI jobs.
+1. Audit and sign the sanitized changes; pass the required checks, then push
+   directly to protected main and verify all CI jobs for that exact commit.
 2. Create a signed annotated immutable version tag for that exact commit.
 3. Dispatch Release candidate and verify its platform signatures and provenance.
 4. Complete native acceptance against those exact downloaded packages.
@@ -156,8 +157,11 @@ adapter when its provider requires hardware-backed keys; keep the same signer
 and timestamp verification gate. macOS uses the Apple inputs above.
 
 Protect `release` and `release-publish` with owner review and deployment limited
-to protected main. Require PR approval, signed commits, resolved threads and
-the five prerequisite build checks on main, with no direct/force-push bypass.
+to protected main. Require signed commits and the five prerequisite build
+checks on main. Direct fast-forward pushes are allowed without PR approval;
+force pushes and branch deletion are blocked. When a new commit needs checks
+before main accepts it, use a temporary verification ref, then push that exact
+commit to main and remove the temporary ref.
 Block changes and deletion of `v*` tags and enable immutable releases. Reviewers
 must inspect the exact version, commit, credentials and evidence, not just the
 workflow's green state. Repository administrators retain control of settings.

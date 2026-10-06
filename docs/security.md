@@ -235,8 +235,9 @@ verified. See [Deep Research](deep-research.md#apply-and-rollback).
 
 ## Release and private-storage controls
 
-Main requires signed commits, reviewed pull requests, resolved review threads,
-and successful frontend, native-platform, and advisory checks. Release tags
+Main accepts direct fast-forward pushes of signed commits with successful
+frontend, native-platform, and advisory checks. Pull-request approval is not
+required. Force pushes and branch deletion are blocked. Release tags
 cannot be moved or deleted; published releases are immutable. Signing and
 publication use separate reviewed environments restricted to protected main.
 Source bootstrap commands verify a published, fixed-version script hash before
