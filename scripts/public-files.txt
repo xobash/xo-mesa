@@ -17,6 +17,7 @@ docs/document-architecture.md
 docs/keyboard-navigation.md
 docs/live-graph.md
 docs/live-preview-editing.md
+docs/mesa-demo.gif
 docs/mesa-hero-themes.png
 docs/mesa-wordmark.png
 docs/native-acceptance.md

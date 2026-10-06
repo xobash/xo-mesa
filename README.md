@@ -101,7 +101,10 @@ source edits; use the signed packages for the reviewed release bytes.
 
 ## Demo
 
-A 90-second native screen recording of a sample vault is being prepared.
+Explore a sample vault in Darkroom: navigate notes, search their contents, and
+expand the living graph.
+
+![90-second Mesa demo in Darkroom](docs/mesa-demo.gif)
 
 ## Architecture
 
