@@ -6,14 +6,7 @@ import { forEachConcurrent } from "./concurrency";
  * bookkeeping during vault open. */
 export const STARTUP_TEXT_READ_CONCURRENCY = 16;
 
-/**
- * Chunk reads in flight at once.
- *
- * A chunk is already read with native parallelism, so this is not a storage
- * throughput knob — it exists so the next batch's syscalls overlap the current
- * batch's decode/intern work on the JS side. Beyond a small number it only
- * raises peak memory.
- */
+/** Bound overlapping chunk reads so decoding and native I/O can overlap without unbounded buffers. */
 const STARTUP_CHUNK_CONCURRENCY = 3;
 
 /** Split `items` into fixed-size groups, preserving order. */
@@ -26,16 +19,8 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
-/**
- * Read the vault's markdown into the content cache.
- *
- * `readChunk` is the bulk path: one IPC round-trip per group of files instead
- * of one per file (see `readVaultText` in `vault.ts` for why the round-trip
- * count, not the disk, is what this costs). `read` stays as the per-file
- * fallback for the browser demo and for shells without the native command.
- * Exactly one of them does the work; both produce the same map, and an
- * unreadable file yields `""` either way.
- */
+/** Compatibility Markdown loader with either batched or per-file reads; unreadable entries become empty strings.
+ * Use the outcome-aware reader for editable baselines. */
 export async function loadStartupTextCache(
   files: readonly VaultFile[],
   read: (file: VaultFile) => Promise<string>,

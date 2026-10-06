@@ -1,6 +1,6 @@
 # Live Preview Editing
 
-Markdown editing stays source-first so Mesa never loses source fidelity.
+Markdown edits use the source document.
 
 The editor has two modes:
 
@@ -8,10 +8,8 @@ The editor has two modes:
 - `Live` keeps CodeMirror on the left and renders the same Markdown on the
   right as you type.
 
-The rendered pane is intentionally read-only. Source remains the canonical
-document because arbitrary rendered HTML cannot be reliably converted back into
-the original Markdown without losing formatting, comments, raw HTML, or plugin
-syntax. Edits from other Mesa surfaces, such as Kanban task movement, refresh the
+The rendered pane is read-only; edits stay in CodeMirror and preserve the
+original Markdown syntax. Edits from other Mesa surfaces, such as Kanban task movement, refresh the
 active CodeMirror document as long as they modify the same note.
 
 Wiki links can open every text file Mesa supports. An exact target such as

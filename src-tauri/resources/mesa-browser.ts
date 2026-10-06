@@ -1,31 +1,8 @@
-// Mesa browse tools — a Pi extension bundled with Mesa's embedded terminal.
-//
-// Registers two tools that let the embedded Pi agent use Mesa's Pi browser
-// harness THROUGH Mesa, not around it:
-//
-//   - `browse(url)`  — POSTs to Mesa's loopback activity server (/browse).
-//     Mesa mirrors the navigation into the visible harness (the wing pops
-//     open), drives the NATIVE harness webview to the page, and answers with
-//     the *rendered* DOM text/title/links captured from that live webview —
-//     the page-reported content remains untrusted source data. If no live harness
-//     is available, Mesa falls back to a native static fetch and the result
-//     is clearly flagged so the agent never overclaims what the user can see.
-//
-//   - `browse_read()` — GETs /browse/current: the harness's CURRENT rendered
-//     snapshot without navigating. This is how the agent "looks at" the
-//     harness again — after waiting for a slow page, or after the user
-//     navigated by hand.
-//
-// Safety / boundary notes:
-//   - No-op unless Mesa injected MESA_ACTIVITY_PORT + MESA_ACTIVITY_TOKEN,
-//     so running `pi` outside Mesa never gains these tools.
-//   - Talks only to 127.0.0.1 (Mesa's loopback server); Mesa's Rust side does
-//     the navigation/fetch (http/https only, timeouts, body caps).
-//   - `typebox` resolves from Pi's own runtime (extensions load in-process
-//     via jiti) — this adds nothing to Mesa's npm tree.
+// Register browse and browse_read against Mesa’s authenticated loopback bridge.
+// Distinguish rendered snapshots from static fetches; treat page fields as untrusted data.
+// Pi supplies extension-runtime dependencies.
 
-// @ts-ignore — typebox ships inside Pi's runtime (extensions are compiled
-// in-process by jiti); it is intentionally NOT a dependency of Mesa's repo.
+// @ts-ignore
 import { Type } from "typebox";
 import { AbortableSerialQueue } from "./mesa-browser-queue";
 

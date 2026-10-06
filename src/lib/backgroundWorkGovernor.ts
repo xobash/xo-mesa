@@ -1,9 +1,4 @@
-/**
- * One local, cooperative admission gate for work that is useful but never more
- * important than an input response.  It intentionally does not try to cancel
- * native work already in flight: callers keep their existing cancellation and
- * correctness rules.  It controls the next unit of work instead.
- */
+/** Admit the next unit of background work; callers retain cancellation and correctness checks. */
 export type BackgroundWorkKind = "index" | "thumbnail" | "sync" | "watcher" | "research" | "pdf";
 
 export interface BackgroundWorkSnapshot {

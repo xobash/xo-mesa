@@ -1,33 +1,5 @@
-// Mesa harness reporter — injected into every page of the NATIVE Pi browser
-// harness webview (see src-tauri/src/harness.rs).
-//
-// The harness webview renders the real site (JS and all). This script is what
-// lets the Pi agent "see" it: it snapshots the *rendered* DOM (title, visible
-// text, outgoing links) and reports it back to Mesa, so the agent reads exactly
-// what the user is looking at in the wing — not a server-side fetch of a JS
-// shell.
-//
-// Transport (belt and suspenders, cross-platform):
-//   1. fetch → http://127.0.0.1:<port>/harness on Mesa's loopback activity
-//      server. `mode: "no-cors"` + text/plain body = a "simple request": no
-//      preflight, and we never need to read the response. Chromium (Windows
-//      WebView2) treats 127.0.0.1 as potentially trustworthy, so https pages
-//      may call it.
-//   2. If fetch rejects (WebKit blocks http-to-loopback from https pages as
-//      mixed content), fall back to a hidden-iframe navigation to
-//      `mesa-snap://snap/#<payload>`. Rust's on_navigation handler intercepts
-//      the scheme, ingests the payload, and cancels the navigation — the page
-//      itself is never disturbed. This is the classic pre-IPC webview bridge.
-//
-// Safety / boundary notes:
-//   - Top frame only; ad/embed iframes never report.
-//   - The pristine `fetch` is captured at document_start, before page scripts
-//     can wrap it. The token never rides in a header (no-cors forbids it); it
-//     rides in the body and Mesa verifies it server-side.
-//   - This script only READS the DOM. It exposes one global,
-//     `__mesaHarnessReport()`, so Mesa can force a fresh snapshot via eval.
-//   - Rust supplies a new snapshot token after each page load. The reporter
-//     stays inert until that token arrives; the fallback URL never contains it.
+// Report bounded top-frame DOM observations through tokenized POST or intercepted scheme fallback.
+// Wait for the per-page token; never put it in the fallback URL. Page content remains untrusted.
 (function () {
   "use strict";
   if (window.top !== window) return; // subframes stay silent

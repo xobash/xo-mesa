@@ -5,30 +5,8 @@ import { extractLinks } from "./markdownExtract";
 import { makeResolver } from "./graph";
 import { backlinksFor } from "./graph";
 
-/**
- * Deep Research — pure, testable logic.
- *
- * This module owns everything about a Deep Research run that does NOT touch
- * the filesystem, the network, the DOM, React, or the Pi process: the run
- * model, context selection with explicit limits, the structured prompt and
- * result contract shared with the Pi extension, URL canonicalization and
- * source dedup, deterministic note naming, change-set generation, and the
- * transactional apply/rollback plan. Side effects live in
- * `deepResearchRun.ts` (driver) and `store.ts` (glue).
- *
- * Design rules baked in here:
- * - Vault notes and web pages are UNTRUSTED content. Their bytes are passed
- *   to the model as data and their text is never executed; the result the
- *   model returns is validated and normalized before it can become a change
- *   set, and model prose is never treated as an instruction.
- * - Every generated file/folder name goes through `safeBaseName` (the same
- *   Windows-portability rules as the rest of the vault).
- * - Links are Obsidian-style `[[Vault/Relative Path.md]]` wiki-links — the
- *   exact convention `lib/graph.ts` + `lib/markdown.ts` already resolve.
- * - The change set is deterministic: stable ordering, explicit dedupe, and a
- *   transactional apply plan that either applies every op or restores the
- *   vault to its original state.
- */
+/** Pure research models, context selection, result validation, and deterministic apply planning.
+ * Treat vault and web content as data. Side effects and recovery belong to the run driver. */
 
 // ---------------------------------------------------------------------------
 // Limits
@@ -263,17 +241,8 @@ export interface DeepResearchContextNote {
   redacted?: boolean;
 }
 
-/**
- * How widely context is gathered from the vault.
- *
- * - `workspace` (default): only what the user is looking at — the active note,
- *   explicitly selected notes, and the active note's direct link neighborhood
- *   (backlinks + outgoing links — the notes the graph/backlinks surfaces show
- *   around it). No vault-wide sweeps.
- * - `vault`: additionally mines the whole vault for notes sharing a tag with
- *   the picked set and for query-term content matches. On a large vault this
- *   selects far more than the caps keep, so most of it is reported as omitted.
- */
+/** workspace selects active, selected, and directly linked notes; vault also searches shared tags and content.
+ * Both scopes report omissions when context limits apply. */
 export type ResearchContextScope = "workspace" | "vault";
 
 export interface DeepResearchContext {
@@ -734,12 +703,7 @@ function compactResearchGraph(
   return best.cellWidth;
 }
 
-/**
- * Build only from the user's query and real progress/navigation events.
- * Planned-but-not-announced sub-questions and untouched source slots never
- * become graph nodes. The graph is deliberately a chronological evidence
- * trail, not a decorative forecast of what Pi might do next.
- */
+/** Build graph nodes only from the query and reported progress/navigation, not unannounced plan slots. */
 export function buildResearchGraph(
   query: string,
   activity: ResearchActivity[],
@@ -979,17 +943,8 @@ function queryTerms(query: string): string[] {
     .slice(0, 8);
 }
 
-/**
- * Deterministic context selection. Always includes the active file, the
- * explicitly selected files, and the active note's direct link neighborhood
- * (backlinks + outgoing links). In `vault` scope it additionally mines the
- * whole vault for shared-tag notes and a bounded query-term content search —
- * in that order, deduped, capped by note count and bytes. The default
- * `workspace` scope performs NO vault-wide sweep: only what the user's
- * workspace surfaces are showing goes to the model. Hidden write artifacts
- * and any dot-prefixed path are always excluded. Truncation is reported
- * explicitly.
- */
+/** Select active, explicit, and neighbouring notes first; vault scope adds shared-tag and content matches.
+ * Exclude hidden paths, deduplicate, cap notes/bytes, and report truncation. */
 export function buildResearchContext(input: BuildContextInput): DeepResearchContext {
   const { query, activePath, selectedPaths, notes, content, limits } = input;
   const scope: ResearchContextScope = input.scope ?? "workspace";
@@ -1108,15 +1063,7 @@ export const RESEARCH_PROGRESS_TOOL = "deep_research_progress";
 export const RESEARCH_FINISH_TOOL = "deep_research_finish";
 export const RESULT_ENVELOPE_TYPE = "mesa_deep_research";
 
-/**
- * The task instruction injected into the shared Pi session. It tells Pi to
- * use ONLY the supplied workspace context, expand the query into
- * sub-questions, research each through the existing `browse`/`browse_read`
- * tools, record sources with URL/title/date and supporting claims, separate
- * verified facts from inference/disagreement/unknowns, and return structured
- * results through the two Mesa tools — and explicitly forbids direct vault
- * mutation during the proposal phase.
- */
+/** Build the research instruction and structured-result protocol for the shared Pi session. */
 export function buildResearchPrompt(input: {
   runId: string;
   query: string;
@@ -1313,13 +1260,7 @@ export type ParseEnvelopeOutcome =
   | { ok: true; result: DeepResearchResult }
   | { ok: false; error: string };
 
-/**
- * Validate and normalize the model's structured result. This is the trust
- * boundary: the model's output is data, and anything malformed, missing, for
- * the wrong run, or over the limits is rejected or clipped here — before it
- * can become a change set. Sources are canonicalized/deduped; claims keep
- * their uncertainty kind; generated notes/sources are capped.
- */
+/** Validate run identity, structure, and limits before producing a change set; deduplicate sources and retain uncertainty. */
 export function validateResearchResult(
   result: DeepResearchResult,
   limits: DeepResearchLimits = DEFAULT_DEEP_RESEARCH_LIMITS
@@ -1565,13 +1506,7 @@ export interface ResearchChangeSet {
   skippedDuplicates: { title: string; relPath: string; reason: string }[];
 }
 
-/**
- * Turn a validated result into a deterministic change set: one report/index
- * note plus only genuinely new source notes, links from the report to source
- * notes and to high-confidence related existing notes, and minimal opt-in
- * backlink updates on those related notes. Duplicates (by slug and by
- * canonical source URL) are skipped and reported, never recreated.
- */
+/** Build deterministic report/source notes and opt-in related-note updates; report skipped duplicate slugs and URLs. */
 export function buildChangeSet(input: {
   runId: string;
   result: DeepResearchResult;
@@ -1718,10 +1653,7 @@ export function buildChangeSet(input: {
   ops.push({ kind: "create", relPath: reportRel, title: reportTitle, content: report });
 
   // --- Useful, high-confidence updates on related existing notes. ----------
-  // A reason/backlink stub is deliberately insufficient. Existing notes are
-  // touched only when the structured result supplies substantive markdown,
-  // high confidence, and at least one surviving source URL. The user reviews
-  // the exact appended section before this becomes an expected-byte update.
+  // Propose substantive, high-confidence updates backed by a surviving source.
   for (const r of relatedExisting.slice(0, limits.maxRelated)) {
     if (r.update?.confidence !== "high") continue;
     const addition = r.update.markdown.trim();

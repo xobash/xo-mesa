@@ -1,30 +1,8 @@
 import { isIndexedCache } from "./documentWorkingSet";
 import type { VaultFile } from "../types";
 
-/**
- * Which files' text `openVault` loads into the content cache.
- *
- * Vault search reads `contentCache[relPath]` for EVERY scanned file, but the
- * cache was populated for `isMarkdown` files only. Every other file the text
- * pipeline owns — `.txt`, `.html`, `.py`, `.json`, `.csv`, … — could therefore
- * only ever match on its NAME, and a phrase sitting in a `.txt` returned
- * nothing. It was also inconsistent rather than merely incomplete: opening such
- * a file caches it lazily (`ensureContent`), so the same query returned more
- * hits later in a session than it did at open.
- *
- * Loading that text costs memory, so the extra files are budgeted. Markdown is
- * never budgeted — it is the note corpus, and `buildNotes` needs all of it.
- *
- * The plan walks `files` in their existing sorted order, which makes the
- * selected set deterministic rather than dependent on which reads happen to
- * resolve first.
- *
- * The size budget here is a pre-filter for callers that already HAVE the scan's
- * `size` metadata: it avoids reading a file only to discard it. `openVault` is
- * not one of them — the per-file stat pass is 93% of the scan and now runs
- * after the first paint — so there every `size` is `undefined`, nothing is
- * pre-filtered. The indexed working set bounds decoded text independently.
- */
+/** Compatibility text-cache admission plan. Preserve file order for deterministic budget selection.
+ * Markdown is exempt here; the indexed working set applies its own decoded-text budget. */
 
 /** The predicate must match `isTextualVaultFile` — passed in to keep this
  *  module free of the vault's Tauri imports. */
@@ -42,11 +20,7 @@ export interface TextCachePlan {
   bytes: number;
 }
 
-/**
- * Default budget for non-markdown text. Large enough for real vaults (a
- * 4,165-file vault with 1,506 `.txt` needed ~30 MB) while keeping a
- * pathological folder of huge logs from being pulled into memory wholesale.
- */
+/** Byte budget for automatically cached non-Markdown text. */
 export const TEXT_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 
 /**

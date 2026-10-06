@@ -1,17 +1,7 @@
 import type { SyncLogEntry, SyncPhase, SyncReport } from "./sync";
 import { formatFingerprint } from "./syncProtocol";
 
-/**
- * Sync troubleshooting package — a single copy-pasteable markdown blob built
- * from the sync console's structured log plus the last sync report. Written
- * for exactly one audience: an LLM (or a human) debugging a sync failure,
- * so it front-loads environment, settings, counts, and per-file errors.
- *
- * SECRETS: the sync key (and any per-device keys) must NEVER appear in the
- * package. Every string that passes through here is scrubbed with
- * `redactSecrets` — belt and braces on top of the Rust engine never logging
- * the token in the first place.
- */
+/** Export sync diagnostics with all strings passed through redactSecrets; exclude keys and absolute vault roots. */
 
 export interface DiagnosticsInput {
   /** App version (Tauri `getVersion()`), "dev" when unavailable. */

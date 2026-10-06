@@ -59,14 +59,8 @@ function writeSavedSearches(searches: string[]): void {
   localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(searches.slice(0, MAX_SAVED_SEARCHES)));
 }
 
-/**
- * Yield to the browser between slices.
- *
- * `setTimeout(0)` is clamped to ~4 ms once nested, which would more than double
- * the wall time of a long pass; a MessageChannel port delivers on the next
- * macrotask with no clamp, and — unlike `requestAnimationFrame` — keeps running
- * when the window is not painting.
- */
+/** Yield through MessageChannel between slices without requiring a paint or
+ * waiting for nested timer clamping. */
 const yieldToBrowser: (run: () => void) => void =
   typeof MessageChannel === "undefined"
     ? (run) => setTimeout(run, 0)
@@ -206,18 +200,8 @@ export function SearchSurface({
     hits: SearchHit[];
   }>({ query: "", files: null, cache: null, hits: [] });
 
-  // The scan runs in slices with a yield between them. A full pass over a real
-  // vault is 42–80 ms warm (hundreds under memory pressure), and running it
-  // synchronously froze the caret for that long on every keystroke that could
-  // not be narrowed from the previous pass. `useDeferredValue` cannot fix that
-  // on its own: React can deprioritise the render but cannot interrupt a
-  // synchronous loop.
-  //
-  // Results are committed only when the pass completes, so the list never shows
-  // a partially-ranked order — the previous results stay up meanwhile, exactly
-  // as they did while the synchronous version blocked. Those retained rows are
-  // display-only: query/data generation checks below prevent a click, Enter, or
-  // preview from acting on an old result while its replacement scan is active.
+  // Yield between scan slices and publish only completed, ranked results.
+  // Retained rows are display-only until query/data generation checks pass.
   useEffect(() => {
     if (
       scannedRef.current?.files !== files ||

@@ -4,14 +4,7 @@ export interface TerminalResizeRequest {
   rows: number;
 }
 
-/**
- * Serialize PTY resize IPC and collapse a burst to its latest dimensions.
- *
- * ResizeObserver, xterm's FitAddon, font-size changes, and native-window
- * movement can all produce dimensions in one frame. Sending every async IPC
- * concurrently lets an older request finish after a newer one and leaves the
- * PTY at a stale width, which breaks terminal TUI cursor-up/redraw arithmetic.
- */
+/** Serialize PTY resize IPC and collapse queued dimensions to the newest request. */
 export function createLatestTerminalResizeQueue(
   send: (request: TerminalResizeRequest) => Promise<void>
 ): {

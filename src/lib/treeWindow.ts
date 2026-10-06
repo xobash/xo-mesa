@@ -1,22 +1,5 @@
-/**
- * Row-window arithmetic for the sidebar file tree.
- *
- * The tree mounts one component per vault entry, and a real vault has
- * thousands. Measured on a 4,165-file vault with every row live:
- * 13,102 DOM nodes and ~20,800 Zustand selectors, which made EVERY store
- * update in the app cost 2.9 ms of subscriber fan-out (0.10 ms with the rows
- * unmounted) — a tax paid by every keystroke, every activity blip, and every
- * PDF status change, whether or not the sidebar was even visible.
- *
- * Rows are a uniform height (one CSS rule sets the box for `.tree-file` and
- * `.tree-folder` alike), so the visible slice is pure arithmetic and lives
- * here rather than in the component.
- *
- * The focus range is what keeps windowing from *removing* keyboard
- * reachability: a row that has DOM focus, and its immediate neighbours, are
- * rendered even when scrolled far out of view, so Tab still walks from one row
- * to the next exactly as it did when every row was mounted.
- */
+/** Sidebar row-window arithmetic for uniform-height rows.
+ * Keep the focused row and its Tab neighbours mounted outside the visible slice. */
 
 export interface RowRange {
   /** First row index in the range (inclusive). */

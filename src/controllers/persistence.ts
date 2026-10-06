@@ -61,9 +61,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
       const historyRoot = get().vaultPath ?? "";
       await writeNote(file, pending, expectedContent);
       if (pending !== expectedContent) {
-        // History is deliberately outside the verified-save transaction. A
-        // full browser quota must never make the already-read-back vault write
-        // appear failed or leave this dirty entry queued for a duplicate save.
+        // History failures must not invalidate a verified save or queue a duplicate.
         queueMicrotask(() => {
           void recordTextRevisionAsync(historyRoot, target.relPath, expectedContent).then((revision) => {
             if (!revision) set({ status: `Saved ${target.relPath}, but revision history is unavailable.` });
@@ -155,9 +153,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         if (!file || !isTextualVaultFile(file)) {
           throw new Error(`The text file is no longer available: ${issue.relPath}`);
         }
-        // `readNote` intentionally converts native read errors to empty text
-        // for ordinary previews. Conflict resolution must fail closed instead:
-        // an unreadable file is never treated as an empty disk copy.
+        // Strict reads preserve errors; conflict resolution needs actual disk bytes.
         const diskText = IN_TAURI
           ? await readTextFileStrict(file.path)
           : await readNote(file);

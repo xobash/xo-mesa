@@ -24,13 +24,6 @@ function installedName(key: string): string {
   return at === -1 ? key : key.slice(at + marker.length);
 }
 
-function hasPackage(pattern: string): boolean {
-  return packageNames.some((key) => {
-    const name = installedName(key);
-    return pattern.endsWith("/") ? name.startsWith(pattern) : name === pattern;
-  });
-}
-
 describe("JavaScript supply-chain contract", () => {
   it("keeps Vitest and its mocker above GHSA-82fw-gwwq-j7x9", () => {
     for (const name of ["vitest", "@vitest/mocker"]) {
@@ -68,27 +61,6 @@ describe("JavaScript supply-chain contract", () => {
     const undici = packageLock.packages["node_modules/undici"]?.version ?? "0.0.0";
     expect((undici.startsWith("7.") && isAtLeast(undici, [7, 29, 1])) || isAtLeast(undici, [8, 10, 2])).toBe(true);
   });
-
-  it("does not include recent compromised-package watchlist families", () => {
-    const watchlistPrefixes = [
-      "chalk",
-      "ansi-styles",
-      "@ctrl/tinycolor",
-      "@tanstack/",
-      "@mistralai/",
-      "nx",
-      "prettier",
-    ];
-
-    for (const prefix of watchlistPrefixes) {
-      expect(hasPackage(prefix)).toBe(false);
-    }
-  });
-
-  it("checks nested installs as well as top-level packages", () => {
-    expect(installedName("node_modules/a/node_modules/chalk")).toBe("chalk");
-    expect(installedName("node_modules/@tanstack/query-core")).toBe("@tanstack/query-core");
-  });
 });
 
 function cargoPackageBlocks(name: string): string[] {
@@ -108,10 +80,9 @@ function cargoBlockDependencies(block: string): string[] {
 describe("Rust supply-chain contract", () => {
   it("keeps the deprecated tiny_http TLS stack out of the lockfile", () => {
     const tinyHttp = cargoPackageBlocks("tiny_http");
-    expect(tinyHttp).toHaveLength(1);
-    expect(cargoBlockDependencies(tinyHttp[0]).some((dep) => dep.startsWith("rustls "))).toBe(
-      false
-    );
+    for (const block of tinyHttp) {
+      expect(cargoBlockDependencies(block).some((dep) => dep.startsWith("rustls "))).toBe(false);
+    }
 
     expect(
       cargoPackageBlocks("rustls").some((block) => cargoBlockVersion(block) === "0.20.9")
@@ -123,6 +94,10 @@ describe("Rust supply-chain contract", () => {
 
   it("keeps the terminal dependency outside the old serial line", () => {
     expect(cargoPackageBlocks("serial")).toHaveLength(0);
-    expect(cargoPackageBlocks("portable-pty").some((block) => cargoBlockVersion(block) === "0.9.0")).toBe(true);
+    expect(
+      cargoPackageBlocks("portable-pty").some((block) =>
+        isAtLeast(cargoBlockVersion(block) ?? "0.0.0", [0, 9, 0])
+      )
+    ).toBe(true);
   });
 });

@@ -1,24 +1,5 @@
-// Mesa /goal command — a Pi extension bundled with Mesa's embedded terminal.
-//
-// Gives the embedded Pi agent a persistent session goal. `/goal <text>` pins an
-// objective that survives the whole session: it is re-appended to the system
-// prompt on every agent turn (so the model never loses it to context drift) and
-// shown as a widget above the editor so the user always sees what Pi is
-// steering toward. `/goal` alone shows the current goal, `/goal clear` removes
-// it.
-//
-// The goal is persisted as a custom session entry (`mesa-goal`), so resuming or
-// branching a session restores the goal that was active at that point in
-// history — the same pattern Pi's own docs recommend for extension state.
-//
-// Safety / boundary notes:
-//   - Dependency-free: no imports, no npm packages. Pi loads this file directly
-//     via `--extension` (jiti compiles the TypeScript in-process), so this adds
-//     nothing to any node_modules and has no supply-chain surface.
-//   - No network, no filesystem, no child processes. The goal text only ever
-//     travels inside Pi's own session state and system prompt.
-//   - Works identically outside Mesa; it just isn't loaded there unless the
-//     user opts in with `--extension`.
+// Persist a session goal and append it to each turn’s system prompt; /goal clear removes it.
+// The extension has no direct network or filesystem calls; Pi may send its prompt to a provider.
 
 interface GoalUi {
   notify(message: string, level?: "info" | "warning" | "error"): void;

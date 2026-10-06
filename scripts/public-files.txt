@@ -25,6 +25,7 @@ docs/pdf-editing.md
 docs/pi-agent.md
 docs/release.md
 docs/saved-html.md
+docs/security-controls.md
 docs/security.md
 docs/sync.md
 docs/tasks-kanban.md

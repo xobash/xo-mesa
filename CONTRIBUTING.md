@@ -17,7 +17,10 @@ npm run mesa
 ## Before you open a pull request
 
 - Describe the user-visible result and the reason for the change.
-- Add or update tests for behavior changes.
+- Add or update tests for changed behavior and specific failure cases. Reuse
+  existing suites; avoid tests that only repeat the implementation or require
+  exact helper names. Tests added with code are regression coverage, not
+  independent validation.
 - Run the frontend CI checks: `npm ci`, `npm run typecheck`, `npm run lint`,
   `npm test`, `npm run test:bootstrap`, `npm run test:index`,
   `npm run test:markdown`, `npm run test:notices`, `npm run build`,

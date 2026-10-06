@@ -24,9 +24,7 @@ import { createFramePublisher } from "../lib/framePublisher";
 
 type Tool = "select" | "edit" | "text" | "highlight" | "ink";
 
-/** How long Mesa gets to paint page 1 before the native read-only renderer is
- *  stood up to cover the gap. Below the threshold where a delay reads as a
- *  stall, and above the measured first-page time for ordinary documents. */
+/** Delay before showing the native read-only fallback while page 1 is loading. */
 const NATIVE_WARM_START_DELAY_MS = 120;
 
 const COLORS: { label: string; rgb: RGB }[] = [
@@ -211,18 +209,7 @@ export function PdfView({
   useEffect(() => {
     renderScaleRef.current = renderScale;
   }, [renderScale]);
-  // The webview's native PDF renderer streams straight from disk via the asset
-  // protocol, so it can cover a slow open — but standing it up is not free. It
-  // is a SECOND full PDF stack over the same file: the OS renderer reads and
-  // maps the document again, alongside the copy Mesa already holds and the copy
-  // in the pdf.js worker. On a machine that is swapping, that duplicate is
-  // exactly what the user feels, and Mesa's own first page now lands in tens of
-  // milliseconds for most documents — so the cover is usually pure cost.
-  //
-  // So: wait a beat. If Mesa paints page 1 first (the common case), the native
-  // renderer is never started at all. If the open really is slow — a huge
-  // scanned document, a cold cache, a machine under pressure — the cover still
-  // appears and behaves exactly as before.
+  // Start the native cover only if Mesa has not painted page 1 before the delay expires.
   const [warmStartDue, setWarmStartDue] = useState(false);
   useEffect(() => {
     if (firstPagePainted || loadFailed || renderError) {
@@ -239,13 +226,7 @@ export function PdfView({
   const showNativeFirstPaint =
     !loadFailed && !renderError && !firstPagePainted && warmStartDue;
 
-  // Page 1's canvas has to exist in the SAME commit that first learns the page
-  // count, or the render pass that the parsed document triggers finds nothing
-  // mounted, skips, and first paint ends up waiting on a second commit plus an
-  // animation frame — which is unbounded whenever the window is occluded.
-  // Resetting here (render phase, keyed by path) instead of in an effect is what
-  // buys that commit back. Keyed by path and not by page count so that editing
-  // page count (rotate, delete, add) never unmounts the pages already painted.
+  // Mount page 1 in the commit that receives page count. Reset shells by path, not page count.
   if (mountedForPath !== (file?.path ?? null)) {
     setMountedForPath(file?.path ?? null);
     setMountedPageCount(0);
@@ -298,13 +279,7 @@ export function PdfView({
     };
   }, []);
 
-  // Report which pages are on (or near) screen, so the hook rasterizes a window
-  // rather than the whole document. The margin is deliberately generous: pages
-  // an easy scroll away should already hold pixels by the time they arrive.
-  //
-  // The container is tracked in state, not read off the ref during render: a ref
-  // read gives the PREVIOUS commit's value and never re-runs this effect, which
-  // would leave the observer unattached and every page reported off-screen.
+  // Report viewport pages through an observer whose container is tracked in state.
   const [pagesEl, setPagesEl] = useState<HTMLDivElement | null>(null);
   const [pagesInnerEl, setPagesInnerEl] = useState<HTMLDivElement | null>(null);
   const manualZoomRef = useRef(false);
@@ -354,13 +329,7 @@ export function PdfView({
   useEffect(() => {
     const scroller = pagesEl;
     const inner = pagesInnerEl;
-    // Before page 1 paints, the only mounted shell is page 1 and the render
-    // planner includes it unconditionally. Starting the observer earlier adds
-    // no information, but its first callback bumps `onscreenVersion`, cancels
-    // the in-flight page-1 raster, and restarts the same work. Chromium usually
-    // recovers; native WebKit can leave the warm-start viewer up indefinitely.
-    // Let the document-change pass own first paint, then start viewport-driven
-    // work for the remaining shells.
+    // Start viewport publications after first paint so they cannot cancel the initial page-1 render.
     if (!firstPagePainted || !scroller || !inner || shellCount === 0) return;
     if (typeof IntersectionObserver === "undefined") {
       // Without an observer, fall back to "everything mounted is on screen".
@@ -602,12 +571,7 @@ export function PdfView({
     const canvas = canvasRefs.current.get(pageIdx);
     const vp = viewports.current.get(pageIdx);
     if (!canvas || !vp) return null;
-    // A page whose pixels were released (or were never painted) has no bitmap,
-    // and the viewport it was last painted with outlives that release. Scaling
-    // the click by a zero-width bitmap would silently map every point onto the
-    // page origin, so an annotation would land in the corner instead of where
-    // the user clicked. No pixels, no pointer mapping — the page repaints as
-    // soon as it is back in the window, and the click is a no-op until then.
+    // Skip pointer mapping until the page has a nonzero painted bitmap.
     if (canvas.width <= 0 || canvas.height <= 0) return null;
     const rect = canvas.getBoundingClientRect();
     const vx = ((e.clientX - rect.left) * canvas.width) / rect.width;

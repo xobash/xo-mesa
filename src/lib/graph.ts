@@ -4,13 +4,7 @@ import { isTextualVaultFile } from "./vault";
 
 /** Shared lazy image lookup for parsed and persisted note metadata. */
 export function createImageResolver(files: readonly VaultFile[]): (target: string) => string | undefined {
-  // Built on FIRST USE, not up front. These two maps are consulted only to turn
-  // a note's first embedded image into a vault path, and a vault whose notes
-  // embed no images never asks even once — yet filling them walks all 4,165
-  // files doing three `toLowerCase()` calls and a template concat each, which
-  // measured 32 ms of a ~215 ms synchronous vault open on the measured vault
-  // (where `resolveFile` was then called 0 times). Deferring costs one null
-  // check per embedded image and is never slower than building them eagerly.
+  // Build image lookup indexes on first use; notes without images need none.
   let byName: Map<string, VaultFile> | null = null;
   let byRel: Map<string, VaultFile> | null = null;
   const buildIndexes = (): void => {
@@ -67,15 +61,8 @@ function sameStrings(a: string[], b: string[]): boolean {
   return true;
 }
 
-/**
- * Re-extract link/tag/alias metadata from `src` against an existing meta.
- * Returns the refreshed meta, or `null` when nothing changed so callers can
- * keep the current `notes` object — its identity churn is what triggers the
- * graph rebuild, the backlink re-index, and every notes subscriber, and typing
- * prose leaves all three arrays untouched on most saves. Deliberately does NOT
- * refresh `firstImagePath` (the debounced save path never did; thumbnails
- * update on rescan). (Measured during the graph optimization campaign.)
- */
+/** Refresh link/tag/alias metadata, returning null when it is unchanged.
+ * Preserves notes-object identity for topology caches. Thumbnails update on rescan. */
 export function refreshedNoteMeta(cur: NoteMeta, src: string): NoteMeta | null {
   const { links: rawLinks, references: rawReferences } = extractLinksAndFirstImage(src);
   const tags = extractTags(src);
@@ -107,14 +94,7 @@ function resolveFile(
   );
 }
 
-/**
- * Build a resolver from a [[target]] string to a note id (relPath).
- *
- * Building the index walks every note and lowercases its id, title, and each
- * alias, so it is O(notes) — call it ONCE and reuse the returned function for
- * every target. Resolving more than one link through `resolveTarget` rebuilds
- * the index per call, which is why the loops in `deepResearch` hoist this.
- */
+/** Build one note-target index and reuse its resolver for multiple lookups. */
 export function makeResolver(
   notes: Record<string, NoteMeta>
 ): (t: string) => string | null {
@@ -212,12 +192,7 @@ export function buildGraph(
 } {
   const ids = Object.keys(notes);
   const resolve = makeResolver(notes);
-  // Both link passes below resolve every rawLink (pass 1 builds note→note
-  // edges; pass 2 re-resolves the SAME raw to decide attachment/phantom
-  // fallback), and hub targets repeat across many notes. Resolution is a pure
-  // function of the raw string for fixed notes, so memoize per buildGraph
-  // call: each unique raw is normalized once, every other lookup is a Map hit.
-  // (Measured during the graph optimization campaign.)
+  // Cache resolution per build so repeated raw targets share one normalization.
   const resolveMemo = new Map<string, string | null>();
   const resolveCached = (raw: string): string | null => {
     let v = resolveMemo.get(raw);
@@ -335,13 +310,7 @@ export function buildGraph(
     });
   }
 
-  // Attachment nodes: every non-text file in the vault. All of them are
-  // ordinary force nodes — same simulation, same drag behavior, same halo
-  // physics as notes — exactly like Obsidian. Unlinked attachments are simply
-  // degree-0 nodes, so shared repulsion + gentle centering rings them loosely
-  // around the connected core, the way Obsidian's yellow dot field forms.
-  // Orphan filter applies to unlinked attachments exactly as it does to
-  // unlinked notes.
+  // Attachments share the note force layout; the orphan filter also applies to them.
   if (opts.showAttachments) {
     for (const f of attachmentFiles) {
       const degreeCount = degree[f.relPath] ?? 0;
@@ -351,9 +320,7 @@ export function buildGraph(
         id: f.relPath,
         title: `${f.name}.${f.ext}`,
         degree: degreeCount,
-        // Only linked image attachments get a thumbnail: a vault can hold
-        // thousands of unlinked assets, and decoding images for all of them
-        // is exactly the kind of hidden cost that made past attempts laggy.
+        // Only linked image attachments receive thumbnails.
         thumbPath:
           linked && ATTACHMENT_IMAGE_EXT.test(f.ext) ? f.path : undefined,
         kind: "attachment",
@@ -446,15 +413,8 @@ export function resolveAssetPath(files: VaultFile[], target: string): string | n
   return idx.byBase.get(base) ?? null;
 }
 
-/** target id → sorted source ids, cached per notes-object identity. The store
- * replaces `notes` immutably on every mutation (spread copies in store.ts), so
- * an unchanged object identity means unchanged link topology and the index can
- * never go stale; the WeakMap frees it when the notes object is replaced. One
- * pass builds the whole index at the cost of a single uncached backlinksFor
- * call (with the same per-unique-raw resolve memo as buildGraph), so the
- * status bar count, the Backlinks panel, and repeated file switches all share
- * one compute per notes change instead of one full vault scan each.
- * (Measured during the graph optimization campaign.) */
+/** Target id → sorted source ids, cached by immutable notes-object identity.
+ * Callers must replace the notes object when link metadata changes. */
 const backlinkIndexCache = new WeakMap<
   Record<string, NoteMeta>,
   Map<string, string[]>

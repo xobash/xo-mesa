@@ -26,20 +26,9 @@ function sameTasks(a: readonly TaskItem[], b: readonly TaskItem[]): boolean {
     task.due === b[i].due && task.kind === b[i].kind);
 }
 
-/**
- * Every task in the vault, classified by its explicit inline agent marker,
- * in note order. The configured tasks note is only a creation destination.
- *
- * The dashboard re-runs this whenever the content cache changes identity, which
- * is every debounced editor save — so a naive pass re-split and re-scanned the
- * WHOLE vault (measured: 15.2 ms at 2,000 notes / 8.6 MiB, 39.5 ms at 5,000)
- * at up to 2 Hz while typing, to recompute a result that differs in one note.
- * Each note's parse is therefore memoised on its exact content revision and
- * title, so a save re-parses only the note that changed.
- *
- * Returned `TaskItem`s are SHARED across calls and must be treated read-only
- * (`groupTasks`/`bucketTask` only read; the dashboard filters into new arrays).
- */
+/** Collect vault-wide tasks in note order, classified by inline agent markers.
+ * The configured tasks note is a creation destination only. Parsing is cached
+ * by exact content revision and title; returned TaskItems are shared and read-only. */
 export function collectVaultTasks(
   notes: Record<string, TaskNoteMeta>,
   cache: Record<string, string>,

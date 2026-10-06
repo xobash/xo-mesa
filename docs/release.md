@@ -14,6 +14,33 @@ telemetry, background update checks, or a Mesa-operated service.
   Do not commit certificates, keys, provisioning profiles, API keys, or
   notarization credentials.
 
+## Release contents
+
+Each published version, including alpha and beta prereleases, contains:
+
+- Platform packages from the exact accepted candidate, with signature and
+  provenance verification described below.
+- SHA-256 inventories for every downloadable asset.
+- A machine-readable SBOM with its source revision and scope. A lockfile-based
+  source inventory includes build/development dependencies and conditional
+  platform dependencies; it is not a scan of the installed binary or system
+  webview. Identify those omissions explicitly.
+- A source archive of the exact tagged, audited public tree, excluding private
+  working files and build output.
+- Release notes listing known limitations, OS/runtime floors, the tested
+  architectures, automated and native test results, and security notes.
+
+Distinguish intended OS/runtime floors from versions exercised on the exact
+packages. Link the exact CI run and native artifact acceptance summary. State
+whether independent security assessment, fuzzing, and reproducibility evidence
+exist; do not infer them from a build or a checksum.
+
+Use an explicit prerelease version such as `v0.1.0-alpha.1` and mark it as a
+GitHub prerelease. Align the application/manifests and source-bootstrap version
+references before signing the candidate. An alpha label does not waive the
+existing signing, privacy, or exact-package native acceptance requirements.
+Unsigned CI bundles remain development artifacts.
+
 ## Build Gates
 
 Before publishing, run or confirm:
@@ -90,6 +117,9 @@ protected pipeline below supersedes the former macOS-only candidate process.
 Signing credentials must be configured before its jobs can pass.
 
 ## Privacy Audit
+
+The [control register](security-controls.md) distinguishes incident responses,
+audit findings and preventive checks, with executable regressions for each.
 
 Audit the exact release commit, release notes, uploaded artifacts, and public
 repository refs before publishing:

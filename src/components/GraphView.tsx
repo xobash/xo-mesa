@@ -367,15 +367,8 @@ export function GraphView() {
   }>({ sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] });
   // Dirty flag: when false and sim is settled, we skip the expensive redraw.
   const needsRedrawRef = useRef(true);
-  // Dirty flag for the idle no-overlap resolver. resolveOverlaps() reads/writes
-  // only LAYOUT x/y; ambient living motion writes renderX/renderY and never
-  // touches x/y, so once the resolver reports moved=false and the sim has
-  // stopped ticking, re-running it every idle frame is a provable no-op (it just
-  // rebuilds a hash-grid Map to confirm nothing moved — ~1ms @650n / ~4ms
-  // @2000n wasted per frame). We freeze here and skip the resolver until layout
-  // x/y can change again. The ONLY force-node x/y writers are sim.tick() (gated
-  // on alpha>0.004) and resolveOverlaps itself; the tick block below clears this
-  // flag whenever the sim ticks, so any real movement re-arms the resolver.
+  // Skip idle overlap checks once settled; simulation ticks re-arm them.
+  // Ambient motion changes render coordinates only, not layout x/y.
   const layoutSettledRef = useRef(false);
   const transformRef = useRef<Transform>({ x: 0, y: 0, k: 1 });
   const targetKRef = useRef(1); // for smooth wheel zoom
@@ -1002,12 +995,8 @@ export function GraphView() {
     // ordinary 2D context is already hardware accelerated by the webview.
     ctxRef.current = canvas.getContext("2d");
     setCanvasUnavailable(ctxRef.current === null);
-    // Reallocating the canvas backing store and re-fitting the force layout is
-    // expensive. The sidebar open/close animation changes this pane's width
-    // every frame for ~0.22s, so doing that work per-frame caused visible lag.
-    // Instead: cheaply stretch the existing bitmap via CSS on every tick, and
-    // debounce the heavy realloc + re-fit to the trailing edge so it runs once
-    // the resize settles.
+    // Stretch the bitmap for small resize deltas; debounce reallocation and fit.
+    // Large growth reallocates immediately to keep the bitmap readable.
     let resizeTimer: number | null = null;
     const applyResize = () => {
       resizeTimer = null;
@@ -1047,14 +1036,7 @@ export function GraphView() {
       canvas.style.width = rect.width + "px";
       canvas.style.height = rect.height + "px";
       if (resizeTimer != null) clearTimeout(resizeTimer);
-      // The CSS stretch is only visually safe for SMALL deltas (its purpose:
-      // the sidebar open/close animation nudging the pane width per frame).
-      // A large growth jump — this pane just opened into the stack and went
-      // from its tiny first-layout box to full size, or a torn-off window got
-      // resized — would smear a few-pixel bitmap into full-width bands
-      // for the whole debounce window. Realloc + redraw immediately for big jumps; a
-      // handful of reallocs during a 0.2s open is nowhere near the per-frame
-      // realloc cost the debounce exists to avoid.
+      // Reallocate immediately for large growth; stretching is reserved for small resize deltas.
       const dpr = window.devicePixelRatio || 1;
       const grewALot =
         rect.width * dpr > canvas.width * 1.2 + 2 ||
@@ -1153,11 +1135,7 @@ export function GraphView() {
     return true;
   }
 
-  // Keep timelapse playback on its own short-lived timer. The graph loop
-  // intentionally throttles settled large graphs to their ambient cadence;
-  // using that loop for playback could leave a replay visually stuck when the
-  // canvas was otherwise idle. A dedicated playback clock makes the time-based
-  // reveal deterministic without changing the graph's normal render cadence.
+  // Replay uses its own timer because idle graph frames run at a lower cadence.
   useEffect(() => {
     if (!timelapseOn) return;
     let timer: number | null = null;
@@ -1258,15 +1236,7 @@ export function GraphView() {
       const tail = clamp((motionUntilRef.current - now) / 4600, 0, 1);
       const tailEase = tail * tail * (3 - 2 * tail);
       const lifeBoost = 1 + tailEase * 0.3;
-      // Ambient motion must be *perceptible*, not sub-pixel. The no-overlap
-      // guarantee lives on LAYOUT positions (resolveOverlaps corrects n.x/n.y);
-      // the breathing here is a render-only offset the resolver never sees, so
-      // it can be visible without breaking layout no-overlap. The only
-      // constraint is two *rendered* adjacent nodes not touching — bounded by
-      // per-node offset <= (OVERLAP_GAP * t.k)/2 screen-px. So positional
-      // breathing is screen-constant (visible at any zoom) and capped there.
-      // The primary visible living signal is RADIUS twinkle (below) — a radius
-      // change can never cause positional overlap.
+      // Ambient motion changes render coordinates only. Cap offsets at half the scaled overlap gap.
       const livingScale = animationsOn
         ? nodes.length > 1200
           ? 1.2
@@ -1487,16 +1457,7 @@ export function GraphView() {
       ctx.stroke();
       ctx.globalAlpha = 1;
 
-      // Batch 2: hot links (touching hovered, active, or dragged node).
-      // Very subtle — only just above the base links. Hover is a faint tint;
-      // the open/active file's links get a touch more so the current document
-      // stays findable without glaring. The active highlight fades back in via
-      // `activeFade` after a typing burst so it never snaps on. Dragged-node
-      // links get the brightest, steadiest treatment so the moving cluster's
-      // edges stay legible against the motion. Agent activity flicker
-      // (Batch 3) is the loud path and is untouched here.
-      // Hover links brighten with the focus ease so the hovered neighborhood
-      // pops exactly as the rest of the graph recedes (Obsidian's highlight).
+      // Highlight hovered, active, and dragged links separately from activity flicker; ease hover and active fades.
       const hotColor = `rgba(${c.flickerRgb},${(0.14 + 0.3 * focusK).toFixed(3)})`;
       const activeColor = `rgba(${c.flickerRgb},${(0.22 * activeFade).toFixed(3)})`;
       const dragColor = `rgba(${c.flickerRgb},0.22)`;
@@ -1638,14 +1599,7 @@ export function GraphView() {
         }
 
         const img = !fastDraw && n.thumbPath ? getImage(n.thumbPath) : null;
-        // Image-thumbnail nodes get a circular clip + image fill.
-        // All other nodes get their distinct shape — no save/restore needed.
-        // Opacity twinkle: the primary zoom-independent visible life signal
-        // (positional/radius motion is sub-pixel on small notes at fit-zoom).
-        // Period ~2.6s; the grabbed node is held steady (no dimming while
-        // pinned to the cursor), like Obsidian. The amplitude is wide and the
-        // floor deep so the luminance swing reads as a clear shimmer against
-        // every theme's graph canvas, not a subtle drift.
+        // Clip image thumbnails to circles. Keep grabbed nodes steady while other nodes twinkle.
         const twinkle =
           animationsOn && !act && !isActive && n !== dragRef.current.node
             ? 1 + Math.sin(lnow * 2.4 + (n.renderPhase ?? 0) * 2.7) * twinkleAmp
@@ -2112,17 +2066,7 @@ export function GraphView() {
       }
       if (zooming) needsRedrawRef.current = true;
 
-      // Hard no-overlap guarantee — but ONLY at idle. d3's forceCollide (which
-      // is velocity-aware and iterative, not a hard per-frame positional snap)
-      // handles collisions while the sim has energy/during drag. The resolver is
-      // a hard snap that shoves overlapping nodes apart by the full overlap each
-      // frame; if it runs *during* a hub drag it fights the link force
-      // (links pull INDEX's 227 neighbors in → resolver snaps them out → links
-      // pull them in again → jitter/haywire). So: skip the resolver while a
-      // node is being dragged or the sim is still settling; let forceCollide do
-      // its smooth iterative job, then the resolver takes over alone at idle
-      // (its original purpose, section EE) to guarantee no overlap at rest.
-      // Obsidian/Logseq/Athens have no such hard resolver at all during motion.
+      // Run the positional overlap resolver only at idle; forceCollide owns moving and dragged nodes.
       const settling = isNodeDragging || (sim ? sim.alpha() > 0.02 : false);
       if (!settling && !layoutSettledRef.current && forceNodesRef.current.length > 0) {
         if (resolveOverlaps(forceNodesRef.current, graphNodeRadius, OVERLAP_GAP, 2)) {
@@ -2240,15 +2184,8 @@ export function GraphView() {
         d.moved = true;
         if (firstMove) {
           const sim = simRef.current;
-          // Reheat so the dragged node's cluster follows the pointer in real
-          // time (Obsidian-like springy drag). d3's standard drag alphaTarget
-          // is 0.3 and Obsidian uses ~0.3; the prior 0.16–0.22 was below that,
-          // so the link/charge forces were under-driven and the cluster lagged
-          // behind the cursor (anemic follow). Pin alpha to 0.3 for the whole
-          // drag so neighbours track the pointer; hubs grab a touch hotter
-          // since their cluster has more mass to resettle.
-          // Use one calm drag target for every node. Degree-based boosts make
-          // hubs yank their whole neighbourhood and feel jittery.
+          // Reheat with a uniform drag target so neighbours follow the pointer.
+          // Degree-based boosts can make hub drags jittery.
           const target = 0.3;
           sim?.alpha(Math.max(sim.alpha(), target));
           sim?.alphaTarget(target);

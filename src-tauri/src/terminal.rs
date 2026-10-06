@@ -124,26 +124,8 @@ struct TerminalSession {
 const TERMINAL_HISTORY_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_RESIZE_HISTORY_COST: usize = 4;
 
-/// How long decoded PTY bytes may wait for company before Mesa emits them.
-///
-/// A `terminal://output` event is delivered to a webview by *evaluating a JS
-/// source string*: `Listeners::emit_js_filter` builds one with
-/// `event::emit_js_script` and hands it to `Webview::eval`
-/// (Tauri `Listeners::emit_js_filter` and `Webview::eval`).
-/// On Windows that eval is marshalled onto the app's UI thread — the same
-/// thread that dispatches `WM_KEYDOWN`, `WM_PAINT`, and resize — and wry's
-/// dispatcher additionally calls `RedrawWindow(.., RDW_INTERNALPAINT)` after
-/// every dispatched item (wry WebView2 window dispatcher).
-///
-/// One event per PTY read therefore turns a bulk Pi response into thousands of
-/// UI-thread script compiles plus thousands of forced paint invalidations. A
-/// real `pty.fork` measurement put 1.3 MB of output at **1,303 events in
-/// 0.02 s** (mean chunk 1,023 B — the 4 KiB read buffer does not bound it),
-/// which is enough to bury the message pump and freeze the window.
-///
-/// 8 ms is half a 60 Hz frame, so coalescing inside the window cannot cost a
-/// rendered frame; `flush_delay`'s leading-edge rule keeps interactive echo at
-/// zero added delay.
+/// Output coalescing interval. Batch PTY reads to limit webview event work;
+/// flush_delay emits the first output after a quiet interval immediately.
 const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(8);
 
 /// Emit early once a batch reaches this size instead of growing one enormous JS
@@ -183,14 +165,7 @@ impl TerminalStream {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Stage decoded bytes and wake the flusher when it has something new to
-    /// decide.
-    ///
-    /// Notifying on every read would put the wakeup back on a per-read budget.
-    /// Mid-batch there is nothing to tell the flusher: it is already waiting on
-    /// this batch's own deadline. Only two transitions matter — opening a batch
-    /// (the flusher is parked with no deadline at all) and crossing the size
-    /// cap (its deadline is now too late).
+    /// Wake the flusher when opening a batch or crossing its size cap, not on every staged read.
     fn stage(&self, data: &str) {
         if data.is_empty() {
             return;
@@ -275,14 +250,7 @@ impl TerminalHistory {
         self.pending.push_str(data);
     }
 
-    /// How long staged bytes still owe before they may be emitted.
-    ///
-    /// `Duration::ZERO` means "send now": either the batch already reached
-    /// `OUTPUT_FLUSH_MAX_BYTES`, or the stream has been quiet for a full
-    /// interval and this is the *leading edge* of a burst. That second rule is
-    /// what keeps a single keystroke's echo — or one line of Pi output after a
-    /// pause — at zero added latency; only the reads that arrive inside an
-    /// already-open window pay the coalescing delay.
+    /// Flush immediately at the size cap or after a quiet interval; otherwise wait for the batch deadline.
     fn flush_delay(&self, now: Instant) -> Duration {
         if self.pending.is_empty() {
             return OUTPUT_FLUSH_INTERVAL;
@@ -296,15 +264,7 @@ impl TerminalHistory {
         }
     }
 
-    /// Move staged bytes into history as one entry and queue the event that
-    /// carries them. Returns false when nothing was staged.
-    ///
-    /// At most `OUTPUT_FLUSH_MAX_BYTES` are taken per commit. The flusher is
-    /// not guaranteed to observe the buffer the instant it crosses the cap — a
-    /// busy UI thread can leave it running far ahead — so the bound has to be
-    /// enforced here rather than only in `flush_delay`. Anything left over
-    /// keeps `flush_delay` at zero, so the remainder drains immediately in
-    /// further batches instead of waiting out another window.
+    /// Commit at most OUTPUT_FLUSH_MAX_BYTES per history entry; leave remaining bytes ready to drain.
     fn commit_pending(&mut self, now: Instant) -> bool {
         if self.pending.is_empty() {
             return false;
@@ -763,22 +723,7 @@ fn merged_path(prefixes: &[PathBuf]) -> Option<OsString> {
     env::join_paths(paths).ok()
 }
 
-/// Incremental UTF-8 decoder for one PTY byte stream.
-///
-/// **Double-render contract.** A PTY read returns whatever bytes were available
-/// when the kernel filled the buffer, so a multi-byte character is regularly
-/// split across two reads. Decoding each read independently with
-/// `String::from_utf8_lossy` turned every such split into replacement
-/// characters — and a 1-column character becomes 2-3 U+FFFD columns, which
-/// silently widens the line. The emulator then soft-wraps a row earlier than Pi
-/// does, Pi's cursor-up redraw arithmetic lands one row low, and the previous
-/// render is stranded above the new one. That is the "Pi renders text twice"
-/// bug, and it fires wherever Pi's TUI uses box drawing, spinners, em dashes,
-/// or curly quotes — i.e. constantly.
-///
-/// Holding an incomplete trailing sequence back until the next read keeps the
-/// emitted text byte-exact. The carry is bounded by UTF-8 itself: a truncated
-/// sequence is at most 3 bytes.
+/// Carry at most three trailing UTF-8 bytes across PTY reads; replace incomplete tails only at EOF.
 #[derive(Default)]
 struct Utf8Stream {
     carry: Vec<u8>,
@@ -843,12 +788,7 @@ impl Utf8Stream {
     }
 }
 
-/// Drain the PTY as fast as it produces bytes, staging decoded text for the
-/// flusher.
-///
-/// Reading and emitting are deliberately on separate threads: the reader never
-/// blocks on a coalescing window, so the PTY buffer keeps draining (no
-/// backpressure onto Pi) while the flusher rate-limits what crosses the bridge.
+/// The reader stages decoded output; the flusher emits it. Only the bounded pending queue applies backpressure.
 fn spawn_reader<R>(mut reader: R, stream: Arc<TerminalStream>)
 where
     R: Read + Send + 'static,
@@ -869,12 +809,7 @@ where
         });
 }
 
-/// Block until the next batch of `terminal://output` events is due.
-///
-/// Returns an empty batch exactly once, when the reader has closed and
-/// everything staged has been committed — that is the flusher's exit signal.
-/// Factored out of `spawn_flusher` so the batching policy is testable without
-/// an `AppHandle`.
+/// Wait for due output. Return an empty batch once after reader closure and complete drain.
 fn next_output_batch(stream: &TerminalStream) -> Vec<(String, u64)> {
     let mut history = stream.lock();
     loop {
@@ -1161,20 +1096,7 @@ pub fn terminal_stop(state: State<TerminalState>, session_id: String) -> Result<
     Ok(())
 }
 
-/// Kill every live PTY on the way out of the app.
-///
-/// Mesa spawns Pi through a PTY, so `pi` (and the Node process behind it) are
-/// ordinary child processes of the app — nothing reparents, reaps, or kills
-/// them when the event loop ends, and no `Drop` runs on managed state at exit.
-/// Quitting Mesa therefore left Pi running with no window attached to it. This
-/// is worst on Windows, where the ConPTY child is not in a job object either,
-/// so the orphan holds the vault folder and a later `run.cmd` can hit a locked
-/// build cache. Called only from the `RunEvent::Exit` handler in `lib.rs`;
-/// `terminal_stop` still owns the ordinary one-session case.
-///
-/// Never returns an error: a failure here must not be able to stop Mesa from
-/// exiting. A poisoned lock is recovered from rather than skipped, because the
-/// children still need killing even if some reader thread panicked.
+/// Best-effort PTY teardown from RunEvent::Exit. Recover a poisoned session lock and never block app exit.
 pub fn stop_all_sessions(state: &TerminalState) {
     let mut sessions = state
         .sessions

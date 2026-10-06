@@ -1,18 +1,5 @@
-/**
- * Word counting for the status bar.
- *
- * The status bar subscribes to the live editor text, so this runs on EVERY
- * keystroke. The obvious expression — `text.trim().split(/\s+/).length` —
- * allocates two full copies of the note (one per `trim()`) plus one substring
- * per word: on a real 420 kB note that is a 74,883-element array of short
- * strings built and thrown away per character typed (measured 4.41 ms).
- *
- * `countWords` returns exactly the same number by scanning once and allocating
- * nothing. `isMarkdownWhitespace` reproduces the JavaScript `\s` class (and
- * therefore `String.prototype.trim`) character for character, which is what
- * makes the two definitions agree; `wordCount.test.ts` pins that equivalence
- * against the original expression, including every code point in the class.
- */
+/** Count words in one scan using the ECMAScript whitespace class, matching
+ * text.trim().split(/\s+/) for non-empty text without allocating a word array. */
 
 /**
  * Exactly the code points matched by the ECMAScript `\s` class: WhiteSpace

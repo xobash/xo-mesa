@@ -1,35 +1,5 @@
-//! Native vault filesystem watcher with bounded event delivery.
-//!
-//! The plugin watcher emits one IPC message per raw event. On Windows each
-//! `Channel::send` is
-//! a JS source string `eval`'d into the webview **on the UI thread**, and wry
-//! forces a `RedrawWindow` after each dispatched IPC response
-//! (wry WebView2 window dispatcher). So a `git checkout`, a device sync, or a
-//! Pi agent writing hundreds of files inside the vault turns into hundreds of
-//! evals + forced repaints serialized against `WM_KEYDOWN`/`WM_PAINT` — input
-//! stall and dropped frames for the duration of the storm. Worse, `.git/`
-//! churn (loose objects, `index`, `refs`, `logs`) is the bulk of that traffic
-//! and it crosses the bridge *before* the frontend's `isIndexableVaultRelPath`
-//! filter can discard it.
-//!
-//! This module keeps the SAME `notify-debouncer-full` engine the plugin uses,
-//! so event fidelity is identical, and changes only the transport:
-//!
-//! 1. Filter every event path in Rust with `is_indexable_rel` — the exact
-//!    predicate as `isIndexableVaultRelPath` (src/lib/vault.ts) and
-//!    `vaultscan::walk`. `.git/`, `node_modules/` and every dot-entry are
-//!    dropped before they can cross the bridge. This is a SUBSET drop: the
-//!    frontend re-applies `isIndexableVaultRelPath` (`store.ts`), so an
-//!    over-eager drop here is impossible to make silent — but by construction
-//!    this only drops what the frontend would also drop, so no real edit is
-//!    ever lost.
-//! 2. Coalesce all survivors from one debounce window into ONE `Channel::send`.
-//!    A pure `.git/` storm produces ZERO sends; a 300-file checkout produces
-//!    one message instead of hundreds.
-//!
-//! The emitted shape is `Vec<WatchEvent>` == `VaultWatchEvent[]` in
-//! `src/lib/vault.ts`, with absolute paths, so `handleExternalChange` consumes
-//! it unchanged.
+//! Filter indexable paths and coalesce survivors into one native watch message per debounce window.
+//! Keep unclassifiable paths for frontend validation; maintain scan/watch predicate parity.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,14 +31,7 @@ pub struct WatchEvent {
     pub kind: &'static str,
 }
 
-/// Whether `scanVault` would index this vault-relative path — the SAME answer
-/// as `isIndexableVaultRelPath` (src/lib/vault.ts) and the leading-dot /
-/// `node_modules` rule in `vaultscan::walk`.
-///
-/// Kept deliberately identical to the frontend predicate. The frontend
-/// re-applies its own copy before acting on any event, so this filter only has
-/// to be a subset-safe drop: it must never drop a path the frontend would keep.
-/// Because it is the same predicate, it drops exactly the same set.
+/// Match frontend isIndexableVaultRelPath and native scan rules; never drop an indexable path.
 fn is_indexable_rel(rel: &str) -> bool {
     if rel.is_empty() {
         return false;
@@ -92,12 +55,8 @@ fn coarse_kind(kind: &EventKind) -> &'static str {
     }
 }
 
-/// The forward-slashed vault-relative path of `abs` under `root`, or `None`
-/// when `abs` is not inside `root`.
-///
-/// `None` is treated by the caller as "cannot classify — KEEP it": a path the
-/// watcher cannot place under the root must never be silently dropped, because
-/// that would be a lost external edit. The frontend resolves and re-filters it.
+/// Map an absolute path under root to forward-slashed relative form.
+/// Keep unclassifiable paths for frontend validation.
 fn rel_under_root(root: &Path, abs: &Path) -> Option<String> {
     let rel = abs.strip_prefix(root).ok()?;
     let mut out = String::new();
@@ -118,19 +77,8 @@ fn rel_under_root(root: &Path, abs: &Path) -> Option<String> {
     Some(out)
 }
 
-/// Reduce one debounce window's `(kind, paths)` tuples to the filtered,
-/// coalesced batch that will cross the bridge as a SINGLE message.
-///
-/// Extracted from the watcher callback so the reduction — the whole point of
-/// this module — is unit-testable without a live filesystem, and so the
-/// event-count win can be asserted deterministically on any platform (macOS
-/// FSEvents and Windows `ReadDirectoryChangesW` coalesce differently, so a live
-/// event count would not transfer; the reduction ratio here is a function of
-/// the workload's distinct paths, which does).
-///
-/// A path that resolves under the root is kept only if `is_indexable_rel`; a
-/// path that does not resolve under the root is kept unconditionally (see
-/// `rel_under_root`). An event with no surviving path is dropped entirely.
+/// Filter and coalesce one debounce window. Drop events with no surviving paths;
+/// retain paths that cannot be classified under the root.
 fn build_batch(root: &Path, events: &[(EventKind, Vec<PathBuf>)]) -> Vec<WatchEvent> {
     let mut batch: Vec<WatchEvent> = Vec::new();
     for (kind, paths) in events {

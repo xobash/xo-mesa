@@ -104,20 +104,8 @@ function loadPdfEditModule(): Promise<PdfEditModule> {
   return pdfEditModulePromise;
 }
 
-/**
- * Did the first page come back blank when it had something to draw?
- *
- * A blank paint alone is NOT evidence of a broken render: blank cover sheets,
- * separator pages, and "this page intentionally left blank" leaves are ordinary
- * documents, and treating them as failures dropped the whole document into the
- * read-only native fallback — which silently costs the user every editing tool,
- * because the annotation surfaces only exist over Mesa's own page canvases.
- *
- * pdf.js answers the question directly: a page whose operator list is empty has
- * no drawing operations at all, so a blank result is the CORRECT one. Anything
- * else that paints blank is still treated as the failure it is. Asking is cheap
- * (measured 1-5 ms on the test corpus) and only happens on the rare blank paint.
- */
+/** Confirm blank paints against drawing operations; fall back if pdf.js cannot
+ * answer. Unreadable canvas pixels are inconclusive. */
 export async function paintedBlankUnexpectedly(
   ctx: { getImageData: (x: number, y: number, w: number, h: number) => { data: Uint8ClampedArray } },
   canvas: { width: number; height: number },
@@ -159,16 +147,8 @@ export function usePdfEditor(
   // Extraction is zoom-independent; the screen-space projection is derived.
   const [textRunSources, setTextRunSources] = useState<PdfTextRunSource[]>([]);
   const [firstPagePainted, setFirstPagePainted] = useState(false);
-  // Page completion is imperative canvas bookkeeping. Keep the complete set
-  // available without publishing a new React state object after every page;
-  // only page 1 changes visible UI (it retires the native warm-start iframe).
-  //
-  // Keyed by the scale the pixels were painted at, which is what makes a render
-  // pass idempotent: re-running one repaints nothing, so mounting more page
-  // canvases (or any other reason the effect re-runs) costs only the pages that
-  // are actually missing. A page leaves this map the moment its pixels stop
-  // being trustworthy — an edit marks it stale, or React hands us a different
-  // canvas element, whose bitmap starts blank.
+  // Track painted scale per page in a ref. Invalidate on edits, canvas replacement, or release;
+  // only first-page completion requires a UI publication.
   const paintedPagesRef = useRef<Map<number, number>>(new Map());
   const allPagesPaintedRef = useRef(false);
   const [history, setHistory] = useState<Uint8Array[]>([]);
@@ -199,13 +179,8 @@ export function usePdfEditor(
   >(new Map());
   const canvasVersionRaf = useRef<number | null>(null);
   const pdfPerfRunRef = useRef<number | null>(null);
-  // One pdf.js worker per viewer, reused across the documents that viewer opens.
-  // Booting a worker measured 44-75 ms and was the ENTIRE cost of the "parse"
-  // phase for small documents (reusing one drops it to 1-5 ms). It is scoped to
-  // the viewer, not shared globally, on purpose: a document that wedges its
-  // worker must not be able to wedge a PDF open in another window, and this hook
-  // shows one document at a time anyway. A failed parse throws the worker away
-  // so the next document still starts from a clean one.
+  // Reuse one worker per viewer; discard it after parse failure.
+  // Viewer scope keeps a failed document isolated from other windows.
   const pdfWorkerRef = useRef<pdfjs.PDFWorker | null>(null);
   // Whether the worker currently held has been handed a document. Only a worker
   // that never has may go back to the shared spare slot.
@@ -221,8 +196,7 @@ export function usePdfEditor(
         markPdfPerf(pdfPerfRunRef.current, "worker-adopted-warm");
         return warm;
       }
-      // Booting the worker means fetching and compiling ~1.4 MB of JS on a new
-      // thread, so it is timed separately from the document parse that follows.
+      // Time worker boot separately from document parsing.
       markPdfPerf(pdfPerfRunRef.current, "worker-boot-start");
       const worker = new pdfjs.PDFWorker();
       pdfWorkerRef.current = worker;
@@ -241,10 +215,7 @@ export function usePdfEditor(
     pdfWorkerUsedRef.current = false;
     worker?.destroy();
   }, []);
-  // Pages the viewer currently has on (or near) screen, 0-based. Null until the
-  // viewer reports — meaning "no information yet", which is treated as "page 1",
-  // never as "every page": a 748-page document must not rasterize itself just
-  // because the observer has not fired.
+  // Zero-based on-screen pages. Until the viewer reports, paint page 1 only.
   const onscreenPagesRef = useRef<ReadonlySet<number> | null>(null);
   const [onscreenVersion, setOnscreenVersion] = useState(0);
   const onscreenRaf = useRef<number | null>(null);
@@ -354,16 +325,7 @@ export function usePdfEditor(
     );
   }, []);
 
-  /**
-   * Take ownership of bytes the caller holds exclusively, without copying them.
-   *
-   * Avoid a defensive full-buffer snapshot when the bytes came directly from
-   * `readFile`/`arrayBuffer` and no other owner can mutate them.
-   *
-   * The caller must own `next` outright and never mutate it afterwards. Every
-   * other producer makes its own snapshot explicitly before adoption: edit
-   * transforms, undo/redo, and save each retain their existing isolation.
-   */
+  /** Adopt exclusively owned bytes without copying. The caller must not mutate them after adoption. */
   const adoptSavedBytes = useCallback((next: Uint8Array) => {
     savedBytesRef.current = next;
     bytesRef.current = next;
@@ -445,9 +407,7 @@ export function usePdfEditor(
             // one was, so this page owes a repaint.
             paintedPagesRef.current.delete(pageIdx);
             allPagesPaintedRef.current = false;
-            // Drop the 300x150 bitmap every canvas is born with. Unpainted, it
-            // is 180 kB of nothing — 135 MB across a 748-page document — and the
-            // page's box comes from CSS now, not from the bitmap.
+            // Release the default bitmap; CSS determines the unpainted page box.
             el.width = 0;
             el.height = 0;
             markPdfPerf(pdfPerfRunRef.current, "canvas-mounted", {
@@ -518,11 +478,8 @@ export function usePdfEditor(
             return;
           }
           worker.destroy();
-          // This viewer really did open PDFs, and leaving one is the strongest
-          // predictor of opening the next (PDF → note → PDF measured a full
-          // 46 ms reboot). Boot a fresh spare for that open — never recycle
-          // this worker, which has parsed documents and must die with its
-          // viewer.
+          // Prime a fresh spare for the next open; this used worker is destroyed
+          // with its viewer and cannot be recycled.
           primePdfWorker(() => new pdfjs.PDFWorker());
         });
     };
@@ -658,13 +615,7 @@ export function usePdfEditor(
         markPdfPerf(pdfPerfRunRef.current, "pdfjs-parse-start", {
           bytes: bytes.byteLength,
         });
-        // Judge the bytes BEFORE the worker is engaged, so a file Mesa itself
-        // rejects can never be mistaken for evidence that the worker is
-        // unhealthy. The rejection carries `isNotAPdf` (tagged by
-        // `sanitizePdfBytes` itself, so both PDF surfaces read one rule) and the
-        // catch below keeps the untouched worker for it. This is not a rare
-        // path: saved HTML error pages can carry a `.pdf` extension. Keep the
-        // untouched worker warm for the next valid document.
+        // Reject non-PDF bytes before engaging the worker; retain a worker that has not parsed a document.
         const clean = sanitizePdfBytes(bytes).slice(0);
         // Passing our own worker also changes who owns it: pdf.js only destroys
         // the worker it created itself, so `doc.destroy()` below tears down the
@@ -692,14 +643,7 @@ export function usePdfEditor(
         if (!cancelled && !isPdfjsCancellation(err)) {
           if (!isNotAPdf(err)) {
             console.error("[mesa] PDF parse failed:", err);
-            // Whatever this document did to the worker, the next one starts
-            // fresh. Only reached when pdf.js was actually handed the bytes —
-            // Mesa's own rejection leaves the worker provably virgin, so the
-            // viewer keeps it: navigating on to a real PDF reuses it, and
-            // unmounting hands it back to the spare slot through the existing
-            // virgin-worker path. Staying silent there also matters: logging a
-            // stack for each of a vault's ~880 saved HTML error pages is noise,
-            // not a diagnostic.
+            // Discard workers after pdf.js failure. Mesa header rejection leaves an untouched worker reusable.
             discardPdfWorker();
           }
           // The load is over; leaving "Loading PDF..." above the fallback would
@@ -756,12 +700,7 @@ export function usePdfEditor(
   // zoom, or the mounted canvas set changes. No parsing happens here anymore.
   useEffect(() => {
     if (!enabled || !doc) return;
-    // A page-scoped override belongs to the document change that produced it.
-    // This effect also re-runs for zoom settles and canvas remounts, and those
-    // passes must repaint EVERYTHING: a zoom landing between the edit and its
-    // reparse would otherwise consume the override, repaint one page at the new
-    // scale, and leave every other page sized for the old one. Non-document
-    // passes leave the override for the reparse that follows.
+    // Consume page-scoped staleness only for its document change; zoom and canvas remounts repaint their band.
     const isDocumentChange = lastRenderedDocRef.current !== doc;
     lastRenderedDocRef.current = doc;
     const stalePages = isDocumentChange ? stalePaintPagesRef.current : "all";
@@ -775,12 +714,8 @@ export function usePdfEditor(
           .filter((pageNumber) => pageNumber >= 1 && pageNumber <= doc.numPages)
           .sort((a, b) => a - b);
         const mountedPages = new Set(mountedPageNumbers);
-        // What one page costs at THIS scale decides how far ahead it is worth
-        // painting: 3 pages is ~5 screens of lookahead at 120% but ~12.7 at
-        // 300%, where each page is 16.6 MB. Measured from a page already sized
-        // at scale 1 (the background measure pass fills these in); before any
-        // is known the configured band stands, which is the pre-existing
-        // behavior for the first paint.
+        // Estimate page bytes at the current scale to bound paint-ahead work.
+        // Use the configured band until page geometry is available.
         const typicalPageBytes = (): number => {
           const size =
             pageSizesRef.current.get(0) ??
@@ -794,14 +729,8 @@ export function usePdfEditor(
           ahead: pdfPaintAheadPages(typicalPageBytes(), PAINT_AHEAD_PAGES),
           keep: RELEASE_AFTER_PAGES,
         });
-        // Hand back the pixel memory of pages that have scrolled well out of
-        // reach before painting new ones, so the peak is the window and not the
-        // document. Their paint credit goes with them: the canvas is genuinely
-        // blank afterwards, so scrolling back must repaint rather than trust it.
-        //
-        // Distance is not the only trigger: a page count is not a memory bound
-        // once zoom is in play (one Letter page is 16.6 MB at 300%), so the
-        // budget also trims the retained tail. See `pdfCanvasBudget.ts`.
+        // Release off-screen pixels before painting and invalidate their paint
+        // credit. Bound retained canvases by bytes as well as page distance.
         const backingBytesOf = (pageIdx: number): number => {
           const canvas = canvasRefs.current.get(pageIdx);
           return canvas ? canvas.width * canvas.height * 4 : 0;
@@ -821,12 +750,7 @@ export function usePdfEditor(
           allPagesPaintedRef.current = false;
           countPdfPerf(pdfPerfRunRef.current, "pagesReleased");
         }
-        // Three filters, all load-bearing. A page with no canvas cannot be
-        // painted at all; a page outside the window is not worth painting; and a
-        // page already holding this scale's pixels has nothing to gain from
-        // being painted again — that last one keeps the pass idempotent, so the
-        // mount of page 200 costs one page instead of re-rasterizing the 199 in
-        // front of it.
+        // Paint only mounted pages in the paint band that lack pixels at the current scale.
         const pageNumbers = pdfPagesToRender(
           mountedPageNumbers,
           window.paint,
@@ -860,12 +784,7 @@ export function usePdfEditor(
           noteWindowComplete();
           return;
         }
-        // Create pixel backing only after planning proves there is paint work.
-        // Observer/canvas updates often produce a skipped pass, which needs no
-        // pixel backing.
-        // The visible page canvases retain their previous pixels until each
-        // replacement is complete, so one effect-local scratch still prevents
-        // white flashes and bounds duplicate backing to the largest page.
+        // Allocate one effect-local scratch canvas only when work exists; replace visible pixels after painting.
         const renderCanvas = document.createElement("canvas");
         countPdfPerf(pdfPerfRunRef.current, "renderPasses");
         countPdfPerf(pdfPerfRunRef.current, "pagesPlanned", pageNumbers.length);
@@ -953,13 +872,7 @@ export function usePdfEditor(
     };
   }, [enabled, doc, renderScale, canvasVersion, onscreenVersion]);
 
-  // Measure every page once, at scale 1, without painting anything. The viewer
-  // needs each page's box to reserve correct layout for pages it has not painted
-  // (otherwise the scroll height is a lie and the observer reporting which pages
-  // are on screen has nothing sound to report), and pointer mapping needs the
-  // viewport of any page the user can reach. Measuring is metadata only — no
-  // rasterization, no pixel memory — and it runs after first paint, in chunks,
-  // yielding between them so it never competes with the page being read.
+  // Measure scale-1 geometry after first paint in yielding batches; reserve page layout without rasterizing.
   useEffect(() => {
     if (!enabled || !doc || !firstPagePainted) return;
     if (pageSizesRef.current.size >= doc.numPages) return;
@@ -1003,9 +916,7 @@ export function usePdfEditor(
     };
   }, [enabled, doc, firstPagePainted]);
 
-  // Extract at scale 1 only. pdf.js extraction is the expensive half (81.3 ms
-  // for a 40-page document), and it does not depend on zoom — only the
-  // screen-space projection below does, which is pure arithmetic.
+  // Extract zoom-independent text at scale 1; project to screen coordinates below.
   useEffect(() => {
     if (!enabled || !extractText || !doc) {
       textRunSourcesRef.current = [];

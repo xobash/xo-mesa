@@ -92,23 +92,7 @@ export function isTextExt(ext: string): boolean {
 export function isEditableTextExt(ext: string): boolean {
   return /^(md|markdown|txt|text)$/i.test(ext);
 }
-/**
- * Whether Mesa's note-TEXT pipeline may read and write this file.
- *
- * The one definition of that decision. `selectFile` already used exactly this
- * test to decide whether to load a file's content into the editor cache; every
- * other stage of the text pipeline (`ensureContent`, `flushSave`, `writeNote`)
- * now asks the same question, so the read side and the write side can never
- * disagree about what a file is.
- *
- * Why it matters: the text pipeline round-trips through a JS string
- * (`readTextFile` → `contentCache` → `TextEncoder`). For a PDF, an image, or
- * any other binary that round-trip is destructive — and when there is no cached
- * text at all (the normal state for a binary, which is never read as text), the
- * "current content" of the active file reads as the empty string, so a flush
- * would replace the file with zero bytes. Binary files are edited only through
- * their own byte-level paths (`pdfSave.ts` → `persistVerifiedBytes`).
- */
+/** Shared text-pipeline eligibility predicate. Binary editing uses byte-oriented persistence. */
 export function isTextualVaultFile(file: {
   ext: string;
   isMarkdown?: boolean;
@@ -142,19 +126,8 @@ export function resolveTextVaultLink(
   return matches.find((file) => file.isMarkdown) ?? matches[0];
 }
 
-/**
- * The text a crash-safety flush (blur / hide / quit) is allowed to write for
- * `file`, or `null` when the flush must be skipped entirely.
- *
- * A flush exists to persist a debounced *edit*, so it may only ever write text
- * Mesa actually holds for that file. Two cases must never reach the disk:
- *   - a file the text pipeline may not touch at all (see `isTextualVaultFile`)
- *   - a file with no cached text, i.e. nothing was ever loaded or edited — for
- *     example a note whose opening read is still in flight. Treating that as ""
- *     would flush an empty document over the real file.
- * An empty *cached* string is a real edit (the user cleared the note) and is
- * written normally.
- */
+/** Return cached text only for eligible text files; null means skip.
+ * An absent cache entry is not an empty document, while a cached empty string is valid content. */
 export function flushableNoteText(
   file: { ext: string; isMarkdown?: boolean },
   cachedContent: string | undefined
@@ -164,17 +137,7 @@ export function flushableNoteText(
   return cachedContent;
 }
 
-/**
- * Whether an externally modified file's CACHED text must be re-read from disk.
- *
- * The mirror of `flushableNoteText` on the read side: refresh any cached text
- * after an external change. This covers every textual file type, so search,
- * selection, and saves cannot use a stale cached copy.
- *
- * A file with NO cache entry returns false on purpose — nothing is stale, and
- * the lazy read in `ensureContent` already produces current text. Re-reading it
- * here would also pull in files the vault-open budget deliberately skipped.
- */
+/** Refresh text only for existing cache entries after an external modification. */
 export function needsCachedTextRefresh(
   file: { ext: string; isMarkdown?: boolean },
   cachedContent: string | undefined
@@ -209,16 +172,7 @@ export function fileKind(ext: string): FileKind {
 
 // --- path helpers (forward-slash normalized) ------------------------------
 
-/**
- * Canonical form of a vault root path: forward slashes, no trailing slash.
- *
- * Every place Mesa remembers or compares a vault path must use this so the same
- * folder is never stored under two spellings. This matters most on Windows,
- * where the OS hands back backslash paths from some entry points and
- * forward-slash paths from the folder dialog — without canonicalizing, the
- * recents list can't match its own entries and "remove vault" appears to do
- * nothing.
- */
+/** Canonical vault-root spelling for storage/comparison: forward slashes and normalized trailing separators. */
 export function canonicalRoot(p: string): string {
   const slashed = p.trim().replace(/\\/g, "/").replace(/\/+$/, "");
   // Windows drive letters are case-insensitive; different entry points hand
@@ -322,12 +276,7 @@ export async function authorizeVaultRoot(root: string): Promise<void> {
   await invoke("vault_authorize", { root });
 }
 
-/**
- * Prove that a remembered vault root is still a reachable directory before
- * replacing the current workspace. Network/removable roots can disappear
- * between launches; an unavailable root must never be interpreted as an empty
- * vault merely because both directory walkers failed.
- */
+/** Require a reachable remembered directory; unavailable roots must not become empty vaults. */
 export async function assertVaultRootAvailable(root: string): Promise<void> {
   if (isDemo(root)) return;
   let info;
@@ -343,17 +292,8 @@ export async function assertVaultRootAvailable(root: string): Promise<void> {
   }
 }
 
-/**
- * Fill in `size`/`mtime`/`createdAt` for already-listed files, mutating them in place.
- *
- * There is no bulk metadata call: this is one `stat` IPC round-trip PER FILE,
- * and on the measured 4,165-file vault it is **93% of `scanVault`** (1,476 ms
- * of 1,593 ms; the directory walk over 166 directories is only 117 ms). Stats
- * run in parallel at a fixed width so file count cannot turn directly into
- * in-flight memory. Mutating in place is deliberate — `PdfView` subscribes to
- * a file's primitive `mtime` rather than to object identity. The graph also
- * uses the creation timestamp when it replays a timelapse.
- */
+/** Fill size/mtime/createdAt in place using bounded per-file stat requests.
+ * Viewers subscribe to primitive metadata; graph timelapse uses creation time. */
 export async function loadVaultMetadata(
   files: readonly VaultFile[],
   stopped?: () => boolean
@@ -374,24 +314,10 @@ export async function loadVaultMetadata(
   }
 }
 
-/**
- * Recursively list every file in the vault.
- *
- * `metadata: false` returns the listing WITHOUT `size`/`mtime`, leaving the
- * expensive per-file stat pass to the caller. `openVault` uses it to keep those
- * 4,165 round-trips off the path to the first frame; every other caller wants
- * the metadata inline and gets it by default.
- */
-/**
- * One-IPC listing via the native walker (`vaultscan.rs`), or null when it is
- * unavailable — an older shell, a non-Tauri host, or any failure at all.
- *
- * Only `rel`/`size`/`mtime`/`created` cross the bridge; every derived field is computed
- * here with the SAME helpers the `readDir` walk uses, so the two paths cannot
- * produce different `name`/`ext`/`isMarkdown`/`path` values. The Rust walk's
- * filter rules are pinned against this file by `vaultScanBehavior.test.ts` and
- * by `vaultscan.rs`'s own parity test.
- */
+/** Recursively list vault files. metadata:false defers per-file stats on the
+ * fallback path; metadata is included by default. */
+/** Map native rel/size/mtime/created fields through shared frontend helpers.
+ * Return null when scanning is unavailable; propagate research-recovery failures. */
 interface NativeScan {
   files: VaultFile[];
   /** Write artifacts found by the SAME walk — see `scanVault`. */
@@ -453,27 +379,10 @@ async function scanVaultNative(root: string): Promise<NativeScan | null> {
   }
 }
 
-/**
- * Every file in the vault.
- *
- * Prefers the native one-round-trip walker: the `readDir`-per-directory walk
- * plus one `stat` PER FILE measured 1,593 ms on the 4,165-file reference vault
- * (1,476 ms of it the stat pass alone), against ~20 ms for the same walk done
- * natively — the gap is IPC round-trip count, not disk. That pass is in front
- * of the first paint whenever the sidebar sorts by `modified` or `size`.
- *
- * `metadata: false` is now only a hint: the native path always returns size and
- * mtime because they are free once the walk has the dirent. It still suppresses
- * the expensive per-file `stat` pass on the fallback path.
- *
- * `onArtifacts` receives the crash-recovery write artifacts the SAME walk found,
- * or `null` when this scan could not answer (browser demo, or a shell without
- * the native command) and `recoverWriteArtifacts` must do its own walk. That
- * walk was 153 `read_dir` IPC round-trips on the reference vault — 96% of the
- * whole pre-paint round-trip budget — to find nothing in the normal case; see
- * `vaultscan.rs`. It is a callback rather than a second return value so every
- * existing caller keeps the plain `VaultFile[]` contract.
- */
+/** List vault files through one native scan, falling back to the plugin walk.
+ * metadata:false suppresses per-file stats only on the fallback path.
+ * onArtifacts receives discovered recovery artifacts, or null when discovery
+ * is unavailable and recovery must perform its own walk. */
 export async function scanVault(
   root: string,
   options: {
@@ -509,23 +418,8 @@ export function hasVaultMetadata(files: readonly VaultFile[]): boolean {
 /** Directory names `walk` never descends into. */
 const SKIPPED_DIRS = new Set(["node_modules", ".git"]);
 
-/**
- * Whether `scanVault` would index this vault-relative path — the ONE definition
- * of what Mesa considers part of a vault.
- *
- * `walk` skips every dot-prefixed entry (files and directories alike) plus
- * `node_modules` and `.git`, so anything under them can never appear in `files`.
- * The watcher needs the same answer: it only checked the BASENAME for a leading
- * dot, so `.git/index` looked like an ordinary file called `index`. It was then
- * missing from `files`, `registerExternalFile` refused it (it applies these
- * rules), and the fallback ran `refreshMissingExternalFiles` — a full
- * `scanVault` — for that one path, and again for the next one. A `git commit`
- * inside a vault emits dozens of such events in a single 60 ms watch batch, so
- * an ordinary git operation could put the app into back-to-back whole-vault
- * rescans (4,165 readDir + 4,165 stat IPC round-trips each, on a vault this
- * size). Answering the question up front removes the work rather than bounding
- * it.
- */
+/** Shared scan/watch path filter. Exclude dot-prefixed path segments and
+ * dependency directories before registration or fallback rescanning. */
 export function isIndexableVaultRelPath(rel: string): boolean {
   if (!rel) return false;
   for (const seg of rel.split("/")) {
@@ -534,12 +428,7 @@ export function isIndexableVaultRelPath(rel: string): boolean {
   return true;
 }
 
-/**
- * Every `readDir` is an IPC round-trip, so walking one directory at a time made
- * vault-open latency scale with the directory COUNT. Sibling directories are
- * listed a level at a time in bounded batches instead; `scanVault` sorts by
- * `relPath` afterwards, so traversal order never reaches the result.
- */
+/** List sibling directories in bounded level batches; final sorting makes traversal order irrelevant. */
 const WALK_BATCH = 16;
 
 async function walk(
@@ -619,24 +508,10 @@ export async function readNote(file: VaultFile): Promise<string> {
   return (await readNoteResult(file)).text;
 }
 
-/**
- * Files per `vault_read_text` round-trip.
- *
- * This is the only thing bounding the response buffer and the decode burst, so
- * it trades round-trips against peak memory rather than against throughput —
- * the real read parallelism is chosen natively (`available_parallelism()`), not
- * by this number. 128 keeps a batch of ordinary notes in the low megabytes
- * while turning the reference vault's ~2,400 reads into ~20 round-trips, and it
- * background hydration can publish progress in bounded batches.
- */
+/** Maximum paths per native text-read response, bounding decode and progress batches. */
 export const VAULT_TEXT_CHUNK = 128;
 
-/**
- * Network-mounted vaults have much higher per-request latency than local
- * folders. Keep their native read pressure deliberately small. This is a
- * conservative path-shape hint: UNC roots and macOS mounted volumes are the
- * only forms Mesa can identify without probing or writing to the filesystem.
- */
+/** Use lower read concurrency for UNC and mounted-volume path hints without probing storage. */
 export function isLikelyRemoteVaultPath(root: string): boolean {
   const normalized = root.replace(/\\/g, "/");
   return normalized.startsWith("//") || normalized.startsWith("/Volumes/");
@@ -656,19 +531,8 @@ export type TextReadOutcome = { kind: "content"; text: string } | { kind: "skipp
  *  the fallback needs a bound; the native path's parallelism is chosen in Rust. */
 const FALLBACK_READ_CONCURRENCY = 16;
 
-/**
- * Decode one `vault_read_text` response body.
- *
- * Frame (little-endian): `u32 count`, then per file `u32 len` followed by `len`
- * bytes, where the two reserved lengths distinguish skipped and failed reads.
- *
- * Decoding is non-fatal, matching `plugin:fs|read_text_file`'s JS half exactly:
- * both hand raw bytes to a default `TextDecoder`, so invalid UTF-8 becomes
- * U+FFFD identically on the native and fallback paths. `vaultReadWire.test.ts`
- * pins this against the Rust encoder.
- *
- * The result variant remains authoritative through indexing and coverage.
- */
+/** Decode ordered little-endian count/length frames; reserved lengths distinguish skips and failures.
+ * Use nonfatal UTF-8 decoding consistently with plugin reads and retain outcome distinctions. */
 export function decodeTextChunkOutcomes(
   /** Whatever `invoke` handed back. The custom-protocol IPC yields an
    *  `ArrayBuffer`, but Tauri silently falls back to `postMessage` if that
@@ -795,20 +659,7 @@ export async function readVaultTextOptional(root: string, files: readonly VaultF
   return (await readVaultTextOutcomes(root, files)).map(result => result.kind === "content" ? result.text : null);
 }
 
-/**
- * Read a batch of vault files in ONE round-trip, in the given order.
- *
- * Per-file reads were ~2,400 invokes per vault open on the reference vault.
- * Every Tauri invoke goes over the custom-protocol IPC, and on Windows that is
- * a WebView2 `WebResourceRequested` raised on the UI thread whose response wry
- * delivers by posting a window message and forcing `RDW_INTERNALPAINT` — so the
- * round-trip count is charged to the same thread that delivers keystrokes and
- * paints. The search-corpus half of those reads runs while the user is already
- * typing. See `vaultread.rs` for the source references.
- *
- * A null result means no authoritative content was read. Callers must never
- * turn it into an editable or indexed empty document.
- */
+/** Read files in request order. Null means no authoritative read, never an editable empty document. */
 export async function readVaultText(
   root: string,
   files: readonly VaultFile[]
@@ -823,14 +674,8 @@ export function decodePeekBytes(bytes: Uint8Array): string {
   return text.replace(/�+$/, "");
 }
 
-/**
- * Read at most `maxBytes` from the head of a file. Hover previews only ever
- * show the first few KB, so reading a whole multi-MB note just to render a
- * 1200-char excerpt is what made preview cards feel slow. Falls back to a
- * whole-file read when the streaming handle isn't available (browser demo,
- * older shells). Never used for editing — the editor always reads the full
- * file — so a truncated peek can never be written back to disk.
- */
+/** Bound hover reads when streaming is available; compatibility may read the whole file.
+ * Peeks must never become editable save baselines. */
 export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<string> {
   if (isDemo(file.path)) return demoRead(file.relPath);
   try {
@@ -853,16 +698,7 @@ export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<strin
   }
 }
 
-/**
- * Write TEXT content to a vault file.
- *
- * Fails closed on anything the text pipeline may not represent
- * (`isTextualVaultFile`): encoding a JS string over a PDF/image/archive
- * destroys it, and this is the last checkpoint every text write passes
- * through, so no present or future caller can reach the disk with a
- * text-encoded overwrite of a binary file. Binary editing has its own
- * byte-level path (`pdfSave.ts` → `persistVerifiedBytes`).
- */
+/** Write text only for files accepted by isTextualVaultFile; binary formats use byte-oriented writes. */
 export async function writeNote(
   file: VaultFile,
   content: string,
@@ -978,17 +814,7 @@ export async function copyVaultFile(
   return toVaultFile(root, destRel);
 }
 
-/**
- * Byte-preserving rename for ANY vault file. The text pipeline must never be
- * part of a rename: reading a binary through the text cache yields `""` (by
- * design, see `ensureContent`), so a rename built on read-text → write-text →
- * remove-original would replace a PDF with an empty file and delete the real
- * bytes. An OS `rename` moves the bytes atomically without decoding them —
- * it is the same primitive the verified-write pipeline trusts for its own
- * commit step. The desktop path calls the native no-replace primitive rather
- * than doing an `exists` check followed by overwrite-capable plugin rename:
- * another process can create the destination in that gap.
- */
+/** Rename bytes without decoding. Native no-replace publication preserves a concurrently created destination. */
 export async function renameVaultFile(
   root: string,
   srcRel: string,
@@ -1235,15 +1061,8 @@ export function decodeWatchBatch(msg: unknown): VaultWatchEvent[] | null {
   return out.length ? out : null;
 }
 
-/** Watch the vault for external changes (e.g. an AI agent writing files).
- * Returns an unwatch function. No-op in the browser demo.
- *
- * Prefers Mesa's native `vault_watch` command (src-tauri/src/vaultwatch.rs),
- * which filters `.git`/dot churn and coalesces a whole debounce window into ONE
- * IPC message. The plugin `watch` path below is the fallback: it emits one IPC
- * message per raw event, and on Windows every one of those is a WebView2
- * UI-thread `eval` plus a forced repaint (see `vaultwatch.rs`), so a git
- * checkout or device sync inside the vault stalls input for its duration. */
+/** Watch external changes through filtered native batches, with a plugin fallback.
+ * Return teardown; browser demo is a no-op. */
 export async function watchVault(
   root: string,
   onChange: (events: VaultWatchEvent[]) => void
@@ -1419,22 +1238,8 @@ async function makeRecoveryRescue(
   throw lastError ?? new Error("Recovery could not create a rescue copy.");
 }
 
-/**
- * Sweep the vault for write artifacts left behind by a crash or power loss
- * mid-save (`.name.ext.mesa-save/backup-…tmp`, `.mesa-sync-tmp-…`) and recover:
- * restore one original-holding artifact when its target is missing, and remove
- * stale disposable artifacts. Decisions live in `writeRecovery.ts` (pure);
- * this function only walks and executes.
- *
- * Runs at vault open. `discovered` is the artifact list `vault_scan` collected
- * during the listing walk; pass `null`/omit it to make this do its own walk
- * (browser demo, or a shell without the native command). Because the native
- * list now arrives WITH the scan rather than before it, `openVault` re-scans
- * after a restore so a restored file is still scanned normally — one extra
- * round-trip in the rare crashed case, against 153 on every open.
- *
- * Never throws — recovery must not block opening a vault.
- */
+/** Execute writeRecovery decisions using scan-discovered artifacts or a fallback walk.
+ * The caller re-scans after restoration. Report recovery outcomes without throwing. */
 export async function recoverWriteArtifacts(
   root: string,
   /** Stop before recovery mutates anything. Already-started directory listings
@@ -1518,14 +1323,7 @@ export async function recoverWriteArtifacts(
   return result;
 }
 
-/**
- * Collect `{dir, name}` entries for files whose basename passes `matches`,
- * using the same bounded, level-at-a-time directory walk and skip rules as the
- * visible vault scan. Every `readDir` is an IPC round-trip; serial recursion
- * made recovery add another directory-count-scaled pass before `scanVault`.
- * Results from each batch are appended in level/input order, independent of
- * which sibling listing settles first.
- */
+/** Collect matching artifact names with bounded level traversal in deterministic batch/input order. */
 async function collectFilesMatching(
   dir: string,
   matches: (name: string) => boolean,

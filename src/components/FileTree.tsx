@@ -171,12 +171,7 @@ interface FlatRow {
   depth: number;
 }
 
-/**
- * The expanded tree as a flat, indexable row list — the same nodes in the same
- * order the recursive renderer produced, minus everything inside a collapsed
- * folder. Windowing needs an index per row, which a recursive render cannot
- * give it.
- */
+/** Flatten expanded tree nodes in display order, excluding collapsed descendants. */
 function flattenRows(
   nodes: TreeNode[],
   depth: number,
@@ -239,12 +234,7 @@ async function copyText(text: string): Promise<boolean> {
   return ok;
 }
 
-/**
- * One rendered row. Everything it displays arrives as a PROP.
- *
- * `FileTree` subscribes once and passes state to the mounted row window.
- * Per-row store subscriptions would add subscriber work to every store update.
- */
+/** Rows receive props; FileTree owns the store subscriptions. */
 const TreeRow = memo(function TreeRow({
   node,
   depth,
@@ -387,36 +377,12 @@ const TreeRow = memo(function TreeRow({
   );
 });
 
-/**
- * The sidebar tree, WINDOWED: the expanded tree is flattened into a row list
- * and only the rows covering the sidebar viewport — plus overscan, plus
- * whatever holds keyboard focus — are mounted.
- *
- * A real vault has thousands of entries, and mounting them all cost far more
- * than their own render. Measured on the 4,165-file vault: 13,102 DOM nodes,
- * 94.0 MB heap, and ~20,800 row selectors that made ANY store update cost
- * 2.97 ms of fan-out (3.86 ms for one editor keystroke) — whether or not the
- * sidebar was even visible, since it stays mounted by design. Windowed:
- * 917 DOM nodes, 78.1 MB, 0.045 ms fan-out, 0.74 ms per keystroke.
- *
- * `FileTree` takes no props, so `memo` makes parent re-renders free while its
- * own store subscriptions drive every update it needs. Three things keep this
- * correct, and all three are load-bearing:
- *  - rows are prop-driven (see `TreeRow`) — no per-row store subscriptions;
- *  - the container reserves the FULL row count × measured row height and
- *    positions each row by index, so the scrollbar and every scroll offset
- *    match a fully-mounted tree;
- *  - `focusRowRange` keeps the focused row and its Tab neighbours mounted, so
- *    keyboard reachability is exactly what it was with every row mounted.
- */
+/** Mount viewport rows, overscan, and the keyboard focus range.
+ * Rows receive state through props. Reserve the full row-list height and
+ * position rows by index so scrolling remains stable. memo isolates parent renders. */
 export const FileTree = memo(function FileTree() {
   const files = useAppStore((s) => s.files);
-  // Note metadata reaches the rendered tree ONLY through the "links" sort mode
-  // (rawLinks counts feed the file comparator and folder aggregates). In every
-  // other mode, subscribe to a stable empty map instead: the notes identity
-  // churns on each debounced editor save (≤2 Hz while typing), and without
-  // this pin that churn re-rendered and re-sorted the entire sidebar tree.
-  // Event handlers that need real note titles read getStore() at event time.
+  // Subscribe to notes only for links sorting. Event handlers read current titles from the store.
   const notes = useAppStore((s) =>
     s.settings.sortMode === "links" ? s.notes : EMPTY_NOTES
   );
@@ -570,18 +536,7 @@ export const FileTree = memo(function FileTree() {
   );
   const onCancelRename = useCallback(() => setRenaming(null), []);
 
-  // Reveal active file: a one-shot triggered by the sidebar's ⌖ button (via
-  // revealTick). Expand every folder on the path to the active file and scroll
-  // it into view. Skips the very first mount so it only fires on real clicks.
-  //
-  // `activePath` and `collapsedFolders` are read from the store HERE rather
-  // than subscribed at the top of the component. This effect is deliberately
-  // keyed on `revealTick` alone, so a subscription only ever fed it a stale
-  // render snapshot — while making the whole sidebar re-render on every file
-  // switch. `TreeItem` subscribes to `activePath` itself, so the two rows whose
-  // highlight actually changes still update; the other 4,000+ rows in a large
-  // vault do not re-render to produce identical markup. Reading at event time
-  // reveals the file that is active when ⌖ is pressed.
+  // Reveal runs on revealTick, skips initial mount, and reads active path and folder state at event time.
   const revealMounted = useRef(false);
   const [revealTarget, setRevealTarget] = useState<string | null>(null);
   useEffect(() => {
@@ -716,10 +671,8 @@ export const FileTree = memo(function FileTree() {
 
       {menu &&
         createPortal(
-          // Portaled to <body>: `.sidebar` sets `transform`/`will-change`, which
-          // makes it the containing block for `position: fixed` descendants, so
-          // a menu rendered inside it is laid out against the sidebar's SCROLLED
-          // content (measured top: -19734 at a scroll of 20,000).
+          // Portal fixed menus outside the transformed sidebar so viewport
+          // coordinates remain independent of its scroll position.
           <div
             ref={menuRef}
             className="context-menu"

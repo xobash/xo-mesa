@@ -1,49 +1,6 @@
-// Mesa activity bridge — a Pi extension loaded by Mesa's embedded terminal.
-//
-// Filesystem watchers can see writes but never *reads*. So Mesa cannot tell
-// when Pi opens a note to look at it — only when Pi changes one on disk. That is
-// why, before this extension, the living graph flickered for agent writes but
-// stayed dark for agent reads.
-//
-// This extension closes that gap at the only layer that is identical across
-// every model and provider Pi can drive: Pi's own tool-execution pipeline. Pi
-// exposes a `tool_call` event that fires for each built-in `read` / `write` /
-// `edit` before it runs, carrying the target path — no matter whether Pi is
-// driving a remote, local, or custom model. We report
-// each access to Mesa's loopback activity server, which makes the matching graph
-// node flicker and floats a live preview card, exactly like an in-app edit.
-//
-// The same pre-execution moment also closes the one write path in all of Mesa
-// that its own verified-write machinery (`src/lib/verifiedWrite.ts`) cannot
-// see: Pi's tools write straight to disk from this external process, with zero
-// backup, atomicity, or validation.
-//
-// For text files that is fine — a text tool round-trips text. For a binary
-// file it is not an edit but destruction: `write`/`edit`/`apply_patch` carry
-// string content, so reaching disk means a UTF-8 decode/encode cycle that
-// mangles every byte sequence that isn't valid UTF-8. On a PDF, one altered
-// byte invalidates the xref table and the document stops opening. Mesa cannot
-// make an external process write good bytes, so it removes the opportunity:
-// those tools are blocked outright on binary paths, with a reason string that
-// points the model at the two routes that do work (a format-aware tool via
-// `bash`, or Mesa's own editor). `bash` itself is deliberately never blocked.
-//
-// `piBinaryWriteBlock` in `src/lib/agent.ts` owns and unit-tests this decision;
-// this file mirrors the extension list and the predicate by hand, because it is
-// a standalone resource compiled into the Rust binary via `include_str!` and
-// cannot import anything from `src/lib` at runtime — the same constraint
-// `opForTool` below already lives with (its tested twin is `activityOpForTool`).
-// `deepResearchExtension.test.ts` executes this bundled copy directly.
-//
-// Safety / boundary notes:
-//   - No-op unless Mesa injected MESA_ACTIVITY_PORT + MESA_ACTIVITY_TOKEN, so
-//     running `pi` outside Mesa (or Mesa loading it with the server down) is
-//     completely silent — including the binary-write block below.
-//   - Talks only to 127.0.0.1 (loopback). Nothing leaves the machine.
-//   - Activity reporting stays fire-and-forget with a hard timeout; it never
-//     blocks a tool and never throws into the agent. The only call this
-//     extension ever blocks is a content write to a binary file, and it fails
-//     closed: any error while deciding leaves the tool call untouched.
+// Report Pi file-tool activity to the authenticated loopback bridge.
+// Mirror the binary text-write guard in src/lib/agent.ts; shell writes are outside this guard.
+// Without bridge configuration the extension is inactive; reporting failures do not block tools.
 
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
@@ -88,12 +45,7 @@ function isBlockedBinaryPath(path: string): boolean {
   return BLOCKED_BINARY_EXTENSIONS.includes(base.slice(dot + 1).toLowerCase());
 }
 
-/**
- * The block payload for a content write that would corrupt a binary file, or
- * undefined to let the call through. Mirrors `piBinaryWriteBlock` in
- * `src/lib/agent.ts`, including the reason text — that string is the model's
- * only feedback, so it names the constraint and the routes that do work.
- */
+/** Return the binary-write block payload or undefined; keep parity with src/lib/agent.ts. */
 function binaryWriteBlock(toolName: string, path: string): PiToolCallResult {
   if (!CONTENT_WRITE_TOOLS.includes(toolName.toLowerCase())) return undefined;
   if (!isBlockedBinaryPath(path)) return undefined;

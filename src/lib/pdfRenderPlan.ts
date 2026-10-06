@@ -1,12 +1,7 @@
 import type { StalePages } from "./pdfStalePages";
 
-/**
- * Select the mounted pages that actually owe pixels.
- *
- * The caller already has the small mounted-page list and viewport window. Work
- * from those rather than allocating `[1..documentPages]` on every canvas/
- * observer update; a 748-page PDF usually has only 1-7 paint candidates.
- */
+/** Select mounted pages that need pixels. Work stays proportional to mounted
+ * pages rather than the document page count. */
 export function pdfPagesToRender(
   mountedPageNumbers: readonly number[],
   paintWindow: ReadonlySet<number>,

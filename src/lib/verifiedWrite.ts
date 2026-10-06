@@ -24,16 +24,7 @@ type VerifiedWriteStage =
   | "Restore"
   | "Rescue";
 
-/**
- * Stages holding bytes MESA AUTHORED, and therefore the only ones `validate`
- * judges. `Backup`, `Restore`, and `Rescue` hold the user's existing file: it
- * is already on disk, Mesa is only preserving it, and byte-for-byte equality
- * already proves the copy is faithful. Applying a format opinion there refuses
- * to save an edit because the ORIGINAL displeases the validator — which is
- * backwards, since the save is what would replace it. Real PDFs carrying more
- * than 4 KiB of debris after `%%EOF` parse and edit fine but fail Mesa's EOF
- * check, so this was reachable as "Backup PDF write verification failed."
- */
+/** Apply format validation only to authored candidate bytes; verify preserved originals by byte equality. */
 const AUTHORED_STAGES: ReadonlySet<VerifiedWriteStage> = new Set([
   "Temporary",
   "Final",
@@ -68,13 +59,7 @@ function splitPath(path: string): { dir: string; base: string } {
   return { dir: path.slice(0, i + 1), base: path.slice(i + 1) };
 }
 
-/**
- * Sibling artifact path for an in-flight write. Dot-prefixed on purpose:
- * every layer that must never see Mesa's write machinery — `scanVault`'s walk,
- * the vault watcher's `registerExternalFile`, and the sync manifest on both
- * the TS and Rust sides — already skips dot-prefixed names. Same directory as
- * the target so the final rename cannot cross a filesystem boundary.
- */
+/** Create dot-prefixed siblings on the target filesystem; scan, watch, and sync must exclude them. */
 export function buildWriteArtifactPath(
   path: string,
   label: WriteArtifactLabel
@@ -133,16 +118,8 @@ async function readBackVerifiedBytes(
   return bytes;
 }
 
-/**
- * Make the original bytes outlive a non-atomic commit window or a transaction
- * whose rollback failed.
- *
- * Preferred route is renaming the already-verified backup. This avoids a
- * second large allocation on a full disk. The helper falls back to a verified
- * copy, and finally to keeping the backup under its own name. The caller must
- * not start an in-place overwrite when only the disposable backup label
- * survives, because crash recovery removes stale backups beside a target.
- */
+/** Promote the verified backup to rescue, falling back to a verified copy or retaining the backup.
+ * Do not begin in-place replacement unless crash recovery will preserve the original. */
 async function preserveOriginalBytes(
   filePath: string,
   original: Uint8Array,
@@ -172,27 +149,9 @@ async function preserveOriginalBytes(
   }
 }
 
-/**
- * Persist bytes with read-back verification, atomic commit, and rollback.
- *
- * Mesa treats filesystem overwrites as untrusted until the path reads back with
- * the exact bytes it meant to write. The sequence is:
- *
- * 1. Existing target → write + verify a sibling backup of the original bytes.
- * 2. Write + verify (and validate) the candidate bytes to a sibling temp file.
- * 3. Commit: atomically rename the verified temp over the target when the fs
- *    supports rename. Before an existing target is rewritten in place, relabel
- *    its verified backup as a rescue that crash recovery always preserves.
- * 4. Read the target back and verify it byte-for-byte one final time.
- * 5. Any failure → restore the original bytes from the backup (verified), or
- *    remove a failed brand-new file so no truncated debris is left behind.
- * 6. If that restore ALSO fails, the backup is the only remaining copy of the
- *    user's file — it is preserved as a `rescue` artifact and named in the
- *    thrown error instead of being cleaned up.
- *
- * With rename available there is no instant at which the target holds partial
- * bytes: it is either the old file or the fully-verified new file.
- */
+/** Persist expected bytes through verified staging, commit, and read-back.
+ * Native writes use their transaction adapter; compatibility rollback retains rescue bytes on failure.
+ * See docs/vault-safety.md for atomicity and recovery limits. */
 export async function persistVerifiedBytes(
   filePath: string,
   snapshot: Uint8Array,

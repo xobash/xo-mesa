@@ -1,17 +1,4 @@
-/**
- * Tiny read-only mirror of AgentPanel's SHARED_PI_SESSION, so store.ts can
- * see whether a live Pi session is running (to hand it off when popping Pi
- * out into its own OS window) without importing the AgentPanel *component*
- * module — store.ts otherwise only imports from lib/ and types, and a
- * store <-> component import cycle is worth avoiding.
- *
- * This only works WITHIN one Tauri webview/renderer: a popped-out Pi window
- * is a separate JS realm and can't see this module's state at all, which is
- * exactly why the live session id has to be carried across that boundary
- * explicitly (as a `piSession` query param on the popout window's URL) —
- * see `openAgentWindow` in store.ts and `adoptSharedPiSession` in
- * AgentPanel.tsx.
- */
+/** Renderer-local shared Pi state without component imports. Pass session identity explicitly across webviews. */
 export interface PiSessionSnapshot {
   sessionId: string | null;
   vaultPath: string | null;
@@ -43,14 +30,7 @@ export function getPiSessionSnapshot(): PiSessionSnapshot {
   return snapshot;
 }
 
-/**
- * A request from store-level code (Deep Research) to restart the shared Pi
- * session so it picks up a changed launch configuration (e.g. loading the
- * deep-research extension). AgentPanel registers the real implementation
- * (which owns the PTY lifecycle); the store calls `requestSharedPiRestart`
- * without importing the component module. Returns true when a live session
- * was actually stopped and will respawn on the next ensure.
- */
+/** Ask the registered PTY owner to restart for new launch configuration; return whether a live session stopped. */
 let restartImpl: (() => Promise<boolean>) | null = null;
 const restartListeners = new Set<() => void>();
 

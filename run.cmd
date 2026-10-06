@@ -1,15 +1,7 @@
 @echo off
-REM Mesa - one-command setup & launch (Windows 10 / 11).
-REM
-REM Assumes NOTHING is installed. Brings a clean machine all the way to a running
-REM Mesa desktop app, installing every missing dependency:
-REM   * Node.js LTS, Rust, and Git      -> via Scoop (user-only, no admin)
-REM   * Microsoft C++ Build Tools        -> via winget (raises its own UAC prompt)
-REM   * WebView2 runtime                 -> via winget (already on Win11/most Win10)
-REM   * JS deps                          -> .\node_modules (local to this project)
-REM Then launches the desktop app.
-REM
-REM Run from this folder in a NORMAL (non-admin) PowerShell/cmd window:  run.cmd
+REM Mesa setup and launch for Windows 10/11.
+REM Installs missing prerequisites and launches the desktop app.
+REM Run from this folder in a normal PowerShell/cmd window: run.cmd
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 set "SCOOP_SHIMS=%USERPROFILE%\scoop\shims"
@@ -221,17 +213,8 @@ if not "%LASTPATH%"=="%CD%" (
 exit /b
 
 :check_long_paths
-REM Windows refuses paths over 260 characters unless LongPathsEnabled is set.
-REM Cargo and Tauri bury build artifacts deep under src-tauri\target - crate
-REM out-dirs carry a 16-hex-digit hash and nest several levels - which adds
-REM roughly 150 characters below this folder. So a project root past ~90
-REM characters (a OneDrive-redirected Documents folder gets there on its own)
-REM fails partway through the FIRST Rust build with an unhelpful "path too
-REM long" or "file not found", long after setup appeared to succeed.
-REM
-REM Enabling long paths is a machine-wide, admin-only registry change, so this
-REM only reports it and names both remedies. It never blocks the run: plenty of
-REM installs are comfortably short, and a warning beats a false failure.
+REM Warn about long checkout paths without requiring an admin registry change.
+REM The user can move the checkout or enable Windows long-path support.
 set "MESA_LONGPATHS="
 for /f "tokens=3" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled 2^>nul') do set "MESA_LONGPATHS=%%A"
 if /i "%MESA_LONGPATHS%"=="0x1" exit /b 0

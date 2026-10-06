@@ -1,16 +1,5 @@
-/**
- * Which pages of a PDF deserve pixels right now.
- *
- * Painting every page of a document is what made a 357-page manual hold ~964 MB
- * of canvas backing store and rasterize for 21 s on open, for pages the reader
- * never looked at. The viewer reports which pages are on screen; this decides
- * how far around them to paint, and how far out to hold on before releasing.
- *
- * Two bounds, deliberately not equal. `paint` is the band that must hold pixels;
- * `keep` is the wider band that is allowed to. Scrolling back and forth across a
- * page boundary moves through the gap between them without ever crossing both,
- * so a page is never released and immediately repainted.
- */
+/** Choose a required paint band and a wider permitted keep band.
+ * The gap provides hysteresis when scrolling across page boundaries. */
 export interface PdfPageWindowOptions {
   /** Pages painted on each side of the on-screen band. */
   ahead: number;

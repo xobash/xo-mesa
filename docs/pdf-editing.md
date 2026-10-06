@@ -213,7 +213,7 @@ Hover thumbnails share a single worker of their own, rather than starting and
 throwing one away per preview — that was seven worker starts for six thumbnails
 when sweeping down a folder. Only the latest queued thumbnail remains admitted;
 stale queued thumbnail requests settle immediately instead of waiting behind
-the active render. It is deliberately separate from the worker your open
+the active render. It is separate from the worker your open
 document is using, so a file that breaks thumbnailing cannot disturb what you
 are reading.
 

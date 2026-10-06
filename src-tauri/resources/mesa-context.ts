@@ -1,20 +1,5 @@
-// Mesa live-workspace context — a Pi extension loaded by Mesa's embedded
-// terminal.
-//
-// Pi's --append-system-prompt and process environment are fixed when the PTY
-// starts, but Mesa's active note/layout can change throughout one conversation.
-// This extension asks Mesa's authenticated loopback bridge for the current
-// path-only workspace context before every agent turn and appends it to that
-// turn's system prompt. The newest block is explicitly authoritative over the
-// launch-time fallback, so switching notes never requires restarting Pi.
-//
-// Safety:
-//   - Inert unless Mesa supplied its loopback port and bearer token.
-//   - Talks only to 127.0.0.1 and has a short timeout.
-//   - Never sends note contents; Mesa publishes only the same direct path/layout
-//     context shown in the Pi context strip.
-//   - A bridge failure leaves the launch-time fallback intact and never blocks
-//     the user's prompt.
+// Fetch bounded path/layout context from the authenticated loopback bridge before each turn.
+// On failure retain launch context; no note contents are included in this bridge payload.
 
 interface BeforeAgentStartEvent {
   systemPrompt: string;

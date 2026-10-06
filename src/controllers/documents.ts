@@ -243,13 +243,7 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       }
       const pending = pendingContentReads.get(key);
       if (pending) return pending;
-      // Never pull a non-text file through the text pipeline. `readNote`
-      // decodes bytes as UTF-8, so caching a PDF/image here would put a lossy
-      // decode of it into `contentCache` — content every text consumer,
-      // including the crash-safety flush, would then treat as that file's real
-      // text. Callers of this are the text surfaces (editor, code/html/rtf
-      // views); the activity bridge also calls it for whatever path an agent
-      // touched, which is exactly how a binary could get in.
+      // Keep non-text files out of the text cache and save pipeline.
       if (!isTextualVaultFile(file)) return "";
       const read = readNoteResult(file)
         .then((result) => {

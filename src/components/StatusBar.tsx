@@ -25,30 +25,15 @@ export function StatusBar() {
     (s) => s.useDiskTextForSaveIssue
   );
 
-  // This bar subscribes to the live editor text, so everything derived from it
-  // runs per keystroke. Even the allocation-free `countWords` scan is O(note):
-  // 6.2 ms per keystroke on a real 420 kB note, inside the keystroke's own
-  // commit. Deriving the word/char pair from a DEFERRED copy of the text moves
-  // that scan to transition priority — the keystroke paints first, and under
-  // sustained typing React discards stale transitions instead of queueing a
-  // scan per character (same pattern as MarkdownView's deferred render). The
-  // memo makes the transition render the only one that pays the scan. Both
-  // numbers read the same deferred string so words/chars never disagree with
-  // each other; the settled values are identical to the live ones. The asset
-  // count is memoized because `files` does not change while typing (it changes
-  // only on a vault scan or a create/delete), so filtering 4,000+ entries into
-  // a throwaway array on every character was pure waste.
+  // Derive words and characters from the same deferred text snapshot so the
+  // scan can wait for input and both counts stay consistent.
   const statsText = useDeferredValue(content);
   const words = useMemo(() => countWords(statsText), [statsText]);
   const backlinks = useMemo(
     () => (activePath ? backlinksFor(notes, activePath).length : 0),
     [notes, activePath]
   );
-  // Memoized for the same reason as `assetCount` below: this bar re-renders on
-  // every keystroke, but `notes` only churns on a debounced save (<=2 Hz), and
-  // `Object.keys` materializes a throwaway array of every note key to read its
-  // length — 63 us and 2,400 allocated entries per character on the measured
-  // vault.
+  // Recount only when the notes-object identity changes.
   const noteCount = useMemo(() => Object.keys(notes).length, [notes]);
   const assetCount = useMemo(
     () => files.reduce((n, f) => (isTextualVaultFile(f) ? n : n + 1), 0),
@@ -59,14 +44,7 @@ export function StatusBar() {
     [textSaveIssues]
   );
 
-  // The store's global `status` is the app's one transient message feed —
-  // "Scanning vault…", "Imported 3 files", and every failure a background
-  // path can hit ("Save failed: …", "Rename failed: …"). It was written by a
-  // dozen paths and RENDERED BY NOTHING, so a failed save was silent: the
-  // user closed the app not knowing their edit never reached disk. The bar
-  // shows it here; failures get the danger color. The one value suppressed is
-  // the post-open "N notes" summary, which duplicates the count at the left
-  // edge of this same bar.
+  // Render global status failures here; suppress the redundant post-open note count.
   const statusMsg = status && status !== `${noteCount} notes` ? status : "";
   const statusIsError = /failed|blocked|error/i.test(statusMsg);
 

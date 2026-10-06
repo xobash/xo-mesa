@@ -587,14 +587,7 @@ button {
 .layout > .right-stack {
   grid-column: 3;
 }
-/* Dock-side flip: the side stack can dock LEFT of the center instead of right,
-   so the workspace is a constrained snap workspace (not hard-coded left/right).
-   Center and dock swap grid columns; the center separator moves to its left.
-   `--sidebar-slot-w` is 0 when the sidebar is closed, so this one rule also
-   covers the no-sidebar case. The sidebar itself is fixed-width and slides as
-   an overlay, so the workspace can reflow without re-laying out the tree.
-   The auto-hide variant (sidebar is absolutely positioned)
-   must zero column 1 separately — see .layout.auto-hide.dock-left below. */
+/* Dock-left swaps center/stack columns. Closed and auto-hidden sidebars must release their grid slot. */
 .layout.dock-left {
   grid-template-columns: var(--sidebar-slot-w, 240px) var(--right-w, 380px) minmax(0, 1fr);
 }
@@ -2426,9 +2419,7 @@ body.is-dragging iframe {
   padding: 10px 12px;
   border-radius: calc(var(--radius) - 2px);
   color: var(--text-dim);
-  /* Broad searches intentionally retain up to 100 keyboard-addressable rows.
-     Let the webview skip layout/paint for the rows outside the scrollport
-     without virtualizing them out of the DOM. */
+  /* Skip offscreen layout and paint while retaining keyboard-addressable rows. */
   content-visibility: auto;
   contain-intrinsic-size: auto 58px;
 }
@@ -2796,12 +2787,7 @@ body,
   color: var(--text-strong);
 }
 
-/* GPU/compositing hints when hardware acceleration is on */
-/* Compositing hints for CSS-animated overlays only. Deliberately NOT the
-   graph canvas: forcing a large 2D canvas into its own transform layer
-   (will-change + translateZ) is a known WKWebView trigger for striped
-   stale-surface garbage, and the canvas repaints via the 2D API — layer
-   promotion gains it nothing. */
+/* Promote animated overlays only; graph-canvas promotion can corrupt WKWebView frames. */
 :root[data-accel="on"] .modal,
 :root[data-accel="on"] .hover-card,
 :root[data-accel="on"] .context-menu {
@@ -5395,13 +5381,7 @@ body,
 .xterm-host .xterm-screen canvas {
   image-rendering: auto;
 }
-/* Browser harness wing. In floating Pi contexts (`.slide`) it emerges from
-   BEHIND the Pi window and extends to its right — the window keeps its size
-   and the terminal is never covered or squeezed. The wing sits at left:100%
-   (outside the surface) and animates translateX(-100%)→0 UNDER the terminal
-   pane (z-index 0 vs 1), which reads as sliding out from behind the window.
-   In bounded contexts (`.inline`: workspace pane, popped-out OS window) it is
-   a normal flex sibling instead, since nothing exists beyond the surface. */
+/* Floating wings extend beyond Pi under its terminal layer; bounded surfaces use a flex sibling. */
 .agent-browser {
   flex: 1 1 auto;
   display: flex;

@@ -2,16 +2,16 @@
 
 Deep Research is Mesa's source-backed, review-before-apply research workflow.
 
-You give it a question; the embedded Pi agent researches it across the web
-through Mesa's own browser harness; Mesa then shows you a deterministic
-change set of new/updated notes and applies it only after you approve — with
-verified writes with durable recovery for interrupted desktop applies.
+Ask a question and Pi researches it through Mesa's browser harness. Review the
+proposed new and updated notes before applying them. Mesa checks writes and
+keeps recovery copies for interrupted desktop applies.
 
 It is local-first: network traffic is limited to the user's existing Pi model
 provider and the web sources Pi chooses to browse or archive. Nothing is sent
-to a Mesa service (there is no Mesa server). Proposed research notes are never
-written without your explicit approval. The one intentional automatic write is
-the accepted-source archive described below: after a result passes validation,
+to a Mesa service (there is no Mesa server). Mesa's reviewed apply path writes
+proposed research notes only after approval.
+Pi runs with normal process permissions, so its shell actions and external tools
+can write outside that path. After a result passes validation,
 Mesa preserves those webpages under `Web Archives/` by default so the evidence
 remains reopenable from the vault.
 
@@ -352,7 +352,7 @@ user selects. The fallback does not choose a vault path. Detached read-only
 Research windows expose the same diagnostic export and snapshot the run's
 original shared Pi session; they do not start a new session or gain apply controls.
 
-The troubleshooting kit is intentionally bounded: it keeps a compact
+The troubleshooting kit keeps a compact
 environment line, up to 12 context-note references, 24 source rows, and the
 last 48 activity rows. When native Pi is available, it also captures the
 retained chronological PTY transcript for the shared session. This is the

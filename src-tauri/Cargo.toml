@@ -18,12 +18,7 @@ tauri-build = { version = "2", features = [] }
 # embed-blocked iframe. The flag gates that API's availability only.
 tauri = { version = "2", features = ["protocol-asset", "unstable"] }
 tauri-plugin-fs = { version = "2", features = ["watch"] }
-# Mesa's native vault watcher (src/vaultwatch.rs) drives this debouncer directly
-# so it can filter `.git`/dot churn and coalesce a whole debounce window into ONE
-# IPC message — the plugin's `watch` sends one message per raw event, which is
-# one WebView2 UI-thread eval each on Windows. Already in the tree as a
-# transitive dep of tauri-plugin-fs (same 0.6.0 in Cargo.lock), so this adds no
-# new supply-chain surface; it only makes the dependency direct.
+# Native watcher imports this debouncer for filtered, batched delivery.
 notify-debouncer-full = "0.6"
 tauri-plugin-dialog = "2"
 tiny_http = "0.12"
@@ -31,13 +26,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9"
 
-# P2P device sync is end-to-end encrypted over TLS (LocalSend-style):
-# - rcgen mints a persistent self-signed cert/key per device (the identity).
-# - Hyper + Tokio-Rustls serve the sync API over HTTPS using that cert.
-# - reqwest + rustls is the client, with a custom certificate verifier that
-#   pins the peer's SHA-256 cert fingerprint (trust-on-first-use, then enforced).
-# tiny_http remains only for plain loopback helper/test servers; it must not
-# regain the ssl-rustls feature.
+# Sync uses rcgen identity certificates, Hyper/Tokio-Rustls server TLS, and reqwest certificate pinning.
+# tiny_http is loopback-only here; do not enable ssl-rustls.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 # The sync engine (sync_run) runs transfers with bounded concurrency on the
 # Tauri tokio runtime; tokio itself was already in the tree via tauri/reqwest —

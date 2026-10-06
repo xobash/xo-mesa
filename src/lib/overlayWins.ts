@@ -1,14 +1,5 @@
-/**
- * Pure geometry for the Mesa overlay floating windows.
- *
- * The contract that matters: the STORED window geometry is the user's intent
- * and is never rewritten by viewport clamping. `fitWin` is a render-time
- * projection into the current viewport — a transiently tiny window (app
- * startup can report 0×0, a temporarily shrunken OS window, a small demo
- * pane) must not permanently squash every remembered window to the minimum
- * size. Only explicit user actions (drag, resize, open/close, layout reset)
- * change what is persisted.
- */
+/** Stored geometry is user intent; viewport clamping is a render-time projection only.
+ * Persist changes only for explicit layout actions. */
 
 export interface OverlayWinRec {
   open: boolean;

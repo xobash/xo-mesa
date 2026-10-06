@@ -52,14 +52,13 @@ twinkling, no matter the amplitude**. Positional drift stays slow while the
 non-positional twinkle (opacity is the primary
 zoom-independent signal, since radius motion is sub-pixel on small notes at
 fit-zoom) carries the living feel at any zoom. Per-axis frequencies are
-deliberately different so radius and opacity don't sync (organic, not a
-uniform pulse). The radius twinkle is non-positional and can never cause
+different so radius and opacity do not pulse together. The radius twinkle is non-positional and can never cause
 overlap. Positional breathing is screen-constant but capped at
 `(OVERLAP_GAP*t.k)/2` so two rendered nodes can never touch. The global
 Animations setting disables all of it.
 
 The main-cluster bloom uses the theme token `--graph-bloom-alpha`: Void keeps
-the full bloom, while System and Darkroom deliberately run a lower multiplier so
+the full bloom, while System and Darkroom run a lower multiplier so
 their graph backgrounds do not read as a strong glowing halo.
 
 At fitted zoom, the graph must stay readable enough to inspect and grab nodes.
@@ -113,19 +112,18 @@ file watcher, or activity bridge.
 
 ## Hover vs. Agent Activity (distinct code paths)
 
-Mesa deliberately separates two kinds of "highlight":
+The graph uses two highlight signals:
 
-- **Hover/open-file highlight** is intentionally very subtle. Hovering a node
+- **Hover/open-file highlight** uses low opacity. Hovering a node
   only slightly lifts its incident links above the base color (faint flicker
   tint), and the open document's links get a touch more so the current file
-  stays findable. The per-node hover ring is thin and low-alpha. This is purely
-  a visual aid, not telemetry.
+  stays findable. The per-node hover ring is thin and low-alpha.
 - **Agent activity flicker** is the loud path and stays loud. When the editor,
   file watcher, or Tauri activity bridge reports a read/edit/write/create on a
   markdown note, that node's links flicker, the node gets a soft radial glow,
   and a live preview card appears.
 
-The two paths are decoupled so toning down hover never weakens agent telemetry.
+Hover styling and observed file activity use separate signals.
 
 ## Smoothness
 

@@ -18,15 +18,15 @@ WebView2 and macOS 13.3+ while still compiling away JavaScript syntax that an
 older supported webview would not parse. Do not use Vite's `esnext` target for
 desktop bundles; it is a moving build-host promise, not a Mesa support matrix.
 
-The native acceptance matrix is the concrete set of machines/runtimes Mesa uses
-to prove that promise:
+The native acceptance matrix defines the machine/runtime checks required before
+claiming release support. This table is a requirement, not a completed result:
 
 | Matrix target | Runtime floor | Acceptance role |
 | --- | --- | --- |
 | Windows 11 current WebView2 | Evergreen WebView2 111+ | Current Windows release confidence |
-| Windows 10 oldest WebView2 | Evergreen WebView2 111+ | Oldest Windows support proof |
+| Windows 10 oldest WebView2 | Evergreen WebView2 111+ | Oldest Windows runtime checks |
 | macOS current WKWebView | Current Safari/WKWebView | Current macOS release confidence |
-| macOS 13.3 oldest WKWebView | Safari/WKWebView 16.4 | Oldest macOS support proof |
+| macOS 13.3 oldest WKWebView | Safari/WKWebView 16.4 | Oldest macOS runtime checks |
 | Linux current WebKitGTK smoke | WebKitGTK 4.1 | Lower-priority build and launch smoke |
 
 Generate and check records with:
@@ -53,7 +53,7 @@ The practical differences are platform dependencies and native window details:
 | Desktop webview | WebView2 must be installed or bootstrapped. | WKWebView is supplied by macOS. |
 | Desktop build | Rust requires the MSVC compiler and linker. `run.cmd` activates the Visual Studio environment before launch. | Rust uses the installed Apple toolchain; the build script supports a universal binary. |
 | Pi launch | The resolver handles `PATHEXT`, `.cmd`/`.bat` wrappers, Node shebangs, and the shorter desktop PATH. | The normal executable and shell PATH are used. |
-| Native windows | Mesa-owned document, Pi, Research, Preview, Tasks, and Calendar windows use dark launch chrome; Graph intentionally follows the OS. Native creation failures restore the surface inside Mesa. | The same surfaces are available, with macOS title-bar treatment where needed; native creation failures also restore the surface inside Mesa. |
+| Native windows | Mesa-owned document, Pi, Research, Preview, Tasks, and Calendar windows use dark launch chrome; Graph follows the OS. Native creation failures restore the surface inside Mesa. | The same surfaces are available, with macOS title-bar treatment where needed; native creation failures also restore the surface inside Mesa. |
 | Local-network sync | Windows Firewall can block inbound pairing or discovery until the user allows Mesa. | The local firewall can impose the same kind of network permission. |
 | Path limits | Long paths can require an administrator-enabled Windows setting; the bootstrap warns before the first Rust build. | No equivalent 260-character Windows limit applies. |
 
@@ -278,10 +278,8 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   controller keeps its white `DefaultBackgroundColor`, so a dark app flashes
   light until WebView2 boots and paints — on every launch, and again under the
   cursor on every tear-out. `index.html`'s `color-scheme: dark` only covers the
-  document canvas, not either native layer. Two windows are deliberately
-  excluded: the Pi browser harness (it hosts arbitrary, mostly light, web pages)
-  and the torn-off panel window that the Graph detaches into (user decision —
-  it keeps following the OS).
+  document canvas, not either native layer. The Pi browser harness and detached
+  Graph panel follow the OS window appearance.
 
 - **Identifier** `dev.xo.mesa` is fixed; it determines the per-OS app-data dir,
   so keep it stable across releases.

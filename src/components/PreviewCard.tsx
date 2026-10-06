@@ -352,12 +352,7 @@ function PreviewCardImpl({
   );
 }
 
-/**
- * Memoized so a parent re-render (e.g. the graph's animation loop pushing new
- * card positions) doesn't re-render every card — only when this card's own
- * position/target/status actually changes. Internal content updates (throttled
- * above) still flow through normally.
- */
+
 function sameTarget(a: PreviewTarget, b: PreviewTarget): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === "note") return a.id === (b as typeof a).id;

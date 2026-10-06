@@ -1,12 +1,4 @@
-/**
- * Pure helpers for deriving vault-relative paths: splitting names, and picking
- * collision-free names for new files, new folders, and duplicates. Kept pure so
- * the naming rules (which the sidebar's New note / New folder / Duplicate
- * actions all depend on) are unit-tested without touching the filesystem.
- *
- * All comparisons are case-insensitive because vaults may live on
- * case-insensitive filesystems (macOS default, Windows).
- */
+/** Pure collision-free path naming with case-insensitive comparisons for cross-platform vaults. */
 
 export interface SplitName {
   /** Parent directory including a trailing slash, or "" for a vault-root entry. */
@@ -70,17 +62,8 @@ export function ancestorFolders(rel: string): string[] {
  */
 const RESERVED_DEVICE_RE = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i;
 
-/**
- * Sanitize a user-entered file/folder base name so the result is legal on
- * every filesystem a vault can live on (Windows is the strictest): strips
- * path separators and Windows-invalid characters (`\ / : * ? " < > |`),
- * control characters, and trailing dots/spaces (Windows rejects `note.` and
- * `note `), and refuses reserved device names. Returns `""` when nothing
- * usable remains — callers treat that as "keep the old name".
- *
- * Applied on ALL platforms, not just Windows, so a vault created on macOS
- * never contains names that break it on a synced Windows device.
- */
+/** Remove separators, Windows-invalid/control characters, trailing dots/spaces, and reserved names.
+ * Apply on every OS; return an empty string when no usable base name remains. */
 export function safeBaseName(name: string): string {
   const cleaned = name
     .trim()

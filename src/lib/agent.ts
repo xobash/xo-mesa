@@ -94,14 +94,7 @@ export interface ActivityInfo {
   deepResearchExtensionPath?: string;
 }
 
-/**
- * Map a Pi built-in tool name to the Mesa activity op it should surface, or
- * `null` for tools that don't correspond to a single note node (grep/find/ls/
- * bash/custom tools). This mirrors the logic embedded in the Pi extension
- * (`src-tauri/resources/mesa-activity.ts`); it lives here too so the mapping is
- * unit-tested and stays a single source of truth for the two tool names Mesa
- * treats specially.
- */
+/** Map file-oriented Pi tools to activity operations. Keep the bundled extension mapping in parity. */
 export function activityOpForTool(
   toolName: string,
   fileExists: boolean
@@ -118,25 +111,8 @@ export function activityOpForTool(
   }
 }
 
-/**
- * Extensions whose bytes Pi's text-oriented mutation tools cannot round-trip.
- *
- * Pi's `write`/`edit`/`apply_patch` tools carry string content: reaching disk
- * means the bytes went through a UTF-8 decode/encode cycle, which silently
- * mangles every byte sequence that isn't valid UTF-8. For a binary file that
- * is not an edit, it is destruction — most visibly a PDF, where a single
- * altered byte invalidates the xref table and the document stops opening.
- *
- * Mesa cannot make an external process write good bytes, so it removes the
- * opportunity: these tools are blocked outright on these paths. Mesa's own
- * editors are unaffected — they write through `persistVerifiedBytes`, not
- * through Pi. Nor is `bash` affected, so a real binary-aware tool driven by
- * the agent (qpdf, ImageMagick, a Python script) still works normally.
- *
- * Deliberately excludes text-based formats that merely look like documents
- * (`.rtf`, `.svg`, `.csv`, `.json`, `.xml`): those round-trip through a text
- * tool safely and Mesa has no reason to restrict them.
- */
+/** Binary extensions blocked by Pi text-mutation hooks. Format-aware shell tools remain available.
+ * This protects known tool paths, not arbitrary process writes; see docs/security.md. */
 export const PI_BLOCKED_BINARY_EXTENSIONS: readonly string[] = [
   // Documents whose containers are binary or zip-based.
   "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
@@ -156,8 +132,7 @@ export const PI_BLOCKED_BINARY_EXTENSIONS: readonly string[] = [
   "pyc", "sqlite", "sqlite3", "db",
 ];
 
-/** Pi built-in tools that write file content from a string payload. `bash` is
- *  intentionally absent: it moves bytes with real tools, not a text encoder. */
+/** Built-in text-write tools; shell commands remain outside this guard. */
 const PI_CONTENT_WRITE_TOOLS = ["write", "edit", "apply_patch"];
 
 /** Lowercased extension of a path (no dot), or "" when it has none. */
@@ -175,17 +150,7 @@ export function isPiBlockedBinaryPath(path: string): boolean {
   return PI_BLOCKED_BINARY_EXTENSIONS.includes(extensionOf(path));
 }
 
-/**
- * Decide whether a Pi `tool_call` must be blocked to protect a binary file,
- * returning the block payload Pi's tool_call hook expects (or null to let the
- * call proceed untouched). This mirrors the logic embedded in the Pi extension
- * (`src-tauri/resources/mesa-activity.ts`); it lives here so the decision is
- * unit-tested, exactly like `activityOpForTool` above.
- *
- * The reason text is the model's only feedback, so it names the real
- * constraint and the two paths that do work — otherwise a capable agent just
- * retries the same write.
- */
+/** Return the binary-write block payload or null. Keep this decision and reason in parity with the bundled extension. */
 export function piBinaryWriteBlock(
   toolName: string,
   path: unknown
@@ -204,14 +169,7 @@ export function piBinaryWriteBlock(
   };
 }
 
-/**
- * Extra environment variables and CLI args needed to make the embedded Pi agent
- * report file reads/edits/writes back to Mesa, and to ship Mesa's built-in
- * /goal command. The env vars activate the activity extension (which stays
- * silent without them) and point it at the loopback activity server; the
- * repeatable `--extension` args load Mesa's bundled extensions without
- * disturbing the user's own auto-discovered Pi extensions.
- */
+/** Configure the loopback activity bridge and append bundled extensions without replacing user extensions. */
 export function piActivityLaunch(info: ActivityInfo | null | undefined): {
   env: Record<string, string>;
   args: string[];
@@ -232,13 +190,7 @@ export function piActivityLaunch(info: ActivityInfo | null | undefined): {
   };
 }
 
-/**
- * The Deep Research launch additions: load the deep-research extension (its
- * progress/finish tools and its fail-safe write/edit block) and mark the run
- * active so the block engages. These merge on top of `piActivityLaunch` —
- * Mesa starts the shared Pi session with them only while a Deep Research run
- * is active, so a normal Pi session never blocks writes.
- */
+/** Add the research extension and active-run configuration only for a Deep Research launch. */
 export function piDeepResearchLaunch(
   info: ActivityInfo | null | undefined,
   runId: string

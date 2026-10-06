@@ -10,17 +10,7 @@ export const SORT_LABELS: Record<SortMode, string> = {
   type: "File type",
 };
 
-/**
- * The ONE numeric-aware name comparator, backed by a shared `Intl.Collator`.
- * `a.localeCompare(b, undefined, { numeric: true })` re-resolves the options
- * on every call — sorting the measured 4,165-file vault by name that way cost
- * ~170 ms in Node's V8 and ~30 ms in the webview, per sort, and the sidebar
- * re-sorts on every scan refresh. The shared collator returns the identical
- * ordering (spec: `String.prototype.localeCompare` is defined in terms of the
- * equivalent `Intl.Collator`) at ~1/17th the cost; `sort.test.ts` pins the
- * sign equivalence. Use this for every name-ish sort that wants natural
- * number ordering instead of spelling the localeCompare call inline.
- */
+/** Shared numeric-aware name comparator; reuse the collator across sorts. */
 export const compareNames: (a: string, b: string) => number = new Intl.Collator(
   undefined,
   { numeric: true }

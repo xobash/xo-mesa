@@ -292,11 +292,8 @@ export interface AppState {
   skippedTextFiles: number;
   failedTextFiles: number;
   unreadableTextReasons: Record<string, "skipped" | "failed">;
-  /** Textual files whose content is still streaming in after vault open. Only
-   *  markdown is read before the UI exists (`buildNotes` needs all of it); the
-   *  search-only remainder — 70% of the reads on the measured vault — hydrates
-   *  in the background. Non-zero only during that window, and surfaced in the
-   *  search UI so partial coverage is never silent. */
+    /** Text files still awaiting background indexing after vault open.
+   * Non-zero means search and other indexed views have incomplete coverage. */
   indexingTextFiles: number;
 
   setTheme: (t: ThemeId) => void;
@@ -526,12 +523,7 @@ export const useAppStore = create<AppState>((set, get) => {
     });
   }
 
-  // Add a file that an agent created/touched but Mesa hasn't scanned yet, so
-  // it appears in the sidebar and, when it is text, the graph. Binary files
-  // appear in the sidebar but do not get link metadata.
-  // External agents (or any tool) report file access by POSTing to the Rust
-  // server's /activity route, which re-emits an "activity" Tauri event. This is
-  // how *reads* light up — filesystem watchers can't see reads. Set up once.
+  // Register reported file activity once; reads arrive through the activity bridge, not filesystem watchers.
   let activityBridgeReady = false;
   async function setupActivityBridge() {
     if (activityBridgeReady || !IN_TAURI) return;
@@ -617,12 +609,7 @@ export const useAppStore = create<AppState>((set, get) => {
     }
   }
 
-  // --- sync console bridge -------------------------------------------------
-  // The Rust engine emits structured `sync://log` + `sync://progress` events
-  // during `sync_run` AND while the embedded server handles an incoming sync
-  // (`[serve]` lines); collect them into the store so SyncModal's embedded
-  // console renders both directions. Registered once at vault open (so a
-  // receiving device misses nothing) and re-ensured before every local sync.
+  // Collect incoming and outgoing sync logs/progress; register at vault open and ensure before local sync.
   const syncEvents = createSyncEventBridge({
     get: () => ({ syncLog: get().syncLog }),
     set: (patch) => set(patch),
@@ -1520,9 +1507,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const keys = matches.map((entry) => entry.path);
         let saveHold: TextSaveHold<VaultFile> | undefined;
         try {
-          // Pause every child before awaiting anything. Pending edits are
-          // intentionally not written to files the user is deleting, but an
-          // in-flight verified write must settle before removal can start.
+          // Hold child saves before awaiting removal; let in-flight writes settle.
           saveHold = await textSaves.hold(keys, false);
           if (file) await removeFile(file.path);
           else await removeVaultEntry(root, relPath, true);
@@ -1559,16 +1544,7 @@ export const useAppStore = create<AppState>((set, get) => {
       });
     },
 
-    // Renames ANY vault file, preserving its real extension and its bytes.
-    // The old implementation was markdown-shaped for every file type: it
-    // forced a `.md` suffix (renaming `notes.txt` produced `notes.md` and a
-    // phantom graph note) and it moved content through the TEXT pipeline —
-    // `ensureContent` returns "" for a binary, so renaming a PDF wrote an
-    // empty .md and REMOVED the real document. The move is now one atomic,
-    // byte-preserving OS rename (`renameVaultFile`) for every file type, the
-    // notes map is only touched for markdown, and a failed rename reports in
-    // `status` instead of vanishing into a dropped promise. Pinned by
-    // renameNote.test.ts.
+    // Rename without changing extension or file bytes. Refresh note metadata and report failures through status.
     renameNote: async (relPath, newBaseName) => {
       const file = get().fileFor(relPath);
       const root = get().vaultPath;
@@ -1587,12 +1563,8 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!clean) return;
       const newRel = realExt ? `${dir}${clean}.${realExt}` : `${dir}${clean}`;
       if (newRel === relPath || get().fileFor(newRel)) return;
-      // `rawLinks` intentionally omits image/file embeds, so it cannot be an
-      // authority for attachment rename repair. Inspect every Markdown source
-      // when a user explicitly renames a file; this preserves attachments,
-      // note embeds, and standard Markdown references without guessing from a
-      // basename index. The operation is held and verified one source at a
-      // time below, so a concurrent edit is reported rather than overwritten.
+      // Inspect all Markdown references for explicit rename repair; rawLinks omits embeds.
+      // Verify each source update against concurrent edits.
       const bareNameUnambiguous = get().files.filter(
         (candidate) => `${candidate.name}.${candidate.ext}`.toLowerCase() === base.toLowerCase()
       ).length === 1;

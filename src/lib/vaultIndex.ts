@@ -46,9 +46,7 @@ const database = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
   let finished = false;
   const timer = setTimeout(() => { finished = true; reject(new Error('Index storage timed out')); }, 2000);
   request.onupgradeneeded = () => {
-    // The cache is disposable. Clearing v1 is intentional: old snapshots lack
-    // metadata, and a partial migration would force Diagnostics back to a
-    // payload read. Rebuild lazily from the vault instead.
+    // Rebuild old snapshots, which lack the metadata used by Diagnostics.
     if (request.result.objectStoreNames.contains('vaults')) request.result.deleteObjectStore('vaults');
     if (request.result.objectStoreNames.contains('metadata')) request.result.deleteObjectStore('metadata');
     const store = request.result.createObjectStore('vaults', { keyPath: 'root' });

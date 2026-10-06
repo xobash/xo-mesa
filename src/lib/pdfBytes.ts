@@ -51,23 +51,8 @@ export function sniffFileType(bytes: Uint8Array): string {
   return "an unrecognized / possibly corrupted file";
 }
 
-/**
- * Marks a failure as "this file is not a PDF at all".
- *
- * This identifies Mesa's byte-header rejection before a byte-based pdf.js
- * parse. A URL-first caller must separately destroy its failed URL loading
- * task before using this tag as a reason to retain that worker. Both PDF
- * surfaces (the viewer in `components/usePdfEditor.ts` and hover thumbnails in
- * `pdfThumb.ts`) keep a worker warm across documents and throw it away when a
- * document wedges it; blaming the worker for Mesa's own byte rejection made
- * every such file cost the NEXT real open a full worker boot. Vaults really do
- * hold hundreds of HTML error pages saved under a `.pdf` name, so this is a hot
- * path, not an edge case.
- *
- * The tag lives here, next to the check that raises it, so the rule has exactly
- * one definition. Callers ask `isNotAPdf(err)`; they never tag anything
- * themselves, which is what keeps the two surfaces from drifting apart.
- */
+/** Tag Mesa header rejection before byte-based parsing. A failed URL task must be destroyed separately
+ * before its worker can be retained; callers never create this tag. */
 const NOT_A_PDF = "__mesaNotAPdf";
 
 export function markNotAPdf<T>(err: T): T {
@@ -126,12 +111,8 @@ export function pdfBytesEqual(a: Uint8Array | null, b: Uint8Array | null): boole
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
 
-  // Equality is a hot save/reload guard, not a parser: a 40 MB document took
-  // 49-74 ms one byte at a time in WebView Chromium. Compare native 32-bit
-  // words when both views are aligned, with an unaligned DataView fallback for
-  // PDFs whose tolerated leading junk produced a subarray. Endianness is
-  // irrelevant because both sides use the same grouping; every remaining tail
-  // byte is still checked below.
+  // Compare aligned words or unaligned DataView groups, then every tail byte.
+  // Both inputs use the same grouping, so endianness does not affect equality.
   const words = a.length >>> 2;
   let word = 0;
   if ((a.byteOffset & 3) === 0 && (b.byteOffset & 3) === 0) {
@@ -187,13 +168,7 @@ export function isLikelyBlankPdfPaint(
     return false;
   }
 
-  // The grid is the fast path, not the authority. Sparse but valid pages
-  // (signatures, checkboxes, a short title, registration marks) can place every
-  // drawn pixel between its 32×32 sample points. `getImageData` already paid to
-  // materialize the complete backing array, so only when the grid looks blank
-  // scan that array until enough real ink is found. Correctness matters more than
-  // a coarse false positive here: declaring a good paint blank drops the whole
-  // PDF into the native fallback and removes Mesa's editable canvases.
+  // If the sample grid looks blank, inspect the full pixel buffer before declaring the page blank.
   const pixelCount = Math.min(width * height, Math.floor(pixels.length / 4));
   let fullVisible = 0;
   for (let i = 0; i < pixelCount; i++) {

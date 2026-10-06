@@ -107,7 +107,7 @@ preconditions and crash recovery remain the save boundary.
 - `npm run bench:index` compares plain and indexed caches in three alternating
   isolated processes. It uses 1,600 synthetic documents, visits every document,
   forces GC, and measures retained JS heap plus ArrayBuffers and 2,000 cache edits.
-  This intentionally compressible fixture demonstrates the architecture; it is
+  This compressible fixture exercises the cache; it is
   not a representative-vault promise or native app memory measurement.
 - `/scripts/index-acceptance.html` on the development server opens the browser
   demo and exposes reuse, search-worker and decoded-pool counters. Exercise edits,

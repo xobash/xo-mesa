@@ -22,8 +22,7 @@ function prewarmPreview(target: PreviewTarget): void {
   if (!file) return;
   const kind = fileKind(file.ext);
   if (kind === "pdf") {
-    // Pointer sweeps intentionally supersede stale queued prewarms. A visible
-    // PdfThumb requests the same promise and handles real render failures.
+    // Prewarm cancellation is harmless; visible PdfThumb handles render failures.
     void import("../lib/pdfThumb")
       .then(({ warmPdfThumb }) => warmPdfThumb(file.path))
       .catch(() => undefined);

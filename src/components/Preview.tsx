@@ -8,10 +8,7 @@ import { fileKind } from "../lib/vault";
 export function Preview() {
   const content = useAppStore((s) => s.content);
   const activePath = useAppStore((s) => s.activePath);
-  // Resolve through the store's identity-keyed index, not a linear scan: this
-  // selector re-runs on EVERY store `set()` — including one per keystroke from
-  // `setContentFromEditor` — and a `find` over a 4,165-file vault costs 16.6 us
-  // a call versus 0.03 us indexed.
+  // Use the identity-keyed file index; selectors run on every store update.
   const file = useAppStore((s) => (activePath ? s.fileFor(activePath) : undefined));
 
   if (!activePath) {

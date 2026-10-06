@@ -1,12 +1,4 @@
-/**
- * Keystroke activity tracker.
- *
- * Lives outside React on purpose: keystrokes fire dozens of times a second and
- * we don't want each one to re-render the app. The editor calls `bumpActivity`
- * on every change; the graph's animation loop samples `getActivity` per frame
- * to make the matching node flicker and glow, then calls `decayActivity` so the
- * effect fades once you stop typing.
- */
+/** Activity stays outside React; editor updates are sampled and decayed by the graph render loop. */
 /** What kind of access is happening — drives the status face/label on the card. */
 export type ActivityOp = "read" | "edit" | "write" | "create";
 
@@ -28,15 +20,8 @@ export interface ActivityRec {
   removed?: number;
 }
 
-/**
- * Shared prefix/suffix scans for the per-keystroke diff below. These run on
- * EVERY editor change over the full previous/next text, so they must not walk
- * the document one `a[i] === b[i]` character at a time — that cost 4.2 ms per
- * keystroke on a real 420 kB note. Comparing 2 KiB native substrings first
- * (memcmp speed) and narrowing only the mismatching block per character gives
- * the same answer in ~0.2 ms. Block size is deliberately small: larger blocks
- * were measured slower because the throwaway substring allocations dominate.
- */
+/** Compare prefix/suffix blocks, then inspect characters within the first
+ * mismatching block. The suffix scan must not overlap the shared prefix. */
 const CHANGE_SCAN_BLOCK = 2048;
 
 /** Length of the longest common prefix of `a` and `b`. */
@@ -53,12 +38,7 @@ function commonPrefixLength(a: string, b: string): number {
   return lo;
 }
 
-/**
- * Length of the longest common suffix of `a` and `b` that does not overlap
- * the first `start` characters of either string — the same clamp the
- * character loop had (`endA > start && endB > start`), so an edit inside a
- * repeated region resolves to the identical changed span.
- */
+/** Find the longest common suffix without overlapping the first start characters of either string. */
 function commonSuffixLength(a: string, b: string, start: number): number {
   const max = Math.min(a.length, b.length) - start;
   let n = 0;
@@ -74,13 +54,7 @@ function commonSuffixLength(a: string, b: string, start: number): number {
   return n;
 }
 
-/**
- * The substring of `next` that changed relative to `prev` (between the common
- * prefix and common suffix). Used to highlight exactly what's being edited in
- * the live preview. Returns a trimmed, length-capped plain snippet.
- * `activity.test.ts` pins equivalence with the original per-character scan
- * over randomized edit shapes.
- */
+/** Return a trimmed, bounded snippet from the changed span between the shared prefix and suffix. */
 export function changedSnippet(prev: string, next: string, cap = 160): string {
   if (next === prev) return "";
   const a = prev ?? "";
@@ -146,14 +120,7 @@ function boundedActivityText(value: string | undefined): string | undefined {
     : value;
 }
 
-/** Register activity for a note id, adding a custom intensity amount and tagging
- * it with an operation (read/edit/write/create) and optional status text.
- *
- * Design: one keystroke / one word read = one short flicker. Intensity is NOT
- * an accumulator that builds up over a typing burst — each bump produces a
- * brief blip that decays quickly (fast time constant below) so the graph
- * reacts per-edit and stops the moment you stop. `rate` still tracks the EMA
- * of events/sec so faster typing flickers faster. */
+/** Register a short activity blip and operation; intensity does not accumulate across a typing burst. */
 export function bumpActivityAmount(
   id: string,
   amount: number,

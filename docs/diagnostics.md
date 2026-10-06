@@ -17,7 +17,7 @@ flight remains the caller's responsibility.
 
 While open, the view refreshes once per second so long tasks, watcher bursts,
 file switches, and background-job changes appear without a manual refresh.
-Persistent cache accounting is deliberately different: Mesa reads a compact
+For persistent cache accounting, Mesa reads a compact
 per-vault metadata index when the panel opens or the user presses Refresh. It
 never reads cached document bodies merely to display a byte total.
 
@@ -61,7 +61,7 @@ never reads cached document bodies merely to display a byte total.
 - File switching: the latest request-to-ready duration recorded by the store.
 - A plain-language local health summary. It identifies an active open, a
   browser-observed long task, remote/removable vault pressure, background work
-  yielding for input, or deliberately name-only large text files. It is a
+  yielding for input, or large text files indexed by name only. It is a
   guide to the next investigation, not a claim about total process memory.
 
 ## Privacy Boundary

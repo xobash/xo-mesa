@@ -250,7 +250,7 @@ driving:
   regardless of the underlying model — and reports the path and operation to
   that server. Mesa then flickers the node and floats a live preview card.
 
-This is intentionally observation-only: the extension returns nothing, so it can
+The extension returns no result, so it can
 never block or alter a tool call, and it is a no-op when the `MESA_ACTIVITY_*`
 env vars are absent (i.e. when `pi` runs outside Mesa). Nothing leaves the
 device — the report never travels beyond loopback. See
@@ -341,7 +341,7 @@ not an iframe:
   (`harness_visibility`). Because a native child webview cannot participate in
   CSS stacking, Mesa hides it while an intersecting blocking window, modal,
   menu, or hover card is in front. The small Deep Research context preview is
-  intentionally passive: it does not hide the live page when their rectangles
+  passive: it does not hide the live page when their rectangles
   touch, so the browser can keep rendering underneath it. The renderer then
   uses its normal stacking order; the still-live page returns as soon as a
   blocking overlap clears.
@@ -354,11 +354,8 @@ not an iframe:
   direct iframe when framing is allowed, sandboxed srcdoc reader mode (no
   `allow-same-origin`, injected `<base>` + postMessage navigation bridge) when
   blocked. The browser demo (no Rust) always uses the legacy path. Reader
-  mode's fetch (`browse.rs`) deliberately sends a bare, generic user agent so
-  UA-sniffing sites serve their simplified/legacy HTML variant (easier for the
-  static parser to reconstruct) — this is why a page that falls into reader
-  mode can visibly look "old" (Google's classic bare-bones layout is the
-  textbook example); it is not a caching or rendering bug, it is that UA.
+  mode's fetch (`browse.rs`) sends a generic user agent; sites may return a
+  simplified layout.
 - One failed `harness_navigate` used to permanently downgrade the whole wing
   session to that legacy path over what is usually a one-off hiccup (the
   loopback activity server was still starting, a transient wry/webview-runtime
@@ -433,7 +430,5 @@ profiles are never touched):
 When no page body can be fetched at all, Mesa still archives a small HTML link
 record with the failure message so the research trail is not lost.
 
-The harness stack is deliberately dependency-free on the npm side: the native
-webview + reporter, Tauri's `WebviewWindow` API, and the reqwest client
-already in the Rust tree — no browser-automation or scraping npm packages, so
-it adds no new supply-chain surface.
+The harness uses the system webview, Tauri's `WebviewWindow` API, the bundled
+reporter and the existing native reqwest client.

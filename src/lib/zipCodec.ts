@@ -23,8 +23,7 @@ function u32(bytes: Uint8Array, offset: number): number {
 
 /**
  * Reads ZIP central-directory metadata before decompression. ZIP64 and data
- * descriptors are intentionally rejected here: their widened/streamed fields
- * cannot prove the configured expansion budget from the ordinary header.
+ * descriptors are rejected because ordinary headers cannot bound their expansion.
  */
 export function inspectZipForImport(data: Uint8Array): ZipImportEntry[] {
   if (data.byteLength > ZIP_IMPORT_LIMITS.maxArchiveBytes) {

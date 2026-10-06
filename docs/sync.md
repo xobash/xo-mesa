@@ -136,7 +136,7 @@ out-of-band for certainty.
 
 ## Default Flow
 
-The Sync menu is intentionally short by default:
+The Sync menu shows:
 
 1. Turn on **Sync**.
 2. Select **Generate key** and copy the key to each device.

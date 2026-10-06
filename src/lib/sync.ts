@@ -12,32 +12,8 @@ export {
   formatFingerprint,
 } from "./syncProtocol";
 
-/**
- * Peer-to-peer LAN / Tailscale sync over TLS.
- *
- * Each device runs an embedded HTTPS server (Rust, `sync.rs`) that serves the
- * vault. The transport is TLS with a per-device self-signed certificate, so
- * vault contents are encrypted on the wire. Access is gated by a bearer
- * credential derived from the shared key and the peer certificate fingerprint;
- * the shared key itself is never sent on first contact.
- *
- * The ENTIRE sync engine runs natively (`sync_run` in `sync.rs`): remote
- * manifest over pinned TLS, local manifest (streamed + cached hashing), diff,
- * then bounded-concurrency transfers over one pooled client with per-file
- * verification, atomic writes, and per-file error collection. Vault bytes and
- * hashing never touch the webview — with hundreds of files, webview-side
- * hashing and one-TLS-handshake-per-file transfers are what made large vaults
- * crawl and fail silently. The native client pins the peer's SHA-256
- * certificate fingerprint (observed without credentials on first contact, then
- * enforced) to detect a man-in-the-middle after pairing. The native engine
- * records a per-peer common version and conditionally replaces one-sided edits.
- * Divergent edits remain conflict copies.
- *
- * While a sync runs, Rust emits `sync://log` and `sync://progress` events;
- * the store collects them for the in-app sync console (see SyncModal), and
- * `syncDiagnostics.ts` turns them into a copyable troubleshooting package.
- *
- */
+/** Native sync command facade and event types. Hashing, manifests, and file transfers stay in Rust.
+ * See docs/sync.md and docs/security.md for authentication and evidence limits. */
 
 export interface ManifestEntry {
   rel: string;
@@ -201,14 +177,7 @@ interface RemoteManifest {
   files: ManifestEntry[];
 }
 
-/**
- * Probe a peer with the given key and return a summary of the vault it's
- * sharing, plus its certificate fingerprint. Used by the "Open shared vault"
- * flow to confirm the address + key are right *before* asking the user to pick
- * a download folder. The native command throws a human-readable error on a bad
- * key, unreachable host, non-Mesa peer, or a certificate that fails a supplied
- * pin.
- */
+/** Probe peer reachability and key authentication, returning its vault summary and observed certificate fingerprint. */
 export async function fetchRemoteVaultInfo(
   peer: string,
   token: string,
@@ -227,18 +196,8 @@ export async function fetchRemoteVaultInfo(
   };
 }
 
-/**
- * Run a full two-way sync against one peer over pinned TLS. `pin` is the
- * peer's known certificate fingerprint (from a prior sync or discovery); pass
- * null the first time to trust-on-first-use without exposing the shared key. Returns the full report,
- * including the fingerprint that was actually observed (the caller should
- * remember it) and every per-file failure (a failed file never aborts the
- * rest of the sync).
- *
- * Everything — local hashing, diffing, transfers — runs in Rust
- * (`sync_run`): bytes never round-trip through the webview. Subscribe to
- * `SYNC_LOG_EVENT` / `SYNC_PROGRESS_EVENT` for the live console.
- */
+/** Run native two-way sync. Enforce a supplied fingerprint or record first contact for the caller to retain.
+ * Return transfer failures and subscribe to log/progress events for updates. */
 export async function syncWithPeer(
   root: string,
   peer: string,

@@ -24,13 +24,7 @@ export function timelineSortValue(n: GraphNode): number {
   return Number.isFinite(n.timelineTime) ? n.timelineTime! : Number.POSITIVE_INFINITY;
 }
 
-/** Alpha-independent overlap resolver. d3's `forceCollide` only runs while the
- *  simulation is ticking (alpha > ~0.004); the moment the sim settles it stops,
- *  freezing whatever overlaps remain — which is why nodes still overlapped at
- *  idle. This directly separates any overlapping force nodes using a spatial
- *  hash grid (O(n) per pass) and is called every frame from the draw loop, so
- *  overlaps can never persist at rest. It is the hard guarantee that nodes
- *  never overlap. Fixed (dragged) nodes are not moved but still push others. */
+/** Separate idle layout overlaps with a spatial hash grid. Fixed nodes stay in place but push others. */
 export function resolveOverlaps(
   nodes: GraphNode[],
   radiusOf: (n: GraphNode) => number,

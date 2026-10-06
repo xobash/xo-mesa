@@ -14,23 +14,8 @@ import { IN_TAURI, writeVaultTextFile } from "../lib/vault";
 import { bumpActivityAmount } from "../lib/activity";
 import { archiveWebPage } from "../lib/webArchive";
 
-// The Pi browser harness. It renders inside a "wing" that slides out from
-// BEHIND the Pi agent window (see AgentSurface) — it never covers the
-// terminal.
-//
-// Page loading in the desktop app is NATIVE-first:
-//   1. Pages render in a real native child webview (`harness_navigate` /
-//      src-tauri/src/harness.rs, Tauri multiwebview) positioned over this
-//      component's frame slot. Real JS, real sessions, real Google/YouTube —
-//      no more embed-blocked skeletons. An injected reporter streams the
-//      rendered DOM back to Mesa so the Pi agent reads exactly what the user
-//      sees. The frontend owns the webview's rect (rAF bounds sync below) and
-//      its visibility follows the wing.
-//   2. If native webview creation fails at runtime, the harness falls back to
-//      the legacy two-tier iframe path: `browse_fetch` header check → direct
-//      iframe when framing is allowed, sandboxed srcdoc "reader mode" when
-//      blocked. The browser demo (no Rust) always uses the legacy path with
-//      timer-based block detection.
+// The wing hosts a native browser webview on desktop and an iframe/reader fallback otherwise.
+// Bounds and visibility follow the slot; reported page content is untrusted.
 
 interface BrowsePage {
   finalUrl: string;
@@ -69,12 +54,7 @@ type FrameMode = "start" | "native" | "direct" | "reader";
 
 const NATIVE_WEBVIEW_OCCLUDER = "[data-native-webview-occluder]";
 
-/** Native child webviews always composite above the renderer DOM. Collect the
- * visible Mesa surfaces that intersect this slot so native visibility can
- * yield while normal DOM stacking decides which Mesa surface is actually on
- * top. An owner that contains the slot is ignored; otherwise every marked
- * window/card is a candidate regardless of its z-index. Once the native page
- * is hidden, the renderer's own stacking order remains authoritative. */
+/** Hide the native webview when another Mesa surface overlaps its slot; CSS stacking cannot cover it. */
 function visibleOccluderRects(
   slot: HTMLElement,
   candidates: readonly HTMLElement[]
@@ -207,14 +187,7 @@ export function BrowserHarness({
   const [nativeOk, setNativeOk] = useState<boolean | null>(IN_TAURI ? null : false);
   const [nativeOccluded, setNativeOccluded] = useState(false);
   const nativeOccludedRef = useRef(false);
-  // Calibration mode: dashed outline on the intended slot rect + a diagnostics
-  // row with the native side's numbers and placement nudge buttons. Click the
-  // status line to toggle. Off by default — the macOS titlebar-offset
-  // calibration this was added for is confirmed fixed (frame height − DOM
-  // viewport height, see harness.rs `content_y_offset`); leaving it on by
-  // default cost every session a permanent 1Hz `harness_status` IPC poll for
-  // no reason. Still toggleable by clicking the status line if it's ever
-  // needed again.
+  // Calibration and its native-status polling are enabled only on request.
   const [debugCal, setDebugCal] = useState(false);
   const [diag, setDiag] = useState<HarnessDiag | null>(null);
   const lastSentRef = useRef<HarnessRect | null>(null);
@@ -295,12 +268,7 @@ export function BrowserHarness({
     }
   };
 
-  // --- native webview path (desktop default) -------------------------------
-  // One retry before giving up: most `harness_navigate` failures are one-off
-  // hiccups (the activity server was still starting, a transient wry/webview
-  // error), not "this platform can't do multiwebview" — retrying once avoids
-  // permanently downgrading a whole session to the legacy reader path (fake
-  // UA, no JS) over a glitch that would have gone away on its own.
+  // Retry native navigation once before selecting the iframe/reader fallback.
   const nativeNavigate = async (url: string, attempt = 0): Promise<void> => {
     setLoadError("");
     if (!url) {
@@ -450,21 +418,8 @@ export function BrowserHarness({
     };
   }, []);
 
-  // Native mode: follow the frame slot's on-screen rect every frame (wing
-  // slide animation, overlay window drags, pane resizes), and yield native
-  // visibility whenever another Mesa surface intersects it. A native child
-  // webview cannot participate in CSS stacking, so hiding it during overlap is
-  // the only way to let the renderer's normal z-order remain authoritative.
-  // IPC is transition-only and serialized. Geometry itself is also
-  // event-driven to avoid layout reads while the browser is idle.
-  // Bounds push only when
-  // the rounded rect actually changes from the last CONFIRMED position —
-  // `confirmed` only advances once the native side acks the call, so a
-  // dropped/failed `harness_bounds` (a transient IPC hiccup) gets retried on
-  // the very next frame instead of leaving the webview stuck wherever it
-  // last landed. `inFlight` skips issuing a new call while one is still
-  // pending so a slow ack doesn't pile up redundant concurrent IPC round
-  // trips during a slide/resize.
+  // Serialize geometry and visibility updates. Advance confirmed bounds only after native acknowledgement;
+  // retry failed updates and avoid layout reads while idle.
   useEffect(() => {
     if (mode !== "native") return;
     let raf = 0;
@@ -728,13 +683,7 @@ export function BrowserHarness({
     }
   };
 
-  // Reliability note: Tauri's `WebviewWindow` constructor is fire-and-forget
-  // internally — it kicks off `invoke('plugin:webview|create_webview_window')`
-  // and reports outcome later via `tauri://created`/`tauri://error` events, it
-  // never throws synchronously for a real creation failure. The old `try {
-  // new WebviewWindow(...) } catch` here could never actually catch anything;
-  // a failed window silently vanished with the user none the wiser. Listening
-  // for the real events surfaces failures and confirms success.
+  // Observe tauri://created and tauri://error; native window creation completes asynchronously.
   const openBrowserExternally = async () => {
     const target = browserUrl || webSearchUrl(browserInput);
     if (!target) return;

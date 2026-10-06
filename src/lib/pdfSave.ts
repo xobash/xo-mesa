@@ -20,13 +20,7 @@ function loadPdfEditModule(): Promise<PdfEditModule> {
   return pdfEditModulePromise;
 }
 
-/**
- * Persist a PDF with post-write verification and automatic restore.
- *
- * Mesa has seen cases where a write path leaves a PDF truncated on disk. This
- * helper treats "write succeeded" as untrusted until the bytes are read back,
- * reparsed as a PDF, and matched byte-for-byte with the intended payload.
- */
+/** Read back, parse, and byte-compare saved PDF output before reporting success. */
 export async function persistPdfBytes(
   filePath: string,
   snapshot: Uint8Array,

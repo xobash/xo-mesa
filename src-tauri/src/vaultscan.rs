@@ -1,33 +1,8 @@
-// One-round-trip vault listing.
-//
-// The frontend's `scanVault` walked the tree with one `readDir` IPC call per
-// directory and then filled `size`/`mtime` with one `stat` IPC call PER FILE.
-// On the 4,165-file reference vault that metadata pass alone measured 1,476 ms
-// of a 1,593 ms scan, while the same walk-plus-stat costs ~248 ms of actual
-// syscalls — so ~1.2 s of it was IPC round-trip overhead, not disk. Sorting the
-// sidebar by `modified` or `size` puts that whole pass in front of the first
-// paint (`SORT_MODES_NEEDING_METADATA` in store.ts).
-//
-// This command does the identical walk natively and returns every entry with
-// its metadata in ONE round-trip. It deliberately does NOT reuse
-// `sync_core::list_vault_files`: that walker answers a different question (what
-// syncs) and coupling the two would let a sync rule silently change what the
-// vault indexes.
-//
-// The filter rules below MUST stay identical to `walk`/`isIndexableVaultRelPath`
-// in `src/lib/vault.ts` — a mismatch makes the watcher rescan files outside the
-// catalog. Native scan tests and frontend path-indexing tests cover the rules.
-//
-// Only the walk and the stat happen here. Every derived field (`name`, `ext`,
-// `isMarkdown`, `path`) is still computed by the frontend from `rel` using its
-// own helpers, so this cannot drift from the browser-demo path.
-//
-// The same walk also collects crash-recovery write artifacts. Those are
-// dot-prefixed by design, so they are never indexed. Collecting them during
-// this walk avoids a separate directory traversal and its IPC round-trips,
-// which run on the WebView2 UI thread on Windows. The scan already visits those
-// directories and already reads every dirent, so collecting the artifacts here
-// removes the second pass entirely rather than making it faster.
+// List vault entries, metadata, and recovery artifacts in one native round-trip.
+// Keep scan filters aligned with walk/isIndexableVaultRelPath in src/lib/vault.ts.
+// Sync owns a separate walker because its inclusion rules may differ.
+// The frontend derives display fields and ordering from vault-relative paths;
+// recovery artifacts are collected but never indexed.
 
 use std::fs;
 use std::path::Path;
@@ -168,8 +143,7 @@ fn walk(dir: &Path, prefix: &str, out: &mut ScanResult) -> std::io::Result<()> {
 #[tauri::command]
 pub async fn vault_scan(app: tauri::AppHandle, root: String) -> Result<ScanResult, String> {
     let path = crate::vaultscope::require_approved(&app, &root)?;
-    // The walk is blocking syscall work (~248 ms on the reference vault); keep
-    // it off the async runtime's worker so IPC stays responsive during open.
+    // Run blocking filesystem work off the async runtime worker.
     let access = crate::vaulttransaction::access(&path).await?;
     tauri::async_runtime::spawn_blocking(move || -> Result<ScanResult, String> {
         let _access = access;

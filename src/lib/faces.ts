@@ -1,18 +1,6 @@
 import type { ActivityOp } from "./activity";
 
-/**
- * Playful status faces + phrases shown at the bottom of the live
- * activity card while a file is being read / edited / written / created.
- *
- * Several variants per op; one is picked deterministically from a seed (the
- * note id) so a file keeps the same face/phrase for the duration of a burst
- * rather than flickering every frame. Faces and phrases are picked from the
- * same seed so a given file always gets a matching pair during a burst.
- *
- * Convention: every default phrase ends in "…" so the trailing ellipsis reads
- * as an ongoing action (a test asserts this). Custom agent status overrides
- * the phrase but keeps the face.
- */
+/** Choose a stable face/phrase pair per activity burst; default phrases end in an ellipsis. */
 const FACES: Record<ActivityOp, string[]> = {
   read: [
     "( ͡° ͜ʖ ͡°)",

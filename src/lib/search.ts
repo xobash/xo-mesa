@@ -13,20 +13,8 @@ export interface ParsedQuery {
   quoted: boolean;
 }
 
-/**
- * Parse a search query, extracting an `ext:`/`type:` filter (and a bare
- * `.pdf` token) from the free-text term.
- *   "ext:pdf budget"    -> { term: "budget", ext: "pdf" }
- *   "type:md alpha"      -> { term: "alpha", ext: "md" }
- *   ".png"               -> { term: "", ext: "png" }
- *   '"exact phrase"'     -> { term: "exact phrase", quoted: true }
- *
- * Matching has always been plain substring matching, so a multi-word query is
- * already a phrase search. Quotes are accepted so that typing the phrase the
- * way people expect — with quotes around it — searches for the phrase rather
- * than for a term that literally contains quote characters. Inside quotes the
- * `ext:` and `.ext` tokens are NOT stripped, so a phrase may contain them.
- */
+/** Extract ext:/type: filters and unquoted .ext tokens. Matching is substring-based;
+ * quoted phrases preserve literal filter tokens. */
 export function parseSearchQuery(q: string): ParsedQuery {
   const quotedMatch = /^\s*"([^"]*)"\s*$/.exec(q);
   if (quotedMatch) {
@@ -128,26 +116,8 @@ function safeEntity(code: number): string {
   }
 }
 
-/**
- * Full-text vault search over the store's content cache.
- *
- * Matching is case-insensitive: the note text and the query are both lowered.
- * (Lowering only the text made every capitalised query — `Budget` against a
- * note literally containing "Budget" — return nothing at all.)
- *
- * `previous` enables incremental narrowing. Substring matching is monotone
- * under prefix extension: if `term` starts with `previous.term`, any file
- * containing `term` also contains `previous.term`, so `matches(term)` is a
- * subset of `previous.candidates` and the rest of the vault cannot match. That
- * makes every keystroke after the first scan only the surviving notes instead
- * of lowercasing the whole vault again. `candidates` is deliberately uncapped
- * so narrowing can never drop a note the display cap hid.
- *
- * The caller MUST discard `previous` whenever `files` or the content cache
- * changes identity — an edited note could newly match a term that had already
- * excluded it. Any other mismatch (backspace, paste, a changed `ext:` filter)
- * falls back to a full scan on its own.
- */
+/** Case-insensitive substring search with optional prefix narrowing over uncapped candidates.
+ * Discard previous results when files or content identity changes. */
 export function searchVault(
   files: readonly SearchFile[],
   cache: Record<string, string>,
@@ -161,22 +131,8 @@ export function searchVault(
   return scan.result();
 }
 
-/**
- * A search pass that can be run in slices.
- *
- * A full pass over this corpus is 42–80 ms warm and several hundred under
- * memory pressure, and it ran synchronously inside a `useMemo` — so every
- * keystroke that cannot be narrowed from the previous pass froze the main
- * thread for that long, including the caret. `useDeferredValue` cannot help:
- * React can deprioritize the render, but it cannot interrupt a synchronous
- * loop once it starts.
- *
- * The work is unchanged and the result is byte-for-byte the same pass — only
- * the loop is resumable, so the caller can yield between slices. Ranking is
- * applied once at the end, so a partial scan is never displayed in the wrong
- * order; the caller keeps showing the previous completed pass until this one
- * finishes, exactly as the synchronous version did.
- */
+/** Resumable search pass. Callers yield between slices and publish only the
+ * completed result, since ranking is applied after scanning. */
 export interface SearchScan {
   /**
    * Scan for up to `budgetMs` of wall time (at least one file per call, so
@@ -189,17 +145,8 @@ export interface SearchScan {
   readonly remaining: number;
 }
 
-/**
- * Files scanned between wall-clock checks.
- *
- * One, because a real corpus is not uniform: a single file here is 3.9 M
- * characters, and batching 32 of those before looking at the clock produced
- * 58–68 ms slices against an 8 ms budget. Checking every file costs about
- * 0.1 ms across the whole vault — far less than the overshoot it prevents.
- *
- * Eligible raw text also yields inside a large file. The Unicode fallback is
- * still atomic because lowercasing can change string length and raw offsets.
- */
+/** Check the time budget after each file; file sizes vary.
+ * Large-file matching also yields within a file. */
 const SCAN_CHECK_INTERVAL = 1;
 
 export function createSearchScan(
@@ -313,12 +260,8 @@ export function createSearchScan(
     const idx = -1;
     const count = 0;
     if (term) {
-      // U+0130 lowercases to `i` plus a combining dot. It can only contribute
-      // to the one-character ASCII query "i"; a longer ASCII literal cannot
-      // cross that non-ASCII combining mark. Every other ASCII matcher can
-      // scan raw text safely without first making `canScanRawFor` walk a
-      // 3.9 M-char file atomically merely to find U+0130. Snippet offsets must
-      // always index the raw text.
+      // U+0130 lowercases to i plus a combining dot, so only the single-character
+      // ASCII query i needs special handling. Snippets must index raw text.
       const canUseRaw =
         rawMatcher && (term !== "i" || canScanRawFor(f.relPath, raw));
       if (canUseRaw) {

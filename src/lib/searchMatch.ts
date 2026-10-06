@@ -1,29 +1,5 @@
-/**
- * Allocation-free case-insensitive matching for vault search.
- *
- * Match raw text without allocating a lowercase copy of the corpus for every
- * keystroke.
- *
- * ## Why a character class is exactly equivalent to lowercasing
- *
- * The legacy predicate is `raw.toLowerCase().indexOf(termLower)`. Over the
- * whole BMP there are exactly two code points that make lowercasing anything
- * other than a per-code-unit ASCII fold (both verified exhaustively in
- * `searchMatch.test.ts`):
- *
- *   - **U+212A KELVIN SIGN** is the ONLY non-ASCII code point whose
- *     `toLowerCase()` is an ASCII string (`"k"`). It is length-preserving, so
- *     folding it into the `k` character class reproduces it exactly.
- *   - **U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE** is the ONLY code point
- *     whose lowercase is longer than one unit (`"i̇"`). Length changes
- *     shift every subsequent index, so any text containing it takes the exact
- *     legacy path instead of the fast one.
- *
- * With those two handled, `toLowerCase()` is a pure per-code-unit map and an
- * ASCII term's character class is equivalent by construction.
- *
- * Snippet offsets refer to raw text, including when U+0130 occurs before a hit.
- */
+/** Raw ASCII matching preserves lowercase-search semantics with Kelvin-sign and dotted-I handling.
+ * Non-ASCII terms use the lowercase path; snippet offsets always refer to raw text. */
 
 /** The one code point whose lowercase is longer than itself. Text containing
  *  it cannot use the fast path, because raw and lowered indices diverge. */
@@ -73,18 +49,8 @@ export interface RawScan {
   count: number;
 }
 
-/**
- * One pass over `raw`, returning both the first match offset and the total
- * count. `re` must be the global regex from `buildRawMatcher`; its `lastIndex`
- * is reset here, so a single matcher can be reused across every file.
- *
- * Uses `test`, not `exec`: `exec` allocates a result array per match, and a
- * common two-letter term hits hundreds of thousands of times across a real
- * vault. `test` allocates nothing and still advances `lastIndex`, and because
- * `buildRawMatcher` only ever emits fixed-width patterns (one character class
- * or one escaped literal per ASCII character of the term), the match start is
- * exactly `lastIndex - width`.
- */
+/** Return first offset and non-overlapping count. Reset the shared fixed-width matcher before each file;
+ * match start is lastIndex minus pattern width. */
 export function scanRaw(raw: string, re: RegExp, width: number): RawScan {
   re.lastIndex = 0;
   let first = -1;
@@ -99,15 +65,7 @@ export function scanRaw(raw: string, re: RegExp, width: number): RawScan {
   return { first, count };
 }
 
-/**
- * Characters inspected by one resumable raw-search step.
- *
- * A single saved page in the reference vault is 3.9 M characters. Searching
- * that file as one regex operation took 18-25 ms, so the outer file-level
- * scheduler could not keep its 8 ms frame budget. A 64 KiB step is small
- * enough to yield well within one frame while avoiding thousands of tiny
- * substring allocations for ordinary large files.
- */
+/** Characters inspected per resumable step; bounded windows allow intra-file yields. */
 const RAW_SCAN_CHUNK_CHARS = 64 * 1024;
 
 export interface IncrementalRawScan {
@@ -175,13 +133,7 @@ export function canScanRaw(raw: string): boolean {
   return raw.indexOf(LENGTH_CHANGING_CHAR) < 0;
 }
 
-/**
- * Preserve the keyed API without retaining source strings. Search now needs
- * this check only for a filtered one-character `i` query. The former memo
- * retained deleted/evicted files; even a character-limited memo can keep a
- * large backing allocation alive through a short substring. Rechecking the
- * predicate avoids that ownership entirely, including after canceled scans.
- */
+/** Check raw-search eligibility without retaining source strings or keys. */
 export function canScanRawFor(_key: string, raw: string): boolean {
   return canScanRaw(raw);
 }

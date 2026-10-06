@@ -58,8 +58,7 @@ function nextOrder(entries: readonly TextRevision[]): number {
 }
 
 function revisionId(now: number): string {
-  // UUIDs make records collision-resistant across independent windows. Ordering
-  // is deliberately separate: it is assigned in the same IndexedDB transaction.
+  // UUIDs identify records across windows; the transaction assigns their order.
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${now}-${crypto.randomUUID()}`;
   }
@@ -98,7 +97,7 @@ function compareNewestFirst(a: TextRevision, b: TextRevision): number {
 /**
  * History is recovery data, so normal Mesa use stores it transactionally and
  * asynchronously. `localStorage` remains only as a browser-demo fallback for
- * profiles where IndexedDB is intentionally unavailable.
+ * profiles without IndexedDB.
  */
 function revisionDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -137,8 +136,7 @@ function sameRevision(left: TextRevision, right: TextRevision): boolean {
 
 /**
  * Runs the complete history decision in one serializable IndexedDB transaction.
- * This is intentionally per-record reconciliation: `clear()` followed by
- * `put()` lets another window erase an acknowledged revision between phases.
+ * Reconcile records without clearing revisions acknowledged by another window.
  */
 async function mutateDatabase<T>(
   mutation: (entries: TextRevision[]) => { value: T; entries: TextRevision[] }

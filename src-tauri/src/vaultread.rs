@@ -1,30 +1,5 @@
-// Bulk vault text reads — many files per IPC round-trip.
-//
-// Vault-open text reads are batched to bound native IPC round-trips. On Windows:
-//
-//   * Every Tauri invoke uses the custom-protocol IPC on every platform except
-//     Android (`tauri/scripts/ipc-protocol.js`).
-//   * On Windows that becomes a WebView2 `WebResourceRequested` event, which is
-//     raised on the app's UI thread (`wry/src/webview2/mod.rs`).
-//   * The commands are async, so responses arrive from a worker thread; wry
-//     then posts a window message to the main HWND, and its dispatcher calls
-//     `RedrawWindow(.., RDW_INTERNALPAINT)` for each dispatched response
-//     (wry WebView2 window dispatcher).
-//
-// Each read response can compete with input and paint messages on Windows.
-//
-// This command reads a batch of vault-relative paths in ONE round-trip and
-// returns their bytes in a single framed binary response (`tauri::ipc::Response`
-// — no JSON, no base64). The frontend chunks its own work so peak memory and
-// cancellation granularity stay bounded; see `readVaultText` and
-// `VAULT_TEXT_CHUNK` in `src/lib/vault.ts`.
-//
-// Deliberately returns BYTES, not strings: `plugin:fs|read_text_file` also
-// returns bytes and lets the frontend decode with a non-fatal `TextDecoder`.
-// Decoding here with `String::from_utf8_lossy` would produce the same text in
-// the common case but would move the substitution rules into Rust, where they
-// could drift from the fallback path. Byte-for-byte identity with the per-file
-// path is the point.
+// Read ordered vault-file batches into one binary IPC response.
+// Return bytes and distinct failure/skip markers; the frontend owns UTF-8 decoding.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,14 +20,7 @@ enum ReadResult {
     Failed,
 }
 
-/// Reject anything that could escape the vault root before it reaches the
-/// filesystem. `rels` normally come straight from `vault_scan`, but this is a
-/// public IPC surface and must not rely on its caller for that.
-///
-/// Mirrors `sync_core::safe_join`. It is duplicated rather than shared for the
-/// same reason `vaultscan.rs` does not reuse `list_vault_files`: sync's path
-/// rules answer a different question, and coupling them would let a sync change
-/// silently alter which paths the vault can read.
+/// Validate vault-relative paths before filesystem access. Keep vault-read policy independent of sync policy.
 fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
     if rel.is_empty() {
         return None;
@@ -67,12 +35,7 @@ fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(p)
 }
 
-/// Read every path, in parallel, preserving request order in the result.
-///
-/// Sizes here span orders of magnitude (empty notes next to multi-MB exports),
-/// so workers pull from a shared cursor rather than taking a static slice —
-/// the same shape `sync_core::build_manifest` uses, and for the same reason: a
-/// static split leaves most threads idle behind the one that drew the big file.
+/// Workers pull paths from a shared cursor and store results in request order.
 fn read_all(
     root: &Path,
     rels: &[String],

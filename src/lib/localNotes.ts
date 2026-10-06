@@ -1,25 +1,5 @@
-/**
- * Writes for the overlay surfaces that are NOT vault files.
- *
- * Almost everything the user types in Mesa lands in the vault through
- * `persistVerifiedBytes` (`verifiedWrite.ts`): verified backup, atomic rename,
- * byte-for-byte read-back. Two overlay surfaces are deliberately outside that —
- * the Scratchpad and the Whiteboard are browser-storage scratch space, not
- * notes. They do not sync, do not appear in search or the graph, and do not get
- * write recovery.
- *
- * That is a legitimate choice for scratch space. Losing it *silently* is not,
- * and `localStorage.setItem` fails silently in exactly the case that matters:
- * a full quota. This module makes the failure a value the caller must handle.
- *
- * It also bounds a single entry. Every Mesa key shares one origin quota, so an
- * unbounded whiteboard PNG could crowd out `mesa:settings`, `mesa:theme` and
- * `mesa:recentVaults` — losing the user's vault list to a doodle. A refused
- * oversized write keeps the previous value intact instead.
- *
- * Pure and dependency-free (`storage` is injectable) so the rules are testable
- * without a DOM.
- */
+/** Bounded browser-storage staging for overlay drafts before explicit vault saves.
+ * Storage failures are returned to the caller; refused writes preserve the previous value. */
 
 /** UTF-16 code units, which is what browsers actually bill against the quota —
  *  a 2-byte-per-character accounting, not UTF-8. */
@@ -27,12 +7,7 @@ export function localNoteBytes(value: string): number {
   return value.length * 2;
 }
 
-/**
- * Per-entry ceiling. Well above any real scratchpad or line-art whiteboard
- * (a 640x460 board of strokes serializes to tens of kB), and far below the
- * ~5 MB origin quota, so one surface can never consume the budget the app's
- * own settings depend on.
- */
+/** Per-entry byte ceiling for browser-local overlay staging. */
 export const LOCAL_NOTE_MAX_BYTES = 2 * 1024 * 1024;
 
 export type LocalNoteWrite =
@@ -49,17 +24,7 @@ export interface LocalNoteStore {
   setItem(key: string, value: string): void;
 }
 
-/**
- * True for the "you are out of room" family.
- *
- * The engines Mesa ships on disagree on how they say it, and Mesa runs on all
- * three: WebView2/Chromium (Windows) throws `QuotaExceededError` with legacy
- * code 22, WKWebView/WebKit (macOS) throws `QuotaExceededError` and older
- * builds `QUOTA_EXCEEDED_ERR`, and WebKitGTK/Gecko-derived paths (Linux) use
- * `NS_ERROR_DOM_QUOTA_REACHED` with code 1014. Matching on only one of them is
- * how a "your board is full" notice becomes correct on one OS and absent on
- * another.
- */
+/** Recognize quota errors by standard names and legacy WebKit/Gecko codes. */
 export function isQuotaError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { name?: unknown; code?: unknown };
@@ -94,14 +59,7 @@ export function readLocalNote(key: string, store?: LocalNoteStore | null): strin
   }
 }
 
-/**
- * Write one overlay entry, reporting what happened instead of swallowing it.
- *
- * The size check runs BEFORE the write: discovering the ceiling by filling the
- * quota would already have evicted nothing (browsers reject rather than evict),
- * but it would leave the origin one keystroke away from failing every other
- * `mesa:` write too.
- */
+/** Check size before writing and return an explicit result for refusal or storage failure. */
 export function writeLocalNote(
   key: string,
   value: string,

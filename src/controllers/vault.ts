@@ -250,25 +250,11 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     let watcherRescanMs = 0;
     const rootRaw = watcherRoot;
     const seen = new Set<string>();
-    // Modify-path results are accumulated and committed ONCE for the batch.
-    // Committing per file spread the whole content cache and notes map each
-    // time, so a bulk external change — a device sync landing, an agent
-    // rewriting a folder, a git checkout inside the vault — cost O(files ×
-    // cacheKeys) copies plus one React cascade per file over the whole sidebar.
-    // Measured at this vault's dimensions (2,452 cached files): 1,500 changed
-    // files spent 576 ms in object copying alone; batched, 0.5 ms. `seen`
-    // guarantees each rel is handled at most once per batch, and nothing in the
-    // loop reads back the values queued here, so one commit is equivalent.
+    // Deduplicate changed paths and publish accumulated results once per batch.
     const pendingContent = new Map<string, string>();
     const pendingNotes = new Map<string, NoteMeta>();
     let filesDirty = false;
-    // `normalizeVaultRelPath` only consults the vault's relPath list for an
-    // absolute path that does NOT sit under the vault root — the uncommon case
-    // (an aliased/symlinked root, or a tool reporting a resolved path). Building
-    // that list per path anyway copied every file in the vault each time: 45.5 ms
-    // per 1,500-path batch here, versus 0.8 ms when it is built only when it is
-    // actually needed. Memoized on the `files` array identity, which every
-    // mutation replaces, so it can never be consulted stale.
+    // Build alias-path lookup lists only when needed; cache by files-array identity.
     let knownFrom: VaultFile[] | null = null;
     let knownRelPaths: string[] = [];
     const knownRels = (): string[] => {
@@ -355,12 +341,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           if (!rel || seen.has(rel)) continue;
           seen.add(rel);
 
-          // Anything scanVault would not index is invisible to Mesa, so there is
-          // nothing here to refresh. This covers Mesa's own verified-write
-          // artifacts (.x.mesa-*.tmp) and, unlike the basename-only check it
-          // replaces, everything under a dot-directory — `.git/index` and its
-          // siblings used to reach the rescan fallback and scan the whole vault
-          // once per path. See `isIndexableVaultRelPath`.
+          // Ignore paths excluded by isIndexableVaultRelPath before refresh or rescan.
           if (!isIndexableVaultRelPath(rel)) continue;
 
           // --- Deletion ---
@@ -642,22 +623,12 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         // reachable through it.
         resetSearchEligibility();
 
-        // `size`/`mtime` come from one `stat` IPC round-trip PER FILE — 93% of
-        // the scan on the measured vault (1,476 ms of 1,593 ms). Nothing the
-        // first frame draws needs them unless the sidebar is sorted by modified
-        // or size, so that is the only case that waits; otherwise the metadata
-        // lands behind the paint (`loadVaultMetadata` below).
+        // Wait for fallback metadata only when the active sidebar sort needs it;
+        // otherwise load it after the initial paint.
         const needsMetadataNow = SORT_MODES_NEEDING_METADATA.has(
           get().settings.sortMode
         );
-        // Crash recovery USED to run first, with its own directory walk — one
-        // `read_dir` IPC round-trip per directory (153 on the reference vault,
-        // 96% of the whole pre-paint round-trip budget) to find nothing whenever
-        // the last session shut down cleanly, which is nearly always. `vault_scan`
-        // already visits every one of those directories, so it now returns the
-        // artifacts too and the second walk is gone. On Windows each of those
-        // round-trips was a UI-thread message plus a forced `RedrawWindow` while
-        // WebView2 was still booting; see `src-tauri/src/vaultscan.rs`.
+        // Reuse scan-discovered recovery artifacts; null requires recovery to walk the vault itself.
         let discoveredArtifacts: FoundArtifact[] | null = null;
         let files = await scanVault(root, {
           metadata: needsMetadataNow,

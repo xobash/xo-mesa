@@ -1,8 +1,9 @@
 # Native Acceptance
 
-Native acceptance proves what CI and browser fixtures cannot: Mesa installs,
-launches, edits, syncs, detaches windows, survives interruption, and releases
-resources on the real operating systems it claims to support.
+Native acceptance records observed installation, editing, sync, window behavior,
+interruption recovery, and resource use on a named operating system and artifact.
+CI and browser fixtures supply different evidence. The record checker validates
+completeness and artifact identity; it cannot authenticate the observations.
 
 ## Support Matrix
 
@@ -10,7 +11,7 @@ The native acceptance matrix is the list of real desktop targets Mesa promises
 to exercise before calling a release healthy. "Matrix" is not a special tool;
 it is just the tested OS/runtime row plus the workflows below.
 
-| Matrix target | What it proves |
+| Matrix target | Required checks |
 | --- | --- |
 | Windows 11 current WebView2 | Current Windows install, runtime, firewall, ConPTY/Pi, detached windows, scaling, and sync behavior |
 | Windows 10 oldest WebView2 | Oldest supported Windows family with Evergreen WebView2 111 or newer |
@@ -33,7 +34,7 @@ and operating system. These are supporting checks, not native acceptance:
 - A different operating system.
 - A source assertion in documentation or code comments.
 
-Keep local records private unless they are deliberately cleaned for release.
+Keep local records private unless sanitized for release.
 They can name local vaults and machines during testing, so write them to a
 gitignored path such as `native-acceptance.local.md`.
 
@@ -109,30 +110,6 @@ do not treat a browser fixture or CI timing as native evidence.
 Large-file and open exceptions must show visible progress and cancellation.
 If a target is not appropriate for the agreed hardware or workload, record the
 measured reason and amend this table before changing the grade decision.
-
-## Messy-Use Inventory
-
-The generated template includes separate inventory lines for the parts most
-often lost in a coarse "sync works" claim:
-
-- Baseline pair and bidirectional transfer
-- Offline third-device convergence
-- Simultaneous text edit conflict
-- Delete and restore
-- Rename plus edit
-- Peer certificate change
-- Interrupted journal or app kill
-- Retry evidence and final status
-- Save/history visible beside the document
-- Delete/recovery visible beside deletion
-- Save/sync problem stayed visible until resolved
-- Keyboard-only path
-- VoiceOver/Narrator path
-- High-DPI/small-display path
-- Modal interruption and return
-
-A passed record must fill these lines with concrete native evidence, not with
-unit tests, CI, or source-contract references.
 
 Process-tree samples cover Mesa and identified descendants. They do not establish
 complete shared WebKit/GPU coverage. A renderer without heap readings cannot

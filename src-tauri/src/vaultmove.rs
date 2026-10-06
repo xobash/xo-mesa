@@ -1,9 +1,4 @@
-// Native no-replace vault rename.
-//
-// The filesystem plugin's rename maps to Rust's overwrite-capable rename on
-// several platforms. A preflight `exists()` check cannot make that safe: a
-// different process can create the destination between the check and move.
-// This command uses the same native no-replace primitive as sync instead.
+// Use native no-replace rename; an exists check does not authorize overwrite.
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};

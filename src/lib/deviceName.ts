@@ -1,11 +1,4 @@
-/**
- * LocalSend-style device names — a friendly "Adjective Noun" pair ("Toasty
- * Lemon", "Quiet Walrus") generated once per device and persisted in settings
- * (`syncDeviceName`). Discovery advertises this name so a user syncing three
- * machines sees three distinct, memorable devices instead of "Mesa device"
- * three times. The name is cosmetic: a peer's real identity is its TLS
- * certificate fingerprint (see sync.ts).
- */
+/** Persistent cosmetic device label. TLS certificate fingerprint remains the peer identity. */
 
 const ADJECTIVES = [
   "Amber", "Brave", "Breezy", "Bright", "Bubbly", "Calm", "Cheery", "Chilly",

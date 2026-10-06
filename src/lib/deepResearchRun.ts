@@ -6,26 +6,8 @@ import { getPiSessionSnapshot } from "./piSessionBridge";
 import type { ApplyPlan, ProposedOp } from "./researchApplyPlan";
 import { buildApplyPlan as resolvePlan } from "./researchApplyPlan";
 
-/**
- * Deep Research — the side-effectful run driver.
- *
- * This module is the ONLY place a Deep Research run touches the outside
- * world: the shared Pi PTY (read + write), the Tauri event bridge that the
- * loopback activity server re-emits the Pi extension's messages on, and the
- * verified vault writes that apply a reviewed change set. Everything else —
- * context selection, validation, change-set building, apply planning — is
- * pure logic in `deepResearch.ts`.
- *
- * Hard guarantees enforced here:
- * - It reuses the ONE shared Pi session (via `getPiSessionSnapshot`); it
- *   never spawns a Pi process. If the session is not running yet, it asks the
- *   store to open a Pi surface (which starts the shared session through the
- *   normal path) and waits for it.
- * - Every create/update goes through `persistVerifiedBytes` (via `writeNote` /
- *   `createNote`) — never a blind overwrite.
- * - Applying a change set follows `buildApplyPlan`. On a caught failure it
- *   attempts to restore earlier changes and reports any rollback failures.
- */
+/** Coordinate the shared Pi session, research events, and reviewed writes.
+ * Desktop apply uses native recovery; browser apply uses compensating rollback and can remain partial. */
 
 // ---------------------------------------------------------------------------
 // Pi session access
@@ -45,14 +27,7 @@ export async function sendToPi(sessionId: string, input: string): Promise<void> 
   await invoke("terminal_write", { sessionId, input });
 }
 
-/**
- * Submit a multi-line research prompt to Pi's interactive editor.
- *
- * A bare LF is content in Pi's editor; it can leave the whole prompt visibly
- * typed into the editor without starting the model turn. Send the body first,
- * then the terminal's carriage-return Enter key as a separate write so the
- * prompt is actually submitted.
- */
+/** Send prompt content first and submit with a separate carriage return; LF alone is editor content. */
 export async function sendResearchPrompt(sessionId: string, prompt: string): Promise<void> {
   await sendToPi(sessionId, prompt);
   await sendToPi(sessionId, "\r");
@@ -141,15 +116,8 @@ export interface ApplyOutcome {
   rolledBack?: boolean;
 }
 
-/**
- * Apply a reviewed change set through verified writes with compensating rollback.
- *
- * Steps run in the pure plan's order (creates before updates). Each update's
- * `expectedBytes` was already version-checked against the vault when the plan
- * was built; if a step fails mid-apply, the rollback plan runs in reverse.
- * A crash or rollback failure can leave partial changes. Each write/remove goes through
- * `persistVerifiedBytes` / the vault helpers.
- */
+/** Apply reviewed operations in plan order with expected-byte checks.
+ * Browser rollback runs in reverse and reports failures; crash recovery belongs to the native transaction. */
 export async function applyChangeSet(input: {
   root: string;
   plan: Extract<ApplyPlan, { ok: true }>;

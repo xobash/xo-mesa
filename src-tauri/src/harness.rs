@@ -1,33 +1,6 @@
-// Native browser-harness webview for the Pi agent and the user.
-//
-// The old harness rendered pages in an <iframe> inside Mesa's own webview.
-// Sites that forbid framing (google.com, youtube.com, most login pages) fell
-// back to a scriptless srcdoc "reader mode" — for modern JS-shell sites that
-// renders a gray skeleton or a no-JS variant that looks like a counterfeit
-// page, and the Pi agent could only read a server-side fetch of HTML that the
-// user was not actually seeing.
-//
-// This module hosts the page surface in a REAL native child webview (Tauri
-// multiwebview, `unstable` cargo feature) positioned over the wing's page
-// area by the frontend (`BrowserHarness.tsx` syncs bounds every frame):
-//   - the user sees the real rendered site — JS, sessions, sign-ins, all of it;
-//   - an injected reporter (resources/harness-reporter.js) streams the
-//     *rendered* DOM text/title/links back to Mesa;
-//   - the Pi `browse` tool answers with that rendered snapshot, so the agent
-//     reads exactly what the user's harness displays. The frontend falls back
-//     to the legacy iframe two-tier path if webview creation fails at runtime.
-//
-// Snapshot ingest has two doors (see harness-reporter.js for why):
-//   - POST /harness on the loopback activity server (activity.rs routes here);
-//   - `mesa-snap://snap/#<payload>` navigations intercepted by on_navigation.
-// The POST verifies a token rotated on each page load. The fallback URL omits
-// it; native code inserts it after decoding, but the page can forge its content.
-//
-// Boundary notes:
-//   - The webview label (`pi-harness`) matches NO capability window pattern,
-//     so remote pages get zero Tauri permissions; the reporter needs none.
-//   - on_navigation confines the webview to http(s)/about/blob/data.
-//   - Snapshots live in memory only and are capped; nothing touches disk.
+// Native harness webview and bounded in-memory snapshots. Remote pages receive no Tauri capabilities.
+// POST snapshots use a per-page token; scheme fallback content remains page-controlled.
+// See docs/security.md for navigation and observation limits.
 
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -291,13 +264,7 @@ pub fn bump_nav_gen() -> u64 {
     st.nav_gen
 }
 
-/// Block (activity-server thread) until a snapshot for `gen` arrives, then
-/// give fast-mutating pages a short settle window for a fresher one.
-///
-/// Guard against the pre-navigation page's last debounced tick slipping in
-/// right after the generation bump: a snapshot only counts if its URL matches
-/// the requested target (redirect-free case) or it arrived at/after `min_at`
-/// (bump time + a beat — by then the webview has left the old page).
+/// Wait for the navigation generation and settle briefly. Reject old-page snapshots by URL/time checks.
 pub fn wait_for_snapshot(
     gen: u64,
     expect_url: &str,
@@ -364,22 +331,8 @@ pub fn webview_exists(app: &tauri::AppHandle) -> bool {
     app.get_webview(HARNESS_LABEL).is_some()
 }
 
-/// Child webviews are positioned relative to the window FRAME (on macOS wry
-/// flips Y over the full frame, titlebar included), while the CSS-pixel rects
-/// the frontend measures are relative to the DOM viewport, which starts below
-/// the titlebar. The exact delta between those two origins is simply
-/// `frame height − DOM viewport height`, so the frontend sends its
-/// `window.innerHeight` with every placement call and we shift down by the
-/// difference.
-///
-/// Why not tao window metrics: desktop QA (2026-07-02, macOS) showed tao
-/// reporting inner_size == outer_size == frame (1440×821) and
-/// inner_position == outer_position, so "outer − inner" computed 0 while the
-/// real offset was ~30 (that macOS version's titlebar). This formula needs no
-/// per-OS knowledge: it self-adapts to any titlebar/toolbar height, collapses
-/// to 0 in fullscreen (titlebar hides, viewport == frame), and is 0 on
-/// Windows/Linux where children are client-area-relative and inner_size IS
-/// the viewport.
+/// Convert DOM-relative bounds to macOS frame coordinates using frame height minus viewport height;
+/// other platforms use client-area coordinates.
 fn content_y_offset(window: &tauri::Window, viewport_h: f64) -> f64 {
     if viewport_h <= 0.0 {
         return 0.0;
@@ -439,14 +392,7 @@ pub fn harness_nudge(dx: f64, dy: f64, reset: bool) -> Result<(f64, f64), String
     Ok(*n)
 }
 
-/// `activity_start` normally completes just before Pi's PTY spawns (and thus
-/// before Pi could ever call `browse`), but a user can click the harness
-/// open by hand within milliseconds of the Pi panel mounting — before that
-/// async start has landed. Rather than hard-failing that race and
-/// permanently downgrading the whole session to the legacy iframe path,
-/// wait briefly for it. Zero-cost in the normal case: `harness_report_target`
-/// already returns `Some` on the first check almost always, so this only
-/// ever sleeps during the rare startup race.
+/// Wait briefly for the activity bridge before creating the reporter.
 fn wait_for_report_target(timeout: Duration) -> Option<u16> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -532,20 +478,8 @@ fn create_webview(
     Ok(())
 }
 
-/// Navigate the harness webview, creating it (as a child of the calling
-/// window) or re-parenting it (close + recreate) as needed. Bounds are the
-/// wing's page-area rect in CSS pixels, supplied by the frontend, along with
-/// `window.innerHeight` (`viewport_h`) so the placement offset can be
-/// computed as frame height minus DOM viewport height.
-/// `visible` is the frontend's current occlusion decision. It is applied in
-/// the same native command as creation/navigation so a covered harness cannot
-/// flash above the Mesa window or hover card that covers it.
-///
-/// A failed `.navigate()` on an existing webview may be transient. Recreate
-/// it once before the frontend falls back to reader mode.
-// The parameter list is the IPC contract with BrowserHarness.tsx — every
-// argument arrives as a named field from `invoke`, so bundling them into a
-// struct would only obscure the wire shape.
+/// Create or re-parent the child in the calling window using DOM slot bounds and viewport height.
+/// Apply visibility with navigation; recreate once on navigation failure. Named parameters are the IPC contract.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn harness_navigate(

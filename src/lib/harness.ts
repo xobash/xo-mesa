@@ -1,10 +1,4 @@
-// Pure geometry helpers for the native Pi browser-harness webview.
-//
-// In the desktop app the harness page surface is a NATIVE child webview
-// (src-tauri/src/harness.rs), not an iframe. The frontend owns its on-screen
-// rect: BrowserHarness measures the wing's page slot every animation frame
-// and pushes changed bounds to Rust (`harness_bounds`). These helpers keep
-// that loop allocation-light and unit-testable.
+// Geometry and occlusion helpers for the native harness slot.
 
 export interface HarnessRect {
   x: number;

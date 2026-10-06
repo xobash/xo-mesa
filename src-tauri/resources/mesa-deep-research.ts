@@ -1,33 +1,8 @@
-// Mesa Deep Research bridge — a Pi extension bundled with Mesa's embedded
-// terminal. Loaded alongside mesa-activity / mesa-browser only when the user
-// starts a Deep Research run.
-//
-// What it does:
-//   - Registers three tools the model uses to report a Deep Research run back
-//     to Mesa: `deep_research_progress` (phase/status updates),
-//     `deep_research_finish` (the final structured result), and
-//     `deep_research_blocked` (a structured stop with its reason). All POST to
-//     Mesa's loopback activity server, which re-emits them to the frontend.
-//   - While a run is active (MESA_DEEP_RESEARCH=1 is injected), it BLOCKS
-//     Pi's direct content mutation tools: Deep Research is a read-only
-//     proposal phase. Mesa owns every vault mutation and applies the reviewed
-//     change set itself through verified atomic writes. This is the belt to
-//     the prompt's suspenders — even if the model ignores the instruction,
-//     it cannot mutate the vault during a run.
-//
-// Safety / boundary notes:
-//   - No-op unless Mesa injected MESA_ACTIVITY_PORT + MESA_ACTIVITY_TOKEN, so
-//     running `pi` outside Mesa (or without a run active) never gains these
-//     tools and never blocks writes.
-//   - Talks only to 127.0.0.1 (loopback). Nothing leaves the machine.
-//   - The mutation-tool block is fail-safe: it only engages while
-//     MESA_DEEP_RESEARCH=1 is set, and a blocked tool returns a clear reason
-//     to the model instead of throwing.
-//   - `typebox` resolves from Pi's own runtime (extensions load in-process
-//     via jiti) — this adds nothing to Mesa's npm tree.
+// Report research progress, finish, and blocked results through the authenticated loopback bridge.
+// While active, block named text-mutation tools. Shell remains available; this is not a process sandbox.
+// Pi supplies extension-runtime dependencies.
 
-// @ts-ignore — typebox ships inside Pi's runtime (extensions are compiled
-// in-process by jiti); it is intentionally NOT a dependency of Mesa's repo.
+// @ts-ignore
 import { Type } from "typebox";
 
 // Node's process global, typed locally so this file needs no @types/node.
@@ -111,13 +86,7 @@ export default function mesaDeepResearch(pi: ResearchPi): void {
     await post({ kind: "agent-end", runId, reason: reason.slice(0, 4000) }).catch(() => undefined);
   });
 
-  // --- Hard guarantee: no direct content mutation during a run. ------------
-  // Register the block unconditionally; it only engages while `active` so a
-  // normal (non-research) Pi session is unaffected. Shell remains available
-  // for read-only inspection (for example `find`, `rg`, and `ls`). This hook
-  // receives the tool name, not the shell command, so blocking the entire
-  // shell tool would also block harmless vault reads and make Pi report a
-  // false environment/permission failure.
+  // Block named content-mutation tools only while active. Shell commands remain outside this hook’s guard.
   pi.on("tool_call", (event) => {
     if (!active) return undefined;
     const name = typeof event?.toolName === "string" ? event.toolName.toLowerCase() : "";

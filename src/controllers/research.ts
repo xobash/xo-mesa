@@ -506,13 +506,7 @@ export function createResearchController({ get, set, getGeneration, registerExte
     });
     if (!current()) { unlisten(); return; }
     drUnlisten = unlisten;
-    // Observed activity: the loopback server / native harness mirror every REAL
-    // browser navigation (`mesa://browse` = the agent's browse tool call,
-    // `mesa://harness-nav` = the harness webview actually navigating, incl.
-    // redirects and SPA moves). Feeding these into the run means the user sees
-    // the true queries and sources even when the model never calls the
-    // self-report progress tool. Best-effort — a failed registration only
-    // loses observation, never the run.
+    // Record observed browser navigation separately from model-reported progress. Subscription failure is nonfatal.
     drLastObservedUrl = null;
     const observeNavigation = (rawUrl: unknown) => {
       const cur = get().deepResearch;

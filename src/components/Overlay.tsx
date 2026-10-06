@@ -136,16 +136,7 @@ function Clock() {
   );
 }
 
-/**
- * The Mesa overlay Pi window. Unlike the other overlay windows it does NOT
- * use the generic FloatingWindow chrome: Pi's combined title bar (label,
- * terminal status, research/workspace/browser/close tools) IS the window bar,
- * exactly like the dedicated Pi overlay and the popped-out Pi OS window — so
- * every floating Pi surface looks and behaves the same. Dragging that bar
- * moves the window; dragging it to a workspace edge and releasing tears Pi
- * into a native OS window (same gesture as everywhere else). Position/size
- * persist with the other overlay windows.
- */
+/** Use the shared Pi title bar for movement and edge tear-off; persist geometry with the overlay. */
 /**
  * Shared bottom-right resize gesture for overlay windows. Grows the window
  * from its current size, clamped to `minW`/`minH` and the viewport, with

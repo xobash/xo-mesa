@@ -30,17 +30,7 @@ const thumbRenderQueue = new LatestWinsQueue<string, PdfThumbSnapshot>(1, true);
 
 let pdfjsPromise: Promise<PdfJsModule> | null = null;
 
-/**
- * One worker for every thumbnail, instead of one per thumbnail.
- *
- * Passing a shared thumbnail worker keeps it alive when `doc.destroy()`
- * releases a thumbnail document.
- *
- * It is deliberately NOT the viewer's worker and never the pooled spare: a
- * malformed file that wedges thumbnailing must not be able to wedge the
- * document the user is reading. When one does wedge it, the worker is thrown
- * away so the next thumbnail starts from a clean one.
- */
+/** Thumbnail worker is separate from viewers and the spare pool; discard it after teardown failure. */
 let thumbWorker: import("pdfjs-dist/legacy/build/pdf.mjs").PDFWorker | null = null;
 
 function thumbWorkerFor(pdfjs: PdfJsModule): import("pdfjs-dist/legacy/build/pdf.mjs").PDFWorker {

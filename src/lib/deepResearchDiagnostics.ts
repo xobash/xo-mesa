@@ -8,21 +8,8 @@ import type {
 import { redactResearchContent, utf8ByteLength } from "./deepResearch";
 import { formatLogTime } from "./syncDiagnostics";
 
-/**
- * Deep Research troubleshooting kit — a single copy-pasteable markdown blob
- * built from the run's structured state, mirroring the sync console's
- * troubleshooting package. Written for exactly one audience: an LLM (or a
- * human) debugging a failed/stuck run, so it front-loads environment,
- * settings, the context that was sent, and the full activity timeline —
- * including which entries were OBSERVED by Mesa (real harness navigations)
- * versus self-reported by the model, which is the single most diagnostic
- * signal for "the model never engaged the protocol".
- *
- * SECRETS: every line is scrubbed with `redactResearchContent` (private-key
- * blocks, credential assignments, provider-token shapes). The vault's
- * absolute path is never accepted as input — note references are
- * vault-relative, and the model/provider settings never include the API key.
- */
+/** Export bounded run diagnostics with observed and reported activity distinguished.
+ * Scrub credentials and use vault-relative paths; redaction is not a confidentiality guarantee. */
 
 /** The run-state slice the kit needs (a structural subset of the store's
  *  DeepResearchRunState, so the pure module never imports the store). */

@@ -48,7 +48,7 @@ surfaces.
 - `Ctrl+Shift+Tab` rotates Pi's reasoning level while Pi is focused in Mesa
   (Control, not Command). `Alt+Shift+Tab` is also accepted as an alternate.
   Plain `Shift+Tab` opens the Mesa overlay. These bindings are the same on
-  Windows, macOS, and Linux; `Cmd+Shift+Tab` is intentionally left to the OS.
+  Windows, macOS, and Linux; `Cmd+Shift+Tab` remains an OS shortcut.
 
 The pure ordering and focus logic lives in `src/lib/keyboardNav.ts` with tests
 in `src/lib/keyboardNav.test.ts`.

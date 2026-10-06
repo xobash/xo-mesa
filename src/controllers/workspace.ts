@@ -95,16 +95,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
           const theme = get().theme;
           const active = get().activePath;
           const docParam = active ? `&sel=${encodeURIComponent(active)}` : "";
-          // Hand off the live Pi session (if this vault already has one
-          // running) so the popped-out window reattaches to the same
-          // backend `pi` process instead of silently starting a second one.
-          // A Tauri WebviewWindow is a separate JS realm, so the new
-          // window's copy of AgentPanel's SHARED_PI_SESSION singleton starts
-          // out empty even though the real session is still alive — see
-          // adoptSharedPiSession in components/AgentPanel.tsx.
-          // Tear-out is an attachment, never a second launch. A very fast
-          // drag can race AgentSurface's async xterm/Pi startup, so keep the
-          // source surface mounted while waiting briefly for its session id.
+          // Transfer the existing PTY session. Keep the source mounted until session startup and adoption finish.
           let liveSession = getPiSessionSnapshot();
           for (
             let attempt = 0;

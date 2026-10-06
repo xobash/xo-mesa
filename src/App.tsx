@@ -1229,12 +1229,7 @@ export default function App() {
     document.documentElement.dataset.accel = hardwareAccel ? "on" : "off";
   }, [hardwareAccel]);
 
-  // Keep the one external Pi process and every detached AgentSurface aligned
-  // with what the MAIN Mesa workspace is showing. Process env/startup args are
-  // immutable, so Rust stores this path-only context for mesa-context.ts to
-  // inject before each turn; detached webviews receive the same typed payload
-  // for their visible context strip. Popout realms never publish their stale
-  // launch-time store back over the main workspace.
+  // Main owns live workspace context. Detached Pi surfaces receive it but never publish it back.
   const liveAgentContext = useMemo(
     () =>
       buildAgentContext({
@@ -1545,12 +1540,7 @@ export default function App() {
     };
   }, [docMode, panelMode, agentMode, researchMode]);
 
-  // Global keyboard shortcuts.
-  // Tauri can activate the native window before the renderer becomes the
-  // first responder. In that state renderer-owned shortcuts (Shift+Tab and
-  // `/`) appear dead until the user clicks inside the webview. Give the main
-  // webview focus once after its first paint; Pi's native global shortcut does
-  // not need this, which is why Pi can appear to work while these do not.
+  // Focus the main webview after its first paint so renderer shortcuts receive input.
   useEffect(() => {
     if (docMode || panelMode || agentMode || researchMode || !IN_TAURI) return;
     let disposed = false;

@@ -26,22 +26,7 @@ import { currentPiSessionId } from "../lib/deepResearchRun";
 import { saveTextFile } from "../lib/saveTextFile";
 import { invoke } from "@tauri-apps/api/core";
 
-/**
- * Deep Research surface — the single UI for a Deep Research run, mounted from
- * both launch points (the Mesa overlay dock window and the Pi agent panel).
- * It reads and drives the ONE shared `deepResearch` store run; there is no
- * per-surface state machine.
- *
- * The panel is built for VISIBILITY: the user watches the agent work, not a
- * single-word status. Its evidence graph combines the sub-question plan,
- * activity, and source nodes in one bounded surface with Obsidian-style hover
- * previews. The panel also keeps a scrolling activity feed, the confidence
- * breakdown of gathered claims, and the full proposed change set with a
- * preview before anything touches the vault.
- *
- * Thoroughness is customizable: a depth preset (quick / standard / deep) plus
- * per-run controls for sub-questions (rounds), sources, and generated notes.
- */
+/** Shared Deep Research UI backed by one store run, with progress, evidence, and proposal review. */
 
 function busy(run: DeepResearchRunState): boolean {
   return run.phase === "planning" || run.phase === "researching" || run.phase === "synthesizing";

@@ -1,15 +1,4 @@
-/**
- * Lightweight metadata extraction from note source — frontmatter, [[links]],
- * #tags, aliases, and the first embedded image.
- *
- * Deliberately dependency-free: functions scan delimiters and use regex over the
- * raw text, with no full Markdown parse. This module is imported at vault-scan
- * time (`store.ts`, `lib/graph.ts`, `lib/deepResearch.ts`) for every note in
- * the vault, so it must NOT pull in the rendering stack — markdown-it +
- * dompurify and friends are ~120 kB minified and are only needed when markdown
- * is actually turned into HTML. The renderer lives in `markdown.ts` and imports
- * from here, never the other way around.
- */
+/** Dependency-free note metadata extraction. Rendering imports extraction, never the reverse. */
 
 export const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 
@@ -54,21 +43,9 @@ const TARGET_END_RE = /[)\s]/g;
 // optionally URL-encoded and with a #heading. Many imported vaults use these
 // instead of [[wiki-links]], so we resolve them into the graph too.
 
-/**
- * ONE pass over the `[[wiki]]` refs, yielding both the note links and the first
- * embedded image.
- *
- * `extractLinks` and `extractFirstImage` each ran this identical scan over the
- * same source, so `buildNotes` walked every note twice with the same regex. On
- * the measured 4,165-file vault (721 notes, 13.5 M characters of markdown) the
- * duplicate pass was 30 ms of a ~215 ms vault open, and vault open is a
- * synchronous freeze the user waits through on every launch.
- *
- * Ordering note: the original `extractLinks` skipped an empty target BEFORE the
- * image test, and the original `extractFirstImage` tested `IMAGE_EXT` without
- * that guard. `IMAGE_EXT` can never match the empty string, so testing the image
- * branch first is equivalent for both callers.
- */
+/** Extract note links and the first embedded image in one wiki-reference pass.
+ * Image targets are handled before the empty-link guard; empty targets cannot
+ * match IMAGE_EXT. */
 function scanWikiRefs(source: string): { links: string[]; references: string[]; firstImage: string | null } {
   const links: string[] = [];
   const references: string[] = [];

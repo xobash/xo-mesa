@@ -1,28 +1,8 @@
 import type { PDFWorker } from "pdfjs-dist/legacy/build/pdf.mjs";
 
-/**
- * One warm, never-used pdf.js worker, booted before a PDF open needs it.
- *
- * Booting a worker means fetching and compiling ~1.4 MB of JavaScript on a new
- * thread. Measured on the open path: 145 ms the first time in a session and
- * ~46 ms afterwards (the script is cached, the compile is not). That cost used
- * to land in the middle of every open, because the viewer created its worker
- * only once the file's bytes had already been read — 51% of the 286 ms it took
- * to show page 1 of an 11 kB document.
- *
- * The safety argument for handing a worker to a viewer that did not create it
- * rests entirely on the spare being VIRGIN: it is constructed here and nothing
- * ever gives it a document, so adopting one is exactly equivalent to
- * constructing one, just earlier. That is why a used worker is never returned
- * here for recycling — `usePdfEditor` still destroys its own worker on unmount,
- * and a fresh spare is booted for the next open instead. A document that wedges
- * its worker therefore still cannot wedge any other viewer's PDF, which is the
- * property the PDF viewer contract requires.
- *
- * The module deliberately holds no static reference to pdfjs: callers pass a
- * factory. `pdfThumb.ts` is always bundled, so importing the engine here would
- * drag pdf.js into the entry chunk.
- */
+/** One warm pdf.js worker, published only after boot and before document use.
+ * Taking it clears the slot. Used workers are never returned; each viewer owns
+ * and destroys its worker. Inject the factory to keep pdf.js out of startup. */
 
 /** At most one spare exists at a time, so the idle cost is bounded to a single
  *  worker thread — and only in a session where the user has already touched a
@@ -50,13 +30,7 @@ function armIdleTimer(): void {
   }, SPARE_IDLE_MS);
 }
 
-/**
- * Boot a spare worker if there is not already one ready or on the way.
- *
- * Safe to call repeatedly and from any predictor of an imminent open (hovering
- * a PDF, leaving a viewer). Never throws: failing to pre-warm must be
- * indistinguishable from not having pre-warmed.
- */
+
 export function primePdfWorker(create: () => PDFWorker): void {
   if (booting || isUsable(spare)) return;
   let worker: PDFWorker;
@@ -100,13 +74,7 @@ export function primePdfWorker(create: () => PDFWorker): void {
   );
 }
 
-/**
- * Take exclusive ownership of the warm spare, if one is ready.
- *
- * The slot is cleared before the worker is handed back, so two callers can
- * never end up holding the same worker. The caller owns it outright from here
- * and is responsible for destroying it.
- */
+/** Transfer exclusive ownership of the spare and clear the slot before returning it. */
 export function takePdfWorker(): PDFWorker | null {
   clearIdleTimer();
   const worker = spare;
@@ -114,15 +82,7 @@ export function takePdfWorker(): PDFWorker | null {
   return isUsable(worker) ? worker : null;
 }
 
-/**
- * Give back a worker that was taken but never handed a document.
- *
- * A viewer that mounts and unmounts without parsing anything — rapid tab
- * switching, React's development double-mount — would otherwise destroy a fully
- * booted worker and make the next open pay for a new one. Such a worker is
- * still virgin, so the argument for reusing it is the same one that makes the
- * spare safe. Callers MUST NOT pass a worker that has been given a document.
- */
+/** Return only a worker that has never received a document. */
 export function releaseUnusedPdfWorker(worker: PDFWorker): void {
   if (!isUsable(worker)) return;
   if (isUsable(spare)) {

@@ -1,14 +1,8 @@
 import DOMPurify, { type Config } from "dompurify";
 import { parseMarkdown } from "./markdownParser";
 
-// DOMPurify config: keep the benign formatting HTML notes legitimately use
-// (including the wikilink spans/anchors Mesa emits with `data-target`, image
-// `data-embed`, and callout `data-callout` — all `data-*` are kept by
-// ALLOW_DATA_ATTR), but strip script execution vectors. `<script>`, every
-// `on*` handler, and `javascript:`/`vbscript:` URLs are removed by DOMPurify's
-// defaults; we additionally forbid framing/plugin tags that could load an
-// active document inside the trusted app origin. Real `.html` vault files are
-// rendered separately in a sandboxed cross-origin iframe (HtmlView), not here.
+// Preserve formatting and Mesa data attributes; forbid executable and framing markup.
+// The threat boundary and sanitizer limits are documented in docs/security.md.
 const SANITIZE_CONFIG: Config = {
   FORBID_TAGS: ["style", "iframe", "frame", "object", "embed", "base", "form"] as string[],
   FORBID_ATTR: ["srcdoc", "form", "formaction"] as string[],

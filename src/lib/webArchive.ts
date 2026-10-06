@@ -165,8 +165,6 @@ export function queueAcceptedResearchSources(
       archiveError: undefined,
     };
   });
-  // Do not archive a final URL that Mesa never observed in the research run.
-  // A model can return an unvisited URL in its finish payload, but that is not
-  // independent evidence that the source was opened or read.
+  // Archive only sources Mesa observed during this run.
   return queued;
 }

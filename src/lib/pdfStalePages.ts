@@ -14,13 +14,7 @@
  */
 export type StalePages = ReadonlySet<number> | "all" | null;
 
-/**
- * Merge newly-stale pages into an accumulator.
- *
- * `"all"` always wins — once Mesa can no longer say which pages are still
- * trustworthy, narrowing back down to a subset would leave stale pixels (or,
- * worse, stale text-run hit boxes that place an edit on the wrong glyphs).
- */
+/** Merge stale pages; all always wins over a page subset. */
 export function addStalePages(
   current: StalePages,
   next: ReadonlySet<number> | "all"

@@ -1,15 +1,4 @@
-/**
- * In-app PDF editing core.
- *
- * Pure byte-in / byte-out transforms over a PDF, built on pdf-lib (MIT, no
- * native deps). Everything here is framework-agnostic and unit-tested; the
- * React layer just calls these and writes the result back to the vault.
- *
- * PDF user space has its origin at the BOTTOM-LEFT with y increasing upward.
- * The viewer works in top-left screen coordinates, so it converts each pointer
- * event with pdf.js's `viewport.convertToPdfPoint` before calling `addText` /
- * `addHighlight`.
- */
+/** PDF byte-in/byte-out transforms. Callers convert top-left screen coordinates to bottom-left PDF coordinates. */
 import {
   PDFDocument,
   StandardFonts,
@@ -88,15 +77,7 @@ async function load(bytes: Uint8Array): Promise<PDFDocument> {
   return PDFDocument.load(sanitizePdfBytes(bytes), { ignoreEncryption: true });
 }
 
-/**
- * Load for a MUTATING transform. pdf-lib cannot decrypt: `ignoreEncryption`
- * lets it parse an encrypted document, but re-serializing one emits unreadable
- * garbage (still-encrypted streams under a rewritten xref) that other readers
- * reject — and that our own pdf-lib-based validation cannot catch. Every edit
- * of an encrypted PDF must therefore fail closed before touching the bytes;
- * viewing stays read-only and unaffected (pdf.js decrypts empty-user-password
- * documents on its own).
- */
+/** Reject encrypted documents before every mutating transform; pdf-lib cannot decrypt them. */
 async function loadForEdit(bytes: Uint8Array): Promise<PDFDocument> {
   const doc = await load(bytes);
   if (doc.isEncrypted) {
@@ -107,12 +88,7 @@ async function loadForEdit(bytes: Uint8Array): Promise<PDFDocument> {
   return doc;
 }
 
-/**
- * pdf-lib normalizes these before encoding — tabs become spaces, backspace and
- * form feed are stripped, newlines split the run into lines — so they draw fine
- * even though the encoder rejects them on their own. Excluding them keeps the
- * check from rejecting text that works today.
- */
+/** Exclude layout characters normalized by pdf-lib from standalone font-encoding checks. */
 const TEXT_LAYOUT_CHARS = new Set(["\t", "\n", "\r", "\b", "\f"]);
 
 /**
@@ -138,14 +114,7 @@ function describeChar(ch: string): string {
   return `"${ch}" (U+${code.toString(16).toUpperCase().padStart(4, "0")})`;
 }
 
-/**
- * Fail before touching the document when the built-in fonts cannot render the
- * text. Mesa embeds only pdf-lib's standard fonts, whose WinAnsi encoding
- * covers Latin-1 — Greek, Cyrillic, CJK, emoji, and arrows raise a raw
- * `WinAnsi cannot encode "α" (0x03b1)` from deep inside pdf-lib, which tells a
- * user nothing. Asking the font itself keeps this exactly consistent with the
- * encoder instead of maintaining a second coverage table that could drift.
- */
+/** Validate text with the selected standard font before mutation; do not maintain a separate character table. */
 export async function assertTextEncodable(text: string): Promise<void> {
   const font = await standardFontProbe();
   const unsupported: string[] = [];
@@ -171,12 +140,7 @@ export async function assertTextEncodable(text: string): Promise<void> {
   );
 }
 
-/**
- * Translate pdf-lib's raw encoder failure into the same explanation if one ever
- * escapes the pre-check — saving regenerates the appearance of each field the
- * edit marked dirty, and that runs inside pdf-lib. Any other error passes
- * through untouched.
- */
+
 function withEncodingContext(error: unknown): unknown {
   const message = error instanceof Error ? error.message : String(error);
   if (!/cannot encode/i.test(message)) return error;
@@ -230,14 +194,7 @@ export async function deletePage(bytes: Uint8Array, index: number): Promise<Uint
   return doc.save();
 }
 
-/**
- * Reorder pages to the given permutation of indices — inside the SAME
- * document. Copying pages into a fresh `PDFDocument.create()` (the previous
- * implementation) silently dropped everything hanging off the catalog that
- * isn't reachable from a page: the AcroForm (all form fields), document
- * metadata, outlines, and named destinations. Detaching and re-attaching the
- * existing page leaves the rest of the document untouched.
- */
+/** Reorder existing pages inside the same document to preserve forms, metadata, outlines, and destinations. */
 export async function reorderPages(
   bytes: Uint8Array,
   order: number[]
@@ -288,12 +245,7 @@ export async function addText(bytes: Uint8Array, s: TextStamp): Promise<Uint8Arr
   return doc.save();
 }
 
-/**
- * Replace visible text by painting over its bounding box, then drawing the new
- * text. PDF content streams do not expose a universal "edit this glyph run"
- * primitive, so this is the same durable visual replacement workflow used by
- * many lightweight PDF annotators.
- */
+/** Replace text visually with an overlay and new text. This does not remove underlying content or redact it. */
 export async function replaceText(
   bytes: Uint8Array,
   s: TextReplacement

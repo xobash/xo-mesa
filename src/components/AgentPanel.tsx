@@ -133,14 +133,7 @@ let resizeFocusListenerInstalled = false;
 // in the same window — see `reconcileSharedPiSizeAfterReplay`.
 let replayingTerminalSnapshot = false;
 
-// Re-establish the invariant the whole terminal depends on: the xterm grid and
-// the PTY are the same size. `fit()` alone cannot do this, because it no-ops
-// when the grid already matches the host — so a resize suppressed during replay
-// would leave xterm and the PTY permanently different widths, and a PTY that is
-// wider than the emulator is exactly what strands duplicate lines above Pi's
-// cursor-up redraws. Pushing the size unconditionally closes that hole; the
-// latest-wins queue collapses it with fit()'s own event, and Rust drops it as a
-// no-op when the PTY already has these dimensions.
+// Always reconcile PTY dimensions after replay, even when fit() leaves the xterm grid unchanged.
 function reconcileSharedPiSizeAfterReplay(term: Terminal): void {
   try {
     SHARED_PI_SESSION.fit?.fit();
@@ -179,13 +172,7 @@ function publishPiSessionSnapshot(): void {
 let sharedPiFontSize = 16;
 const sharedPiFontSizeListeners = new Set<(size: number) => void>();
 
-// Every mounted AgentSurface host, in mount order. All Pi surfaces share ONE
-// xterm DOM element; whichever surface mounts last adopts it. Without this
-// registry the element was simply *stolen*: opening the Mesa overlay Pi
-// removed the terminal from a docked workspace Pi pane, and closing the
-// overlay left that pane permanently empty (and vice versa). On unmount, a
-// surface that currently holds the terminal hands it back to the most
-// recently mounted surviving host.
+// The latest mounted host owns the shared xterm element; unmount returns it to the latest surviving host.
 const PI_HOST_STACK: HTMLDivElement[] = [];
 
 function reattachSharedPiTerminal(host: HTMLDivElement): void {
@@ -211,12 +198,7 @@ function setSharedPiFontSize(next: number): void {
   SHARED_PI_SESSION.fit?.fit();
 }
 
-// xterm.js is the heaviest npm dependency in the startup path and is only
-// needed once a Pi surface actually mounts, so it loads on demand (same
-// stance as the pdf-lib split in lib/pdfBytes.ts: keep heavyweight engines
-// out of the startup bundle). The in-flight promise is cached because the
-// terminal is a shared singleton — concurrent mounts (overlay + docked pane)
-// must not race two Terminal instances into existence.
+// Load xterm on demand and share its in-flight promise across concurrent Pi surfaces.
 let sharedPiTerminalPromise: Promise<Terminal> | null = null;
 
 function getSharedPiTerminal(): Promise<Terminal> {
@@ -292,13 +274,8 @@ async function createSharedPiTerminal(): Promise<Terminal> {
       if (claimPlainShiftTabToggle(event)) useAppStore.getState().toggleOverlay();
       return false;
     }
-    // Pi's default reasoning-cycle binding is `shift+tab` (sequence ESC [ Z),
-    // but Mesa owns plain Shift+Tab for the Mesa overlay. To rotate Pi's
-    // thinking level while it's embedded in Mesa, press Ctrl+Shift+Tab
-    // (Control, NOT Command — Cmd+Shift+Tab is left to the OS). xterm.js
-    // drops modifiers on Tab, so we synthesize the ESC [ Z sequence Pi expects
-    // and write it straight to the PTY. Alt+Shift+Tab is also accepted as an
-    // alternate path that also works on Windows keyboards.
+    // Mesa owns Shift+Tab. Ctrl+Shift+Tab and Alt+Shift+Tab send Pi its ESC [ Z binding;
+    // Command+Shift+Tab remains with the OS.
     if (
       event.shiftKey &&
       event.key === "Tab" &&
@@ -318,12 +295,7 @@ async function createSharedPiTerminal(): Promise<Terminal> {
     if (!id) return;
     void invoke("terminal_write", { sessionId: id, input });
   });
-  // Double-text prevention: Pi's TUI redraws streaming blocks with cursor-up +
-  // rewrite arithmetic based on the PTY's size. If xterm wraps at a different
-  // width, stale physical lines survive above the rewrite. onResize observes
-  // every real grid change; the latest-wins queue prevents older async IPC
-  // from landing last, and Rust rejects calls from a non-owning webview during
-  // native-window handoff.
+  // Serialize grid changes through the resize queue; native resize ownership rejects obsolete surfaces.
   term.onResize(({ cols, rows }) => {
     if (replayingTerminalSnapshot) return;
     const id = SHARED_PI_SESSION.sessionId;
@@ -464,13 +436,7 @@ async function ensureSharedPiSession(
     return ensureSharedPiSession(vaultPath, ctx, contextText, terminal);
   }
 
-  // Never silently kill a live Pi session just because the context text
-  // drifted (the user switched files). Relaunching here would (a) drop the
-  // whole conversation the moment the user clicks another note, and (b) shed
-  // any session-scoped env a feature injected at launch — e.g. Deep
-  // Research's read-only write-block would silently turn off mid-run. The
-  // live session keeps the context it started with until the user explicitly
-  // restarts Pi; a fresh context is only used when a brand-new session spawns.
+  // Changing context must not restart the live session or discard its conversation and launch configuration.
   if (SHARED_PI_SESSION.sessionId && SHARED_PI_SESSION.vaultPath === vaultPath) {
     return SHARED_PI_SESSION.sessionId;
   }
@@ -602,12 +568,7 @@ export function AgentSurface({
    * popped-out OS window, where nothing exists beyond the surface's edge),
    * the harness opens as an inline sibling instead. */
   browserSlideOut?: boolean;
-  /** A Pi session id carried in from another Mesa window that already had
-   * one running (currently: the window Pi was popped out of — see
-   * `openAgentWindow` in store.ts). Consumed once, on the first session-setup
-   * pass: reattaches to that backend session via `adoptSharedPiSession`
-   * instead of `ensureSharedPiSession` spawning a brand-new `pi` process,
-   * which is what silently dropped the conversation before this existed. */
+  /** Existing PTY session to adopt once during setup; do not spawn a replacement. */
   attachSessionId?: string | null;
   /** Authoritative vault path carried in the detached launch URL. A popout
    * must be able to adopt the existing PTY before its separate store finishes
@@ -1147,15 +1108,7 @@ export function AgentSurface({
   );
 }
 
-/**
- * The one floating Pi window implementation. Every in-window floating Pi
- * surface (the dedicated Ctrl/Cmd+Left Shift+Space overlay AND the fallback
- * window `agentOpen` opens, e.g. when Deep Research needs a Pi surface or a
- * native pop-out fails) renders THIS component, so they cannot drift apart:
- * one combined title bar (Pi label, terminal status, research/workspace/
- * browser/close tools), drag to move, drag to a workspace edge to tear off
- * into a native OS window, resize from the corner. Mounted only while open.
- */
+/** Shared floating Pi chrome: combined toolbar, movement, edge tear-off, and corner resize. */
 function PiFloatingWindow({
   onClose,
   onPlaceInWorkspace,
@@ -1379,13 +1332,7 @@ function PiFloatingWindow({
   );
 }
 
-/**
- * Fallback floating Pi window (`agentOpen`): opened when a feature needs a
- * mounted Pi surface in this window (Deep Research without one, a failed
- * native pop-out). Renders the exact same PiFloatingWindow as the dedicated
- * overlay; when the dedicated overlay is (or becomes) open it yields to it so
- * there is never a second identical window.
- */
+/** Fallback Pi surface yields to the dedicated overlay so only one floating window is visible. */
 export function AgentPanel() {
   const open = useAppStore((s) => s.agentOpen);
   const piOverlayOpen = useAppStore((s) => s.piOverlayOpen);

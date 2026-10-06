@@ -1,36 +1,6 @@
-// Embedded peer-to-peer sync — LocalSend-style, end-to-end encrypted.
-//
-// Two halves live here:
-//
-// **Server.** A small HTTPS server bound to the device network interfaces so other devices on your
-// LAN or Tailscale network can reach it. The transport is TLS: on first run
-// each device mints a persistent self-signed certificate (its "identity") and
-// serves over HTTPS. A nonce-bound HMAC proof of the sync key precedes every
-// client manifest or file request. Requests are handled by a small worker pool, manifest hashes are
-// freshly streamed, and writes are verified,
-// create-if-missing commits so a dropped connection or racing writer can
-// never truncate or overwrite a note.
-// Every protected request carries `Authorization: Bearer <HMAC(key, cert)>`.
-// The shared sync key is never sent to an unauthenticated first-contact peer. Endpoints:
-//   GET  /sync/manifest                  -> {"files":[{"rel","size","hash"}]}
-//   GET  /sync/file?rel=<path>           -> raw bytes
-//   PUT  /sync/file?rel=<path>[&hash=h]  -> write bytes (verified when h given)
-// Content hashes are SHA-256; older protocols are rejected before transfer.
-//
-// **Client engine.** `sync_run` performs an entire two-way sync natively:
-// remote manifest over pinned TLS, local manifest (freshly streamed, never
-// through the webview), diff, then bounded-concurrency transfers over ONE
-// pooled client. Every file failure is
-// collected (never aborts the rest), every step emits `sync://log` +
-// `sync://progress` events for the in-app console, all requests have
-// timeouts, and pulled bytes are verified against the manifest hash before an
-// verified create. The client pins the peer's SHA-256 certificate fingerprint —
-// trust-on-first-use, then enforced — which detects an active MITM at the
-// handshake, before any vault data moves.
-//
-// Pure logic (hashing, walking, diff, conflict names, verified commits, wire
-// helpers) lives in `sync_core.rs` — dependency-light and unit-tested with
-// `cargo test`, mirrored by the reference implementations in src/lib/sync.ts.
+// Native HTTPS sync server and client with key proof, certificate pinning, and verified file transfers.
+// Protected requests use a certificate-bound credential; shared keys are not sent as bearer tokens.
+// Pure file/journal logic is in sync_core.rs; security limits are in docs/security.md.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -213,25 +183,8 @@ impl Drop for SyncRunGuard {
     }
 }
 
-// === Console log / progress events =======================================
-//
-// Every Tauri event is a JS source string eval'd on the app UI thread, and on
-// Windows wry forces a `RedrawWindow` after each one (see the Tauri webview
-// event-dispatch path). One event per file would turn a sync into
-// a UI-thread storm there: the initiator emits one `sync://log` PLUS one
-// `sync://progress` per transferred file, and a *receiving* device emits one
-// `[serve] received …` line per PUT — thousands of forced repaints during a
-// first full-vault sync, each serialized against `WM_KEYDOWN` while the user
-// keeps editing. So both events are COALESCED through one process-global
-// flusher, exactly like the terminal output pump (`terminal.rs`): callers only
-// stage a line / the latest progress and wake a condvar; a single flusher thread
-// batches `sync://log` into one array event per window and collapses
-// `sync://progress` to its latest value. Idle costs zero wakeups (condvar, no
-// polling — so no background CPU), and `flush_sync_events` forces an immediate
-// drain at sync end so the final report line and "done" progress land without
-// the flush-window lag. The reduction is a property of the workload's file
-// count, not the OS, so it is pinned deterministically in `tests` rather than by
-// a live Windows event count.
+// Stage logs and latest progress through one flusher. Wait without polling when idle;
+// force-drain at sync completion.
 
 /// Coalescing window. ~2 frames — a progress bar and a scrolling console cannot
 /// show more than this, and a full-vault transfer collapses to one event per
@@ -313,14 +266,7 @@ fn sync_flusher_loop(e: &SyncEmitter) {
             while !st.has_pending() && !st.flush_now {
                 st = e.cv.wait(st).unwrap();
             }
-            // Hold the window open for the FULL coalescing delay so the rest of
-            // the burst accumulates into one batch — but cut it short the moment
-            // a caller requests an immediate drain (sync end). A plain `emit_*`
-            // notify wakes `wait_timeout` early; we must NOT treat that as the
-            // window closing, or a fast burst would flush every one or two lines
-            // and defeat the batching. So loop on a fixed deadline: an early
-            // wake just re-waits the remaining time; only a real timeout or
-            // `flush_now` ends the window.
+            // Early notifications do not end the coalescing window; only the fixed deadline or flush_now does.
             let deadline = Instant::now() + Duration::from_millis(SYNC_EVENT_FLUSH_MS);
             while !st.flush_now {
                 let now = Instant::now();
@@ -1400,12 +1346,7 @@ pub fn sync_local_addr() -> Result<String, String> {
     local_lan_ip()
 }
 
-// === TLS identity ========================================================
-//
-// Each device has ONE persistent self-signed certificate. Its SHA-256
-// fingerprint is this device's stable, verifiable identity: peers pin it, and
-// it is what the discovery packet advertises. Generated once, then loaded from
-// the app config dir on every launch so the fingerprint never changes.
+// Persistent TLS identity and fingerprint cache.
 
 #[derive(Clone)]
 struct Identity {
@@ -1707,16 +1648,8 @@ pub fn sync_identity(app: tauri::AppHandle) -> Result<String, String> {
     Ok(get_identity(&app)?.fingerprint)
 }
 
-// === TLS client (fingerprint-pinning) ====================================
-//
-// The webview cannot talk to a self-signed LAN HTTPS peer, and even a native
-// client must decide whether to trust the peer's certificate. We accept the
-// self-signed cert but pin its SHA-256 fingerprint: if the caller already knows
-// the expected fingerprint we reject any mismatch *at the TLS handshake* (before
-// a credential or vault byte is sent). On first contact a challenge records
-// the observed identity and verifies the key proof before authenticated
-// requests enforce that pin. Handshake signatures verify possession of the
-// private key.
+// Verify TLS signatures and a supplied leaf-certificate fingerprint.
+// With no pin, record the observed fingerprint for the key-proof exchange.
 
 #[derive(Debug)]
 struct PinnedServerCert {
@@ -2480,15 +2413,7 @@ pub fn sync_cancel() {
     cancel_notify().notify_waiters();
 }
 
-/// Run a complete two-way sync against one peer. This is THE sync path:
-/// everything happens natively (no vault bytes or hashing in the webview),
-/// over one pooled pinned-TLS client, with bounded concurrency, per-file
-/// verification, non-destructive verified commits, and per-file error
-/// collection. `retry` is an optional rel-path allowlist from the previous
-/// failed transfer report; manifests and journal reconciliation still run
-/// before Mesa narrows the pull/push/conflict transfer jobs. Emits
-/// `sync://log` and `sync://progress` throughout so the UI console can show —
-/// and the user can copy — exactly what happened.
+/// Run one native sync with fresh manifests, journal reconciliation, bounded transfers, and final verification.
 #[tauri::command]
 pub async fn sync_run(
     app: tauri::AppHandle,

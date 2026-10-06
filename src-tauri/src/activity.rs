@@ -473,15 +473,7 @@ fn handle_request(
         json_response(req, serde_json::json!({ "context": context }).to_string());
         return;
     }
-    // Pi's `browse` tool: navigate the visible harness and answer with the
-    // rendered page. The `mesa://browse` event pops the wing open; the wing
-    // drives the native harness webview; its injected reporter streams the
-    // rendered DOM back here (POST /harness above). We wait for the snapshot
-    // that belongs to this navigation, so the agent reads exactly what the
-    // user's harness displays. If no live harness materializes (no Pi surface
-    // mounted, or the native webview failed and the wing uses the iframe
-    // iframe path), fall back to the shared-client native fetch — clearly
-    // flagged `rendered: false` so the tool/model can say so honestly.
+    // Wait for this navigation’s rendered snapshot; mark native static-fetch fallback rendered:false.
     if url == "/browse" && method == Method::Post {
         let Some(_browse_permit) = BrowsePermit::try_acquire(browse_active) else {
             let mut response =

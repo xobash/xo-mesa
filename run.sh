@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
-#
-# Mesa — one-command setup & launch (macOS / Linux).
-#
-# Assumes NOTHING is installed. This script brings a clean machine all the way
-# to a running Mesa desktop app, installing every missing dependency LOCALLY to
-# your user account wherever possible (no surprise system changes):
-#   • Xcode Command Line Tools (macOS only) — C compiler + git
-#   • System libraries Tauri needs (Linux only, via your package manager — sudo)
-#   • Node.js LTS -> ~/.nvm                 (via nvm, user-only)
-#   • Rust        -> ~/.cargo and ~/.rustup (via rustup, user-only)
-#   • JS deps     -> ./node_modules          (local to this project)
-# Then it launches the real Tauri desktop app.
-#
-# Run it with:   bash run.sh
-#
+# Mesa setup and launch for macOS/Linux. Installs missing prerequisites,
+# using user-local installs where supported; Linux system libraries require sudo.
+# Run from this folder with: bash run.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -115,15 +103,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 ok "Rust $(cargo --version | awk '{print $2}')"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4) JavaScript dependencies (local to ./node_modules).
-# ─────────────────────────────────────────────────────────────────────────────
-# 4b) Guard against a stale Rust build cache. Cargo and Tauri bake this folder's
-# ABSOLUTE path into src-tauri/target (and the generated permissions in
-# src-tauri/gen). If the project was moved or renamed since the last build, those
-# paths point at the old location and the build fails reading generated files.
-# We stamp the path we built at; if it no longer matches, clear the cache once so
-# it recompiles cleanly. (Unchanged path → no clean → fast incremental builds.)
+# Invalidate generated native caches when the checkout path changes.
 STAMP="src-tauri/.build-cache-path"
 HERE="$(pwd)"
 if [ -d src-tauri/target ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" != "$HERE" ]; then

@@ -1,10 +1,4 @@
-/**
- * One abortable FIFO lane for Pi browse calls.
- *
- * The native activity bridge must keep spare request workers for rendered-DOM
- * snapshots. Serializing at the bundled client preserves the old queued
- * browse behavior without letting several long waits occupy that worker pool.
- */
+/** Serialize browse calls through one abortable FIFO, leaving bridge workers available for snapshots. */
 export class AbortableSerialQueue {
   private tail: Promise<void> = Promise.resolve();
 

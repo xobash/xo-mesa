@@ -168,13 +168,7 @@ function injectBase(html: string, baseHref: string): string {
   return `${tag}${html}`;
 }
 
-/**
- * Saved webpages are usually an HTML file plus a sibling `*_files` directory.
- * Tauri's asset protocol can serve those files, but root-relative URLs still
- * point at the app origin and many webviews do not resolve the saved-page
- * directory the same way a browser's `file://` loader does. Rewriting makes
- * the local dependency graph explicit before the iframe renders it.
- */
+/** Rewrite saved-page asset references relative to the saved document before framing. */
 export function rewriteSavedHtml(
   html: string,
   filePath: string,
@@ -247,13 +241,7 @@ export function rewriteCssAssetUrls(
     );
 }
 
-/**
- * Fully prepares browser-saved pages for an iframe `srcDoc`. Some webviews do
- * not reliably fetch `asset://` stylesheet links from `about:srcdoc`, so local
- * saved CSS is inlined before render. Script chunks are inlined too when they
- * are local sibling files, which makes saved Next/Vite-style pages behave much
- * closer to opening the HTML directly in a browser.
- */
+/** Prepare srcDoc by inlining local stylesheet assets and, when enabled, local scripts. */
 export async function hydrateSavedHtml(
   html: string,
   filePath: string,
@@ -263,14 +251,7 @@ export async function hydrateSavedHtml(
 ): Promise<string> {
   const originalUrl = savedFromUrl(html);
   const scripts = options.scripts !== false;
-  // Preview iframes are fully sandboxed and cannot execute scripts. Removing
-  // them before parsing preserves that exact markup-only behavior while
-  // avoiding script fetch/inlining, blocked-script error storms, and memory
-  // for JavaScript the webview is guaranteed to reject.
-  // PreviewCard needs a synchronous rewritten fallback while stylesheet reads
-  // run. It has already stripped that same string for the fallback, so reuse
-  // it instead of walking and reallocating a multi-megabyte saved page twice.
-  // The final strip below remains authoritative after CSS has been inlined.
+  // Markup-only previews skip script reads. Reuse stripped fallback input and strip again after CSS inlining.
   let out = scripts || options.previewCodeStripped
     ? html
     : stripSavedHtmlPreviewCode(html);

@@ -1,10 +1,4 @@
-// Launch `tauri dev` / `tauri build` with Rust's bin dir on PATH.
-//
-// run.sh installs Rust locally via rustup with --no-modify-path, so a plain
-// `npm run mesa` outside run.sh can fail with "failed to run 'cargo metadata'
-// … No such file or directory" because `cargo` isn't on the shell's PATH.
-// This launcher prepends ~/.cargo/bin (and the Windows equivalent) so the
-// command works from any shell, then forwards to the local Tauri CLI.
+// Prepend the Rust user bin directory and launch the project-local Tauri CLI.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";

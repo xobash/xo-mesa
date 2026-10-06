@@ -1,9 +1,4 @@
-/**
- * Tiny, dependency-free syntax highlighter + delimited-data parser used by the
- * code/text viewer (`CodeView`). It is deliberately language-agnostic: a single
- * scanner recognises line/block comments, strings, numbers and keywords, driven
- * by a small per-language spec. Pure (no DOM) so it's unit-tested.
- */
+/** Language-agnostic token scanner and delimited-data parser for the code viewer. */
 
 type TokType = "plain" | "comment" | "string" | "number" | "keyword";
 export interface Token {

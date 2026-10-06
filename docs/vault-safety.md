@@ -6,7 +6,7 @@ file, then publishes it with an atomic move. It flushes the containing
 directory on macOS and Linux. Windows directory metadata durability and
 sudden-power-loss recovery still need native acceptance.
 
-## Guarantees
+## Enforced save behavior
 
 - Every vault write (note saves, PDF saves, file duplication, drag-and-drop
   imports, zip extraction) goes through one verified-write primitive
@@ -31,18 +31,9 @@ sudden-power-loss recovery still need native acceptance.
   back to an in-place desktop rewrite when the atomic move fails. The
   non-native verified-write adapter retains its JavaScript stages for tests
   and browser-side compatibility.
-- PDF saves additionally require a `%PDF-` header, `%%EOF` marker, and a full
-  pdf-lib parse before Mesa accepts bytes as valid. This judges the bytes Mesa
-  AUTHORED before the native transaction, so a bad candidate is caught before
-  the commit. The compatibility path also validates its read-back stages. It deliberately does
-  NOT judge the backup, restore, or rescue copies: those hold the user's
-  existing file, byte-for-byte equality already proves the copy is faithful,
-  and applying Mesa's format opinion there refused to save an edit *because the
-  original displeased the validator*. That was reachable — a PDF carrying more
-  than 4 KiB of debris after `%%EOF` (incremental-update leftovers, a server
-  footer) parses and edits fine but fails the EOF check, so Mesa opened it,
-  edited it, and then failed every save with "Backup PDF write verification
-  failed", a message implying a disk fault.
+- PDF candidates require a `%PDF-` header, `%%EOF` marker and full pdf-lib
+  parse before commit. Backup, restore and rescue stages preserve existing bytes
+  by equality checks; candidate format rules do not apply to those copies.
 - The native command verifies the staged file before publication. If a later
   directory flush fails, it restores the rescue when the target still has the
   candidate bytes. If restoration fails or another writer changed the target,
@@ -155,7 +146,7 @@ perfectly.
   equal timestamps. Legacy localStorage history is migrated once and marked in
   the database before its old copy is removed, so a purged revision cannot
   reappear after restart. Settings can
-  compare an earlier copy beside the open document, deliberately remove that
+  compare an earlier copy beside the open document, remove that
   copy without changing the vault file, or restore through the same verified
   save queue, so restoration still refuses stale disk baselines. The editor's
   History action opens and focuses this current-document section directly.
@@ -195,11 +186,7 @@ Two operations that LOOK like text operations are held to the same rule:
   vault does not open unrelated Markdown files during one rename. If an
   inbound-link write sees a concurrent external edit, the rename remains
   byte-safe and Mesa reports the partial link update instead of overwriting the
-  edited file. Its previous
-  implementation read the file as text, wrote the text under the new name,
-  and removed the original; for a binary the text read yields "" by design,
-  so renaming a PDF replaced it with an empty markdown file. Pinned by
-  `src/lib/renameNote.test.ts`.
+  edited file. Regression coverage: `src/lib/renameNote.test.ts`.
 - **Delete** is recoverable. Mesa moves files and folders into a hidden
   `.mesa-trash/` recovery area on the same vault volume and removes them from
   the workspace only after that move succeeds. A locked file, permission error,
@@ -254,8 +241,8 @@ visible casualty, since a text-oriented tool is the least equipped to
 round-trip them safely, but the gap is general: any file Pi's tools touch is
 exposed.
 
-Mesa cannot stop an external process from writing good bytes. What it can do —
-and does — is remove the opportunity to write bad ones:
+The bundled extension rejects specific built-in binary text writes. It does
+not constrain arbitrary shell commands or third-party tools:
 
 - `src-tauri/resources/mesa-activity.ts` (the bundled Pi extension that also
   powers living-graph read/write reporting) intercepts Pi's `tool_call` event,
