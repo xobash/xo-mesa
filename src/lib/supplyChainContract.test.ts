@@ -47,6 +47,14 @@ describe("JavaScript supply-chain contract", () => {
     expect(isAtLeast(version!, [8, 5, 18])).toBe(true);
   });
 
+  it("keeps every source-map-js install above GHSA-68fv-2mgg-jv7q", () => {
+    const installs = packageNames.filter((key) => installedName(key) === "source-map-js");
+    expect(installs.length).toBeGreaterThan(0);
+    for (const key of installs) {
+      expect(isAtLeast(packageLock.packages[key].version ?? "0.0.0", [1, 2, 2])).toBe(true);
+    }
+  });
+
   it("keeps linkify-it above the quadratic scan advisory range", () => {
     const version = packageLock.packages["node_modules/linkify-it"]?.version;
 

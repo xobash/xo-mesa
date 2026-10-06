@@ -171,6 +171,13 @@ minimum is pinned by `src/lib/supplyChainContract.test.ts`. This remains
 dev/build tooling rather than packaged application code, but high-severity
 findings are remediated instead of waived on that basis.
 
+The indexed source-map denial-of-service advisory
+[GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q)
+affects `source-map-js` before `1.2.2`, reached through PostCSS and the test DOM
+CSS parser. The lockfile uses `1.2.2`; supply-chain tests check every nested
+installation against that patched floor. Build/test dependencies remain subject
+to the same advisory gate.
+
 The `linkify-it` advisory above was likewise found in a package Mesa never
 depends on directly (it arrives under `markdown-it`). Transitive packages on
 user-content and build paths remain in the threat model even though production

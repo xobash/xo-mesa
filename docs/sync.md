@@ -47,7 +47,14 @@ is used for unnamed peers.
 
 **Transport encryption (TLS).** On first launch each device mints a persistent,
 self-signed certificate — its *identity* — stored in the app config directory
-(`sync-identity/cert.pem` + `key.pem`). The embedded sync server serves over
+(`sync-identity/identity.json`). The private bundle contains both certificate and
+key, is flushed and verified in staging, and is published once without replacing
+an existing identity. Unix also flushes the directory. Interrupted staging is
+ignored on restart. Windows flushes file bytes; power-loss durability of directory
+metadata is not established. Existing `cert.pem` + `key.pem` pairs migrate without
+changing the fingerprint and remain as backups. A legacy certificate-only first
+run recovers automatically; a key-only, mismatched, or corrupt published identity
+stops with an error and preserves its files. The embedded sync server serves over
 HTTPS using that certificate. Because the certificate is self-signed, a normal
 CA check would reject it, so the client instead **pins the certificate's SHA-256
 fingerprint**:
@@ -207,7 +214,7 @@ Matching bytes removed by a peer operation
 go to the normal per-folder `.mesa-trash` recovery storage and can be restored
 through Mesa's recovery UI.
 
-Every peer must advertise journal version 1 and sync protocol version 2, and serve the journal
+Every peer must advertise journal version 2 and sync protocol version 3, and serve the journal
 endpoint. Missing or unsupported journal data stops sync before file transfers.
 Network, authorization, and invalid journal responses also stop sync
 before file transfers. The local baseline is not transmitted; a large idle
@@ -252,18 +259,14 @@ A vault with hundreds or thousands of files syncs comfortably:
   Interrupted transfers remove their partial sibling; existing files remain
   unchanged. If sent bytes differ from the upload hash, the receiver rejects
   them and Mesa can use the existing retry. The PUT limit remains 1 GiB.
-- **Streamed, cached, parallel hashing.** Manifests hash files in 64 KiB chunks
-  (nothing is loaded whole into memory) through a `(size, mtime)` cache, so
-  repeat syncs re-hash only what changed — on both the serving and the
-  initiating device. The cache is consulted in one cheap metadata-only pass
-  first, then the files that actually need reading are hashed with a
-  conservative two-worker application budget so editing, PDF work, and Pi
-  remain responsive.
-  Each file uses streaming SHA-256;
-  whole files are independent and a manifest is thousands of them. On the
-  4,094-file / 1.45 GB reference vault a cold manifest is **~3.0 s → 0.6–1.0 s**;
-  a warm one is ~20 ms. Digests are byte-identical either way — this changes
-  only the order the reads are dispatched in, never the wire format.
+- **Fresh, streamed, parallel hashing.** Every manifest reads every syncable file
+  in 64 KiB chunks with streaming SHA-256. Size, timestamps, platform change
+  metadata and watcher events are not proof of unchanged bytes, especially on
+  removable or network storage. No metadata hash cache influences file diffs,
+  journal reconciliation or shared baselines. Same-size edits with preserved
+  timestamps are detected. Concurrent scans share a conservative two-worker
+  budget; file bodies are never loaded whole for hashing. Cancellation returns
+  no partial manifest, and unreadable files make the scan incomplete.
 - **Timeouts everywhere.** Connect 10 s, stall 60 s, and a per-file total budget
   scaled by size. A dead peer is an error message, not an infinite silent hang.
 - **Per-file failure isolation.** One unreadable or failed file is recorded in
@@ -290,8 +293,8 @@ A vault with hundreds or thousands of files syncs comfortably:
   incomplete candidate is abandoned; a candidate already verified and published
   remains intact. The report marks the run cancelled and lists unfinished work
   so a later sync retries it.
-- **Bounded resources.** The content-hash cache is pruned to the current vault
-  snapshot and a fixed maximum. Transfer work is admitted in small batches,
+- **Bounded resources.** Concurrent manifest scans share at most two hashing
+  workers with 64 KiB buffers. Transfer work is admitted in small batches,
   rather than creating one task per queued file. These are application safety
   budgets, not claims of a measured memory leak or native input slowdown.
 

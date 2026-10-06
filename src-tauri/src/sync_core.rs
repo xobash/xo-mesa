@@ -1184,100 +1184,6 @@ fn hash_open_file_until(
     Some(Ok((size, hasher.hex())))
 }
 
-// === Hash cache ==========================================================
-
-/// Outcome of consulting the cache for one file, without reading its contents.
-pub enum CacheProbe {
-    /// `(size, hash)` answered from the cache — the file is not read at all.
-    Hit(u64, String),
-    /// The file must be hashed. Carries the mtime observed BEFORE hashing,
-    /// which is what gets stored alongside the new digest: if the file changes
-    /// while it is being read, the stored mtime is already stale and the next
-    /// build re-hashes it rather than trusting a torn digest.
-    Miss(u128),
-}
-
-/// Content-hash cache keyed by (size, mtime). Manifest builds re-hash only
-/// files that changed since the last build, which is what makes repeated
-/// syncs of a hundreds-of-files vault cheap on both the serving and the
-/// initiating side.
-#[derive(Default)]
-pub struct HashCache {
-    entries: HashMap<PathBuf, (u64, u128, String)>, // size, mtime_ns, hash
-}
-
-impl HashCache {
-    pub fn new() -> Self {
-        HashCache {
-            entries: HashMap::new(),
-        }
-    }
-
-    /// Metadata-only cache probe. Cheap enough to run over a whole vault
-    /// serially (~13 ms for 4,094 files) before any file is opened, which is
-    /// what lets `build_manifest` hash only the misses, and hash them in
-    /// parallel.
-    #[cfg(any(test, not(unix)))]
-    pub fn probe(&self, path: &Path) -> std::io::Result<CacheProbe> {
-        let meta = std::fs::metadata(path)?;
-        Ok(self.probe_metadata(path, &meta))
-    }
-
-    fn probe_metadata(&self, path: &Path, meta: &std::fs::Metadata) -> CacheProbe {
-        let size = meta.len();
-        let mtime_ns = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        if let Some((s, m, h)) = self.entries.get(path) {
-            if *s == size && *m == mtime_ns && mtime_ns != 0 {
-                return CacheProbe::Hit(size, h.clone());
-            }
-        }
-        CacheProbe::Miss(mtime_ns)
-    }
-
-    /// Record a freshly computed digest. `size` is the byte count the streaming
-    /// read actually saw, `mtime_ns` the pre-hash mtime from `probe`.
-    pub fn store(&mut self, path: &Path, size: u64, mtime_ns: u128, hash: &str) {
-        self.entries
-            .insert(path.to_path_buf(), (size, mtime_ns, hash.to_string()));
-    }
-
-    /// Keep cache ownership bounded to the current vault snapshot. This also
-    /// removes renamed/deleted paths instead of retaining them for the life of
-    /// the process. A hard cap protects a vault with unusually many files.
-    pub fn prune(&mut self, live: &[PathBuf], max_entries: usize) {
-        let live: std::collections::HashSet<&Path> = live.iter().map(PathBuf::as_path).collect();
-        self.entries.retain(|path, _| live.contains(path.as_path()));
-        if self.entries.len() > max_entries {
-            let remove = self.entries.len() - max_entries;
-            let keys: Vec<PathBuf> = self.entries.keys().take(remove).cloned().collect();
-            for key in keys {
-                self.entries.remove(&key);
-            }
-        }
-    }
-
-    /// (size, hash) of `path`, re-hashing only when size or mtime changed.
-    /// `build_manifest` does not call this — it splits the same two steps so
-    /// the reads can run in parallel — but it is the reference definition of
-    /// what that split must add up to, and the tests hold it to that.
-    #[cfg(test)]
-    pub fn hash_file(&mut self, path: &Path) -> std::io::Result<(u64, String)> {
-        match self.probe(path)? {
-            CacheProbe::Hit(size, hash) => Ok((size, hash)),
-            CacheProbe::Miss(mtime_ns) => {
-                let (real_size, hash) = hash_file_streaming(path)?;
-                self.store(path, real_size, mtime_ns, &hash);
-                Ok((real_size, hash))
-            }
-        }
-    }
-}
-
 // === Vault walking =======================================================
 
 /// Files/dirs sync ignores. Matches the frontend vault walker
@@ -1548,8 +1454,7 @@ pub struct ManifestEntry {
     pub hash: String,
 }
 
-/// Below this many cache misses the hashing stays inline: spawning threads
-/// costs more than it saves, and the common warm-cache build has zero misses.
+/// Below this many files hashing stays inline to avoid thread startup costs.
 const PARALLEL_HASH_MIN_FILES: usize = 8;
 
 /// Hashing threads. Keep a small application-owned budget so a cold sync does
@@ -1561,32 +1466,31 @@ fn hash_threads() -> usize {
         .min(2)
 }
 
-/// `(index into files, pre-hash mtime, streamed hash result)`.
-type HashOutcome = (usize, u128, std::io::Result<(u64, String)>);
+/// `(index into files, streamed hash result)`.
+type HashOutcome = (usize, std::io::Result<(u64, String)>);
 
-/// Hash `work` (indices into `files`, each with its pre-hash mtime) within the
-/// application-owned worker budget, returning `(index, mtime_ns, result)` per
-/// item in completion order.
+/// Read every file within the application-owned worker budget. Metadata and
+/// watcher events cannot prove content equality on every supported filesystem.
+/// Always obtain fresh bytes for manifest, baseline and journal decisions.
 ///
 /// Each file uses streaming SHA-256. Independent files share a bounded worker
 /// queue; every digest matches the serial reference regardless of scheduling.
-fn hash_missing(
+fn hash_manifest_files(
     root: &Path,
     files: &[(String, PathBuf)],
-    work: &[(usize, u128)],
     cancelled: Option<&AtomicBool>,
 ) -> Option<Vec<HashOutcome>> {
     #[cfg(not(unix))]
     let _ = root;
-    let threads = hash_threads().min(work.len());
-    if work.len() < PARALLEL_HASH_MIN_FILES || threads <= 1 {
-        let mut outcomes = Vec::with_capacity(work.len());
-        for &(i, mtime) in work {
+    let threads = hash_threads().min(files.len());
+    if files.len() < PARALLEL_HASH_MIN_FILES || threads <= 1 {
+        let mut outcomes = Vec::with_capacity(files.len());
+        for (i, (_rel, _path)) in files.iter().enumerate() {
             #[cfg(unix)]
-            let result = hash_rooted_file_until(root, &files[i].0, cancelled)?;
+            let result = hash_rooted_file_until(root, _rel, cancelled)?;
             #[cfg(not(unix))]
-            let result = hash_file_streaming_until(&files[i].1, cancelled)?;
-            outcomes.push((i, mtime, result));
+            let result = hash_file_streaming_until(_path, cancelled)?;
+            outcomes.push((i, result));
         }
         return Some(outcomes);
     }
@@ -1602,15 +1506,15 @@ fn hash_missing(
                             return None;
                         }
                         let n = cursor.fetch_add(1, Ordering::Relaxed);
-                        if n >= work.len() {
+                        if n >= files.len() {
                             break;
                         }
-                        let (i, mtime) = work[n];
+                        let i = n;
                         #[cfg(unix)]
                         let result = hash_rooted_file_until(root, &files[i].0, cancelled)?;
                         #[cfg(not(unix))]
                         let result = hash_file_streaming_until(&files[i].1, cancelled)?;
-                        local.push((i, mtime, result));
+                        local.push((i, result));
                     }
                     Some(local)
                 })
@@ -1633,83 +1537,34 @@ fn hash_missing(
 ///
 /// Both outputs stay in `list_vault_files` rel order regardless of the order
 /// the hashing threads finish in, so the serialized manifest is deterministic.
-pub fn build_manifest(root: &Path, cache: &mut HashCache) -> ManifestBuild {
-    build_manifest_until(root, cache, None).expect("uncancelled manifest must complete")
+pub fn build_manifest(root: &Path) -> ManifestBuild {
+    build_manifest_until(root, None).expect("uncancelled manifest must complete")
 }
 
 /// Cancellation-aware manifest build for the client sync path. `None` means
 /// the caller requested cancellation; no partial manifest is returned.
-pub fn build_manifest_cancellable(
-    root: &Path,
-    cache: &mut HashCache,
-    cancelled: &AtomicBool,
-) -> Option<ManifestBuild> {
-    build_manifest_until(root, cache, Some(cancelled))
+pub fn build_manifest_cancellable(root: &Path, cancelled: &AtomicBool) -> Option<ManifestBuild> {
+    build_manifest_until(root, Some(cancelled))
 }
 
-fn build_manifest_until(
-    root: &Path,
-    cache: &mut HashCache,
-    cancelled: Option<&AtomicBool>,
-) -> Option<ManifestBuild> {
+fn build_manifest_until(root: &Path, cancelled: Option<&AtomicBool>) -> Option<ManifestBuild> {
     let (files, mut skipped) = list_vault_files_with_errors_until(root, cancelled)?;
-    cache.prune(
-        &files
-            .iter()
-            .map(|(_, path)| path.clone())
-            .collect::<Vec<_>>(),
-        4096,
-    );
-
-    // Phase 1 — serial, metadata only. Resolves every file the cache already
-    // knows without opening it, and collects the rest as work items.
-    let mut resolved: Vec<Result<Option<(u64, String)>, String>> = Vec::with_capacity(files.len());
-    let mut work: Vec<(usize, u128)> = Vec::new();
-    for (i, (_, path)) in files.iter().enumerate() {
+    let mut resolved: Vec<Option<std::io::Result<(u64, String)>>> =
+        (0..files.len()).map(|_| None).collect();
+    for (i, result) in hash_manifest_files(root, &files, cancelled)? {
         if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return None;
         }
-        #[cfg(unix)]
-        let probe = RootedTarget::resolve(root, &files[i].0, false)
-            .and_then(|target| target.open_read())
-            .and_then(|file| file.metadata())
-            .map(|meta| cache.probe_metadata(path, &meta));
-        #[cfg(not(unix))]
-        let probe = cache.probe(path);
-        match probe {
-            Ok(CacheProbe::Hit(size, hash)) => resolved.push(Ok(Some((size, hash)))),
-            Ok(CacheProbe::Miss(mtime_ns)) => {
-                work.push((i, mtime_ns));
-                resolved.push(Ok(None));
-            }
-            Err(e) => resolved.push(Err(e.to_string())),
-        }
-    }
-
-    // Phase 2 — read and hash the misses across all cores.
-    let hashed = hash_missing(root, &files, &work, cancelled)?;
-
-    // Phase 3 — fold results back into rel order and update the cache.
-    for (i, mtime_ns, result) in hashed {
-        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-            return None;
-        }
-        resolved[i] = match result {
-            Ok((real_size, hash)) => {
-                cache.store(&files[i].1, real_size, mtime_ns, &hash);
-                Ok(Some((real_size, hash)))
-            }
-            Err(e) => Err(e.to_string()),
-        };
+        resolved[i] = Some(result);
     }
 
     let mut entries = Vec::with_capacity(files.len());
     for ((rel, _), slot) in files.into_iter().zip(resolved) {
         match slot {
-            Ok(Some((size, hash))) => entries.push(ManifestEntry { rel, size, hash }),
+            Some(Ok((size, hash))) => entries.push(ManifestEntry { rel, size, hash }),
             // `None` is unreachable: every work item is written back above.
-            Ok(None) => skipped.push((rel, "hash not computed".to_string())),
-            Err(e) => skipped.push((rel, e)),
+            None => skipped.push((rel, "hash not computed".to_string())),
+            Some(Err(e)) => skipped.push((rel, e.to_string())),
         }
     }
     Some((entries, skipped))
@@ -1717,7 +1572,7 @@ fn build_manifest_until(
 
 /// Serialize a manifest as the wire JSON: {"files":[{"rel","size","hash"}]}.
 pub fn manifest_to_json(entries: &[ManifestEntry]) -> String {
-    let mut s = String::from("{\"journalVersion\":2,\"syncProtocolVersion\":3,\"files\":[");
+    let mut s = format!("{{\"journalVersion\":{JOURNAL_VERSION},\"syncProtocolVersion\":{SYNC_PROTOCOL_VERSION},\"files\":[");
     for (i, e) in entries.iter().enumerate() {
         if i > 0 {
             s.push(',');
@@ -3385,6 +3240,24 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     #[test]
+    fn sync_documentation_matches_current_protocol_constants() {
+        let doc = include_str!("../../docs/sync.md");
+        assert!(doc.contains(&format!(
+            "journal version {JOURNAL_VERSION} and sync protocol version {SYNC_PROTOCOL_VERSION}"
+        )));
+        assert!(doc.contains(&format!("journalVersion: {JOURNAL_VERSION}")));
+        assert!(doc.contains(&format!("syncProtocolVersion: {SYNC_PROTOCOL_VERSION}")));
+        for line in doc.lines() {
+            if line.contains("Every peer must advertise") {
+                assert!(line.contains(&format!("journal version {JOURNAL_VERSION} and sync protocol version {SYNC_PROTOCOL_VERSION}")));
+            }
+        }
+        let wire: serde_json::Value = serde_json::from_str(&manifest_to_json(&[])).unwrap();
+        assert_eq!(wire["journalVersion"], JOURNAL_VERSION);
+        assert_eq!(wire["syncProtocolVersion"], SYNC_PROTOCOL_VERSION);
+    }
+
+    #[test]
     fn version_one_journal_upgrades_live_and_recovery_bytes() {
         let v = ManifestVault::new("journal-upgrade");
         std::fs::write(v.0.join("live.md"), b"live").unwrap();
@@ -3707,7 +3580,7 @@ mod tests {
     }
 
     #[test]
-    fn hash_file_streams_and_caches() {
+    fn hash_file_streams() {
         let dir = std::env::temp_dir().join(format!("mesa-core-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("a.bin");
@@ -3716,19 +3589,6 @@ mod tests {
         assert_eq!(size, 11);
         assert_eq!(hash, content_hash_hex(b"hello world"));
 
-        let mut cache = HashCache::new();
-        let first = cache.hash_file(&f).unwrap();
-        let second = cache.hash_file(&f).unwrap();
-        assert_eq!(first, second);
-
-        // Content change (same length ⇒ relies on mtime; force a distinct one).
-        std::fs::write(&f, b"HELLO WORLD").unwrap();
-        let newer = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
-        let ft = std::fs::File::options().write(true).open(&f).unwrap();
-        ft.set_modified(newer).unwrap();
-        drop(ft);
-        let third = cache.hash_file(&f).unwrap();
-        assert_eq!(third.1, content_hash_hex(b"HELLO WORLD"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3789,8 +3649,7 @@ mod tests {
     fn build_manifest_hashes_match_whole_buffer_hashes() {
         let v = ManifestVault::new("equal");
         let made = v.populate();
-        let mut cache = HashCache::new();
-        let (entries, skipped) = build_manifest(&v.0, &mut cache);
+        let (entries, skipped) = build_manifest(&v.0);
         assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
         assert_eq!(entries.len(), made.len());
         for (rel, bytes) in &made {
@@ -3808,8 +3667,8 @@ mod tests {
     fn build_manifest_order_is_deterministic_and_sorted() {
         let v = ManifestVault::new("order");
         v.populate();
-        let first = build_manifest(&v.0, &mut HashCache::new()).0;
-        let second = build_manifest(&v.0, &mut HashCache::new()).0;
+        let first = build_manifest(&v.0).0;
+        let second = build_manifest(&v.0).0;
         let rels = |m: &[ManifestEntry]| m.iter().map(|e| e.rel.clone()).collect::<Vec<_>>();
         assert_eq!(rels(&first), rels(&second));
         let mut sorted = rels(&first);
@@ -3825,45 +3684,27 @@ mod tests {
         let v = ManifestVault::new("cancel");
         v.populate();
         let cancelled = AtomicBool::new(true);
-        assert!(build_manifest_cancellable(&v.0, &mut HashCache::new(), &cancelled).is_none());
+        assert!(build_manifest_cancellable(&v.0, &cancelled).is_none());
     }
 
     #[test]
-    fn hash_cache_prune_removes_paths_outside_the_snapshot() {
-        let v = ManifestVault::new("prune");
-        let kept = v.0.join("kept.md");
-        let removed = v.0.join("removed.md");
-        v.write("kept.md", b"kept");
-        v.write("removed.md", b"removed");
-        let mut cache = HashCache::new();
-        cache.hash_file(&kept).unwrap();
-        cache.hash_file(&removed).unwrap();
-        cache.prune(&[kept], 4096);
-        assert!(matches!(
-            cache.probe(&removed).unwrap(),
-            CacheProbe::Miss(_)
-        ));
-    }
-
-    /// A warm cache must still short-circuit: the parallel phase may only see
-    /// files whose (size, mtime) changed. Rewriting content while preserving
-    /// both proves the second build never re-read the file.
-    #[test]
-    fn build_manifest_reuses_cached_digests() {
+    fn build_manifest_detects_edits_with_preserved_size_and_coarse_mtime() {
         let v = ManifestVault::new("warm");
         v.populate();
-        let mut cache = HashCache::new();
-        let (first, _) = build_manifest(&v.0, &mut cache);
-
         let target = v.0.join("file1.bin");
         let meta = std::fs::metadata(&target).unwrap();
-        let mtime = meta.modified().unwrap();
+        let mtime = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let f = std::fs::File::options().write(true).open(&target).unwrap();
+        f.set_modified(mtime).unwrap();
+        drop(f);
+        assert_eq!(meta.len(), 11);
+        let (first, _) = build_manifest(&v.0);
         std::fs::write(&target, b"DIFFERENT!!").unwrap(); // same 11-byte length
         let f = std::fs::File::options().write(true).open(&target).unwrap();
         f.set_modified(mtime).unwrap();
         drop(f);
 
-        let (second, _) = build_manifest(&v.0, &mut cache);
+        let (second, _) = build_manifest(&v.0);
         let pick = |m: &[ManifestEntry]| {
             m.iter()
                 .find(|e| e.rel == "file1.bin")
@@ -3871,10 +3712,28 @@ mod tests {
                 .hash
                 .clone()
         };
-        assert_eq!(pick(&first), pick(&second), "cached digest was not reused");
+        assert_ne!(pick(&first), pick(&second));
+        assert_eq!(pick(&second), content_hash_hex(b"DIFFERENT!!"));
+        let diff = diff_manifests_from_base(&second, &first, &[]);
+        assert!(diff.conflict.contains(&"file1.bin".to_string()));
+        let base: Vec<JournalEntry> = first
+            .iter()
+            .map(|entry| JournalEntry {
+                rel: entry.rel.clone(),
+                size: entry.size,
+                hash: entry.hash.clone(),
+            })
+            .collect();
+        let diff = diff_manifests_from_base(&second, &first, &base);
+        assert!(diff.push_replace.contains(&"file1.bin".to_string()));
+        assert!(diff.conflict.is_empty());
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().modified().unwrap(),
+            mtime
+        );
 
-        // A fresh cache does read it, and sees the new bytes.
-        let (third, _) = build_manifest(&v.0, &mut HashCache::new());
+        // Every subsequent scan observes the actual bytes.
+        let (third, _) = build_manifest(&v.0);
         assert_eq!(pick(&third), content_hash_hex(b"DIFFERENT!!"));
     }
 
@@ -3892,7 +3751,7 @@ mod tests {
         if std::fs::File::open(&locked).is_ok() {
             return;
         }
-        let (entries, skipped) = build_manifest(&v.0, &mut HashCache::new());
+        let (entries, skipped) = build_manifest(&v.0);
         assert_eq!(skipped.len(), 1, "expected one skip, got {skipped:?}");
         assert_eq!(skipped[0].0, "file2.bin");
         assert!(!entries.iter().any(|e| e.rel == "file2.bin"));
@@ -3907,7 +3766,7 @@ mod tests {
             std::process::id(),
             now_ms()
         ));
-        let (entries, errors) = build_manifest(&root, &mut HashCache::new());
+        let (entries, errors) = build_manifest(&root);
         assert!(entries.is_empty());
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].0, ".");
@@ -4147,7 +4006,7 @@ mod tests {
             std::fs::write(root.join("Case.md"), b"one").unwrap();
             std::fs::write(root.join("case.md"), b"two").unwrap();
         }
-        let (entries, skipped) = build_manifest(&root, &mut HashCache::new());
+        let (entries, skipped) = build_manifest(&root);
         assert!(entries.iter().any(|entry| entry.rel == "good.md"));
         #[cfg(not(unix))]
         assert!(skipped.is_empty());
@@ -4772,11 +4631,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("old.md"), b"same").unwrap();
         std::fs::write(dir.join("gone.md"), b"gone").unwrap();
-        let (first, _) = build_manifest(&dir, &mut HashCache::new());
+        let (first, _) = build_manifest(&dir);
         reconcile_journal(&dir, &first).unwrap();
         std::fs::rename(dir.join("old.md"), dir.join("new.md")).unwrap();
         std::fs::remove_file(dir.join("gone.md")).unwrap();
-        let (second, _) = build_manifest(&dir, &mut HashCache::new());
+        let (second, _) = build_manifest(&dir);
         let journal = reconcile_journal(&dir, &second).unwrap();
         assert!(journal
             .operations
@@ -4826,7 +4685,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("keep.md"), b"keep").unwrap();
-        let (complete, _) = build_manifest(&dir, &mut HashCache::new());
+        let (complete, _) = build_manifest(&dir);
         reconcile_journal(&dir, &complete).unwrap();
 
         let partial = Vec::new();
@@ -5024,11 +4883,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("note.md"), b"restore me").unwrap();
-        let (first, _) = build_manifest(&dir, &mut HashCache::new());
+        let (first, _) = build_manifest(&dir);
         reconcile_journal(&dir, &first).unwrap();
 
         std::fs::remove_file(dir.join("note.md")).unwrap();
-        let (deleted, _) = build_manifest(&dir, &mut HashCache::new());
+        let (deleted, _) = build_manifest(&dir);
         let with_delete = reconcile_journal(&dir, &deleted).unwrap();
         assert!(with_delete
             .operations
@@ -5036,7 +4895,7 @@ mod tests {
             .any(|op| { op.kind == JournalOperationKind::Delete && op.from == "note.md" }));
 
         std::fs::write(dir.join("note.md"), b"restore me").unwrap();
-        let (restored, _) = build_manifest(&dir, &mut HashCache::new());
+        let (restored, _) = build_manifest(&dir);
         let journal = reconcile_journal(&dir, &restored).unwrap();
         assert!(journal
             .operations

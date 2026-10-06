@@ -7,7 +7,7 @@
 // each device mints a persistent self-signed certificate (its "identity") and
 // serves over HTTPS. A nonce-bound HMAC proof of the sync key precedes every
 // client manifest or file request. Requests are handled by a small worker pool, manifest hashes are
-// streamed + cached (see `sync_core::HashCache`), and writes are verified,
+// freshly streamed, and writes are verified,
 // create-if-missing commits so a dropped connection or racing writer can
 // never truncate or overwrite a note.
 // Every protected request carries `Authorization: Bearer <HMAC(key, cert)>`.
@@ -18,7 +18,7 @@
 // Content hashes are SHA-256; older protocols are rejected before transfer.
 //
 // **Client engine.** `sync_run` performs an entire two-way sync natively:
-// remote manifest over pinned TLS, local manifest (streamed, cached, never
+// remote manifest over pinned TLS, local manifest (freshly streamed, never
 // through the webview), diff, then bounded-concurrency transfers over ONE
 // pooled client. Every file failure is
 // collected (never aborts the rest), every step emits `sync://log` +
@@ -149,12 +149,10 @@ fn discovery_state() -> &'static Mutex<Option<DiscoveryState>> {
     S.get_or_init(|| Mutex::new(None))
 }
 
-/// Process-wide content-hash cache shared by the server (manifest requests)
-/// and the client engine (local manifest). Keyed by (path, size, mtime), so
-/// only changed files are ever re-hashed.
-fn hash_cache() -> &'static Mutex<sync_core::HashCache> {
-    static S: OnceLock<Mutex<sync_core::HashCache>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(sync_core::HashCache::new()))
+/// Serialize manifest scans so concurrent requests share the two-worker budget.
+fn manifest_lock() -> &'static Mutex<()> {
+    static S: OnceLock<Mutex<()>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(()))
 }
 
 /// Cooperative cancel flag for the running `sync_run`, set by `sync_cancel`.
@@ -751,10 +749,10 @@ async fn handle_hyper(
         let started = Instant::now();
         let manifest_root = root.as_ref().clone();
         let (entries, skipped) = match tokio::task::spawn_blocking(move || {
-            let mut cache = hash_cache()
+            let _scan_guard = manifest_lock()
                 .lock()
-                .map_err(|_| "cache poisoned".to_string())?;
-            Ok::<_, String>(sync_core::build_manifest(&manifest_root, &mut cache))
+                .map_err(|_| "manifest lock poisoned".to_string())?;
+            Ok::<_, String>(sync_core::build_manifest(&manifest_root))
         })
         .await
         {
@@ -926,9 +924,9 @@ async fn handle_hyper(
         };
         let base_root = root.as_ref().clone();
         let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let mut cache = hash_cache().lock().map_err(|error| error.to_string())?;
-            let (current, skipped) = sync_core::build_manifest(&base_root, &mut cache);
-            drop(cache);
+            let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
+            let (current, skipped) = sync_core::build_manifest(&base_root);
+            drop(_scan_guard);
             if !skipped.is_empty() {
                 return Err("receiver scan is incomplete".into());
             }
@@ -1483,14 +1481,14 @@ fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
             return Err("could not restrict sync identity ACL".into());
         }
     }
-    for name in ["cert.pem", "key.pem"] {
+    for name in ["cert.pem", "key.pem", "identity.json"] {
         let path = dir.join(name);
         if let Ok(meta) = fs::symlink_metadata(&path) {
             if !meta.is_file() || meta.file_type().is_symlink() {
                 return Err("sync identity must contain regular files".into());
             }
             #[cfg(unix)]
-            if name == "key.pem" {
+            if name != "cert.pem" {
                 use std::os::unix::fs::PermissionsExt;
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
                     .map_err(|e| e.to_string())?;
@@ -1520,7 +1518,7 @@ fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; foreach($name in @('cert.pem','key.pem')) { $file=Join-Path $p $name; if(Test-Path -LiteralPath $file) { $acl=Get-Acl -LiteralPath $file; $rules=@($acl.Access); if($rules.Count -eq 0){throw 'Missing identity access'}; foreach($r in $rules){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected identity file access'}} } }"#;
+        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; foreach($name in @('cert.pem','key.pem','identity.json')) { $file=Join-Path $p $name; if(Test-Path -LiteralPath $file) { $acl=Get-Acl -LiteralPath $file; $rules=@($acl.Access); if($rules.Count -eq 0){throw 'Missing identity access'}; foreach($r in $rules){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected identity file access'}} } }"#;
         let status = std::process::Command::new("powershell.exe")
             // A PowerShell 7 parent passes incompatible module paths through
             // native child processes. Let Windows PowerShell use its own modules.
@@ -1550,55 +1548,138 @@ fn persist_identity_key(path: &std::path::Path, bytes: &[u8]) -> Result<(), Stri
     file.sync_all().map_err(|e| e.to_string())
 }
 
-/// Load this device's TLS identity, generating + persisting it on first run.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentityBundle {
+    version: u32,
+    cert_pem: String,
+    key_pem: String,
+}
+
+fn validate_identity(cert_pem: String, key_pem: String) -> Result<Identity, String> {
+    let fingerprint = fingerprint_from_cert_pem(&cert_pem)?;
+    let id = Identity {
+        cert_pem,
+        key_pem,
+        fingerprint,
+    };
+    // Reject corrupt or mismatched pairs before advertising a fingerprint.
+    sync_server_config(&id)?;
+    Ok(id)
+}
+
+fn flush_identity_directory(dir: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        // Also persist the first-run directory entry in its existing parent.
+        if let Some(parent) = dir.parent() {
+            std::fs::File::open(parent)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir; // Windows file bytes are flushed; directory durability is not claimed.
+    Ok(())
+}
+
+/// One create-only publication of a validated cert/key bundle. `stop` simulates
+/// abrupt interruption at each boundary; abandoned private staging is never loaded.
+fn load_identity(dir: &std::path::Path, stop: Option<u8>) -> Result<Identity, String> {
+    protect_identity_directory(dir)?;
+    let bundle_path = dir.join("identity.json");
+    if bundle_path.try_exists().map_err(|e| e.to_string())? {
+        let bytes = std::fs::read(&bundle_path).map_err(|e| e.to_string())?;
+        let bundle: IdentityBundle = serde_json::from_slice(&bytes)
+            .map_err(|_| "sync identity bundle is invalid; restore its backup".to_string())?;
+        if bundle.version != 1 {
+            return Err("unsupported sync identity bundle version".into());
+        }
+        let id = validate_identity(bundle.cert_pem, bundle.key_pem)?;
+        flush_identity_directory(dir)?;
+        return Ok(id);
+    }
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let id = if key_path.try_exists().map_err(|e| e.to_string())? {
+        // An existing key may belong to an advertised identity. Never rotate it.
+        if !cert_path.try_exists().map_err(|e| e.to_string())? {
+            return Err("sync identity certificate is missing; restore it from backup".into());
+        }
+        validate_identity(
+            std::fs::read_to_string(&cert_path).map_err(|e| e.to_string())?,
+            std::fs::read_to_string(&key_path).map_err(|e| e.to_string())?,
+        )?
+    } else {
+        // The legacy writer published the certificate first. A lone certificate
+        // could never complete get_identity or be advertised; retain it and recover.
+        let CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["mesa.example".into(), "localhost".into()])
+                .map_err(|e| e.to_string())?;
+        validate_identity(cert.pem(), signing_key.serialize_pem())?
+    };
+    let bundle = IdentityBundle {
+        version: 1,
+        cert_pem: id.cert_pem.clone(),
+        key_pem: id.key_pem.clone(),
+    };
+    let bytes = serde_json::to_vec(&bundle).map_err(|e| e.to_string())?;
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let stage = dir.join(format!(
+        "identity-{}-{}-{}.pending",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Private create-only staging; never expose a partial bundle as the identity.
+    let result: Result<(), String> = (|| {
+        if stop == Some(1) {
+            persist_identity_key(&stage, &bytes[..bytes.len() / 2])?;
+            return Err("identity interruption during staging".into());
+        }
+        persist_identity_key(&stage, &bytes)?;
+        // The private parent ACL applies to staging; verify bytes before publication.
+        let readback = std::fs::read(&stage).map_err(|e| e.to_string())?;
+        if readback != bytes {
+            return Err("sync identity staging verification failed".into());
+        }
+        flush_identity_directory(dir)?;
+        if stop == Some(2) {
+            return Err("identity interruption before publication".into());
+        }
+        sync_core::move_file_no_replace(&stage, &bundle_path).map_err(|e| e.to_string())?;
+        if stop == Some(3) {
+            return Err("identity interruption after publication".into());
+        }
+        flush_identity_directory(dir)?;
+        protect_identity_directory(dir)?;
+        Ok(())
+    })();
+    if stop.is_none() {
+        let _ = std::fs::remove_file(&stage);
+    }
+    result?;
+    Ok(id)
+}
+
+/// Cache only an identity whose complete bundle was durably published.
 fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
     let mut guard = identity_cache().lock().map_err(|e| e.to_string())?;
     if let Some(id) = guard.as_ref() {
         return Ok(id.clone());
     }
-
     let dir = app
         .path()
         .app_config_dir()
         .map_err(|e| e.to_string())?
         .join("sync-identity");
-    protect_identity_directory(&dir)?;
-    let cert_path = dir.join("cert.pem");
-    let key_path = dir.join("key.pem");
-
-    let id = if cert_path.exists() && key_path.exists() {
-        let cert_pem = std::fs::read_to_string(&cert_path).map_err(|e| e.to_string())?;
-        let key_pem = std::fs::read_to_string(&key_path).map_err(|e| e.to_string())?;
-        let fingerprint = fingerprint_from_cert_pem(&cert_pem)?;
-        Identity {
-            cert_pem,
-            key_pem,
-            fingerprint,
-        }
-    } else {
-        if cert_path.exists() || key_path.exists() {
-            return Err(
-                "sync identity is incomplete; restore its matching certificate and key".into(),
-            );
-        }
-        let CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
-            "mesa.example".to_string(),
-            "localhost".to_string(),
-        ])
-        .map_err(|e| e.to_string())?;
-        let cert_pem = cert.pem();
-        let key_pem = signing_key.serialize_pem();
-        let fingerprint = sha256_hex(cert.der().as_ref());
-        std::fs::write(&cert_path, &cert_pem).map_err(|e| e.to_string())?;
-        persist_identity_key(&key_path, key_pem.as_bytes())?;
-        protect_identity_directory(&dir)?;
-        Identity {
-            cert_pem,
-            key_pem,
-            fingerprint,
-        }
-    };
-
+    let id = load_identity(&dir, None)?;
     *guard = Some(id.clone());
     Ok(id)
 }
@@ -2485,14 +2566,13 @@ pub async fn sync_run(
     sync_core::bind_journal_peer(&root, &fingerprint, &remote_journal.device, true)
         .map_err(|error| error.to_string())?;
 
-    // 2. Local manifest — streamed + cached hashing off the async runtime.
+    // 2. Local manifest — fresh streaming hashes off the async runtime.
     emit_progress(&app, "scan", 0, 0, "");
     let scan_started = Instant::now();
     let scan_root = root.clone();
     let (mut local, skipped) = tokio::task::spawn_blocking(move || {
-        let mut cache = hash_cache().lock().map_err(|e| e.to_string())?;
-        sync_core::build_manifest_cancellable(&scan_root, &mut cache, cancel_flag())
-            .ok_or_else(cancelled_error)
+        let _scan_guard = manifest_lock().lock().map_err(|e| e.to_string())?;
+        sync_core::build_manifest_cancellable(&scan_root, cancel_flag()).ok_or_else(cancelled_error)
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -2612,11 +2692,11 @@ pub async fn sync_run(
             }
         }
         // Remote operations changed the local filesystem. Rebuild from the
-        // shared hash cache before the ordinary file diff.
+        // fresh bytes before the ordinary file diff.
         let scan_root = root.clone();
         let (rescanned_local, rescanned_skipped) = tokio::task::spawn_blocking(move || {
-            let mut cache = hash_cache().lock().map_err(|error| error.to_string())?;
-            sync_core::build_manifest_cancellable(&scan_root, &mut cache, cancel_flag())
+            let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
+            sync_core::build_manifest_cancellable(&scan_root, cancel_flag())
                 .ok_or_else(cancelled_error)
         })
         .await
@@ -2890,8 +2970,8 @@ pub async fn sync_run(
     if failed.is_empty() && !was_cancelled {
         let final_root = root.clone();
         let final_local = tokio::task::spawn_blocking(move || {
-            let mut cache = hash_cache().lock().map_err(|error| error.to_string())?;
-            let (entries, skipped) = sync_core::build_manifest(&final_root, &mut cache);
+            let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
+            let (entries, skipped) = sync_core::build_manifest(&final_root);
             if !skipped.is_empty() {
                 return Err("final local scan is incomplete".to_string());
             }
@@ -3076,6 +3156,157 @@ pub fn sync_discovery_stop() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    fn identity_test_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mesa-identity-{label}-{}-{}",
+            std::process::id(),
+            sync_core::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn identity_recovers_interruption_at_every_publication_boundary() {
+        for stop in 1..=3 {
+            let dir = identity_test_dir(&format!("crash-{stop}"));
+            assert!(load_identity(&dir, Some(stop)).is_err());
+            let published = dir.join("identity.json");
+            let before = if published.exists() {
+                Some(std::fs::read(&published).unwrap())
+            } else {
+                None
+            };
+            let recovered = load_identity(&dir, None).unwrap();
+            sync_server_config(&recovered).unwrap();
+            let reopened = load_identity(&dir, None).unwrap();
+            assert_eq!(recovered.fingerprint, reopened.fingerprint);
+            if let Some(before) = before {
+                assert_eq!(before, std::fs::read(&published).unwrap());
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn identity_migrates_complete_legacy_pair_without_rotating() {
+        let dir = identity_test_dir("migrate");
+        protect_identity_directory(&dir).unwrap();
+        let CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert_pem = cert.pem();
+        let key_pem = signing_key.serialize_pem();
+        std::fs::write(dir.join("cert.pem"), &cert_pem).unwrap();
+        persist_identity_key(&dir.join("key.pem"), key_pem.as_bytes()).unwrap();
+        let id = load_identity(&dir, None).unwrap();
+        assert_eq!(id.cert_pem, cert_pem);
+        assert_eq!(id.key_pem, key_pem);
+        assert_eq!(id.fingerprint, sha256_hex(cert.der().as_ref()));
+        assert_eq!(
+            load_identity(&dir, None).unwrap().fingerprint,
+            id.fingerprint
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identity_recovers_legacy_certificate_only_and_preserves_original() {
+        let dir = identity_test_dir("certificate-only");
+        protect_identity_directory(&dir).unwrap();
+        std::fs::write(dir.join("cert.pem"), "interrupted certificate").unwrap();
+        let id = load_identity(&dir, None).unwrap();
+        sync_server_config(&id).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cert.pem")).unwrap(),
+            "interrupted certificate"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identity_never_rotates_key_only_or_corrupt_published_bundle() {
+        let dir = identity_test_dir("invalid");
+        protect_identity_directory(&dir).unwrap();
+        persist_identity_key(&dir.join("key.pem"), b"retained key").unwrap();
+        assert!(load_identity(&dir, None).is_err());
+        assert!(!dir.join("identity.json").exists());
+        assert_eq!(std::fs::read(dir.join("key.pem")).unwrap(), b"retained key");
+        std::fs::remove_file(dir.join("key.pem")).unwrap();
+        load_identity(&dir, None).unwrap();
+        std::fs::write(dir.join("identity.json"), b"broken bundle").unwrap();
+        assert!(load_identity(&dir, None).is_err());
+        assert_eq!(
+            std::fs::read(dir.join("identity.json")).unwrap(),
+            b"broken bundle"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identity_bundle_permissions_are_repaired_without_rotating() {
+        let dir = identity_test_dir("bundle-permissions");
+        let id = load_identity(&dir, None).unwrap();
+        let bundle = dir.join("identity.json");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&bundle).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        #[cfg(windows)]
+        assert!(std::process::Command::new("icacls.exe")
+            .arg(&bundle)
+            .args(["/grant", "*S-1-1-0:R", "/Q"])
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            load_identity(&dir, None).unwrap().fingerprint,
+            id.fingerprint
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&bundle).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_bundle_rejects_symlink_without_changing_target() {
+        let dir = identity_test_dir("symlink");
+        let outside = dir.join("outside");
+        std::fs::write(&outside, b"retained").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("identity.json")).unwrap();
+        assert!(load_identity(&dir, None).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"retained");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn identity_bundle_rejects_mismatched_legacy_pair() {
+        let dir = identity_test_dir("mismatch");
+        protect_identity_directory(&dir).unwrap();
+        let first = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let second = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        std::fs::write(dir.join("cert.pem"), first.cert.pem()).unwrap();
+        persist_identity_key(
+            &dir.join("key.pem"),
+            second.signing_key.serialize_pem().as_bytes(),
+        )
+        .unwrap();
+        assert!(load_identity(&dir, None).is_err());
+        assert!(!dir.join("identity.json").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn identity_acl_repairs_explicit_broad_key_access() {
