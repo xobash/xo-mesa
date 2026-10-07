@@ -25,6 +25,16 @@ lists those files but does not claim to parse, render, or serialize them.
 ordinary files. Very large code and data files use a windowed row view, so file
 open and scroll work scales with the viewport instead of total line count.
 
+## Shell subscriptions
+
+The workspace shell subscribes to its layout and narrow lifecycle inputs.
+Vault status/loading are read by Welcome and status surfaces; document navigation,
+file catalogs and Deep Research progress are read by their owning views.
+Research snapshots and Pi context are published through effect-owned store
+subscriptions, preserving initial delivery and cleanup without redrawing the shell.
+Pi context publishes only when vault, document, tabs or settings inputs change.
+`src/App.rerender.test.tsx` checks this boundary and retains a layout-render control.
+
 ## Shared Lifecycle
 
 1. `scanVault` discovers files without reading content.

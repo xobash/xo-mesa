@@ -747,8 +747,15 @@ pub fn activity_set_context(context: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs blocking work on a worker to keep the webview responsive.
 #[tauri::command]
-pub fn activity_stop() -> Result<(), String> {
+pub async fn activity_stop() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(stop_activity)
+        .await
+        .map_err(|e| format!("activity_stop worker failed: {e}"))?
+}
+
+pub(crate) fn stop_activity() -> Result<(), String> {
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     let stopped = guard.take();
     if let Some(st) = stopped.as_ref() {

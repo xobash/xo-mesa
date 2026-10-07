@@ -1,14 +1,17 @@
 .dockerignore
 .gitattributes
+.github/AGENTS.md
 .github/workflows/build.yml
 .github/workflows/release-candidate.yml
 .github/workflows/release.yml
 .gitignore
+AGENTS.md
 CONTRIBUTING.md
 Dockerfile
 LICENSE
 README.md
 SECURITY.md
+docs/AGENTS.md
 docs/activity-api.md
 docs/cross-platform.md
 docs/deep-research.md
@@ -43,6 +46,7 @@ public/THIRD_PARTY_NOTICES.txt
 public/favicon.svg
 run.cmd
 run.sh
+scripts/AGENTS.md
 scripts/acceptance.html
 scripts/bootstrap-download.sh
 scripts/bundle-boundaries.check.mjs
@@ -73,6 +77,7 @@ scripts/release-windows.ps1
 scripts/third-party-notices.check.mjs
 scripts/third-party-notices.mjs
 scripts/windows-installer-behavior.check.ps1
+src-tauri/AGENTS.md
 src-tauri/Cargo.lock
 src-tauri/Cargo.toml
 src-tauri/build.rs
@@ -113,7 +118,10 @@ src-tauri/src/vaultwrite.rs
 src-tauri/tauri.conf.json
 src-tauri/tauri.windows.conf.json
 src-tauri/tauri.windows.offline.conf.json
+src/AGENTS.md
+src/App.rerender.test.tsx
 src/App.tsx
+src/components/AGENTS.md
 src/components/AgentPanel.tsx
 src/components/Backlinks.tsx
 src/components/BookmarksList.test.tsx
@@ -179,6 +187,7 @@ src/components/useOverlayDraft.test.tsx
 src/components/useOverlayDraft.ts
 src/components/usePdfEditor.test.tsx
 src/components/usePdfEditor.ts
+src/controllers/AGENTS.md
 src/controllers/documents.test.ts
 src/controllers/documents.ts
 src/controllers/persistence.test.ts
@@ -189,6 +198,7 @@ src/controllers/vault.test.ts
 src/controllers/vault.ts
 src/controllers/workspace.test.ts
 src/controllers/workspace.ts
+src/lib/AGENTS.md
 src/lib/activity.test.ts
 src/lib/activity.ts
 src/lib/agent.test.ts
@@ -282,6 +292,7 @@ src/lib/menuPosition.test.ts
 src/lib/menuPosition.ts
 src/lib/mesaPerf.test.ts
 src/lib/mesaPerf.ts
+src/lib/nativeCommandThreading.test.ts
 src/lib/nativeScope.test.ts
 src/lib/nativeWindowConfig.test.ts
 src/lib/navigationFilters.test.ts

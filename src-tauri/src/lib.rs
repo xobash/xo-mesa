@@ -201,7 +201,7 @@ pub fn run() {
                 // server keeps its thread and its bound port until the process
                 // is reaped. Both are best-effort: exiting must not be blocked.
                 terminal::stop_all_sessions(&app.state::<terminal::TerminalState>());
-                let _ = activity::activity_stop();
+                let _ = activity::stop_activity();
             }
         });
 }

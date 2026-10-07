@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_fs::FsExt;
 
 const APPROVED_ROOTS_FILE: &str = "approved-vault-roots.json";
@@ -155,9 +155,16 @@ fn sync_file(path: &Path) -> std::io::Result<()> {
 
 /// Flush a verified vault file and its containing directory after a write or
 /// rename. The renderer can request this only for an existing approved file.
+/// Runs blocking work on a worker to keep the webview responsive.
 #[tauri::command]
-pub fn vault_flush_file(app: AppHandle, path: String) -> Result<(), String> {
-    let canonical = require_approved_file_from(&approved_roots_path(&app)?, &path)?;
+pub async fn vault_flush_file(app: AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || flush_file(&app, &path))
+        .await
+        .map_err(|e| format!("vault_flush_file worker failed: {e}"))?
+}
+
+fn flush_file(app: &AppHandle, path: &str) -> Result<(), String> {
+    let canonical = require_approved_file_from(&approved_roots_path(app)?, path)?;
     sync_file(&canonical).map_err(|error| format!("cannot flush vault file: {error}"))?;
     sync_parent(canonical.parent().ok_or("vault file has no parent")?)
         .map_err(|error| format!("cannot flush vault folder: {error}"))
@@ -218,18 +225,22 @@ fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
 /// Restores access only to a vault the user selected previously. A newly picked
 /// folder is already in Tauri's runtime scope because plugin-dialog grants it;
 /// that native grant is the proof used to remember the folder for later runs.
+/// Runs blocking work on a worker to keep the webview responsive.
 #[tauri::command]
-pub fn vault_authorize(
-    app: AppHandle,
-    state: State<'_, VaultScopeState>,
-    root: String,
-) -> Result<(), String> {
+pub async fn vault_authorize(app: AppHandle, root: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || authorize_root(&app, &root))
+        .await
+        .map_err(|e| format!("vault_authorize worker failed: {e}"))?
+}
+
+fn authorize_root(app: &AppHandle, root: &str) -> Result<(), String> {
+    let state = app.state::<VaultScopeState>();
     let _guard = state
         .0
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let path = PathBuf::from(&root);
-    normalized_root(&root)?;
+    let path = PathBuf::from(root);
+    normalized_root(root)?;
     let canonical =
         fs::canonicalize(&path).map_err(|error| format!("vault root is unavailable: {error}"))?;
     if !canonical.is_dir() {
@@ -238,7 +249,7 @@ pub fn vault_authorize(
     let normalized = normalized_root(canonical.to_str().ok_or("vault root is not valid UTF-8")?)?;
     let fs_scope = app.fs_scope();
     let granted_by_dialog = fs_scope.is_allowed(&path);
-    let approval_path = approved_roots_path(&app)?;
+    let approval_path = approved_roots_path(app)?;
     let mut approved = load_for_authorization(&approval_path, granted_by_dialog)?;
 
     if !granted_by_dialog && !approved.roots.contains(&normalized) {
@@ -306,20 +317,24 @@ fn is_write_artifact_name(name: &str) -> bool {
 /// Give the fs plugin exact paths for Mesa's hidden write artifacts. The
 /// configured directory scope excludes dot-prefixed names, including backups.
 /// Only paths inside a previously approved vault can be added.
+/// Runs blocking work on a worker to keep the webview responsive.
 #[tauri::command]
-pub fn vault_authorize_artifacts(
-    app: AppHandle,
-    state: State<'_, VaultScopeState>,
-    paths: Vec<String>,
-) -> Result<(), String> {
+pub async fn vault_authorize_artifacts(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || authorize_artifacts(&app, paths))
+        .await
+        .map_err(|e| format!("vault_authorize_artifacts worker failed: {e}"))?
+}
+
+fn authorize_artifacts(app: &AppHandle, paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() || paths.len() > 256 {
         return Err("invalid write artifact batch".into());
     }
+    let state = app.state::<VaultScopeState>();
     let _guard = state
         .0
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let approved = load_approved_roots(&approved_roots_path(&app)?)?;
+    let approved = load_approved_roots(&approved_roots_path(app)?)?;
     if approved.roots.is_empty() {
         return Err("vault folder has not been selected in Mesa".into());
     }

@@ -11,6 +11,7 @@ use notify_debouncer_full::notify::{EventKind, RecommendedWatcher, RecursiveMode
 use notify_debouncer_full::{new_debouncer, Debouncer, RecommendedCache};
 use serde::Serialize;
 use tauri::ipc::Channel;
+use tauri::Manager;
 
 /// Debounce window. Matches the `delayMs: 120` the plugin watch path used, so
 /// external edits still surface within the same latency envelope.
@@ -118,14 +119,25 @@ pub struct WatchState {
 /// The debouncer callback runs on notify's own thread (never the UI thread);
 /// it filters + coalesces in Rust and does at most one `Channel::send` per
 /// debounce window.
+/// Runs blocking work on a worker to keep the webview responsive.
 #[tauri::command]
-pub fn vault_watch(
+pub async fn vault_watch(
     app: tauri::AppHandle,
-    state: tauri::State<'_, WatchState>,
     root: String,
     on_event: Channel<Vec<WatchEvent>>,
 ) -> Result<u32, String> {
-    let root_path = crate::vaultscope::require_approved(&app, &root)?;
+    tauri::async_runtime::spawn_blocking(move || start_watch(&app, &root, on_event))
+        .await
+        .map_err(|e| format!("vault_watch worker failed: {e}"))?
+}
+
+fn start_watch(
+    app: &tauri::AppHandle,
+    root: &str,
+    on_event: Channel<Vec<WatchEvent>>,
+) -> Result<u32, String> {
+    let state = app.state::<WatchState>();
+    let root_path = crate::vaultscope::require_approved(app, root)?;
     let root_for_cb = root_path.clone();
     let mut debouncer = new_debouncer(
         Duration::from_millis(WATCH_DEBOUNCE_MS),
@@ -167,11 +179,15 @@ pub fn vault_watch(
 
 /// Stop a watcher started by `vault_watch`. Idempotent: an unknown id is a
 /// no-op, so a double-unwatch (e.g. React strict-mode remount) is harmless.
+/// Drops the debouncer on a worker because shutdown joins its thread.
 #[tauri::command]
-pub fn vault_unwatch(state: tauri::State<'_, WatchState>, id: u32) {
-    if let Ok(mut map) = state.inner.lock() {
-        map.remove(&id);
-    }
+pub async fn vault_unwatch(app: tauri::AppHandle, id: u32) {
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<WatchState>();
+        let removed = state.inner.lock().ok().and_then(|mut map| map.remove(&id));
+        drop(removed); // joins the debouncer thread outside the lock
+    })
+    .await;
 }
 
 #[cfg(test)]

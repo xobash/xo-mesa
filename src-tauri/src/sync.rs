@@ -1321,8 +1321,15 @@ pub fn sync_start(
     Ok(())
 }
 
+/// Runs blocking work on a worker to keep the webview responsive.
 #[tauri::command]
-pub fn sync_stop() -> Result<(), String> {
+pub async fn sync_stop() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(stop_server)
+        .await
+        .map_err(|e| format!("sync_stop worker failed: {e}"))?
+}
+
+fn stop_server() -> Result<(), String> {
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(st) = guard.take() {
         st.running.store(false, Ordering::Relaxed);
@@ -1641,11 +1648,14 @@ fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
     Ok(id)
 }
 
+/// Loads or creates identity on a worker to keep disk I/O off the UI thread.
 /// This device's certificate fingerprint (lowercase hex SHA-256), for the UI to
 /// display so users can compare it out-of-band with a peer.
 #[tauri::command]
-pub fn sync_identity(app: tauri::AppHandle) -> Result<String, String> {
-    Ok(get_identity(&app)?.fingerprint)
+pub async fn sync_identity(app: tauri::AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(get_identity(&app)?.fingerprint))
+        .await
+        .map_err(|e| format!("sync_identity worker failed: {e}"))?
 }
 
 // Verify TLS signatures and a supplied leaf-certificate fingerprint.
@@ -3083,8 +3093,15 @@ pub fn sync_discovery_start(
     Ok(())
 }
 
+/// Runs blocking work on a worker to keep the webview responsive.
 #[tauri::command]
-pub fn sync_discovery_stop() -> Result<(), String> {
+pub async fn sync_discovery_stop() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(stop_discovery)
+        .await
+        .map_err(|e| format!("sync_discovery_stop worker failed: {e}"))?
+}
+
+fn stop_discovery() -> Result<(), String> {
     let mut guard = discovery_state().lock().map_err(|e| e.to_string())?;
     if let Some(mut st) = guard.take() {
         st.running.store(false, Ordering::Relaxed);

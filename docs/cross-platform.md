@@ -370,3 +370,17 @@ checks on **both macOS and Windows**:
 Do not mark a row passed from a source assertion, browser fixture or another OS's
 build. Signing/notarization and OS permission prompts are separate release checks.
 See `docs/native-acceptance.md` for the evidence boundary and record format.
+
+## Blocking native commands
+
+Vault authorization, artifact authorization, watcher setup/teardown, file flush,
+identity loading, and sync/discovery/activity shutdown run in blocking workers.
+Their IPC names and arguments are unchanged. Authorization retains its managed
+state lock inside the worker; removed watchers are dropped outside the registry
+lock. The synchronous exit callback calls the activity shutdown helper directly.
+The native command threading regression covers worker dispatch and exit cleanup.
+
+Watch and authorization requests can overlap; vault controllers must reject late
+watcher results. Server start commands retain their existing lifecycle. Automated
+checks do not prove responsiveness on a physical desktop; validate vault open and
+switch, Sync close, PDF save and activity port release on quit on each target.

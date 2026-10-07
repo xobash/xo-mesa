@@ -13,7 +13,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { useAppStore, getStore, type VaultUnavailableState } from "./store";
-import type { DeepResearchRunState } from "./store";
+import type { AppState, DeepResearchRunState } from "./store";
 import { IN_TAURI, DEMO_ROOT, fileKind, isEditableTextExt, isTextualVaultFile } from "./lib/vault";
 import { MediaView } from "./components/MediaView";
 import { CodeView } from "./components/CodeView";
@@ -1017,16 +1017,16 @@ function SortMenu() {
 function Welcome({
   onOpen,
   onRetry,
-  loading,
-  status,
   unavailableVault,
 }: {
   onOpen: () => void;
   onRetry: () => void;
-  loading: boolean;
-  status: string;
   unavailableVault: VaultUnavailableState | null;
 }) {
+  // Read transient open progress here, not in App: status and loading change
+  // throughout a vault open and import, and App re-renders the whole shell.
+  const loading = useAppStore((s) => s.loading);
+  const status = useAppStore((s) => s.status);
   const [connectOpen, setConnectOpen] = useState(false);
   const approvalNeeded = unavailableVault?.reason.includes(
     "vault folder has not been selected in Mesa",
@@ -1137,16 +1137,13 @@ export default function App() {
   const researchMode = useMemo(() => routeParams.has("research"), [routeParams]);
   const requestedVault = useMemo(() => routeParams.get("vault") ?? "", [routeParams]);
 
+  // App renders the whole shell, and its children are not memoized. Subscribe
+  // only to fields the shell itself renders. High-churn fields (status,
+  // loading, files, the Deep Research run, the active document) are read by
+  // the components that show them, or through store subscriptions in effects.
   const vaultPath = useAppStore((s) => s.vaultPath);
-  const vaultName = useAppStore((s) => s.vaultName);
   const unavailableVault = useAppStore((s) => s.unavailableVault);
-  const activePath = useAppStore((s) => s.activePath);
-  const openTabs = useAppStore((s) => s.openTabs);
-  const settings = useAppStore((s) => s.settings);
-  const files = useAppStore((s) => s.files);
   const graphFull = useAppStore((s) => s.graphFull);
-  const loading = useAppStore((s) => s.loading);
-  const status = useAppStore((s) => s.status);
   const openVault = useAppStore((s) => s.openVault);
   const theme = useAppStore((s) => s.theme);
   const animations = useAppStore((s) => s.settings.animations);
@@ -1164,14 +1161,12 @@ export default function App() {
   const syncEnabled = useAppStore((s) => s.settings.syncEnabled);
   const syncPeerCount = useAppStore((s) => s.settings.peers.length);
   const syncToken = useAppStore((s) => s.settings.syncToken);
-  const deepResearch = useAppStore((s) => s.deepResearch);
   const setSetting = useAppStore((s) => s.setSetting);
   const setCollapsedFolders = useAppStore((s) => s.setCollapsedFolders);
   const appRootRef = useRef<HTMLDivElement | null>(null);
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const vimPrefixRef = useRef<"g" | "window" | null>(null);
   const leftShiftDownRef = useRef(false);
-  const researchRelayLabelsRef = useRef<Set<string>>(new Set());
 
   useApplyTheme(theme);
 
@@ -1202,26 +1197,29 @@ export default function App() {
     if (researchMode || !IN_TAURI) return;
     let alive = true;
     let unlisten: (() => void) | null = null;
+    const relayLabels = new Set<string>();
     void listen<{ label?: string }>(DEEP_RESEARCH_STATE_REQUEST_EVENT, (event) => {
       const label = event.payload?.label;
       if (!label) return;
-      researchRelayLabelsRef.current.add(label);
+      relayLabels.add(label);
       void emitTo(label, DEEP_RESEARCH_STATE_EVENT, getStore().deepResearch).catch(() => undefined);
     }).then((off) => {
       if (alive) unlisten = off;
       else off();
     });
+    // Mirror run updates without re-rendering the shell for each progress patch.
+    const unsubscribe = useAppStore.subscribe((state, prev) => {
+      if (state.deepResearch === prev.deepResearch) return;
+      for (const label of relayLabels) {
+        void emitTo(label, DEEP_RESEARCH_STATE_EVENT, state.deepResearch).catch(() => undefined);
+      }
+    });
     return () => {
       alive = false;
       unlisten?.();
+      unsubscribe();
     };
   }, [researchMode]);
-  useEffect(() => {
-    if (researchMode || !IN_TAURI) return;
-    for (const label of researchRelayLabelsRef.current) {
-      void emitTo(label, DEEP_RESEARCH_STATE_EVENT, deepResearch).catch(() => undefined);
-    }
-  }, [deepResearch, researchMode]);
   useEffect(() => {
     document.documentElement.dataset.anim = animations ? "on" : "off";
   }, [animations]);
@@ -1230,41 +1228,36 @@ export default function App() {
   }, [hardwareAccel]);
 
   // Main owns live workspace context. Detached Pi surfaces receive it but never publish it back.
-  const liveAgentContext = useMemo(
-    () =>
-      buildAgentContext({
-        vaultName,
-        vaultPath,
-        activePath,
-        openTabs,
-        settings,
-      }),
-    [vaultName, vaultPath, activePath, openTabs, settings]
-  );
-  const liveAgentContextText = useMemo(
-    () => contextPrompt(liveAgentContext),
-    [liveAgentContext]
-  );
+  // Publish from a store subscription: navigation and settings changes must
+  // not re-render the whole shell just to rebuild this context.
   useEffect(() => {
     if (docMode || panelMode || agentMode || researchMode || !IN_TAURI) return;
-    const context = vaultPath ? liveAgentContextText : "";
-    void PI_CONTEXT_PUBLISH_QUEUE.enqueue(context, async () => {
-      await invoke("activity_set_context", { context });
-      if (vaultPath) await emit(AGENT_CONTEXT_EVENT, liveAgentContext);
-    }).catch((error) => {
-      if (!(error instanceof SupersededTaskError)) {
-        console.warn("[mesa] Pi context publish failed:", error);
-      }
-    });
-  }, [
-    docMode,
-    panelMode,
-    agentMode,
-    researchMode,
-    vaultPath,
-    liveAgentContext,
-    liveAgentContextText,
-  ]);
+    let published: Pick<AppState, "vaultName" | "vaultPath" | "activePath" | "openTabs" | "settings"> | null = null;
+    const publish = (state: AppState) => {
+      if (
+        published &&
+        published.vaultName === state.vaultName &&
+        published.vaultPath === state.vaultPath &&
+        published.activePath === state.activePath &&
+        published.openTabs === state.openTabs &&
+        published.settings === state.settings
+      ) return;
+      const { vaultName, vaultPath, activePath, openTabs, settings } = state;
+      published = { vaultName, vaultPath, activePath, openTabs, settings };
+      const liveAgentContext = buildAgentContext({ vaultName, vaultPath, activePath, openTabs, settings });
+      const context = vaultPath ? contextPrompt(liveAgentContext) : "";
+      void PI_CONTEXT_PUBLISH_QUEUE.enqueue(context, async () => {
+        await invoke("activity_set_context", { context });
+        if (vaultPath) await emit(AGENT_CONTEXT_EVENT, liveAgentContext);
+      }).catch((error) => {
+        if (!(error instanceof SupersededTaskError)) {
+          console.warn("[mesa] Pi context publish failed:", error);
+        }
+      });
+    };
+    publish(getStore());
+    return useAppStore.subscribe(publish);
+  }, [docMode, panelMode, agentMode, researchMode]);
 
   // First-run guided tour, once the vault is open.
   useEffect(() => {
@@ -1848,8 +1841,6 @@ export default function App() {
               : unavailableVault.root,
           )
         }
-        loading={loading}
-        status={status}
         unavailableVault={unavailableVault}
       />
     );
@@ -1860,7 +1851,7 @@ export default function App() {
   // Collapse / expand every folder in one click.
   const collapseAll = () => {
     const map: Record<string, boolean> = {};
-    for (const f of files) {
+    for (const f of getStore().files) {
       const parts = f.relPath.split("/");
       for (let i = 1; i < parts.length; i++) map[parts.slice(0, i).join("/")] = true;
     }
