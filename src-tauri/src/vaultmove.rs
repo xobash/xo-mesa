@@ -33,6 +33,9 @@ fn move_confined(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
+        if !from.starts_with(root) || !to.starts_with(root) {
+            return Err("rename path is outside the approved root".into());
+        }
         let _source = crate::sync_core::WindowsParentGuard::acquire(from, false)
             .map_err(|e| e.to_string())?;
         let _destination =

@@ -12,6 +12,7 @@ test('development, CI and release use the exact reviewed toolchains', () => {
     assert.match(workflow, /node-version-file: \.node-version/);
     for (const block of workflow.split('- uses: dtolnay/rust-toolchain').slice(1)) assert.match(block.split('- uses:')[0], /toolchain: 1\.96\.0/);
   }
+  assert.match(read('.github/workflows/parser-fuzz.yml'), /cargo \+1\.96\.0 install/);
   assert.match(read('.github/workflows/parser-fuzz.yml'), /cargo \+nightly-2026-10-06 fuzz/);
   assert.match(read('run.sh'), /nvm install "\$MESA_NODE_VERSION"/);
   assert.doesNotMatch(read('run.sh'), /nvm (install|use) --lts/);

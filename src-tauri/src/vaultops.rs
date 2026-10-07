@@ -410,7 +410,9 @@ mod tests {
         let artifact = root.join(".note.md.mesa-backup-123-ab.tmp");
         fs::write(&artifact, b"original").unwrap();
         assert!(recover_artifact(&root, ".note.md.mesa-backup-123-ab.tmp", true).is_err());
-        fs::File::open(&artifact)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&artifact)
             .unwrap()
             .set_times(
                 fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(120)),
@@ -425,7 +427,9 @@ mod tests {
         assert_eq!(fs::read(root.join("note.md")).unwrap(), b"original");
         assert!(!artifact.exists());
         fs::write(root.join(".note.md.mesa-rescue-123-ab.tmp"), b"rescue").unwrap();
-        fs::File::open(root.join(".note.md.mesa-rescue-123-ab.tmp"))
+        fs::OpenOptions::new()
+            .write(true)
+            .open(root.join(".note.md.mesa-rescue-123-ab.tmp"))
             .unwrap()
             .set_times(
                 fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(120)),
