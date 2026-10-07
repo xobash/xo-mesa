@@ -5,7 +5,7 @@ import { scrubStoredSyncSecrets } from './settings';
 interface SyncSecrets { syncToken: string; peers: Record<string, string> }
 export interface SyncSecretStore {
   read: () => Promise<string | null>;
-  write: (value: string) => Promise<void>;
+  write: (value: string) => Promise<string>;
 }
 
 export const nativeSyncSecretStore: SyncSecretStore = {
@@ -13,7 +13,7 @@ export const nativeSyncSecretStore: SyncSecretStore = {
     return invoke<string | null>('sync_secrets_read');
   },
   write: async value => {
-    await invoke('sync_secrets_write', { value });
+    return invoke<string>('sync_secrets_write', { value });
   },
 };
 
@@ -49,22 +49,22 @@ export async function hydrateSyncSecrets(
   store: SyncSecretStore = nativeSyncSecretStore,
   storage?: Pick<Storage, 'getItem' | 'setItem'>
 ): Promise<Settings> {
-  const saved = parseSecrets(await store.read());
+  let saved = parseSecrets(await store.read());
   const legacy = syncSecretsFromSettings(settings);
   const merged: SyncSecrets = {
     syncToken: saved.syncToken || legacy.syncToken,
     peers: { ...legacy.peers, ...saved.peers },
   };
   if (JSON.stringify(saved) !== JSON.stringify(merged)) {
-    await store.write(JSON.stringify(merged));
+    saved = parseSecrets(await store.write(JSON.stringify(merged)));
   }
   // Even an existing credential-store record requires a confirmed successful
   // read before removing the old settings copy.
   scrubStoredSyncSecrets(storage);
   return {
     ...settings,
-    syncToken: merged.syncToken,
-    peers: settings.peers.map(peer => ({ ...peer, token: merged.peers[peer.id] || undefined })),
+    syncToken: saved.syncToken,
+    peers: settings.peers.map(peer => ({ ...peer, token: saved.peers[peer.id] || undefined })),
   };
 }
 
@@ -72,7 +72,14 @@ export async function persistSyncSecrets(
   settings: Settings,
   store: SyncSecretStore = nativeSyncSecretStore,
   storage?: Pick<Storage, 'getItem' | 'setItem'>
-): Promise<void> {
-  await store.write(syncSecretSignature(settings));
+): Promise<Settings> {
+  const saved = parseSecrets(await store.write(syncSecretSignature(settings)));
   scrubStoredSyncSecrets(storage);
+  return { ...settings, syncToken: saved.syncToken, peers: settings.peers.map(peer => ({ ...peer, token: saved.peers[peer.id] || undefined })) };
+}
+
+/** Import an explicitly entered key once; subsequent network commands receive only its reference. */
+export async function nativeCredential(value: string): Promise<string> {
+  if (value.startsWith('credential:')) return value;
+  return invoke<string>('sync_secrets_import', { value });
 }

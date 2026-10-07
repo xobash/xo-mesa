@@ -89,11 +89,20 @@ back to `winget` for Node.js, Git, and Rust when Scoop cannot bootstrap in the
 current PowerShell environment. It executes `cargo --version` rather than
 trusting executable presence because Rustup can install a Cargo proxy before a
 default toolchain exists. If that check fails while Rustup is available,
-`run.cmd` configures `stable-msvc` and verifies Cargo again. It also verifies
+`run.cmd` configures the pinned `1.96.0-msvc` toolchain and verifies Cargo again. It also verifies
 Microsoft C++ Build Tools before launching Tauri, so setup stops at the missing
 dependency instead of failing later in `cargo metadata` or the Rust link step.
 The setup scripts also clear a stale Rust build cache if the project folder was
 moved or renamed.
+
+Development, ordinary CI, candidate builds and release tooling use Node
+`22.22.3` (`.node-version`) and Rust `1.96.0` (`rust-toolchain.toml`). The browser
+preview container uses the same Node version and an immutable image digest.
+Windows installs the exact official Node archive only after its reviewed
+architecture-specific SHA-256 matches. The wrappers verify versions before launch.
+Lockfiles plus fixed tools reduce drift; OS SDKs and system packages remain
+external inputs, so this does not establish bit-for-bit reproducibility.
+`npm run test:toolchains` checks those contracts.
 
 ## CI build matrix
 
@@ -194,7 +203,7 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   reads alone were ~2,400 round-trips per vault open on the reference vault and
   are now 20, with the search-corpus share of them running while the user is
   already typing.
-- **Sync server** (`src-tauri/src/sync.rs`) binds `0.0.0.0` and `[::]` and serves HTTPS
+- **Sync server** (`src-tauri/src/sync.rs`) binds the selected literal IP (loopback by default) and serves HTTPS
   through Hyper + Tokio-Rustls on Rustls 0.23. `tiny_http` remains only for
   plain loopback helper/test servers and must not regain its old TLS feature.
 - **File watching** prefers Mesa's native `vault_watch`
@@ -284,8 +293,7 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   controller keeps its white `DefaultBackgroundColor`, so a dark app flashes
   light until WebView2 boots and paints — on every launch, and again under the
   cursor on every tear-out. `index.html`'s `color-scheme: dark` only covers the
-  document canvas, not either native layer. The Pi browser harness and detached
-  Graph panel follow the OS window appearance.
+  document canvas, not either native layer. The detached Graph panel follows the OS window appearance.
 
 - **Identifier** `dev.xo.mesa` is fixed; it determines the per-OS app-data dir,
   so keep it stable across releases.

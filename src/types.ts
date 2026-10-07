@@ -83,6 +83,7 @@ export interface Settings {
   /** Announce/listen for nearby Mesa devices while sync is open or listening. */
   syncDiscovery: boolean;
   /** Sync key required to read/write this device's vault over sync. */
+  syncBindAddress: string;
   syncToken: string;
   /** How this device introduces itself to nearby devices (LocalSend-style
    *  "Toasty Lemon"; generated once at first launch, user-editable). */

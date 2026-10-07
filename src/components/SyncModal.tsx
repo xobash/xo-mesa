@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { refreshDiscoveredPeers } from "../lib/discoveryPeers";
 import { createSerialResource } from "../lib/serialResource";
 import { SyncConflictReview } from "./SyncConflictReview";
@@ -27,6 +28,23 @@ import { Modal } from "./Modal";
 import type { SyncPeer } from "../types";
 
 const ownDiscovery = createSerialResource();
+
+function SecretInput({ value, onCommit, label }: { value: string; onCommit: (value: string) => void; label: string }) {
+  const [draft, setDraft] = useState("");
+  const [issue, setIssue] = useState("");
+  return <div>
+    <input className="text-input sync-key-input" type="password" aria-label={label}
+      autoComplete="off" spellCheck={false}
+      placeholder={value ? "Key saved securely — enter to replace" : "Paste a generated sync key"}
+      value={draft} onChange={e => setDraft(e.target.value)}
+      onBlur={() => {
+        if (!draft) return;
+        if (!validSyncKey(draft) || draft.startsWith("credential:")) { setIssue("Enter a generated 64-character lowercase hex key."); return; }
+        onCommit(draft); setDraft(""); setIssue("");
+      }} />
+    {issue && <span role="alert">{issue}</span>}
+  </div>;
+}
 
 function Toggle({
   label,
@@ -162,15 +180,7 @@ function PeerRow({ peer }: { peer: SyncPeer }) {
               {showSecret ? "Hide per-device key" : "Per-device sync key"}
             </button>
             {showSecret && (
-              <input
-                className="text-input"
-                type="password"
-                placeholder="optional — overrides the sync key"
-                value={peer.token ?? ""}
-                onChange={(e) =>
-                  updatePeer(peer.id, { token: e.target.value || undefined })
-                }
-              />
+              <div><SecretInput value={peer.token ?? ""} label="Per-device sync key" onCommit={value => updatePeer(peer.id, { token: value })} /><button className="link-btn" onClick={() => updatePeer(peer.id, { token: undefined })}>Use shared key</button></div>
             )}
           </div>
           <button
@@ -434,7 +444,7 @@ export function SyncModal() {
 
   useEffect(() => {
     if (!IN_TAURI) return;
-    const shouldDiscover = settings.syncEnabled && settings.syncDiscovery && (open || listening);
+    const shouldDiscover = settings.syncEnabled && settings.syncDiscovery && open;
     if (!shouldDiscover) return;
     let alive = true;
     const release = ownDiscovery(async () => {
@@ -468,8 +478,8 @@ export function SyncModal() {
   }, [open]);
 
   const myCode = useMemo(
-    () => (localIp ? encodePairing(localIp, settings.syncPort) : null),
-    [localIp, settings.syncPort]
+    () => { const address = settings.syncBindAddress === "0.0.0.0" ? localIp : settings.syncBindAddress; return address ? encodePairing(address, settings.syncPort) : null; },
+    [localIp, settings.syncPort, settings.syncBindAddress]
   );
   const hasKey = validSyncKey(settings.syncToken);
   const canReceive = settings.syncEnabled && hasKey;
@@ -492,6 +502,10 @@ export function SyncModal() {
         .sort((a, b) => Number(b.listening) - Number(a.listening) || a.name.localeCompare(b.name)),
     [nearby, peers]
   );
+
+  useEffect(() => {
+    if (!open && settings.syncDiscovery) setSetting("syncDiscovery", false);
+  }, [open, settings.syncDiscovery, setSetting]);
 
   if (!open) return null;
 
@@ -560,15 +574,14 @@ export function SyncModal() {
                   secure transfer. Use a generated 64-character lowercase hex key on each device.
                 </div>
               </div>
-              <input
-                className="text-input sync-key-input"
-                type="password"
-                aria-label="Sync key"
-                placeholder="sync key"
-                value={settings.syncToken}
-                onChange={(e) => setSetting("syncToken", e.target.value)}
-              />
-              <button type="button" className="link-btn" onClick={() => setSetting("syncToken", generateSyncKey())}>Generate key</button>
+              <SecretInput value={settings.syncToken} label="Sync key" onCommit={value => setSetting("syncToken", value)} />
+              <button type="button" className="link-btn" onClick={() => {
+                if (!IN_TAURI) { setSetting("syncToken", generateSyncKey()); return; }
+                void invoke<string>("sync_secrets_generate").then(key => setSetting("syncToken", key)).catch(error => useAppStore.setState({ syncStatus: String(error) }));
+              }}>Generate key</button>
+              {IN_TAURI && settings.syncToken.startsWith("credential:") && <button type="button" className="link-btn" onClick={() => {
+                void invoke("sync_secrets_show", { reference: settings.syncToken }).catch(error => useAppStore.setState({ syncStatus: String(error) }));
+              }}>Show key in native dialog</button>}
             </div>
 
             {/* Receive — LocalSend-style hero */}
@@ -577,8 +590,8 @@ export function SyncModal() {
                 <div className="setting-meta">
                   <div className="setting-name">Receive</div>
                   <div className="setting-desc">
-                    Be visible to your devices while on. Others pick this device
-                    or enter the code.
+                    Accept authenticated connections on the selected address.
+                    Nearby discovery is a separate, temporary choice.
                   </div>
                 </div>
                 <Toggle
@@ -588,6 +601,12 @@ export function SyncModal() {
                   onChange={() => void toggleListen()}
                 />
               </div>
+              <label className="setting-desc">Listen address
+                <input className="text-input" aria-label="Sync listen address"
+                  value={settings.syncBindAddress}
+                  onChange={e => setSetting("syncBindAddress", e.target.value)} />
+                Use this device’s LAN or Tailscale IP. Loopback is the default; 0.0.0.0 explicitly allows all IPv4 interfaces.
+              </label>
               <div className="sync-device-name">
                 <span className="sync-fingerprint-label">
                   Appears to other devices as
@@ -632,7 +651,7 @@ export function SyncModal() {
               <div className="sync-section-title">Nearby devices</div>
               {!settings.syncDiscovery ? (
                 <div className="setting-desc">
-                  Turn on LAN discovery in Advanced to find nearby devices.
+                  Turn on LAN discovery in Advanced for this open dialog. It broadcasts this device’s name and certificate fingerprint on the local network and stops when the dialog closes.
                 </div>
               ) : discoveredPeers.length === 0 ? (
                 <div className="setting-desc">

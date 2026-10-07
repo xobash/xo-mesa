@@ -192,13 +192,13 @@ export function recordTextRevisionAsync(
   content: string,
   now = Date.now()
 ): Promise<TextRevision | null> {
-  if (!root || !relPath || !content) return Promise.resolve(null);
+  if (!root || !relPath) return Promise.resolve(null);
   if (typeof indexedDB === "undefined") return Promise.resolve(recordTextRevision(root, relPath, content, now));
   return mutateDatabase((entries) => {
     const last = entries
       .filter((entry) => entry.root === root && entry.relPath === relPath)
       .sort(compareNewestFirst)[0];
-    if (last?.content === content) return { value: null, entries };
+    if (last?.content === content) return { value: last, entries };
     const revision: TextRevision = { id: revisionId(now), root, relPath, savedAt: now, content, order: nextOrder(entries) };
     return { value: revision, entries: [revision, ...entries] };
   }).catch(() => null);
@@ -256,10 +256,10 @@ export function recordTextRevision(
   content: string,
   now = Date.now()
 ): TextRevision | null {
-  if (!root || !relPath || !content) return null;
+  if (!root || !relPath) return null;
   const entries = readAll();
   const last = entries.filter((entry) => entry.root === root && entry.relPath === relPath).sort(compareNewestFirst)[0];
-  if (last?.content === content) return null;
+  if (last?.content === content) return last;
   const revision: TextRevision = {
     id: revisionId(now),
     root,

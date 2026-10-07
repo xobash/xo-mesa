@@ -5,6 +5,7 @@ import {
   listTextRevisions,
   migrateTextRevisions,
   recordTextRevision,
+  recordTextRevisionAsync,
 } from "./textRevisionHistory";
 
 afterEach(() => {
@@ -49,9 +50,16 @@ describe("text revision history", () => {
   });
 
   it("does not store duplicate consecutive content", () => {
-    recordTextRevision("/vault", "Note.md", "same", 1);
-    recordTextRevision("/vault", "Note.md", "same", 2);
+    const first = recordTextRevision("/vault", "Note.md", "same", 1);
+    expect(recordTextRevision("/vault", "Note.md", "same", 2)).toEqual(first);
 
+    expect(listTextRevisions("/vault", "Note.md")).toHaveLength(1);
+  });
+
+  it("preserves an empty baseline and reports an existing revision as available", async () => {
+    const empty = await recordTextRevisionAsync("/vault", "Note.md", "", 1);
+    expect(empty?.content).toBe("");
+    expect(await recordTextRevisionAsync("/vault", "Note.md", "", 2)).toEqual(empty);
     expect(listTextRevisions("/vault", "Note.md")).toHaveLength(1);
   });
 

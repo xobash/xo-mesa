@@ -15,4 +15,12 @@ export default tseslint.config(
       "no-control-regex": "error",
     },
   },
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: { globals: Object.fromEntries([
+      "process", "console", "Buffer", "URL", "TextEncoder", "TextDecoder", "AbortController",
+      "Uint8Array", "ArrayBuffer", "setTimeout", "clearTimeout", "performance", "fetch", "crypto", "window", "document"
+    ].map(name => [name, "readonly"])) },
+    rules: { "no-undef": "error", "no-unreachable": "error", "no-constant-condition": "error", "no-dupe-keys": "error", "no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "none" }], "@typescript-eslint/no-unused-vars": "off" },
+  },
 );

@@ -30,9 +30,25 @@ describe("native filesystem and remote-browser scopes", () => {
 describe("main workspace authority", () => {
   const grants = (label: string) => capabilities.filter(c => c.windows?.some(p => matchesWindow(p, label))).flatMap(c => c.permissions ?? []).filter(p => typeof p === "string");
   it("keeps destructive file, credential and sync operations out of document/panel windows", () => {
-    for (const permission of ["fs:allow-remove", "fs:allow-rename", "allow-sync-run", "allow-sync-start", "allow-sync-secrets-read", "allow-vault-apply-research"]) {
+    for (const permission of ["allow-vault-move-to-recovery", "allow-vault-restore-recovery", "allow-sync-run", "allow-sync-start", "allow-sync-secrets-read", "allow-vault-apply-research"]) {
       expect(grants("main")).toContain(permission);
       for (const label of ["doc-1", "panel-graph", "panel-preview"]) expect(grants(label)).not.toContain(permission);
     }
   });
+});
+
+describe("privileged application script policy", () => {
+  it("permits no arbitrary inline script or remote script source", () => {
+    const policy = tauriConfig.app.security.csp.split(';').find(d => d.trim().startsWith('script-src'))!;
+    expect(policy).not.toContain("'unsafe-inline'");
+    expect(policy).not.toContain('https:');
+    expect(policy).toContain("'sha256-");
+  });
+});
+
+it("denies every generic mutation and file-open route in every app window", () => {
+  for (const capability of capabilities) for (const permission of capability.permissions ?? []) {
+    if (typeof permission !== "string") continue;
+    expect(permission).not.toMatch(/^fs:(default|allow-(write.*|mkdir|remove|rename|copy-file|open|create|truncate))$/);
+  }
 });

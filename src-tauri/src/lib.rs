@@ -4,12 +4,13 @@ mod activity;
 mod bearer;
 mod browse;
 mod diagnostics;
-mod harness;
 mod secrets;
 mod sync;
 mod sync_core;
+mod sync_policy;
 mod terminal;
 mod vaultmove;
+mod vaultops;
 mod vaultread;
 mod vaultscan;
 mod vaultscope;
@@ -150,12 +151,6 @@ pub fn run() {
             activity::activity_stop,
             browse::browse_fetch,
             diagnostics::diagnostics_process_tree,
-            harness::harness_navigate,
-            harness::harness_bounds,
-            harness::harness_visibility,
-            harness::harness_history,
-            harness::harness_status,
-            harness::harness_nudge,
             terminal::terminal_start,
             terminal::terminal_attach,
             terminal::terminal_snapshot,
@@ -164,6 +159,7 @@ pub fn run() {
             terminal::terminal_stop,
             vaultscan::vault_scan,
             vaultread::vault_read_text,
+            vaultread::vault_read_bytes,
             vaultread::vault_text_fingerprints,
             vaultmove::vault_rename_no_replace,
             vaultmove::vault_purge_recovery,
@@ -171,6 +167,14 @@ pub fn run() {
             vaultscope::vault_authorize_artifacts,
             vaultscope::vault_flush_file,
             vaultwrite::vault_write_atomic,
+            vaultops::vault_create_directory,
+            vaultops::vault_move_to_recovery,
+            vaultops::vault_restore_recovery,
+            vaultops::vault_list_recovery,
+            vaultops::vault_recover_artifact,
+            secrets::sync_secrets_import,
+            secrets::sync_secrets_generate,
+            secrets::sync_secrets_show,
             vaulttransaction::vault_apply_research,
             quit_guard_arm,
             quit_guard_disarm,

@@ -52,8 +52,11 @@ Mesa is in early development.
 
 ## Try Mesa
 
-Start with sample files or a backup of your vault. Until signed installers are
-available, use a development build. Install Git first; the setup wrapper handles
+Signed end-user installers are pending. See [verified installation](docs/release.md#release-verification) for the release requirements.
+
+The following commands are **developer-only setup** from mutable source. Review
+the checkout before running it; setup can install tools and request system permission.
+Use sample files or a backup. Install Git first; the setup wrapper handles
 supported missing build tools. First builds can take several minutes and may
 need system permission. Later starts reuse an unchanged build.
 

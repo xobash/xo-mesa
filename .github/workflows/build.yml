@@ -17,14 +17,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - run: npm run test:assets
+      - run: npm run audit:assets
+      - run: npm run test:toolchains
+      - run: npm run test:documents
       - run: npm run test:release
       - run: npm run test:bootstrap
       - run: npm run test:index
@@ -32,6 +37,7 @@ jobs:
       - run: npm run test:notices
       - run: npm run build
       - run: npm run audit:public
+      - run: npm run audit:independent
       # Registry-backed advisory gate. Kept separate from the offline
       # `supplyChainContract.test.ts` pins, which catch a bad lockfile but
       # cannot see an advisory published after the pin was written.
@@ -56,6 +62,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: 1.96.0
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -84,13 +91,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
       - run: cargo install cargo-audit --version 0.22.2 --locked
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version-file: .node-version
       - run: node scripts/native-advisory-check.mjs
       - run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
       - run: node scripts/third-party-notices.mjs --check-native
@@ -115,9 +124,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: npm
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri

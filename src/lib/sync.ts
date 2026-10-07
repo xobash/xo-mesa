@@ -1,3 +1,4 @@
+import { nativeCredential } from "./syncSecrets";
 import { invoke } from "@tauri-apps/api/core";
 import { IN_TAURI } from "./vault";
 import { normalizeFingerprint } from "./syncProtocol";
@@ -25,9 +26,11 @@ export interface ManifestEntry {
 export async function startSyncServer(
   port: number,
   token: string,
-  vault: string
+  vault: string,
+  bindAddress = "127.0.0.1"
 ): Promise<void> {
-  await invoke("sync_start", { port, token, vault });
+  token = await nativeCredential(token);
+  await invoke("sync_start", { port, token, vault, bindAddress });
 }
 export async function stopSyncServer(): Promise<void> {
   await invoke("sync_stop");
@@ -183,6 +186,7 @@ export async function fetchRemoteVaultInfo(
   token: string,
   pin?: string | null
 ): Promise<RemoteVaultInfo> {
+  token = await nativeCredential(token);
   const base = normalizePeer(peer, true);
   const manifest = await invoke<RemoteManifest>("sync_fetch_manifest", {
     base,
@@ -206,6 +210,7 @@ export async function syncWithPeer(
   retry?: string[] | null,
   peerName?: string | null
 ): Promise<SyncReport> {
+  token = await nativeCredential(token);
   const base = normalizePeer(peer, true);
   return await invoke<SyncReport>("sync_run", {
     root,

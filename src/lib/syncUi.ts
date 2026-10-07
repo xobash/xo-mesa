@@ -1,3 +1,4 @@
+import { nativeCredential } from "./syncSecrets";
 import { invoke } from "@tauri-apps/api/core";
 import { IN_TAURI } from "./vault";
 import { normalizeFingerprint } from "./syncProtocol";
@@ -19,6 +20,7 @@ export async function localSyncAddr(): Promise<string | null> { if (!IN_TAURI) r
 export async function syncIdentity(): Promise<string | null> { if (!IN_TAURI) return null; try { return await invoke<string>("sync_identity"); } catch { return null; } }
 export interface RemoteVaultInfo { files: number; bytes: number; fingerprint: string; }
 export async function fetchRemoteVaultInfo(peer: string, token: string, pin?: string | null): Promise<RemoteVaultInfo> {
+  token = await nativeCredential(token);
   const trimmed = peer.trim(), base = (/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`).replace(/\/+$/, "");
   const manifest = await invoke<{ fingerprint: string; files: { size: number }[] }>("sync_fetch_manifest", { base, token, pin: pin ?? null });
   return { files: manifest.files.length, bytes: manifest.files.reduce((sum, file) => sum + (file.size || 0), 0), fingerprint: manifest.fingerprint };

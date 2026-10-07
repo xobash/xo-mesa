@@ -183,7 +183,36 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: async () => null }));
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
-  invoke: async () => {},
+  invoke: async (command: string, args: { path: string; root: string; trashRelPath: string; targetRelPath: string; restore: boolean }) => {
+    const fs = await import("@tauri-apps/plugin-fs");
+    if (command === "vault_list_recovery") {
+      const result: Array<{trashRelPath:string; originalRelPath:string; name:string; isDirectory:boolean}> = [];
+      for (const [dir,entries] of directories) {
+        if (!dir.includes('/.mesa-trash')) continue;
+        for (const entry of entries) {
+          const path = `${dir}/${entry.name}`; const parts = path.slice(ROOT.length+1).split('/'); const index=parts.indexOf('.mesa-trash');
+          let original: string;
+          if (index===0) { if(parts.length<3) continue; original=parts.slice(2).join('/'); }
+          else { if(parts.length!==index+2) continue; original=[...parts.slice(0,index),entry.name.replace(/^\d+-remote--/,'').replace(/^\d+-/,'')].join('/'); }
+          if(result.some(item=>item.isDirectory && path.startsWith(`${ROOT}/${item.trashRelPath}/`))) continue;
+          result.push({trashRelPath:path.slice(ROOT.length+1),originalRelPath:original,name:original.split('/').pop()!,isDirectory:entry.isDirectory});
+        }
+      }
+      return result.sort((a,b)=>a.originalRelPath.localeCompare(b.originalRelPath));
+    }
+    if (command === "vault_create_directory") return fs.mkdir(args.path, { recursive: true });
+    if (command === "vault_restore_recovery") return fs.rename(`${args.root}/${args.trashRelPath}`, `${args.root}/${args.targetRelPath}`);
+    if (command === "vault_recover_artifact") {
+      if (args.restore) {
+        const name = args.path.split('/').pop()!;
+        const target = args.path.slice(0, args.path.lastIndexOf('/') + 1) + name.slice(1).split('.mesa-')[0];
+        // Native create-only publication has no renderer file-open fallback.
+        if (createNewFailures.has(target)) throw new Error('native staging failed');
+        await fs.writeFile(target, await fs.readFile(args.path), { createNew: true });
+      }
+      return fs.remove(args.path);
+    }
+  },
 }));
 
 (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
@@ -497,11 +526,10 @@ describe("recoverWriteArtifacts traversal", () => {
     expect(files.has(backup)).toBe(true);
     expect(fallbackCreateCalls).not.toContain(target);
     const rescues = recoveryArtifactPaths("raced.md", "rescue");
-    expect(rescues).toHaveLength(1);
-    expect(files.get(rescues[0])).toEqual(new Uint8Array([7, 8, 9]));
+    expect(rescues).toHaveLength(0);
   });
 
-  it("keeps recoverable bytes when the create-new fallback is corrupted", async () => {
+  it("keeps original recovery bytes when native staging fails", async () => {
     const now = Date.now();
     const backup = addFile(
       ROOT,
@@ -515,15 +543,14 @@ describe("recoverWriteArtifacts traversal", () => {
     const result = await recoverWriteArtifacts(ROOT);
 
     expect(result).toEqual({ restored: [], removed: [] });
-    expect(fallbackCreateCalls).toContain(target);
-    expect(files.get(target)).toEqual(new Uint8Array([0, 0]));
+    expect(fallbackCreateCalls).not.toContain(target);
+    expect(files.has(target)).toBe(false);
     expect(files.has(backup)).toBe(true);
     const rescues = recoveryArtifactPaths("corrupt.md", "rescue");
-    expect(rescues).toHaveLength(1);
-    expect(files.get(rescues[0])).toEqual(new Uint8Array([8, 9]));
+    expect(rescues).toHaveLength(0);
   });
 
-  it("does not overwrite a target created during the create-new fallback", async () => {
+  it("does not open a writable renderer handle after native staging failure", async () => {
     const now = Date.now();
     const backup = addFile(
       ROOT,
@@ -537,12 +564,11 @@ describe("recoverWriteArtifacts traversal", () => {
     const result = await recoverWriteArtifacts(ROOT);
 
     expect(result).toEqual({ restored: [], removed: [] });
-    expect(fallbackCreateCalls).toContain(target);
-    expect(files.get(target)).toEqual(new Uint8Array([6, 7]));
+    expect(fallbackCreateCalls).not.toContain(target);
+    expect(files.has(target)).toBe(false);
     expect(files.has(backup)).toBe(true);
     const rescues = recoveryArtifactPaths("fallback-race.md", "rescue");
-    expect(rescues).toHaveLength(1);
-    expect(files.get(rescues[0])).toEqual(new Uint8Array([2, 3]));
+    expect(rescues).toHaveLength(0);
   });
 
   it("stops scheduling listings and applies no partial recovery plan", async () => {

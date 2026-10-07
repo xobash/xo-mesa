@@ -10,22 +10,21 @@ fonts, media, nested frames, and objects. Local styles and scoped asset images
 remain available; local stylesheet links are hydrated without loading scripts.
 Referrer policy is always `no-referrer`.
 
-**Enable active content** asks for confirmation that scripts and remote
-resources may contact websites and transmit data already in this document.
-Consent applies only to this open viewer, vault generation, file path, and
-loaded version. Navigation, file changes, reopening, or disabling active
-content returns to offline rendering. Active frames retain an opaque origin:
-`allow-same-origin` is never granted. Mesa's parent CSP remains in effect, so
-some remote or module scripts may still be blocked. Consent does not grant
-Tauri commands or read access to Mesa's asset origin. Detached HTML windows use
-the same viewer and policy. Hover previews never enable active content.
+**Enable online resources** asks for confirmation before remote resources may
+contact websites and reveal data already in the document. Consent applies only
+to this open viewer, vault generation, file path and loaded version. A version
+change, reopening or disabling resources restores offline rendering.
+Scripts remain stripped and blocked in both modes. Forms, frame navigation,
+popups, origin access and native commands stay unavailable. The parent app CSP
+can additionally block resources such as external styles. Detached HTML uses
+the same policy; hover previews never enable online resources.
 
 Both the Pi browser's Archive action and accepted Deep Research sources use
 `src/lib/webArchive.ts`. Capture is an explicit network operation. It writes
 through verified vault persistence under `Web Archives/`, preserves a
-saved-from marker and original-URL base for opt-in interactive rendering, and
+saved-from marker and original-URL metadata, and
 writes a source-link record when fetching fails. The offline renderer removes
-that base and disables the link until active content is approved. Capture
+that base and disables navigation links in both modes. Capture
 metadata does not grant networking permission on reopen.
 
 The shared rendering boundary is `src/lib/html.ts`. Preview cards decline

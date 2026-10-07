@@ -26,12 +26,14 @@ On macOS and Linux, sync traverses vault directories with no-follow directory
 handles. File reads, manifest hashing, incoming journal moves, conflict-copy
 probes, staging, and publication use the held parent handle. A
 directory replaced after validation cannot redirect those operations through
-a new symlink. Windows still uses path-based transfer checks; native reparse
-point and ancestor-replacement acceptance remains open there.
+a new symlink. Windows holds non-reparse ancestor handles without write/delete sharing through
+reads, journal moves, staging and publication. That blocks ancestor renames and
+junction retargeting while the operation runs. Physical Windows hostile-race
+acceptance remains required; Unix uses handle-relative operations.
 
 The activity bridge accepts at most 1 MiB of metadata per request. File GET
 responses use bounded streaming with backpressure; file PUTs remain capped at
-1 GiB and are staged with bounded chunks and final byte/hash verification.
+64 MiB by default and are staged with bounded chunks and final byte/hash verification.
 Missing nested folders are created one component at a time under a held vault
 directory on macOS and Linux. A rejected path or oversized request
 does not modify the vault.
@@ -40,7 +42,7 @@ does not modify the vault.
 
 Receive serves the currently open vault. Switching vaults stops the old
 listener before the new vault becomes active, then starts a listener for the
-new vault if Receive was on. Changing the key or port while receiving also
+new vault if Receive was on. Changing the key, port or bind address while receiving also
 restarts the listener with the new setting.
 Conflict copies use the saved peer name when available; an address-safe label
 is used for unnamed peers.
@@ -93,6 +95,12 @@ probes or failed authentications from one IPv4 address or IPv6 /64 pause
 requests from that source for one minute. SPAKE2 prevents passive offline
 key guessing; active guesses remain subject to this limit.
 
+Stored keys never return to the desktop renderer. It holds credential references;
+native sync resolves the selected reference and performs authentication. Generate
+key uses native randomness. Show key opens a native dialog for manual pairing.
+Explicitly typed keys and older settings cross JS during entry or migration;
+OS keyring storage does not protect against a compromised OS or trusted Pi.
+
 The key and optional peer keys are saved in the operating system's credential store on
 desktop (Keychain on macOS, Credential Manager on Windows, Secret Service on
 Linux). Mesa moves keys from older browser settings only after the credential
@@ -124,12 +132,22 @@ one run cannot clear or receive the cancellation state of another run.
 listening, stops LAN discovery, blocks manual sync, and suppresses scheduled
 sync even if saved peers exist.
 
-**Discovery is metadata-only.** While the Sync menu is open or listening is on,
-Mesa announces its device name — a LocalSend-style name like "Toasty Lemon",
+**Defaults and exposure.** Sync and discovery start off. Receiving binds only
+to `127.0.0.1` by default. Choose a specific LAN or Tailscale IP in Advanced
+to receive from other devices, or explicitly choose `0.0.0.0` / `::` to listen
+on every IPv4 / IPv6 interface. Invalid addresses fail without a broader fallback.
+Changing networks can make a chosen address unavailable; select the new address
+rather than silently expanding exposure.
+
+**Discovery is temporary and opt-in.** Turn on LAN discovery in the open Sync
+menu to announce its device name — a LocalSend-style name like "Toasty Lemon",
 minted once at first launch (`lib/deviceName.ts`, persisted as
 `settings.syncDeviceName`) and editable in the Receive section, so multiple
 devices are distinguishable at a glance — plus its LAN address, port, listening status, and
-certificate fingerprint over UDP broadcast (port 47887). It never broadcasts the
+certificate fingerprint over UDP broadcast (port 47887). The fingerprint is
+a stable LAN identifier; device names and addresses can also identify you.
+Closing the menu stops discovery and clears consent; restart never restores it.
+Merely opening Sync or enabling Receive does not broadcast. It never broadcasts the
 vault path, sync key, or file contents. A discovery packet is unauthenticated,
 so the advertised fingerprint is a convenience for first contact — verify it
 out-of-band for certainty.
@@ -139,9 +157,9 @@ out-of-band for certainty.
 The Sync menu shows:
 
 1. Turn on **Sync**.
-2. Select **Generate key** and copy the key to each device.
-3. Turn on **Receive**.
-4. Add nearby devices when they appear, or share the short pairing code.
+2. Select **Generate key**, then **Show key**, and enter it on each device.
+3. Choose a receiving bind address in Advanced, then turn on **Receive**.
+4. Opt into temporary LAN discovery to find nearby devices, or add a device manually.
 5. Compare the device fingerprints across both machines before trusting a new device.
 
 Port, manual addresses, LAN discovery, and scheduled sync remain under the
@@ -259,7 +277,7 @@ A vault with hundreds or thousands of files syncs comfortably:
   checks the declared or manifest size and the expected hash before publication.
   Interrupted transfers remove their partial sibling; existing files remain
   unchanged. If sent bytes differ from the upload hash, the receiver rejects
-  them and Mesa can use the existing retry. The PUT limit remains 1 GiB.
+  them and Mesa can use the existing retry. The configured file limit applies before every outgoing transfer.
 - **Fresh, streamed, parallel hashing.** Every manifest reads every syncable file
   in 64 KiB chunks with streaming SHA-256. Size, timestamps, platform change
   metadata and watcher events are not proof of unchanged bytes, especially on
@@ -385,3 +403,52 @@ Native sync takes a shared vault-access lease. A reviewed research apply
 holds exclusive access through publication and recovery, so Mesa does not
 sync a partially applied proposal. After a crash, recovery runs before a
 new transfer. External applications are outside this coordination boundary.
+
+## Transfer budgets
+
+The default per-file transfer cap is 64 MiB. Set `MESA_SYNC_MAX_FILE_MIB` before
+starting Mesa to explicitly allow an integer from 1 to 256 MiB. Invalid values
+stop listener startup and transfers. Larger files remain in the vault and are
+reported as failed sync items; they are not truncated or deleted.
+
+Incoming PUTs reserve their declared length, or the full file cap for unknown
+lengths. At most 256 MiB is admitted concurrently. Each IPv4 address or IPv6 /64
+can admit at most 1 GiB per hour. Failed attempts retain their hourly charge;
+concurrent reservations release on success, failure and cancellation. Unknown
+lengths are charged conservatively at the cap. Excess admission returns 429;
+files over the cap return 413 before staging. Both idle and total body timeouts
+apply. These are source-network budgets, not authenticated per-device identity
+quotas; devices behind one address share a budget. Restarting Mesa resets the
+in-memory window. A shared-key holder still has access to the served vault.
+
+## Protocol specification (version 3)
+
+| Phase or property | Required behavior |
+| --- | --- |
+| Pairing | Share a generated 256-bit key through an operator-selected trusted channel; discovery is an untrusted locator, not authority. |
+| First contact | Observe the leaf TLS certificate, exchange fresh SPAKE2/Ed25519 messages and a fresh nonce, verify the session HMAC bound to that nonce and certificate fingerprint, then pin the certificate. |
+| Authentication | Protected requests carry HMAC-SHA-256 of the shared key and `mesa-sync-cert-v1:` plus server fingerprint over pinned TLS. The raw shared key never travels on the wire. TLS signature verification proves certificate private-key possession. |
+| Replay | Fresh SPAKE2 sessions/nonces prevent replay of identity proofs. The certificate-bound bearer is reusable by design until key or certificate replacement; it is not a per-request replay-resistant credential. |
+| Downgrade | Manifests must advertise journal version 2 and protocol version 3; missing/unsupported journal exchange fails before file transfers. No plaintext or legacy authentication fallback. |
+| Peer identity | The pinned certificate fingerprint identifies the remote server. Incoming journal fingerprint headers associate records; they are not TLS client authentication. Any shared-key holder can send journal data. |
+| Certificate replacement | A known pin mismatch stops at the TLS handshake before credentials or bodies. Re-pair only after operator fingerprint verification; never silently trust a new certificate. |
+| Rotation | Replace the shared key on every remaining device. Running Receive restarts with the new key. There is no automatic key-distribution or certificate-rotation protocol. |
+| Revocation | Remove the peer to retire its journal participants, then rotate the shared key to revoke its network authority. Retirement alone is not credential revocation. |
+| Journal ordering | Operation identity is device plus numeric sequence; deduplicate IDs, validate operation shape and paths, order per-device sequences numerically. Compact only after every known participant acknowledges; retain offline participants. |
+| Conflict semantics | Apply delete/rename only against matching prior size/hash; retain recovery bytes. One-sided edits use the common version; divergent edits retain numbered conflict copies. Cancellation or incomplete scans do not advance a full baseline. |
+| Transport/resource limits | No redirects or system proxy on sync clients; bounded TLS admission, manifest/journal bodies, streams, transfer slots and byte budgets. |
+
+This specifies implementation behavior and review scope. It is not an independent
+cryptographic review. See the tests in `sync_runtime_tests.rs` and `sync_tests.rs` for proof,
+pinning, malformed-journal, ordering, conflict, retirement and transfer failures.
+
+## Native review boundaries
+
+`sync.rs` coordinates transfers, cancellation, events and discovery.
+`sync_server.rs` owns HTTPS request admission and listener lifecycle;
+`sync_identity.rs` owns private TLS identity persistence. `sync_core.rs` owns
+manifest/hash/diff contracts, `sync_journal.rs` durable operation reconciliation,
+`sync_paths.rs` lexical policy, `sync_wire.rs` serialization and `sync_fs.rs`
+held-parent filesystem primitives. The same production functions are exercised
+by `sync_tests.rs`, `sync_runtime_tests.rs` and the isolated parser fuzz target.
+Keep cross-module invariants in this document and executable tests.

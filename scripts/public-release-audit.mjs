@@ -35,15 +35,22 @@ for (const path of approved) {
   if (!trackedSet.has(path)) failures.push(`${path}: approved path is missing`);
 }
 
-// The native crate root declares required source modules. An allowlist that
-// omits one must fail before publication, even when the local checkout builds.
-const nativeRoot = "src-tauri/src/lib.rs";
-if (trackedSet.has(nativeRoot)) {
-  const source = git(["show", `:${nativeRoot}`]);
-  for (const match of source.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
-    const base = `src-tauri/src/${match[1]}`;
-    if (!trackedSet.has(`${base}.rs`) && !trackedSet.has(`${base}/mod.rs`)) {
-      failures.push(`${nativeRoot}: required native module ${match[1]} is missing`);
+// Check every external native module, including #[path] overrides in test/fuzz crates.
+for (const file of tracked.filter(file => file.startsWith("src-tauri/") && file.endsWith(".rs"))) {
+  const source = git(["show", `:${file}`]);
+  for (const match of source.matchAll(/^\s*(?:#\[path\s*=\s*"([^"]+)"\]\s*)?(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
+    const dir = path.posix.dirname(file);
+    const stem = path.posix.basename(file, ".rs");
+    const base = path.posix.join(dir, ["lib", "main", "mod"].includes(stem) ? "" : stem, match[2]);
+    const candidates = match[1] ? [path.posix.normalize(path.posix.join(dir, match[1]))] : [`${base}.rs`, `${base}/mod.rs`];
+    if (!candidates.some(candidate => trackedSet.has(candidate))) failures.push(`${file}: required native module ${match[2]} is missing`);
+  }
+}
+if (trackedSet.has("package.json")) {
+  const scripts = JSON.parse(git(["show", ":package.json"])).scripts ?? {};
+  for (const [name, command] of Object.entries(scripts)) {
+    for (const match of command.matchAll(/(?:^|[;&|]\s*)node(?:\s+--[^\s]+)*\s+([\w/.-]+\.(?:mjs|cjs|js))(?=\s|$)/g)) {
+      if (!trackedSet.has(match[1])) failures.push(`package.json: script ${name} requires missing ${match[1]}`);
     }
   }
 }

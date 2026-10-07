@@ -4,10 +4,10 @@ import {
   readDir,
   readTextFile,
   readFile,
-  writeFile,
-  remove,
-  rename,
-  mkdir,
+  writeFile as pluginWriteFile,
+  remove as pluginRemove,
+  rename as pluginRename,
+  mkdir as pluginMkdir,
   exists,
   stat,
   watch,
@@ -17,10 +17,9 @@ import {
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { VaultFile } from "../types";
 import {
-  buildWriteArtifactPath,
   persistVerifiedBytes,
-  parseWriteArtifactName,
   bytesEqual,
+  parseWriteArtifactName,
   type VerifiedWriteFs,
 } from "./verifiedWrite";
 import {
@@ -39,6 +38,23 @@ import { safeBaseName } from "./fsnames";
 export const IN_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+const writeFile: typeof pluginWriteFile = async (path, data, options) => {
+  if (IN_TAURI) throw new Error("Direct vault writes are disabled; use a verified save.");
+  return pluginWriteFile(path, data, options);
+};
+const remove: typeof pluginRemove = async (path, options) => {
+  if (IN_TAURI) throw new Error("Direct removal is disabled; use native recovery.");
+  return pluginRemove(path, options);
+};
+const rename: typeof pluginRename = async (from, to, options) => {
+  if (IN_TAURI) throw new Error("Direct moves are disabled; use native recovery.");
+  return pluginRename(from, to, options);
+};
+const mkdir: typeof pluginMkdir = async (path, options) => {
+  if (IN_TAURI) return invoke("vault_create_directory", { path });
+  return pluginMkdir(path, options);
+};
+
 /** The native command owns the whole verified transaction. The plugin-fs
  *  callbacks remain for browser and compatibility paths. */
 const VAULT_FS: VerifiedWriteFs = {
@@ -54,6 +70,9 @@ export async function nativeVaultWriteAtomic(
   data: Uint8Array,
   expectedCurrentBytes?: Uint8Array | null
 ): Promise<void> {
+  if (expectedCurrentBytes === undefined) {
+    expectedCurrentBytes = await exists(path) ? await readFile(path) : null;
+  }
   const expected = expectedCurrentBytes === undefined
     ? { kind: "any" }
     : expectedCurrentBytes === null
@@ -66,6 +85,8 @@ export async function nativeVaultWriteAtomic(
         };
   await invoke("vault_write_atomic", { path, data, expected });
 }
+
+
 
 export const DEMO_ROOT = "mesa://demo";
 
@@ -501,6 +522,10 @@ export async function readReviewText(file: VaultFile, maxBytes = 1024 * 1024): P
     if (new TextEncoder().encode(text).length > maxBytes) throw new Error("File exceeds the inline review limit.");
     return text;
   }
+  if (IN_TAURI) {
+    const bytes = await invoke<number[]>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: true });
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+  }
   return readBoundedText(await openFsFile(file.path, { read: true }), maxBytes);
 }
 
@@ -679,6 +704,7 @@ export function decodePeekBytes(bytes: Uint8Array): string {
 export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<string> {
   if (isDemo(file.path)) return demoRead(file.relPath);
   try {
+    if (IN_TAURI) return decodePeekBytes(Uint8Array.from(await invoke<number[]>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: false })));
     const fh = await openFsFile(file.path, { read: true });
     try {
       const buf = new Uint8Array(maxBytes);
@@ -1155,89 +1181,6 @@ export interface WriteRecoveryResult {
   removed: string[];
 }
 
-/**
- * Create a file only if no entry exists at `path`.
- *
- * Both routes use the filesystem's create-new operation. The second route is
- * a compatibility fallback for a platform that rejects `writeFile` with its
- * create-new option. Neither route can overwrite a file that appears after
- * recovery discovery.
- */
-async function writeRecoveryFileCreateNew(
-  path: string,
-  bytes: Uint8Array
-): Promise<void> {
-  let writeError: unknown;
-  try {
-    await writeFile(path, bytes, { createNew: true });
-    return;
-  } catch (error) {
-    writeError = error;
-  }
-
-  // If the first route created the target or another process won the race,
-  // keep that file unchanged. The fallback is only for a still-missing path.
-  if (await safeExists(path)) throw writeError;
-
-  const handle = await openFsFile(path, { write: true, createNew: true });
-  try {
-    const written = await handle.write(bytes);
-    if (written !== bytes.byteLength) {
-      throw new Error("Recovery wrote an incomplete file.");
-    }
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
-
-/** Create a new recovery file and verify all bytes before it is trusted. */
-async function writeRecoveryFileCreateNewVerified(
-  path: string,
-  bytes: Uint8Array
-): Promise<void> {
-  await writeRecoveryFileCreateNew(path, bytes);
-  const written = await readFile(path);
-  if (!bytesEqual(written, bytes)) {
-    throw new Error("Recovery file verification failed.");
-  }
-}
-
-/**
- * Make a verified rescue copy before recovery writes a missing target.
- *
- * A crash can stop a create-new write before all bytes reach the target. The
- * rescue copy makes the next sweep preserve the original bytes if that occurs.
- */
-async function makeRecoveryRescue(
-  targetPath: string,
-  bytes: Uint8Array
-): Promise<string> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    // Keep unverified bytes under the disposable `save` label. Only a verified
-    // staging file can become a rescue, so a failed copy cannot be selected as
-    // an original during the next recovery sweep.
-    const stagingPath = buildWriteArtifactPath(targetPath, "save");
-    const rescuePath = buildWriteArtifactPath(targetPath, "rescue");
-    try {
-      await authorizeWriteArtifacts([stagingPath, rescuePath]);
-      await writeRecoveryFileCreateNewVerified(stagingPath, bytes);
-      if (await safeExists(rescuePath)) {
-        throw new Error("Recovery rescue path already exists.");
-      }
-      await rename(stagingPath, rescuePath);
-      const rescued = await readFile(rescuePath);
-      if (!bytesEqual(rescued, bytes)) {
-        throw new Error("Recovery rescue verification failed.");
-      }
-      return rescuePath;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError ?? new Error("Recovery could not create a rescue copy.");
-}
-
 /** Execute writeRecovery decisions using scan-discovered artifacts or a fallback walk.
  * The caller re-scans after restoration. Report recovery outcomes without throwing. */
 export async function recoverWriteArtifacts(
@@ -1288,29 +1231,10 @@ export async function recoverWriteArtifacts(
       try {
         if (action.kind === "restore") {
           const targetAbs = joinPath(action.dir, action.targetName);
-          const bytes = await readFile(artifactAbs);
-          const parsed = parseWriteArtifactName(action.artifactName);
-          if (!parsed || parsed.label === "save") continue;
-
-          // A rescue already has the preservation semantics that recovery
-          // needs. A backup gets a verified rescue sibling before Mesa creates
-          // the target, so a crash during the create cannot strand the bytes.
-          const recoveryRescue =
-            parsed.label === "backup"
-              ? await makeRecoveryRescue(targetAbs, bytes)
-              : null;
-
-          await writeRecoveryFileCreateNewVerified(targetAbs, bytes);
+          await invoke("vault_recover_artifact", { root, path: artifactAbs, restore: true });
           result.restored.push(targetAbs);
-
-          // The target passed the final byte-for-byte read-back. It is now safe
-          // to remove the selected artifact and its temporary rescue copy.
-          await remove(artifactAbs);
-          if (recoveryRescue) {
-            await remove(recoveryRescue);
-          }
         } else {
-          await remove(artifactAbs);
+          await invoke("vault_recover_artifact", { root, path: artifactAbs, restore: false });
           result.removed.push(artifactAbs);
         }
       } catch {
@@ -1375,6 +1299,10 @@ export async function removeFile(absPath: string): Promise<void> {
     delete DEMO[rel];
     return;
   }
+  if (IN_TAURI) {
+    await invoke("vault_move_to_recovery", { path: absPath });
+    return;
+  }
   const parent = parentDir(absPath);
   const name = baseName(absPath);
   const recoveryDir = joinPath(parent, ".mesa-trash");
@@ -1396,6 +1324,10 @@ export async function removeVaultEntry(
     for (const rel of Object.keys(DEMO)) {
       if (rel === clean || rel.startsWith(prefix)) delete DEMO[rel];
     }
+    return;
+  }
+  if (IN_TAURI) {
+    await invoke("vault_move_to_recovery", { path: joinPath(root, clean) });
     return;
   }
   const recoveryRel = await uniqueRel(root, `.mesa-trash/${Date.now()}/${clean}`);
@@ -1423,6 +1355,9 @@ function inferRecoveryOriginalRel(trashRelPath: string): string | null {
 
 export async function listRecoveryEntries(root: string): Promise<RecoveryEntry[]> {
   if (root.startsWith(DEMO_ROOT)) return [];
+  if (IN_TAURI) {
+    return invoke<RecoveryEntry[]>("vault_list_recovery", { root });
+  }
   const found: RecoveryEntry[] = [];
   const walkTrash = async (dir: string): Promise<void> => {
     let entries;
@@ -1498,7 +1433,8 @@ export async function restoreRecoveryEntry(
   const targetRel = await uniqueRel(root, entry.originalRelPath);
   const targetAbs = joinPath(root, targetRel);
   await ensureDir(parentDir(targetAbs));
-  await rename(joinPath(root, entry.trashRelPath), targetAbs);
+  if (IN_TAURI) await invoke("vault_restore_recovery", { root, trashRelPath: entry.trashRelPath, targetRelPath: targetRel });
+  else await rename(joinPath(root, entry.trashRelPath), targetAbs);
   return toVaultFile(root, targetRel);
 }
 

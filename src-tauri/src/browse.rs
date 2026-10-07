@@ -1,7 +1,7 @@
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde::Serialize;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -86,27 +86,6 @@ pub(crate) fn check_public_url(url: &str) -> Result<(), String> {
     public_url(&parsed)
 }
 
-pub(crate) async fn check_public_destination(url: &str) -> Result<(), String> {
-    check_public_url(url)?;
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("invalid url: {e}"))?;
-    let host = parsed.host_str().ok_or("URL has no host")?;
-    if host.trim_matches(['[', ']']).parse::<IpAddr>().is_ok() {
-        return Ok(());
-    }
-    let addresses: Vec<SocketAddr> = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio::net::lookup_host((host, parsed.port_or_known_default().unwrap_or(80))),
-    )
-    .await
-    .map_err(|_| "DNS check timed out".to_string())?
-    .map_err(|e| format!("DNS check failed: {e}"))?
-    .collect();
-    if addresses.is_empty() || addresses.iter().any(|address| !public_ip(address.ip())) {
-        return Err("private network address is blocked".into());
-    }
-    Ok(())
-}
-
 struct PublicResolver;
 
 impl Resolve for PublicResolver {
@@ -127,7 +106,7 @@ impl Resolve for PublicResolver {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct BrowsePage {
     #[serde(rename = "finalUrl")]
     pub final_url: String,
@@ -139,6 +118,21 @@ pub struct BrowsePage {
     pub frame_blocked: bool,
     pub body: Option<String>,
     pub truncated: bool,
+}
+
+fn current_page() -> &'static Mutex<Option<(BrowsePage, std::time::Instant)>> {
+    static CURRENT: OnceLock<Mutex<Option<(BrowsePage, std::time::Instant)>>> = OnceLock::new();
+    CURRENT.get_or_init(|| Mutex::new(None))
+}
+
+pub fn current_page_json() -> String {
+    match current_page().lock() {
+        Ok(page) => match page.as_ref() {
+            Some((page, at)) => serde_json::json!({ "page": page, "ageMs": at.elapsed().as_millis(), "trust": "untrusted-page-content" }).to_string(),
+            None => serde_json::json!({ "page": null, "ageMs": null }).to_string(),
+        },
+        Err(_) => serde_json::json!({ "page": null, "ageMs": null }).to_string(),
+    }
 }
 
 fn decode_page_body(bytes: &[u8], content_type: &str) -> String {
@@ -211,8 +205,14 @@ fn is_texty(content_type: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn browse_fetch(url: String) -> Result<BrowsePage, String> {
-    fetch_inner(url, false).await
+pub async fn browse_fetch(app: tauri::AppHandle, url: String) -> Result<BrowsePage, String> {
+    use tauri::Emitter;
+    let page = fetch_inner(url, false).await?;
+    let _ = app.emit(
+        "mesa://browse-observed",
+        serde_json::json!({ "url": page.final_url }),
+    );
+    Ok(page)
 }
 
 /// Synchronous wrapper for non-async callers (the loopback activity server
@@ -254,14 +254,19 @@ async fn fetch_inner(url: String, agent: bool) -> Result<BrowsePage, String> {
         (None, false)
     };
 
-    Ok(BrowsePage {
+    let page = BrowsePage {
         final_url,
         status,
         content_type,
         frame_blocked: blocked,
         body,
         truncated,
-    })
+    };
+    *current_page()
+        .lock()
+        .map_err(|_| "browser source state unavailable")? =
+        Some((page.clone(), std::time::Instant::now()));
+    Ok(page)
 }
 
 #[cfg(test)]
@@ -288,6 +293,15 @@ mod tests {
             let parsed = reqwest::Url::parse(&url).unwrap();
             assert!(public_url(&parsed).is_err(), "{url}");
         }
+    }
+
+    #[tokio::test]
+    async fn final_connection_resolver_rejects_local_dns_answers() {
+        use std::str::FromStr;
+        let result = PublicResolver
+            .resolve(Name::from_str("localhost").unwrap())
+            .await;
+        assert!(result.is_err());
     }
 
     #[test]

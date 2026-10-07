@@ -50,6 +50,6 @@ export default defineConfig({
     // suite — a stray test there silently changes the counts a green claim is
     // judged by. `tmp/` is gitignored scratch (corpora, measurement harnesses),
     // so it is excluded for the same reason as `.backups/`.
-    exclude: ["**/node_modules/**", "**/dist/**", "**/.backups/**", "**/tmp/**"],
+    exclude: ["**/node_modules/**", "**/dist/**", "**/.backups/**", "**/tmp/**", "**/output/**"],
   },
 });

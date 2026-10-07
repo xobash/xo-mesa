@@ -166,3 +166,20 @@ it('rejects unrelated authors, personal-address forms and non-UTC history', () =
     assert.match(result.stderr, /identity metadata/);
   }
 });
+
+it('checks nested native modules and path overrides against staged files', () => {
+  const files = { 'src-tauri/src/lib.rs': 'mod core;\n', 'src-tauri/src/core.rs': '#[path = "wire.rs"]\nmod wire;\n' };
+  const missing = auditFixture({ files });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /required native module wire is missing/);
+  const present = auditFixture({ files: { ...files, 'src-tauri/src/wire.rs': '' } });
+  assert.equal(present.status, 0, present.stderr);
+});
+it('rejects a package command whose script was omitted from publication', () => {
+  const files = { 'package.json': JSON.stringify({ scripts: { verify: 'node scripts/verify.mjs' } }) };
+  const missing = auditFixture({ files });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /script verify requires missing scripts\/verify.mjs/);
+  const present = auditFixture({ files: { ...files, 'scripts/verify.mjs': '' } });
+  assert.equal(present.status, 0, present.stderr);
+});

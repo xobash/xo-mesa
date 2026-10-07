@@ -515,7 +515,7 @@ export function createResearchController({ get, set, getGeneration, registerExte
       if (cur.phase !== "planning" && cur.phase !== "researching" && cur.phase !== "synthesizing") return;
       const activity = activityForNavigation(String(rawUrl ?? ""), Date.now());
       if (!activity?.sourceUrl) return;
-      // browse + harness-nav both fire for one navigation — collapse the echo.
+      // Browse request + fetched-page events may describe one navigation — collapse the echo.
       if (activity.sourceUrl === drLastObservedUrl) return;
       drLastObservedUrl = activity.sourceUrl;
       drLastEventAt = Date.now();
@@ -549,9 +549,9 @@ export function createResearchController({ get, set, getGeneration, registerExte
         const browse = await listen<string>("mesa://browse", (ev) => observeNavigation(ev.payload));
         if (!current()) { browse(); return; }
         drNavUnlistens.push(browse);
-        const harness = await listen<{ url?: string }>("mesa://harness-nav", (ev) => observeNavigation(ev.payload?.url));
-        if (!current()) { harness(); return; }
-        drNavUnlistens.push(harness);
+        const fetched = await listen<{ url?: string }>("mesa://browse-observed", (ev) => observeNavigation(ev.payload?.url));
+        if (!current()) { fetched(); return; }
+        drNavUnlistens.push(fetched);
       } catch {
         // Roll back partial observation; progress has its own subscription.
         if (!current()) return;

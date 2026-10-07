@@ -29,9 +29,8 @@ const DEEP_RESEARCH_EXTENSION_SRC: &str = include_str!("../resources/mesa-deep-r
 /// Loopback ports to try, in order (inclusive). The first free one wins.
 const PORT_FIRST: u16 = 8788;
 const PORT_LAST: u16 = 8820;
-/// Request workers for the loopback bridge. One may wait for a rendered
-/// `/browse` result while the others keep snapshot ingest and control routes
-/// responsive.
+/// Request workers for the loopback bridge. One may fetch a page while the
+/// others keep context and research control routes responsive.
 const ACTIVITY_SERVER_WORKERS: usize = 4;
 const ACTIVITY_STOP_POLL: Duration = Duration::from_millis(50);
 const ACTIVITY_BODY_CAP: usize = 1024 * 1024;
@@ -59,7 +58,7 @@ struct ResearchPending {
 }
 
 /// One admitted finish wait leaves the other loopback workers free for
-/// browsing, snapshots and lifecycle events. No result cache survives a wait.
+/// browsing and lifecycle events. No result cache survives a wait.
 #[derive(Default)]
 struct ResearchReplies(Mutex<Option<ResearchPending>>);
 
@@ -132,7 +131,7 @@ fn research_replies() -> &'static ResearchReplies {
     REPLIES.get_or_init(ResearchReplies::default)
 }
 
-/// Only the main store validates research; the remote harness has no IPC grant.
+/// Only the main store validates research.
 #[tauri::command]
 pub fn deep_research_respond(
     window: tauri::Window,
@@ -148,63 +147,42 @@ pub fn deep_research_respond(
 }
 
 #[derive(Debug)]
-enum HarnessBodyError {
+enum BodyError {
     TooLarge,
     Read,
     InvalidUtf8,
 }
 
-/// Read only the bounded snapshot payload. The route must do this before JSON
-/// parsing or token validation because `/harness` cannot use header auth: the
-/// browser reporter sends a no-CORS request with the token in its body.
+/// Bound request bytes before UTF-8 conversion and JSON parsing.
 fn read_bounded_utf8(
     reader: &mut (impl Read + ?Sized),
     declared: Option<usize>,
     cap: usize,
-) -> Result<String, HarnessBodyError> {
+) -> Result<String, BodyError> {
     if declared.is_some_and(|length| length > cap) {
-        return Err(HarnessBodyError::TooLarge);
+        return Err(BodyError::TooLarge);
     }
     let mut bytes = Vec::with_capacity(declared.unwrap_or(0).min(cap));
     reader
         .take((cap + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| HarnessBodyError::Read)?;
+        .map_err(|_| BodyError::Read)?;
     if bytes.len() > cap {
-        return Err(HarnessBodyError::TooLarge);
+        return Err(BodyError::TooLarge);
     }
-    String::from_utf8(bytes).map_err(|_| HarnessBodyError::InvalidUtf8)
+    String::from_utf8(bytes).map_err(|_| BodyError::InvalidUtf8)
 }
 
-fn read_bounded_body(req: &mut Request, cap: usize) -> Result<String, HarnessBodyError> {
+fn read_bounded_body(req: &mut Request, cap: usize) -> Result<String, BodyError> {
     let declared = req.body_length();
     read_bounded_utf8(req.as_reader(), declared, cap)
 }
 
-fn read_harness_body(req: &mut Request) -> Result<String, HarnessBodyError> {
-    read_bounded_body(req, crate::harness::SNAPSHOT_BODY_CAP)
-}
-
-fn body_error_status(error: HarnessBodyError) -> u16 {
+fn body_error_status(error: BodyError) -> u16 {
     match error {
-        HarnessBodyError::TooLarge => 413,
-        HarnessBodyError::Read | HarnessBodyError::InvalidUtf8 => 400,
+        BodyError::TooLarge => 413,
+        BodyError::Read | BodyError::InvalidUtf8 => 400,
     }
-}
-
-fn rendered_browse_json(snapshot: crate::harness::HarnessSnapshot) -> serde_json::Value {
-    serde_json::json!({
-        "finalUrl": snapshot.url,
-        "title": snapshot.title,
-        "status": null,
-        "contentType": null,
-        "frameBlocked": false,
-        "body": snapshot.text,
-        "links": snapshot.links,
-        "rendered": true,
-        "trust": "untrusted-page-content",
-        "harnessLive": true,
-    })
 }
 
 #[derive(Clone, Serialize)]
@@ -230,9 +208,9 @@ struct ActivityServer {
     extension_dir: std::path::PathBuf,
 }
 
-/// A `/browse` request can wait for a rendered snapshot for several seconds.
+/// A `/browse` request can wait for a native fetch for several seconds.
 /// Admit only one so concurrent browse calls cannot occupy the whole request
-/// pool and starve the `/harness` snapshot needed by the admitted call.
+/// pool and starve context and research control routes.
 struct BrowsePermit<'a> {
     active: &'a AtomicBool,
 }
@@ -422,27 +400,6 @@ fn handle_request(
         let _ = req.respond(Response::from_string("misdirected request").with_status_code(421));
         return;
     }
-    // Rendered-DOM snapshots from the native harness webview. This route is
-    // token-in-body instead of header-auth: the reporter posts with
-    // `mode: "no-cors"` (the only way an https page may reach loopback without
-    // a preflight), and no-cors requests cannot carry an Authorization header.
-    // The snapshot token cannot authorize the other bridge routes.
-    if url == "/harness" && method == Method::Post {
-        match read_harness_body(&mut req) {
-            Ok(body) => {
-                let _ = crate::harness::ingest_snapshot_body(app, &body);
-                let _ = req.respond(Response::from_string("ok"));
-            }
-            Err(HarnessBodyError::TooLarge) => {
-                let _ =
-                    req.respond(Response::from_string("snapshot too large").with_status_code(413));
-            }
-            Err(HarnessBodyError::Read | HarnessBodyError::InvalidUtf8) => {
-                let _ = req.respond(Response::from_string("read error").with_status_code(400));
-            }
-        }
-        return;
-    }
     if !auth_ok(&req, token) {
         let _ = req.respond(Response::from_string("unauthorized").with_status_code(401));
         return;
@@ -473,7 +430,7 @@ fn handle_request(
         json_response(req, serde_json::json!({ "context": context }).to_string());
         return;
     }
-    // Wait for this navigation’s rendered snapshot; mark native static-fetch fallback rendered:false.
+    // Fetch through the native broker without rendering website scripts.
     if url == "/browse" && method == Method::Post {
         let Some(_browse_permit) = BrowsePermit::try_acquire(browse_active) else {
             let mut response =
@@ -505,84 +462,26 @@ fn handle_request(
             let _ = req.respond(Response::from_string(error).with_status_code(400));
             return;
         }
-        let gen = crate::harness::bump_nav_gen();
-        let bumped_at = std::time::Instant::now();
-        // Old-page ticks are debounced ≥900ms apart; by +600ms the webview has
-        // left the previous page, so a time-qualified snapshot belongs to the current navigation.
-        let min_at = bumped_at + Duration::from_millis(600);
-        let _ = app.emit("mesa://browse", target.clone());
-        let mut nudged = false;
-        let mut rendered: Option<crate::harness::HarnessSnapshot> = None;
-        while running.load(Ordering::Acquire) && bumped_at.elapsed() < Duration::from_secs(9) {
-            if let Some(snap) =
-                crate::harness::wait_for_snapshot(gen, &target, min_at, Duration::from_millis(450))
-            {
-                rendered = Some(snap);
-                break;
+        // The native fetcher owns resolution and the final connection.
+        let page = match browse_fetch_while_running(target.clone(), running) {
+            Some(Ok(page)) => page,
+            Some(Err(error)) => {
+                let _ = req.respond(Response::from_string(error).with_status_code(502));
+                return;
             }
-            let live = crate::harness::webview_exists(app);
-            if !live && bumped_at.elapsed() > Duration::from_millis(2500) {
-                break; // no harness anywhere — don't stall the agent
+            None => {
+                let _ = req.respond(Response::from_string("server stopping").with_status_code(503));
+                return;
             }
-            if live && !nudged && bumped_at.elapsed() > Duration::from_millis(2000) {
-                crate::harness::request_report(app);
-                nudged = true;
-            }
-        }
-        if !running.load(Ordering::Acquire) {
-            let _ = req.respond(Response::from_string("server stopping").with_status_code(503));
-            return;
-        }
-        let json = match rendered {
-            Some(snap) => rendered_browse_json(snap).to_string(),
-            None => match browse_fetch_while_running(target, running) {
-                Some(Ok(page)) => {
-                    let mut v =
-                        serde_json::to_value(&page).unwrap_or_else(|_| serde_json::json!({}));
-                    if let Some(obj) = v.as_object_mut() {
-                        obj.insert("rendered".into(), serde_json::Value::Bool(false));
-                        obj.insert(
-                            "harnessLive".into(),
-                            serde_json::Value::Bool(crate::harness::webview_exists(app)),
-                        );
-                    }
-                    v.to_string()
-                }
-                Some(Err(e)) => {
-                    let _ = req.respond(Response::from_string(e).with_status_code(502));
-                    return;
-                }
-                None => {
-                    let _ =
-                        req.respond(Response::from_string("server stopping").with_status_code(503));
-                    return;
-                }
-            },
         };
+        let _ = app.emit("mesa://browse", target);
+        let json = serde_json::to_string(&page).unwrap_or_else(|_| "{}".into());
         json_response(req, json);
         return;
     }
-    // Pi's `browse_read` tool: what is the harness showing RIGHT NOW — the
-    // agent's way to look at the page again (or at whatever the user
-    // navigated to by hand) without re-navigating.
+    // Return the latest native-fetched source, never a page-authored snapshot.
     if url == "/browse/current" && method == Method::Get {
-        crate::harness::request_report(app);
-        let json = match crate::harness::current_snapshot() {
-            Some((snap, age_ms)) => serde_json::json!({
-                "harnessLive": crate::harness::webview_exists(app),
-                "ageMs": age_ms,
-                "snapshot": snap,
-                "trust": "untrusted-page-content",
-            })
-            .to_string(),
-            None => serde_json::json!({
-                "harnessLive": crate::harness::webview_exists(app),
-                "ageMs": null,
-                "snapshot": null,
-            })
-            .to_string(),
-        };
-        json_response(req, json);
+        json_response(req, crate::browse::current_page_json());
         return;
     }
     // Deep Research bridge: the mesa-deep-research extension POSTs
@@ -650,15 +549,6 @@ fn handle_request(
         return;
     }
     let _ = req.respond(Response::from_string("not found").with_status_code(404));
-}
-
-/// Where the harness reporter should POST rendered-DOM snapshots: the running
-/// activity server's loopback port. `None` until
-/// `activity_start` has run (harness.rs refuses to create the webview then —
-/// a reporter with nowhere to report would blind the agent).
-pub fn harness_report_target() -> Option<u16> {
-    let guard = state().lock().ok()?;
-    guard.as_ref().map(|s| s.info.port)
 }
 
 fn bind_activity_server(first: u16, last: u16) -> Result<(Server, u16), String> {
@@ -755,7 +645,7 @@ pub fn activity_stop() -> Result<(), String> {
         st.running.store(false, Ordering::Release);
     }
     // A request may be finishing in another worker and call back into
-    // `harness_report_target`, which also needs `state()`. Never hold this
+    // Other bridge operations also need `state()`. Never hold this
     // lock while waiting for worker threads to exit.
     drop(guard);
     if let Some(st) = stopped {
@@ -776,16 +666,16 @@ mod tests {
         let mut body = std::io::Cursor::new(b"hello".to_vec());
         assert!(matches!(
             read_bounded_utf8(&mut body, Some(5), 4),
-            Err(HarnessBodyError::TooLarge)
+            Err(BodyError::TooLarge)
         ));
         let mut body = std::io::Cursor::new(b"hello".to_vec());
         assert!(matches!(
             read_bounded_utf8(&mut body, None, 4),
-            Err(HarnessBodyError::TooLarge)
+            Err(BodyError::TooLarge)
         ));
         let mut body = std::io::Cursor::new(b"hello".to_vec());
         assert_eq!(read_bounded_utf8(&mut body, None, 5).unwrap(), "hello");
-        assert_eq!(body_error_status(HarnessBodyError::TooLarge), 413);
+        assert_eq!(body_error_status(BodyError::TooLarge), 413);
     }
 
     #[test]
@@ -796,31 +686,12 @@ mod tests {
     }
 
     #[test]
-    fn rendered_browse_does_not_invent_http_metadata() {
-        let snapshot = crate::harness::HarnessSnapshot {
-            url: "https://example.com".into(),
-            title: "Example".into(),
-            text: "visible".into(),
-            links: vec![],
-            ready: "complete".into(),
-            at: std::time::Instant::now(),
-            nav_gen: 1,
-        };
-        let value = rendered_browse_json(snapshot);
-        assert!(value["status"].is_null());
-        assert!(value["contentType"].is_null());
-        assert_eq!(value["body"], "visible");
-    }
-
-    #[test]
     fn bridge_tokens_are_fresh_256_bit_values() {
         let first = make_token().unwrap();
         let second = make_token().unwrap();
         assert_eq!(first.len(), 64);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second);
-        let snapshot = serde_json::json!({"token": second, "text": "visible"}).to_string();
-        assert!(crate::harness::parse_snapshot_body(&snapshot, &second, 1).is_ok());
         for route in ["/browse", "/context", "/deep-research"] {
             assert!(
                 !crate::bearer::matches(&format!("Bearer {second}"), &first),

@@ -1,14 +1,14 @@
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     env,
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, State};
 
@@ -364,12 +364,31 @@ pub struct TerminalReplayEvent {
 
 static PI_BINARY: OnceLock<PathBuf> = OnceLock::new();
 
-fn session_id() -> String {
-    let n = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("term-{n:x}")
+fn session_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
+        .map_err(|_| "Could not generate a terminal session identifier".to_string())?;
+    Ok(format!(
+        "term-{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    ))
+}
+
+fn approve_external_process(
+    grants: &Mutex<HashSet<PathBuf>>,
+    root: &Path,
+    confirm: impl FnOnce() -> bool,
+) -> Result<(), String> {
+    let mut grants = grants
+        .lock()
+        .map_err(|_| "Pi permission state is unavailable")?;
+    if !grants.contains(root) {
+        if !confirm() {
+            return Err("Pi launch cancelled: external process access was not approved".into());
+        }
+        grants.insert(root.to_path_buf());
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -883,10 +902,10 @@ fn spawn_flusher(stream: Arc<TerminalStream>, app: AppHandle, id: String, name: 
 // only obscure the wire shape.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-pub fn terminal_start(
+pub async fn terminal_start(
     window: tauri::Window,
     app: AppHandle,
-    state: State<TerminalState>,
+    state: State<'_, TerminalState>,
     cwd: Option<String>,
     program: Option<String>,
     args: Option<Vec<String>>,
@@ -896,8 +915,24 @@ pub fn terminal_start(
 ) -> Result<String, String> {
     let root = cwd.as_deref().ok_or("Pi needs an approved vault folder")?;
     let root = crate::vaultscope::require_approved(&app, root)?;
-    let id = session_id();
     let (mut cmd, path_prefixes) = terminal_command(program.as_deref())?;
+    static PROCESS_GRANTS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let approved_root = root.clone();
+    let dialog_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        approve_external_process(
+            PROCESS_GRANTS.get_or_init(|| Mutex::new(HashSet::new())),
+            &approved_root,
+            || dialog_app.dialog().message(
+                format!("Vault: {}\n\nPi runs with your normal OS permissions. It can read or change files outside this vault, run commands, and use the network. Pi edits bypass Mesa's verified saves and recovery. Untrusted notes, webpages, and extensions can influence its actions. Allow this trusted external process for this vault until Mesa quits?", approved_root.display())
+            ).title("Allow Pi external process access?")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom("Allow Pi".into(), "Cancel".into()))
+                .blocking_show(),
+        )
+    }).await.map_err(|_| "Pi permission dialog failed")??;
+    let id = session_id()?;
     cmd.cwd(root);
     if let Some(args) = args {
         for arg in args {
@@ -1114,6 +1149,30 @@ pub fn stop_all_sessions(state: &TerminalState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_ids_are_random_128_bit_identifiers() {
+        let ids: HashSet<_> = (0..1024).map(|_| session_id().unwrap()).collect();
+        assert_eq!(ids.len(), 1024);
+        assert!(ids
+            .iter()
+            .all(|id| id.len() == 37 && id[5..].bytes().all(|b| b.is_ascii_hexdigit())));
+    }
+
+    #[test]
+    fn external_process_consent_is_root_scoped_and_denial_is_not_cached() {
+        let grants = Mutex::new(HashSet::new());
+        let root = Path::new("vault-one");
+        assert!(approve_external_process(&grants, root, || false).is_err());
+        assert!(grants.lock().unwrap().is_empty());
+        assert!(approve_external_process(&grants, root, || true).is_ok());
+        assert!(approve_external_process(&grants, root, || panic!(
+            "existing grant prompted again"
+        ))
+        .is_ok());
+        assert!(approve_external_process(&grants, Path::new("vault-two"), || false).is_err());
+        assert!(approve_external_process(&Mutex::new(HashSet::new()), root, || false).is_err());
+    }
 
     #[cfg(target_os = "windows")]
     #[test]
