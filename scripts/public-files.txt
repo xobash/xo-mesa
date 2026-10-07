@@ -187,6 +187,7 @@ src/components/SettingsModal.tsx
 src/components/StatusBar.test.tsx
 src/components/StatusBar.tsx
 src/components/SyncConflictReview.tsx
+src/components/SyncModal.test.tsx
 src/components/SyncModal.tsx
 src/components/TagList.tsx
 src/components/TasksModal.test.tsx

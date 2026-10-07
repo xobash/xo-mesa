@@ -369,6 +369,7 @@ Every app window is denied filesystem-plugin mutation and writable open/create
 operations. Verified native saves require expected SHA-256/length or a missing
 target. Callers without a baseline read one before submitting; IPC rejects an
 unconditional overwrite. Trusted internal recovery remains stricter per operation.
+Ordinary saves and renames reject hidden recovery/control directories.
 Visible directories use native creation. Delete and restore use recoverable,
 no-replace moves. Recovery catalogue reads need no recursive hidden-path grant.
 Artifact restoration accepts stale recognized originals, retains rescue copies,

@@ -48,7 +48,12 @@ describe("privileged application script policy", () => {
 
 it("denies every generic mutation and file-open route in every app window", () => {
   for (const capability of capabilities) for (const permission of capability.permissions ?? []) {
-    if (typeof permission !== "string") continue;
-    expect(permission).not.toMatch(/^fs:(default|allow-(write.*|mkdir|remove|rename|copy-file|open|create|truncate))$/);
+    const identifier = typeof permission === "string" ? permission : permission.identifier;
+    expect(identifier).not.toMatch(/^fs:(default|allow-(write.*|mkdir|remove|rename|copy-file|open|create|truncate))$/);
   }
+});
+
+it("keeps arbitrary HTTPS connections out of the privileged renderer", () => {
+  const policy=tauriConfig.app.security.csp.split(';').find(d=>d.trim().startsWith('connect-src'))!;
+  expect(policy).not.toMatch(/(?:^|\s)https:(?:\s|$)/);
 });

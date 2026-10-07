@@ -217,7 +217,15 @@ fn recover_artifact(root: &Path, rel: &str, restore: bool) -> Result<(), String>
                 bytes
             };
             #[cfg(windows)]
-            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            let bytes = {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                sync_core::open_file_no_follow(&path)
+                    .map_err(|e| e.to_string())?
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| e.to_string())?;
+                bytes
+            };
             vaultwrite::write_atomic(&target_path, &bytes, &vaultwrite::ExpectedCurrent::Missing)?;
         } else if label == "rescue" || (label == "backup" && !target_path.is_file()) {
             return Err("original recovery bytes must be retained".into());

@@ -74,6 +74,13 @@ fn rename_no_replace(
     to_rel: &str,
     case_only: bool,
 ) -> Result<(), String> {
+    if [from_rel, to_rel].iter().any(|rel| {
+        rel.replace('\\', "/")
+            .split('/')
+            .any(|part| part.starts_with('.') || part == "node_modules")
+    }) {
+        return Err("rename accepts visible vault files only".into());
+    }
     let from = safe_relative_path(from_rel).ok_or("invalid rename source")?;
     let to = safe_relative_path(to_rel).ok_or("invalid rename destination")?;
     if from == to {
@@ -133,6 +140,12 @@ pub async fn vault_rename_no_replace(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ordinary_rename_cannot_bypass_main_only_recovery() {
+        let root = std::env::temp_dir();
+        assert!(super::rename_no_replace(&root, ".mesa-trash/123/a.md", "a.md", false).is_err());
+        assert!(super::rename_no_replace(&root, "a.md", ".git/config", false).is_err());
+    }
     use super::*;
 
     struct TempVault(PathBuf);

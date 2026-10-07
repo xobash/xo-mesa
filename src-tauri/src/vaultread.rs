@@ -195,6 +195,9 @@ pub async fn vault_read_bytes(
             .open_read()
             .map_err(|e| e.to_string())?;
         #[cfg(windows)]
+        let _guard = crate::sync_core::WindowsParentGuard::acquire(&root.join(&rel), false)
+            .map_err(|e| e.to_string())?;
+        #[cfg(windows)]
         let file =
             crate::sync_core::open_file_no_follow(&root.join(rel)).map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();

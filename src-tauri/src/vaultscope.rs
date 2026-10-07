@@ -90,7 +90,11 @@ fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Resul
     if !approved.roots.iter().any(|root| {
         fs::canonicalize(root)
             .ok()
-            .is_some_and(|approved_root| canonical_parent.starts_with(approved_root))
+            .is_some_and(|approved_root| {
+                canonical_parent.strip_prefix(approved_root).ok().is_some_and(|relative| {
+                    relative.components().all(|part| matches!(part, Component::Normal(name) if name.to_str().is_some_and(|name| !name.starts_with('.') && name != "node_modules")))
+                })
+            })
     }) {
         return Err("vault file is outside the approved folders".into());
     }
@@ -450,6 +454,36 @@ mod tests {
             relative_to_root(&canonical, &root.join("outside/new.md").to_string_lossy()).is_none()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renderer_save_cannot_rewrite_hidden_recovery_or_control_files() {
+        let dir =
+            std::env::temp_dir().join(format!("mesa-scope-write-policy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("vault/.mesa-trash/123")).unwrap();
+        fs::create_dir_all(dir.join("vault/.git")).unwrap();
+        let root = fs::canonicalize(dir.join("vault")).unwrap();
+        let approval = dir.join("approval.json");
+        let mut roots = ApprovedRoots::default();
+        roots
+            .roots
+            .insert(normalized_root(root.to_str().unwrap()).unwrap());
+        save_approved_roots(&approval, &roots).unwrap();
+        for rel in [".mesa-trash/123/original.md", ".git/config"] {
+            let target = root.join(rel);
+            fs::write(&target, b"retained").unwrap();
+            assert!(
+                require_approved_write_target_from(&approval, target.to_str().unwrap()).is_err()
+            );
+            assert_eq!(fs::read(&target).unwrap(), b"retained");
+        }
+        assert!(require_approved_write_target_from(
+            &approval,
+            root.join("note.md").to_str().unwrap()
+        )
+        .is_ok());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

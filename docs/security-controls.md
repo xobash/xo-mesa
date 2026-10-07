@@ -55,8 +55,8 @@ shared input contract for CONTROL-001 through CONTROL-014. A clean working file
 does not excuse unsafe staged bytes, and an unstaged file is not publication input.
 
 The scanner is a bounded text and tree check. It skips binary content and does
-not inspect image pixels, every credential format, every historical blob or
-provider caches. CONTROL-003 checks filenames; human review must still ensure
+not inspect image pixels, every credential format, historical binary content or provider caches. Reachable text blobs receive
+the same private-path, credential-signature, hostname, email and address checks. CONTROL-003 checks filenames; human review must still ensure
 approved ignore files contain only generic categories. CONTROL-011 has explicit
 upstream-notice and allowlist exceptions. CONTROL-013 checks file targets, not
 heading existence, external-link availability or every Markdown dialect.
@@ -107,3 +107,9 @@ CONTROL-026 (PREVENTIVE, enforced): package Node entry points must exist in the
 exact staged public tree. `public-release-audit.check.mjs` executes omitted and
 present script cases; frontend CI runs the check. This prevents sampled source
 packaging failures; it does not prove every dynamic import is present.
+
+CONTROL-027 (INCIDENT-001; enforced): scan every reachable historical text blob
+with the private-content rules, not only current staged files or author names.
+`rejects private bytes retained only in reachable history` exercises a replaced
+private fixture and confirms redacted reporting. Binary pixels, unknown secret
+formats and provider caches remain outside this claim.
