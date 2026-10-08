@@ -5,6 +5,7 @@ export function generateSyncKey(random: Pick<Crypto, "getRandomValues"> = crypto
 }
 
 export function validSyncKey(key: string): boolean {
+  if (/^credential:(device|peer:[^\s]+|session:[0-9a-f]{64})$/.test(key)) return true;
   if (!/^[0-9a-f]{64}$/.test(key)) return false;
   const bytes = key.match(/../g)!;
   // Reject repeated, short-pattern and password-like inputs. Users paste a

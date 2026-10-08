@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { VaultFile, NoteMeta } from './types';
 
 const io = vi.hoisted(() => ({
-  scan: vi.fn(), read: vi.fn(), write: vi.fn(), index: vi.fn(), watch: vi.fn(),
+  scan: vi.fn(), read: vi.fn(), write: vi.fn(), index: vi.fn(), watch: vi.fn(), history: vi.fn(),
 }));
 vi.mock('./lib/vault', async original => ({
   ...await original<object>(),
@@ -14,6 +14,7 @@ vi.mock('./lib/vault', async original => ({
   watchVault: io.watch,
   recoverWriteArtifacts: async () => ({ restored: [], removed: [] }),
 }));
+vi.mock('./lib/textRevisionHistory', async original => ({ ...await original<object>(), recordTextRevisionAsync: io.history }));
 vi.mock('./lib/vaultIndex', async original => ({ ...await original<object>(), loadIndexedNotes: io.index }));
 import { useAppStore } from './store';
 const initial = useAppStore.getState();
@@ -37,6 +38,7 @@ beforeEach(() => {
   io.read.mockResolvedValue({ ok: true, text: 'original' });
   io.write.mockResolvedValue(undefined);
   io.watch.mockResolvedValue(() => {});
+  io.history.mockResolvedValue({ id: 'revision' });
   io.index.mockResolvedValue(indexed('/vault', 'original'));
 });
 afterEach(async () => { await useAppStore.getState().flushSave(); useAppStore.setState(initial); });
@@ -90,4 +92,68 @@ it('requires a deliberate load for an over-limit document', async () => {
   expect(useAppStore.getState().activeContentState).toBe('ready');
   expect(useAppStore.getState().content).toBe('original');
   held.resolve({ ...indexed('/vault', 'stale'), skipped: ['Note.md'], cache: {} });
+});
+
+async function modifyFromOutside() {
+  const callback = io.watch.mock.lastCall?.[1] as (events: Array<{ kind: string; paths: string[] }>) => Promise<void>;
+  callback([{ kind: 'modify', paths: ['/vault/Note.md'] }]);
+  await vi.waitFor(() => expect(useAppStore.getState().status).toContain('File changed outside Mesa'));
+}
+it('preserves the known clean text in history before publishing an external edit', async () => {
+  await useAppStore.getState().openVault('/vault');
+  await vi.waitFor(() => expect(useAppStore.getState().indexingTextFiles).toBe(0));
+  io.read.mockResolvedValue({ ok: true, text: 'external edit' });
+  await modifyFromOutside();
+  expect(io.history).toHaveBeenCalledWith('/vault', 'Note.md', 'original');
+  expect(useAppStore.getState().content).toBe('external edit');
+  expect(useAppStore.getState().status).toContain('Previous text kept in document history');
+});
+it('keeps unsaved text and its original save precondition when Pi edits the same file', async () => {
+  await useAppStore.getState().openVault('/vault');
+  await vi.waitFor(() => expect(useAppStore.getState().indexingTextFiles).toBe(0));
+  useAppStore.getState().setContentFromEditor('local edit');
+  io.read.mockResolvedValue({ ok: true, text: 'Pi edit' });
+  await modifyFromOutside();
+  expect(useAppStore.getState().content).toBe('local edit');
+  expect(useAppStore.getState().status).toContain('unsaved text was kept');
+  expect(io.history).not.toHaveBeenCalled();
+  await useAppStore.getState().flushSave();
+  expect(io.write).toHaveBeenCalledWith(expect.objectContaining({ relPath: 'Note.md' }), 'local edit', 'original');
+});
+it('reports unavailable history while still showing a successful external read', async () => {
+  await useAppStore.getState().openVault('/vault');
+  await vi.waitFor(() => expect(useAppStore.getState().indexingTextFiles).toBe(0));
+  io.history.mockResolvedValue(null);
+  io.read.mockResolvedValue({ ok: true, text: 'external edit' });
+  await modifyFromOutside();
+  expect(useAppStore.getState().content).toBe('external edit');
+  expect(useAppStore.getState().status).toContain('history is unavailable');
+});
+
+it('keeps text typed while external-change history storage is still pending', async () => {
+  await useAppStore.getState().openVault('/vault');
+  await vi.waitFor(() => expect(useAppStore.getState().indexingTextFiles).toBe(0));
+  const held = deferred<{ id: string }>();
+  io.history.mockReturnValueOnce(held.promise);
+  io.read.mockResolvedValue({ ok: true, text: 'external edit' });
+  io.watch.mock.lastCall![1]([{ kind: 'modify', paths: ['/vault/Note.md'] }]);
+  await vi.waitFor(() => expect(io.history).toHaveBeenCalledOnce());
+  useAppStore.getState().setContentFromEditor('new local typing');
+  held.resolve({ id: 'retained' });
+  await vi.waitFor(() => expect(useAppStore.getState().status).toContain('unsaved text was kept'));
+  expect(useAppStore.getState().content).toBe('new local typing');
+});
+it('does not publish an old vault refresh after pending history finishes', async () => {
+  await useAppStore.getState().openVault('/vault');
+  await vi.waitFor(() => expect(useAppStore.getState().indexingTextFiles).toBe(0));
+  const held = deferred<{ id: string }>();
+  io.history.mockReturnValueOnce(held.promise);
+  io.read.mockResolvedValueOnce({ ok: true, text: 'obsolete external edit' });
+  io.watch.mock.lastCall![1]([{ kind: 'modify', paths: ['/vault/Note.md'] }]);
+  await vi.waitFor(() => expect(io.history).toHaveBeenCalledOnce());
+  await useAppStore.getState().openVault('/second');
+  held.resolve({ id: 'retained' });
+  await Promise.resolve(); await Promise.resolve();
+  expect(useAppStore.getState().vaultPath).toBe('/second');
+  expect(useAppStore.getState().content).toBe('original');
 });

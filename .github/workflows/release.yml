@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22.22.3
+          node-version-file: .node-version
       - run: node scripts/release-gate.mjs
       - name: Verify candidate run identity
         run: |

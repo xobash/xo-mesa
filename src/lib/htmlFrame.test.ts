@@ -12,3 +12,12 @@ describe('offline frame policy', () => {
     for (const hostile of ['http-equiv="refresh"', '<base', '<script', '<iframe', 'onclick=', 'href=', 'ping=']) expect(html).not.toContain(hostile);
   });
 });
+
+it('online resources never authorize executable saved markup', async () => {
+  const { savedHtmlFrameDocument } = await import('./html');
+  const result = savedHtmlFrameDocument('<script>fetch("https://example.com")</script><p onclick="bad()">Hello</p><form action="https://example.com"></form><img src="https://example.com/pixel">', true);
+  expect(result).toContain("script-src 'none'");
+  expect(result).toContain("connect-src 'none'");
+  expect(result).toContain('https://example.com/pixel');
+  for (const unsafe of ['<script', 'onclick=', '<form']) expect(result).not.toContain(unsafe);
+});

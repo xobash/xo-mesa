@@ -932,7 +932,7 @@ export function AgentSurface({
               className="pi-terminal-title"
               data-tauri-drag-region={nativeDragRegion ? "" : undefined}
             >
-              {windowTitle ? "Terminal · " : "Pi terminal · "}
+              {windowTitle ? "External process · " : "Pi external process · "}
               {terminalSize.cols}×{terminalSize.rows} · {fontSize}px
             </span>
             {titleBarHint && <span className="pi-window-hint" aria-hidden="true">{titleBarHint}</span>}

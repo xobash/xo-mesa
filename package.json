@@ -12,7 +12,7 @@
     "notices:generate": "node scripts/third-party-notices.mjs --generate",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --max-warnings 0",
+    "lint": "eslint src scripts --max-warnings 0",
     "test": "vitest run",
     "test:release": "node --test scripts/release-gate.check.mjs scripts/public-release-audit.check.mjs",
     "test:bootstrap": "node --test scripts/install-behavior.check.mjs scripts/dev-behavior.check.mjs scripts/launch-cache.check.mjs",
@@ -28,7 +28,12 @@
     "bench:index": "node scripts/index-memory-bench.mjs",
     "acceptance:native-template": "node scripts/native-acceptance-template.mjs",
     "acceptance:native-check": "node scripts/native-acceptance-check.mjs",
-    "audit:public": "node scripts/public-release-audit.mjs"
+    "audit:public": "node scripts/public-release-audit.mjs",
+    "test:documents": "node scripts/document-fuzz.mjs",
+    "test:toolchains": "node --test scripts/toolchain-contract.check.mjs",
+    "audit:independent": "node scripts/independent-privacy.mjs",
+    "test:assets": "node --test scripts/asset-metadata.check.mjs",
+    "audit:assets": "node scripts/asset-metadata.mjs"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.3.0",
@@ -50,7 +55,7 @@
     "zustand": "^5.0.1"
   },
   "engines": {
-    "node": ">=20.19.0"
+    "node": "22.22.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.0",

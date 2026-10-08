@@ -4,7 +4,7 @@ Host the native desktop shell and OS boundaries.
 
 ## Ownership
 
-Owns Rust sources, native resources, capabilities, configuration and platform icons.
+Owns Rust sources, native resources, capabilities, configuration and platform icons. Sync commands are split across `src/sync.rs` (discovery/client), `src/sync_server.rs` (server), and `src/sync_identity.rs` (identity).
 
 ## Local Contracts
 
@@ -31,4 +31,6 @@ Desktop checks cover vault open/switch, Sync close responsiveness, PDF save and 
 
 ## Child DOX Index
 
-None. `src/`, resources, capabilities and icons are owned here.
+- `fuzz/AGENTS.md` — isolated native parser fuzzing.
+
+`src/`, resources, capabilities and icons are owned here.

@@ -19,14 +19,10 @@
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "dialog:allow-open",
-    "fs:default",
     "fs:allow-read-text-file",
-    "fs:allow-write-text-file",
     "fs:allow-read-file",
-    "fs:allow-write-file",
     "fs:allow-read-dir",
     "fs:allow-stat",
-    "fs:allow-mkdir",
     "fs:allow-exists",
     "fs:allow-watch",
     {
@@ -36,7 +32,6 @@
     "allow-sync-status",
     "allow-sync-local-addr",
     "allow-sync-identity",
-    "allow-sync-fetch-manifest",
     "allow-sync-cancel",
     "allow-activity-start",
     "allow-activity-set-context",
@@ -53,6 +48,10 @@
     "allow-vault-flush-file",
     "allow-vault-write-atomic",
     "allow-vault-watch",
-    "allow-vault-unwatch"
+    "allow-vault-unwatch",
+    "allow-vault-create-directory",
+    "fs:deny-default",
+    "allow-vault-read-bytes",
+    "allow-vault-list-recovery"
   ]
 }

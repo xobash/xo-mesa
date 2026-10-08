@@ -6,8 +6,6 @@
     "main"
   ],
   "permissions": [
-    "fs:allow-remove",
-    "fs:allow-rename",
     "allow-sync-secrets-read",
     "allow-sync-secrets-write",
     "allow-sync-start",
@@ -20,6 +18,13 @@
     "allow-quit-guard-disarm",
     "allow-quit-after-save",
     "allow-vault-apply-research",
-    "allow-vault-purge-recovery"
+    "allow-vault-purge-recovery",
+    "allow-vault-move-to-recovery",
+    "allow-vault-restore-recovery",
+    "allow-vault-recover-artifact",
+    "allow-sync-fetch-manifest",
+    "allow-sync-secrets-import",
+    "allow-sync-secrets-generate",
+    "allow-sync-secrets-show"
   ]
 }

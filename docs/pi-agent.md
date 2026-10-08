@@ -31,6 +31,14 @@ into the model prompt.
 
 ## Terminal
 
+Pi is a trusted external process, not a vault sandbox. Before its first launch
+for a vault in each app session, a native dialog explains full OS file access,
+command execution, networking and the absence of Mesa save guarantees. Cancel
+creates no process. The Pi toolbar labels the external-process boundary.
+Approvals stay only in native memory until Mesa quits; switching vaults needs
+that vault's own decision. Terminal session IDs contain 128 OS-random bits;
+they are identifiers, not authentication credentials.
+
 In the desktop app, Pi starts in the current vault folder through Mesa's native
 PTY layer. On Windows this maps to the platform pseudoconsole path exposed by
 the same PTY dependency; on macOS/Linux it uses the native pseudoterminal path.
@@ -265,8 +273,8 @@ provider — this is the one write path in Mesa that `persistVerifiedBytes`
 (`src/lib/verifiedWrite.ts`) never sees, so none of Mesa's own backup/atomic-
 rename/read-back guarantees apply to it.
 
-For text files that is fine: a text tool round-trips text, and Pi editing notes
-is the intended workflow. For a binary file it is not an edit but destruction.
+Text tools can still overwrite concurrent edits or lose recovery versions.
+Mesa treats these as external writes, even when the resulting text is valid. For a binary file it is not an edit but destruction.
 `write`/`edit`/`apply_patch` carry string content, so reaching disk means a
 UTF-8 decode/encode cycle that mangles every byte sequence which isn't valid
 UTF-8. On a PDF, one altered byte invalidates the xref table and the document
@@ -305,130 +313,26 @@ and is compiled into the Mesa binary (`include_str!`), so what ships is exactly
 what is code-reviewed in this repo. Nothing is fetched at runtime, which keeps
 this path outside the blast radius of npm supply-chain attacks.
 
-## Browser Harness
+## Browser reader
 
-The browser harness is a tool, not the default view. The ⌕ button near the
-terminal slides it out **from behind the Pi window, to its right** — the Pi
-window keeps its size and the terminal is never covered or squeezed. In bounded
-surfaces (a workspace pane or the popped-out Pi OS window, where nothing exists
-beyond the surface edge) the harness opens as an inline sibling pane instead.
-Both variants are resizable by dragging the wing's outer edge. An inline wing
-is capped at half of the bounded Pi surface, preserving at least half for a
-usable terminal. Dragging the Deep Research wing by its own header separates it
-from Pi into the overlay's floating Research window without adding a second
-visible button path. If Browser opens while bounded Deep Research is visible,
-it nests beneath Research's evidence region so neither surface covers the
-terminal or hides the composer/footer controls. Floating slide-out Pi windows
-may keep both external wings open because they do not consume terminal width.
-Automatic navigation opens Browser only in the Pi host that owns the shared
-xterm, never closes Research, and does not reopen Browser after the user closes
-it during the same run.
+The Pi wing reads public HTTP(S) pages through Mesa's native network broker.
+The broker validates literal addresses, checks every resolved address at the
+final connection, disables system proxies and rechecks redirects. Responses
+are capped at 4 MiB and report truncation.
 
-In the desktop app the harness page surface is a **real native child webview**
-(Tauri multiwebview, `unstable` cargo feature; `src-tauri/src/harness.rs`),
-not an iframe:
+The viewer sanitizes fetched HTML and renders it in an opaque sandbox. Only
+Mesa's fixed navigation bridge runs, authorized by its exact script hash.
+Website scripts, remote subresources, forms, nested frames and live remote
+webviews are unavailable. This removes the second DNS resolution path that
+could bypass the broker. JavaScript-only and signed-in pages may not be readable.
+The browser demo displays the controls but needs the desktop broker to fetch.
 
-- Pages render fully — JavaScript, sessions, sign-ins, google.com/youtube.com
-  and every other site that blocks embedding. The old iframe approach hit
-  `X-Frame-Options` / CSP `frame-ancestors` on exactly the sites people use
-  most and fell back to a scriptless "reader mode" that showed no-JS variants
-  and JS-shell skeletons — pages that looked like counterfeit copies of the
-  real site. That failure mode is gone.
-- The frontend owns the webview's rectangle: `BrowserHarness.tsx` measures the
-  wing's page slot every animation frame and pushes changed bounds to Rust
-  (`harness_bounds`), so the webview follows wing slides, pane resizes, and
-  overlay drags. Its visibility follows both the wing and higher Mesa surfaces
-  (`harness_visibility`). Because a native child webview cannot participate in
-  CSS stacking, Mesa hides it while an intersecting blocking window, modal,
-  menu, or hover card is in front. The small Deep Research context preview is
-  passive: it does not hide the live page when their rectangles
-  touch, so the browser can keep rendering underneath it. The renderer then
-  uses its normal stacking order; the still-live page returns as soon as a
-  blocking overlap clears.
-  The initial overlap decision is included in `harness_navigate`, preventing a
-  newly loaded page from flashing above an already-open Mesa surface. The page
-  also survives a closed wing and is re-adopted when the wing reopens
-  (`harness_status`).
-- If native webview creation fails at runtime, the harness falls back to the
-  legacy two-tier iframe path for the session: `browse_fetch` header check →
-  direct iframe when framing is allowed, sandboxed srcdoc reader mode (no
-  `allow-same-origin`, injected `<base>` + postMessage navigation bridge) when
-  blocked. The browser demo (no Rust) always uses the legacy path. Reader
-  mode's fetch (`browse.rs`) sends a generic user agent; sites may return a
-  simplified layout.
-- One failed `harness_navigate` used to permanently downgrade the whole wing
-  session to that legacy path over what is usually a one-off hiccup (the
-  loopback activity server was still starting, a transient wry/webview-runtime
-  error) rather than a real platform limitation. `harness_navigate` now waits
-  briefly for the activity server if it isn't up yet and recreates a
-  misbehaving existing webview once before erroring; the frontend also retries
-  once before giving up. If native mode still downgrades, the status row (only
-  shown once nativeOk is confirmed false) offers a one-click "Try live view
-  again" instead of requiring the wing to be closed and reopened.
+Search and address entry, Back, Forward, Reload and Archive remain available.
+Links route through the broker again. Archive uses verified create-only vault
+writes under `Web Archives/`; the saved document opens offline.
 
-Address-bar semantics (shared with the Pi mirror path via `resolveNavTarget`):
-
-- search terms open a DuckDuckGo search URL
-- full URLs open directly
-- Back/Forward/Reload drive the real webview's history (`harness_history`)
-- Archive saves the current page into `Web Archives/` inside the active vault
-  via a native `browse_fetch` of the current URL
-
-### Pi uses — and sees — the same harness the user sees
-
-Every page in the harness webview gets an injected **reporter**
-(`src-tauri/resources/harness-reporter.js`, top frame only): it snapshots the
-*rendered* DOM (title, visible text, outgoing links) after load, on DOM
-mutations (debounced), and on SPA pushState navigations, and streams the
-snapshots to Mesa. Two transports keep this working on every platform webview:
-a `no-cors` POST to Mesa's loopback activity server (`/harness`), and — where
-https→loopback fetches are blocked as mixed content — a hidden-iframe
-navigation to the `mesa-snap:` scheme that Rust's `on_navigation` handler
-intercepts and cancels. The POST carries a separate snapshot-only token that
-Mesa rotates on each page load and verifies. The fallback URL omits that token; Rust adds it after intercepting
-the URL. A page can forge fallback observations, so Pi must treat rendered page
-content as untrusted source material.
-
-The embedded Pi agent ships with two bundled tools (`mesa-browser.ts`, loaded
-via `--extension` like the activity and /goal extensions):
-
-- `browse(url)` — Mesa mirrors the navigation into the visible harness
-  (popping the wing open), waits for the rendered snapshot belonging to that
-  navigation, and returns the **rendered page text** to the model — exactly
-  what the user is watching, JS included. If no live harness materializes
-  (no Pi surface mounted, or the legacy iframe fallback is active), Mesa
-  answers with a native static fetch instead, and the tool result is
-  explicitly labeled as a fallback the user is *not* seeing, so the agent
-  cannot honestly overclaim.
-- `browse_read()` — returns the harness's *current* rendered snapshot without
-  navigating: how the agent re-checks a slow page or looks at whatever the
-  user opened by hand.
-
-Navigation mirroring also flows the other way: the webview reports real
-navigations and SPA moves back to the harness address bar
-(`mesa://harness-nav`), so the URL the user sees always matches the page.
-
-### Isolation & sessions
-
-The harness is fully isolated from the user's default browser (Chrome/Safari
-profiles are never touched):
-
-- The native harness webview and "open webview" windows use the app webview's
-  own cookie storage, which persists across Mesa restarts (platform webview
-  profile) — sign-ins made there stick, and because Pi's `browse` reads the
-  rendered DOM of that same webview, the agent sees signed-in pages without
-  any cookie sharing machinery.
-- The static-fallback fetch and legacy reader mode share one native HTTP
-  client with an in-memory cookie jar (reqwest `cookies` feature); that jar is
-  memory-only and clears when Mesa quits.
-- The harness webview's label (`pi-harness`) matches no capability window
-  pattern, so remote pages get **zero** Tauri permissions; the reporter needs
-  none (its transports are plain HTTP-to-loopback and a cancelled navigation).
-  `on_navigation` confines the webview to http(s)/about/blob/data URLs. A
-  native harness tests pin these route and security behaviors.
-
-When no page body can be fetched at all, Mesa still archives a small HTML link
-record with the failure message so the research trail is not lost.
-
-The harness uses the system webview, Tauri's `WebviewWindow` API, the bundled
-reporter and the existing native reqwest client.
+Pi's `browse(url)` returns native-fetched source data and mirrors navigation
+into the reader. `browse_read()` returns the latest fetched source and its age,
+not a page-controlled DOM snapshot or proof of what the user saw. User browsing
+and Pi browsing retain separate in-memory cookie jars. Page data is untrusted
+and is encoded as evidence rather than instructions or authorization.

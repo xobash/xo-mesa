@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const scanner = resolve('scripts/public-release-audit.mjs');
-function auditFixture({ name = 'xobash', email = 'xobash@users.noreply.github.com', date = '2026-10-05T00:00:00+0000', files = { 'README.md': '# Example\n' }, approved = Object.keys(files), allowlistText, unstaged = {} } = {}) {
+function auditFixture({ name = 'xobash', email = 'xobash@users.noreply.github.com', date = '2026-10-05T00:00:00+0000', files = { 'README.md': '# Example\n' }, approved = Object.keys(files), allowlistText, unstaged = {}, historicalFiles = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'mesa-public-identity-'));
   const env = { ...process.env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_NAME: 'xobash', GIT_COMMITTER_EMAIL: 'xobash@users.noreply.github.com', GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date };
   function git(...args) {
@@ -14,13 +14,19 @@ function auditFixture({ name = 'xobash', email = 'xobash@users.noreply.github.co
   }
   try {
     const entries = { ...files, 'scripts/public-files.txt': allowlistText ?? [...approved, 'scripts/public-files.txt'].sort().join('\n') + '\n' };
-    for (const [path, content] of Object.entries(entries)) {
+    for (const [path, content] of Object.entries({ ...entries, ...historicalFiles })) {
       mkdirSync(join(dir, path, '..'), { recursive: true });
       writeFileSync(join(dir, path), content);
     }
     git('init', '-q');
-    git('add', '--', ...Object.keys(entries));
+    git('add', '--', ...Object.keys({ ...entries, ...historicalFiles }));
     git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'Verify public identity');
+    if(Object.keys(historicalFiles).length) {
+      for(const [path,content] of Object.entries(entries)) writeFileSync(join(dir,path),content);
+      for(const path of Object.keys(historicalFiles)) if(!(path in entries)) git('rm','--',path);
+      git('add','--',...Object.keys(entries));
+      git('-c','commit.gpgsign=false','commit','-qm','Replace historical fixture');
+    }
     for (const [path, content] of Object.entries(unstaged)) writeFileSync(join(dir, path), content);
     return spawnSync(process.execPath, [scanner], { cwd: dir, env, encoding: 'utf8' });
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -165,4 +171,29 @@ it('rejects unrelated authors, personal-address forms and non-UTC history', () =
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /identity metadata/);
   }
+});
+
+it('checks nested native modules and path overrides against staged files', () => {
+  const files = { 'src-tauri/src/lib.rs': 'mod core;\n', 'src-tauri/src/core.rs': '#[path = "wire.rs"]\nmod wire;\n' };
+  const missing = auditFixture({ files });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /required native module wire is missing/);
+  const present = auditFixture({ files: { ...files, 'src-tauri/src/wire.rs': '' } });
+  assert.equal(present.status, 0, present.stderr);
+});
+it('rejects a package command whose script was omitted from publication', () => {
+  const files = { 'package.json': JSON.stringify({ scripts: { verify: 'node scripts/verify.mjs' } }) };
+  const missing = auditFixture({ files });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /script verify requires missing scripts\/verify.mjs/);
+  const present = auditFixture({ files: { ...files, 'scripts/verify.mjs': '' } });
+  assert.equal(present.status, 0, present.stderr);
+});
+
+it('rejects private bytes retained only in reachable history',()=>{
+  const value=['/Users','/','synthetic-person','/vault'].join('');
+  const result=auditFixture({historicalFiles:{'README.md':value}});
+  assert.notEqual(result.status,0);
+  assert.match(result.stderr,/historical blob .* contains personal filesystem path/);
+  assert.doesNotMatch(result.stderr,/synthetic-person/);
 });

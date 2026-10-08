@@ -90,7 +90,11 @@ fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Resul
     if !approved.roots.iter().any(|root| {
         fs::canonicalize(root)
             .ok()
-            .is_some_and(|approved_root| canonical_parent.starts_with(approved_root))
+            .is_some_and(|approved_root| {
+                canonical_parent.strip_prefix(approved_root).ok().is_some_and(|relative| {
+                    relative.components().all(|part| matches!(part, Component::Normal(name) if name.to_str().is_some_and(|name| !name.starts_with('.') && name != "node_modules")))
+                })
+            })
     }) {
         return Err("vault file is outside the approved folders".into());
     }
@@ -377,9 +381,125 @@ fn authorize_artifacts(app: &AppHandle, paths: Vec<String>) -> Result<(), String
     Ok(())
 }
 
+fn relative_to_root(root: &Path, raw: &str) -> Option<String> {
+    let spelling = |value: &str| {
+        value
+            .replace('\\', "/")
+            .trim_start_matches("//?/")
+            .trim_end_matches('/')
+            .to_string()
+    };
+    let input = spelling(raw);
+    let root_text = spelling(&root.to_string_lossy());
+    let input_parts: Vec<_> = input.split('/').collect();
+    let root_parts: Vec<_> = root_text.split('/').collect();
+    let same = |a: &str, b: &str| {
+        #[cfg(windows)]
+        {
+            a.to_lowercase() == b.to_lowercase()
+        }
+        #[cfg(not(windows))]
+        {
+            a == b
+        }
+    };
+    if input_parts.len() >= root_parts.len()
+        && root_parts.iter().zip(&input_parts).all(|(a, b)| same(a, b))
+    {
+        return Some(input_parts[root_parts.len()..].join("/"));
+    }
+    // A selected root can have an OS alias (for example /var on macOS).
+    // Resolve that root alias, never a descendant inside it.
+    for ancestor in Path::new(raw).ancestors() {
+        if fs::canonicalize(ancestor).ok().as_deref() == Some(root) {
+            return raw
+                .strip_prefix(ancestor.to_str()?)
+                .map(|rel| rel.trim_start_matches(['/', '\\']).replace('\\', "/"));
+        }
+    }
+    None
+}
+/// Resolve an absolute in-vault path without treating renderer input as approval.
+pub(crate) fn approved_path(app: &AppHandle, raw: &str) -> Result<(PathBuf, String), String> {
+    normalized_root(raw)?;
+    let approved = load_approved_roots(&approved_roots_path(app)?)?;
+    for root in approved.roots {
+        let Ok(root) = fs::canonicalize(root) else {
+            continue;
+        };
+        if let Some(rel) = relative_to_root(&root, raw) {
+            if rel.is_empty() || crate::sync_core::safe_join(&root, &rel).is_some() {
+                return Ok((root, rel));
+            }
+        }
+    }
+    Err("path is outside approved vault folders".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn relative_paths_match_components_without_slicing_unicode() {
+        let root = std::env::temp_dir().join("mesa-İ-root");
+        let input = root.join("notes/new.md");
+        assert_eq!(
+            relative_to_root(&root, &input.to_string_lossy()).as_deref(),
+            Some("notes/new.md")
+        );
+        assert!(relative_to_root(&root, &format!("{}-other/file", root.display())).is_none());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn selected_root_alias_does_not_grant_another_root() {
+        let root = std::env::temp_dir().join(format!("mesa-scope-alias-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("vault")).unwrap();
+        std::os::unix::fs::symlink(root.join("vault"), root.join("alias")).unwrap();
+        let canonical = fs::canonicalize(root.join("vault")).unwrap();
+        assert_eq!(
+            relative_to_root(
+                &canonical,
+                &root.join("alias/notes/new.md").to_string_lossy()
+            )
+            .as_deref(),
+            Some("notes/new.md")
+        );
+        assert!(
+            relative_to_root(&canonical, &root.join("outside/new.md").to_string_lossy()).is_none()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renderer_save_cannot_rewrite_hidden_recovery_or_control_files() {
+        let dir =
+            std::env::temp_dir().join(format!("mesa-scope-write-policy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("vault/.mesa-trash/123")).unwrap();
+        fs::create_dir_all(dir.join("vault/.git")).unwrap();
+        let root = fs::canonicalize(dir.join("vault")).unwrap();
+        let approval = dir.join("approval.json");
+        let mut roots = ApprovedRoots::default();
+        roots
+            .roots
+            .insert(normalized_root(root.to_str().unwrap()).unwrap());
+        save_approved_roots(&approval, &roots).unwrap();
+        for rel in [".mesa-trash/123/original.md", ".git/config"] {
+            let target = root.join(rel);
+            fs::write(&target, b"retained").unwrap();
+            assert!(
+                require_approved_write_target_from(&approval, target.to_str().unwrap()).is_err()
+            );
+            assert_eq!(fs::read(&target).unwrap(), b"retained");
+        }
+        assert!(require_approved_write_target_from(
+            &approval,
+            root.join("note.md").to_str().unwrap()
+        )
+        .is_ok());
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn normalizes_separators_and_trailing_slashes() {

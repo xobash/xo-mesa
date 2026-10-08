@@ -229,6 +229,14 @@ Two operations that LOOK like text operations are held to the same rule:
 
 ## Writes Mesa does not make itself: the embedded Pi agent
 
+Pi launch requires native consent for trusted external-process access for each
+vault during the app session. Its toolbar labels that boundary. Consent does not
+make Pi writes verified or sandboxed. The existing vault watcher reconciles
+successful external reads into clean editors, search and the graph; dirty drafts
+keep their expected-byte baseline and refuse a stale overwrite. Failed refreshes
+retain prior content. Recovery copies for arbitrary external writes cannot be
+guaranteed; use Mesa's reviewed research apply for those guarantees.
+
 Everything above covers writes Mesa's own code performs. It does not cover
 Pi: the embedded agent runs as a real, unsandboxed native process
 (`src-tauri/src/terminal.rs`, cwd = the vault folder) driven by whatever
@@ -348,3 +356,23 @@ main-window calls inside approved recovery storage and rejects traversal,
 symlinks, reparse points, and the storage root. Permanent removal affects no
 live file and does not promise SSD erasure or removal from external backups.
 Recovery has no automatic expiry; retention is an explicit user decision.
+
+When an observed external text edit replaces clean cached text, Mesa retains the
+last known text in document history before refreshing the editor and reports the
+external change. Dirty text keeps its original verified-save baseline. History
+failures are disclosed; writes between observations and uncached/binary bytes are
+not recoverable through this text-history feature.
+
+## Enforced desktop mutation boundary
+
+Every app window is denied filesystem-plugin mutation and writable open/create
+operations. Verified native saves require expected SHA-256/length or a missing
+target. Callers without a baseline read one before submitting; IPC rejects an
+unconditional overwrite. Trusted internal recovery remains stricter per operation.
+Ordinary saves and renames reject hidden recovery/control directories.
+Visible directories use native creation. Delete and restore use recoverable,
+no-replace moves. Recovery catalogue reads need no recursive hidden-path grant.
+Artifact restoration accepts stale recognized originals, retains rescue copies,
+and fails when a destination appears. Native tests exercise collisions, symlink
+parents, fresh artifacts and concurrent edits; capability tests cover every window.
+Pi and other OS processes remain outside this renderer boundary.

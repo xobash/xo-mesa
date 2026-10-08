@@ -34,7 +34,7 @@ export function HtmlView({ rel, file: providedFile }: { rel: string; file?: Vaul
   useEffect(() => {
     if (!file) return;
     let alive = true;
-    void hydrateSavedHtml(text, file.path, urlForPath, readTextFile, { scripts: active })
+    void hydrateSavedHtml(text, file.path, urlForPath, readTextFile, { scripts: false })
       .then(html => { if (alive) setRendered({ key: renderKey, html: savedHtmlFrameDocument(html, active) }); })
       .catch(reason => { if (alive) setError(`Could not render HTML: ${String(reason)}`); });
     return () => { alive = false; };
@@ -51,12 +51,12 @@ export function HtmlView({ rel, file: providedFile }: { rel: string; file?: Vaul
       </div>
       <button className="seg-btn" aria-pressed={active} onClick={() => {
         if (active) { setApproved(null); return; }
-        if (window.confirm("Enable active content for this file while it is open? Scripts and remote resources can contact websites and transmit data in this document.")) setApproved({ identity, text });
-      }}>{active ? "Disable active content" : "Enable active content"}</button>
-      <span>{active ? "Active content · network enabled" : "Offline · scripts blocked"}</span>
+        if (window.confirm("Load online images, styles, and media for this file while it is open? These requests can reveal document data to websites. Scripts remain blocked.")) setApproved({ identity, text });
+      }}>{active ? "Disable online resources" : "Enable online resources"}</button>
+      <span>{active ? "Online resources · scripts blocked" : "Offline · scripts blocked"}</span>
     </div>
     {error && <div role="alert">{error}</div>}
     {source ? <pre className="html-source">{text}</pre> : <iframe key={`${identity}:${active}`} className="html-frame" srcDoc={html}
-      sandbox={active ? "allow-scripts allow-popups allow-forms allow-modals" : ""} referrerPolicy="no-referrer" title={file.name} />}
+      sandbox="" referrerPolicy="no-referrer" title={file.name} />}
   </div>;
 }

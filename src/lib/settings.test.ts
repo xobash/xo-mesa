@@ -62,3 +62,11 @@ describe('settings upgrade and failure behavior', () => {
     expect(source.getItem(SETTINGS_KEY)).not.toContain(fresh);
   });
 });
+
+it('starts offline and never resumes network discovery from saved settings', () => {
+  expect(DEFAULT_SETTINGS.syncEnabled).toBe(false);
+  expect(DEFAULT_SETTINGS.syncDiscovery).toBe(false);
+  expect(DEFAULT_SETTINGS.syncBindAddress).toBe('127.0.0.1');
+  expect(normalizeSettings({ syncDiscovery: true, syncEnabled: true }).syncDiscovery).toBe(false);
+  expect(normalizeSettings({ syncEnabled: true }).syncEnabled).toBe(true);
+});

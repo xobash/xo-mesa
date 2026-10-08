@@ -1,6 +1,6 @@
 # Browser preview image. Desktop bundles are built by the CI matrix.
 
-FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS build
+FROM node:22.22.3-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci

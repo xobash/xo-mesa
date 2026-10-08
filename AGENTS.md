@@ -10,7 +10,7 @@ Root owns project rules, bootstrap, dependency manifests, browser assets in `pub
 
 - Preserve unrelated uncommitted files. Use an isolated checkout when a focused commit cannot safely be prepared in the working tree.
 - Keep changes pragmatic, concise, complete, tested and documented. Search before building; review every requirement before closeout.
-- Keep vault data local; do not add telemetry. Preserve verified saves, recovery and IPC compatibility.
+- Keep vault data local; do not add telemetry. Follow pinned Node and Rust toolchains. Preserve verified saves, recovery and IPC compatibility.
 - Every new tracked file goes into `scripts/public-files.txt`, sorted with JavaScript `Array.prototype.sort()`.
 - Performance is a contract: measure before/after and record numbers. Distinguish supplied historical measurements from newly reproduced results.
 - Public files must contain no credentials, personal paths, private vault data or session records. Use the existing public no-reply commit identity.
@@ -32,8 +32,14 @@ npm run test:bootstrap
 npm run test:index
 npm run test:markdown
 npm run test:notices
+npm run test:toolchains
+npm run test:assets
+npm run audit:assets
+npm run test:documents
+npm run test:release
 npm run build
 npm run audit:public
+npm run audit:independent
 npm audit --audit-level=moderate
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

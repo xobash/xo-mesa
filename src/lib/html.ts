@@ -330,10 +330,10 @@ async function replaceAsync(
 /** A dedicated frame policy is applied before any saved markup is parsed. */
 export function savedHtmlFrameDocument(html: string, active = false): string {
   const policy = active
-    ? "default-src 'none'; script-src 'unsafe-inline' https: asset: http://asset.localhost https://asset.localhost; style-src 'unsafe-inline' https: asset: http://asset.localhost https://asset.localhost; img-src data: blob: https: asset: http://asset.localhost https://asset.localhost; font-src data: https: asset: http://asset.localhost https://asset.localhost; connect-src https:; media-src data: blob: https: asset: http://asset.localhost https://asset.localhost; frame-src 'none'; object-src 'none'; form-action https:; base-uri https: asset: http://asset.localhost https://asset.localhost"
+    ? "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' https: asset: http://asset.localhost https://asset.localhost; img-src data: blob: https: asset: http://asset.localhost https://asset.localhost; font-src data: https: asset: http://asset.localhost https://asset.localhost; connect-src 'none'; media-src data: blob: https: asset: http://asset.localhost https://asset.localhost; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"
     : "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' asset: http://asset.localhost https://asset.localhost; img-src data: blob: asset: http://asset.localhost https://asset.localhost; font-src data: asset: http://asset.localhost https://asset.localhost; media-src data: blob: asset: http://asset.localhost https://asset.localhost; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
   let markup = html;
-  if (!active) {
+  {
     if (!DOMPurify.isSupported) throw new Error("Safe HTML rendering is unavailable.");
     markup = DOMPurify.sanitize(html, {
       WHOLE_DOCUMENT: true,

@@ -171,7 +171,7 @@ export interface ResearchActivity {
   /** Source title, when known. */
   sourceTitle?: string;
   /**
-   * True when Mesa OBSERVED this activity itself (a real browser-harness
+   * True when Mesa OBSERVED this activity itself (a brokered browser
    * navigation) rather than trusting the model's self-reported progress call.
    */
   observed?: boolean;
@@ -412,8 +412,8 @@ export function searchQueryOf(raw: string): string | null {
 }
 
 /**
- * Map a REAL browser-harness navigation (observed via `mesa://browse` /
- * `mesa://harness-nav`, not self-reported by the model) to a run activity:
+ * Map a brokered browser navigation (observed via `mesa://browse` /
+ * `mesa://browse-observed`, not self-reported by the model) to a run activity:
  * search-engine URLs become a `search` entry showing the query, other http(s)
  * pages become a `source` entry. Non-web URLs return `null`.
  */

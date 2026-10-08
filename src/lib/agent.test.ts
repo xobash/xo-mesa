@@ -22,7 +22,7 @@ const settings: Settings = {
   hardwareAccel: true,
   animations: true,
   enableTabs: false,
-  syncPort: 8787,
+  syncBindAddress: "127.0.0.1", syncPort: 8787,
   syncEnabled: true,
   syncDiscovery: true,
   syncToken: "",

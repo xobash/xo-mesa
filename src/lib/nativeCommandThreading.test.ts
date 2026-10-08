@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import nativeApp from "../../src-tauri/src/lib.rs?raw";
 import activity from "../../src-tauri/src/activity.rs?raw";
 import sync from "../../src-tauri/src/sync.rs?raw";
+import syncServer from "../../src-tauri/src/sync_server.rs?raw";
+import syncIdentity from "../../src-tauri/src/sync_identity.rs?raw";
 import vaultscope from "../../src-tauri/src/vaultscope.rs?raw";
 import vaultwatch from "../../src-tauri/src/vaultwatch.rs?raw";
 
@@ -15,7 +17,9 @@ import vaultwatch from "../../src-tauri/src/vaultwatch.rs?raw";
  */
 const OFF_MAIN_THREAD: Record<string, { source: string; commands: string[] }> = {
   "activity.rs": { source: activity, commands: ["activity_stop"] },
-  "sync.rs": { source: sync, commands: ["sync_stop", "sync_identity", "sync_discovery_stop"] },
+  "sync.rs": { source: sync, commands: ["sync_discovery_stop"] },
+  "sync_server.rs": { source: syncServer, commands: ["sync_stop"] },
+  "sync_identity.rs": { source: syncIdentity, commands: ["sync_identity"] },
   "vaultscope.rs": { source: vaultscope, commands: ["vault_flush_file", "vault_authorize", "vault_authorize_artifacts"] },
   "vaultwatch.rs": { source: vaultwatch, commands: ["vault_watch", "vault_unwatch"] },
 };

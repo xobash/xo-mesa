@@ -1,36 +1,51 @@
 // Use native no-replace rename; an exists check does not authorize overwrite.
 
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 fn safe_relative_path(rel: &str) -> Option<PathBuf> {
-    if rel.is_empty() {
-        return None;
-    }
     let normalized = rel.replace('\\', "/");
-    let path = Path::new(&normalized);
-    if path.is_absolute() {
-        return None;
-    }
-    let mut result = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(part) => result.push(part),
-            _ => return None,
-        }
-    }
-    (!result.as_os_str().is_empty()).then_some(result)
+    crate::sync_core::safe_join(Path::new(""), &normalized)
 }
 
-fn contained_parent(root: &Path, parent: &Path) -> Result<(), String> {
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("could not create destination folder: {error}"))?;
-    let canonical_parent = fs::canonicalize(parent)
-        .map_err(|error| format!("could not resolve destination folder: {error}"))?;
-    if canonical_parent.starts_with(root) {
-        Ok(())
-    } else {
-        Err("rename destination escapes the selected vault".into())
+fn move_confined(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let rel = |path: &Path| {
+            path.strip_prefix(root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        };
+        let source = crate::sync_core::RootedTarget::resolve(
+            root,
+            &rel(from).map_err(|e| e.to_string())?,
+            false,
+        )
+        .map_err(|e| e.to_string())?;
+        let destination = crate::sync_core::RootedTarget::resolve(
+            root,
+            &rel(to).map_err(|e| e.to_string())?,
+            true,
+        )
+        .map_err(|e| e.to_string())?;
+        source
+            .rename_no_replace(&destination)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(windows)]
+    {
+        if !from.starts_with(root) || !to.starts_with(root) {
+            return Err("rename path is outside the approved root".into());
+        }
+        let _source = crate::sync_core::WindowsParentGuard::acquire(from, false)
+            .map_err(|e| e.to_string())?;
+        let _destination =
+            crate::sync_core::WindowsParentGuard::acquire(to, true).map_err(|e| e.to_string())?;
+        crate::sync_core::open_file_no_follow(from).map_err(|e| e.to_string())?;
+        crate::sync_core::move_file_no_replace(from, to).map_err(|e| e.to_string())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err("confined rename is unavailable on this platform".into())
     }
 }
 
@@ -62,6 +77,13 @@ fn rename_no_replace(
     to_rel: &str,
     case_only: bool,
 ) -> Result<(), String> {
+    if [from_rel, to_rel].iter().any(|rel| {
+        rel.replace('\\', "/")
+            .split('/')
+            .any(|part| part.starts_with('.') || part == "node_modules")
+    }) {
+        return Err("rename accepts visible vault files only".into());
+    }
     let from = safe_relative_path(from_rel).ok_or("invalid rename source")?;
     let to = safe_relative_path(to_rel).ok_or("invalid rename destination")?;
     if from == to {
@@ -74,15 +96,8 @@ fn rename_no_replace(
     if !metadata.file_type().is_file() {
         return Err("rename source is not a regular vault file".into());
     }
-    contained_parent(
-        root,
-        destination
-            .parent()
-            .ok_or("rename destination has no parent")?,
-    )?;
-
     if !case_only {
-        return crate::sync_core::move_file_no_replace(&source, &destination).map_err(|error| {
+        return move_confined(root, &source, &destination).map_err(|error| {
             format!("could not rename without replacing an existing file: {error}")
         });
     }
@@ -90,12 +105,12 @@ fn rename_no_replace(
     // A case-only rename on a case-insensitive volume names the source through
     // both spellings. Two no-replace hops preserve the same safety guarantee.
     let temporary = unique_case_hop(&source)?;
-    crate::sync_core::move_file_no_replace(&source, &temporary)
+    move_confined(root, &source, &temporary)
         .map_err(|error| format!("could not stage case-only rename: {error}"))?;
-    match crate::sync_core::move_file_no_replace(&temporary, &destination) {
+    match move_confined(root, &temporary, &destination) {
         Ok(()) => Ok(()),
         Err(error) => {
-            let rollback = crate::sync_core::move_file_no_replace(&temporary, &source);
+            let rollback = move_confined(root, &temporary, &source);
             match rollback {
                 Ok(()) => Err(format!("could not complete case-only rename: {error}")),
                 Err(rollback_error) => Err(format!(
@@ -128,6 +143,12 @@ pub async fn vault_rename_no_replace(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ordinary_rename_cannot_bypass_main_only_recovery() {
+        let root = std::env::temp_dir();
+        assert!(super::rename_no_replace(&root, ".mesa-trash/123/a.md", "a.md", false).is_err());
+        assert!(super::rename_no_replace(&root, "a.md", ".git/config", false).is_err());
+    }
     use super::*;
 
     struct TempVault(PathBuf);
@@ -194,6 +215,22 @@ mod tests {
 
         assert!(!vault.0.join("from.pdf").exists());
         assert_eq!(fs::read(vault.0.join("nested/to.pdf")).unwrap(), payload);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_linked_source_parent_and_destination_without_outside_mutation() {
+        let vault = TempVault::new("source-link");
+        let outside = TempVault::new("outside-link");
+        outside.write("keep.md", "outside");
+        vault.write("inside.md", "inside");
+        std::os::unix::fs::symlink(&outside.0, vault.0.join("linked")).unwrap();
+        let root = fs::canonicalize(&vault.0).unwrap();
+        assert!(rename_no_replace(&root, "linked/keep.md", "stolen.md", false).is_err());
+        assert!(rename_no_replace(&root, "inside.md", "linked/new/sub/note.md", false).is_err());
+        assert_eq!(fs::read(outside.0.join("keep.md")).unwrap(), b"outside");
+        assert!(!outside.0.join("new").exists());
+        assert_eq!(fs::read(vault.0.join("inside.md")).unwrap(), b"inside");
     }
 }
 

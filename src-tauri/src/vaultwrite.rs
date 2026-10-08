@@ -279,6 +279,9 @@ pub async fn vault_write_atomic(
     data: Vec<u8>,
     expected: ExpectedCurrent,
 ) -> Result<(), String> {
+    if matches!(expected, ExpectedCurrent::Any) {
+        return Err("verified saves require an expected hash or missing target".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = WRITE_LOCK
             .lock()

@@ -8,8 +8,9 @@ export const DEFAULT_SETTINGS: Settings = {
   animations: true,
   enableTabs: false,
   syncPort: 8787,
-  syncEnabled: true,
-  syncDiscovery: true,
+  syncEnabled: false,
+  syncDiscovery: false,
+  syncBindAddress: "127.0.0.1",
   syncToken: "",
   syncDeviceName: "",
   syncAutoMinutes: 0,
@@ -93,6 +94,8 @@ export function normalizeSettings(value: unknown): Settings {
   const peers = Array.isArray(value.peers) ? value.peers : [];
   next.peers = peers.filter((peer): peer is SyncPeer => record(peer) && typeof peer.id === 'string' && typeof peer.address === 'string' && typeof peer.name === 'string')
     .map(peer => ({ ...peer, favorite: peer.favorite === true, token: typeof peer.token === 'string' ? peer.token : undefined, fingerprint: typeof peer.fingerprint === 'string' ? peer.fingerprint : undefined }));
+  next.syncDiscovery = false;
+  next.syncBindAddress = typeof value.syncBindAddress === "string" ? value.syncBindAddress : "127.0.0.1";
   next.syncPort = normalizeSyncPort(next.syncPort, DEFAULT_SETTINGS.syncPort);
   if (next.syncAutoMinutes < 0) next.syncAutoMinutes = 0;
   return next;

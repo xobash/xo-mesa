@@ -483,7 +483,13 @@ export const useAppStore = create<AppState>((set, get) => {
     if (IN_TAURI && secretChanged) {
       secretsWriteTail = secretsWriteTail.then(async () => {
         await loadSyncSecrets();
-        await persistSyncSecrets(get().settings);
+        const submitted = get().settings;
+        const secured = await persistSyncSecrets(submitted);
+        const current = get().settings;
+        set({ settings: { ...current,
+          syncToken: current.syncToken === submitted.syncToken ? secured.syncToken : current.syncToken,
+          peers: current.peers.map(peer => ({ ...peer, token: peer.token === submitted.peers.find(p => p.id === peer.id)?.token ? secured.peers.find(p => p.id === peer.id)?.token : peer.token })),
+        } });
         secretSaveError = "";
       }).catch(error => {
         secretSaveError = String(error);
@@ -518,7 +524,7 @@ export const useAppStore = create<AppState>((set, get) => {
       await retireSyncPeers(root, s.settings.retiredSyncPeers ?? []);
       if (get().vaultPath !== root || !get().settings.syncEnabled) return;
       const current = get().settings;
-      await startSyncServer(current.syncPort, current.syncToken, root);
+      await startSyncServer(current.syncPort, current.syncToken, root, current.syncBindAddress);
       set({ syncListening: true, syncStatus: `Listening on port ${current.syncPort}.` });
     });
   }
@@ -667,7 +673,13 @@ export const useAppStore = create<AppState>((set, get) => {
       if (IN_TAURI) {
         secretsWriteTail = secretsWriteTail.then(async () => {
           await loadSyncSecrets();
-          await persistSyncSecrets(get().settings);
+          const submitted = get().settings;
+        const secured = await persistSyncSecrets(submitted);
+        const current = get().settings;
+        set({ settings: { ...current,
+          syncToken: current.syncToken === submitted.syncToken ? secured.syncToken : current.syncToken,
+          peers: current.peers.map(peer => ({ ...peer, token: peer.token === submitted.peers.find(p => p.id === peer.id)?.token ? secured.peers.find(p => p.id === peer.id)?.token : peer.token })),
+        } });
           secretSaveError = "";
           set({ settingsIssue: "" });
         }).catch(error => {
@@ -756,7 +768,7 @@ export const useAppStore = create<AppState>((set, get) => {
         void get().cancelCurrentSync();
         set({ syncStatus: "Sync disabled." });
       }
-      if ((key === "syncToken" || key === "syncPort") && get().syncListening) {
+      if ((key === "syncToken" || key === "syncPort" || key === "syncBindAddress") && get().syncListening) {
         void queueListener(async () => {
           await secretsWriteTail;
           const current = get();
@@ -774,7 +786,7 @@ export const useAppStore = create<AppState>((set, get) => {
             return;
           }
           const { startSyncServer } = await import("./lib/sync");
-          await startSyncServer(current.settings.syncPort, current.settings.syncToken, current.vaultPath);
+          await startSyncServer(current.settings.syncPort, current.settings.syncToken, current.vaultPath, current.settings.syncBindAddress);
           set({ syncStatus: `Listening on port ${current.settings.syncPort}.` });
         }).catch((error) => set({ syncListening: false, syncStatus: `Could not restart server: ${String(error)}` }));
       }

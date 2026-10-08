@@ -173,6 +173,48 @@ pub async fn vault_read_text(
     Ok(tauri::ipc::Response::new(body))
 }
 
+/// Bounded read-only access replaces generic file handles in privileged renderers.
+#[tauri::command]
+pub async fn vault_read_bytes(
+    app: tauri::AppHandle,
+    path: String,
+    max_bytes: usize,
+    require_complete: bool,
+) -> Result<Vec<u8>, String> {
+    if max_bytes > 8 * 1024 * 1024 {
+        return Err("invalid bounded read limit".into());
+    }
+    let (root, rel) = crate::vaultscope::approved_path(&app, &path)?;
+    let access = crate::vaulttransaction::access(&root).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+        let _access = access;
+        #[cfg(unix)]
+        let file = crate::sync_core::RootedTarget::resolve(&root, &rel, false)
+            .map_err(|e| e.to_string())?
+            .open_read()
+            .map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        let _guard = crate::sync_core::WindowsParentGuard::acquire(&root.join(&rel), false)
+            .map_err(|e| e.to_string())?;
+        #[cfg(windows)]
+        let file =
+            crate::sync_core::open_file_no_follow(&root.join(rel)).map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        file.take((max_bytes + usize::from(require_complete)) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > max_bytes {
+            return Err(
+                "File exceeds the inline review limit. Open each copy to review it.".into(),
+            );
+        }
+        Ok(bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -47,7 +47,7 @@ names the executing test; it is not a source-string assertion.
 | CONTROL-011 | Reject non-example email addresses while preserving approved upstream attribution | AUDIT; no separate published email disclosure recorded | `rejects personal emails but preserves example addresses and upstream attribution` |
 | CONTROL-012 | Detect obsolete project identifiers in public content | PREVENTIVE; branding/privacy requirement, not an exploit defense | `rejects local hostnames and legacy project names` |
 | CONTROL-013 | Check Markdown file-link targets against the staged public tree | AUDIT; no published navigation failure recorded | `checks staged Markdown file links and admits anchors, external URLs and fenced examples` |
-| CONTROL-014 | Reject native crate modules omitted from the public tree | FINDING-001 | `rejects omitted native modules and accepts file or directory module layouts` |
+| CONTROL-014 | Reject root/nested native crate modules and explicit path modules omitted from the public tree | FINDING-001 | `rejects omitted native modules and accepts file or directory module layouts`; `checks nested native modules and path overrides against staged files` |
 | CONTROL-015 | Restrict reachable commit author identity to approved no-reply forms and UTC dates | Preventive privacy/provenance requirement; FINDING-002 explains an allowed exception | `audits staged trees with both approved owner no-reply identities`; `rejects unrelated authors, personal-address forms and non-UTC history` |
 
 `audits staged bytes rather than the later working-file contents` verifies the
@@ -55,8 +55,8 @@ shared input contract for CONTROL-001 through CONTROL-014. A clean working file
 does not excuse unsafe staged bytes, and an unstaged file is not publication input.
 
 The scanner is a bounded text and tree check. It skips binary content and does
-not inspect image pixels, every credential format, every historical blob or
-provider caches. CONTROL-003 checks filenames; human review must still ensure
+not inspect image pixels, every credential format, historical binary content or provider caches. Reachable text blobs receive
+the same private-path, credential-signature, hostname, email and address checks. CONTROL-003 checks filenames; human review must still ensure
 approved ignore files contain only generic categories. CONTROL-011 has explicit
 upstream-notice and allowlist exceptions. CONTROL-013 checks file targets, not
 heading existence, external-link availability or every Markdown dialect.
@@ -87,3 +87,29 @@ npm run test:notices
 Keep test execution results with the exact revision and environment. Register
 entries describe maintained coverage; they are not a permanent claim that a
 past run is current or that every attack variant is covered.
+
+## Independent validation controls
+
+| ID | Purpose | Origin | Regression / enforcement |
+| --- | --- | --- | --- |
+| CONTROL-022 | Detect additional secret formats in reachable public history and exact committed bytes | INCIDENT-001; AUDIT | `independent-privacy.mjs` verifies Gitleaks 8.30.1 by SHA-256, scans full Git history and exported HEAD in frontend CI; upstream detector suite supplies format coverage. Redacted failures stop CI. |
+| CONTROL-023 | Reject personal raster metadata without interpreting compressed pixels as comments | PREVENTIVE | `asset-metadata.check.mjs` executes EXIF, PNG text/trailing data and GIF compressed-marker regressions; `audit:assets` scans committed asset paths in CI. |
+| CONTROL-024 | Prevent compiler/runtime drift between development, CI and release | AUDIT | `toolchain-contract.check.mjs` checks exact Node/Rust/container pins and wrappers; frontend CI executes it. |
+| CONTROL-025 | Check release/security scripts for undefined names, unreachable code and unused variables | PREVENTIVE | `npm run lint` covers `src` and `scripts`; CI rejects warnings. Existing behavior suites remain required. |
+
+These controls add independent format detection and metadata checks to the
+custom allowlist scanner. They cannot certify image pixels, unknown secret
+formats, unreachable objects or provider caches. Image pixels still require
+review before publication. Toolchain pins do not freeze OS SDKs or establish
+independent reproducibility. A passed source scan is not release acceptance.
+
+CONTROL-026 (PREVENTIVE, enforced): package Node entry points must exist in the
+exact staged public tree. `public-release-audit.check.mjs` executes omitted and
+present script cases; frontend CI runs the check. This prevents sampled source
+packaging failures; it does not prove every dynamic import is present.
+
+CONTROL-027 (INCIDENT-001; enforced): scan every reachable historical text blob
+with the private-content rules, not only current staged files or author names.
+`rejects private bytes retained only in reachable history` exercises a replaced
+private fixture and confirms redacted reporting. Binary pixels, unknown secret
+formats and provider caches remain outside this claim.

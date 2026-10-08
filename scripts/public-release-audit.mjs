@@ -2,8 +2,8 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
-function git(args, encoding = "utf8") {
-  const result = spawnSync("git", args, { encoding, maxBuffer: 64 * 1024 * 1024 });
+function git(args, encoding = "utf8", input) {
+  const result = spawnSync("git", args, { encoding, input, maxBuffer: 64 * 1024 * 1024 });
   if (result.status !== 0) {
     process.stderr.write(result.stderr?.toString() || `git ${args[0]} failed\n`);
     process.exit(result.status || 1);
@@ -35,15 +35,22 @@ for (const path of approved) {
   if (!trackedSet.has(path)) failures.push(`${path}: approved path is missing`);
 }
 
-// The native crate root declares required source modules. An allowlist that
-// omits one must fail before publication, even when the local checkout builds.
-const nativeRoot = "src-tauri/src/lib.rs";
-if (trackedSet.has(nativeRoot)) {
-  const source = git(["show", `:${nativeRoot}`]);
-  for (const match of source.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
-    const base = `src-tauri/src/${match[1]}`;
-    if (!trackedSet.has(`${base}.rs`) && !trackedSet.has(`${base}/mod.rs`)) {
-      failures.push(`${nativeRoot}: required native module ${match[1]} is missing`);
+// Check every external native module, including #[path] overrides in test/fuzz crates.
+for (const file of tracked.filter(file => file.startsWith("src-tauri/") && file.endsWith(".rs"))) {
+  const source = git(["show", `:${file}`]);
+  for (const match of source.matchAll(/^\s*(?:#\[path\s*=\s*"([^"]+)"\]\s*)?(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/gm)) {
+    const dir = path.posix.dirname(file);
+    const stem = path.posix.basename(file, ".rs");
+    const base = path.posix.join(dir, ["lib", "main", "mod"].includes(stem) ? "" : stem, match[2]);
+    const candidates = match[1] ? [path.posix.normalize(path.posix.join(dir, match[1]))] : [`${base}.rs`, `${base}/mod.rs`];
+    if (!candidates.some(candidate => trackedSet.has(candidate))) failures.push(`${file}: required native module ${match[2]} is missing`);
+  }
+}
+if (trackedSet.has("package.json")) {
+  const scripts = JSON.parse(git(["show", ":package.json"])).scripts ?? {};
+  for (const [name, command] of Object.entries(scripts)) {
+    for (const match of command.matchAll(/(?:^|[;&|]\s*)node(?:\s+--[^\s]+)*\s+([\w/.-]+\.(?:mjs|cjs|js))(?=\s|$)/g)) {
+      if (!trackedSet.has(match[1])) failures.push(`package.json: script ${name} requires missing ${match[1]}`);
     }
   }
 }
@@ -139,6 +146,24 @@ for (const path of tracked) {
   if (path.endsWith(".md")) checkMarkdownTargets(path, text);
 }
 
+// Inspect each reachable historical blob once; report categories without private bytes.
+const objects = git(["rev-list", "--objects", "--all"]).trim().split("\n").filter(Boolean);
+const batch = git(["cat-file", "--batch"], null, objects.map(line=>line.split(" ")[0]).join("\n")+"\n");
+let offset=0, historicalBlobs=0;
+for (const object of objects) {
+  const end=batch.indexOf(10,offset);
+  if(end<0) throw new Error("Incomplete historical object response.");
+  const [id,kind,length]=batch.toString("ascii",offset,end).split(" ");
+  const size=Number(length);if(!Number.isSafeInteger(size)||size<0||end+1+size>=batch.length) throw new Error("Invalid historical object bounds.");
+  const content=batch.subarray(end+1,end+1+size);offset=end+size+2;
+  if(kind!=="blob"||content.includes(0)) continue;
+  historicalBlobs++;
+  const name=object.slice(id.length+1), text=content.toString("utf8");
+  for(const {pattern,label} of forbiddenContent) if(pattern.test(text)) failures.push(`historical blob ${id}: contains ${label}`);
+  if(name!=="public/THIRD_PARTY_NOTICES.txt" && name!=="scripts/public-files.txt" && hasPersonalEmail(text)) failures.push(`historical blob ${id}: contains non-example email address`);
+  if(hasPrivateIpv4(text)) failures.push(`historical blob ${id}: contains private IPv4 literal`);
+}
+
 // GitHub-generated PR preview/squash commits use the same owner's numeric
 // no-reply alias. Neither alias exposes a personal email address.
 const publicAuthorEmails = new Set([
@@ -159,4 +184,4 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-process.stdout.write(`Public release audit passed (${tracked.length} approved files checked).\n`);
+process.stdout.write(`Public release audit passed (${tracked.length} approved files checked; ${historicalBlobs} reachable text blobs).\n`);

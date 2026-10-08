@@ -31,6 +31,7 @@ import {
   type FoundArtifact,
   type VaultWatchEvent
 } from "../lib/vault";
+import { recordTextRevisionAsync } from "../lib/textRevisionHistory";
 import { fingerprintText, loadIndexedNotes } from "../lib/vaultIndex";
 import { hydrateVaultMetadata } from "../lib/vaultMetadata";
 import type {
@@ -423,6 +424,16 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             // cannot: its verified save will detect the changed baseline and
             // keep the local edit retryable instead of overwriting either side.
             if (!textSaves.isDirty(file.path)) {
+              let preserved = false;
+              if (get().contentCache[rel] !== undefined) {
+                preserved = Boolean(await recordTextRevisionAsync(rootRaw, rel, old));
+                if (!isCurrent()) return;
+              }
+              if (textSaves.isDirty(file.path)) {
+                set({ status: `File changed outside Mesa; unsaved text was kept for ${rel}.` });
+                continue;
+              }
+              set({ status: `File changed outside Mesa: ${rel}. ${preserved ? "Previous text kept in document history." : "Previous text history is unavailable."}` });
               const cur = get().notes[rel];
               if (cur) {
                 pendingNotes.set(rel, {
@@ -433,6 +444,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                 });
               }
               pendingContent.set(rel, text);
+            } else {
+              set({ status: `File changed outside Mesa; unsaved text was kept for ${rel}.` });
             }
           } else {
             // Binary file was modified (e.g. an image was replaced).

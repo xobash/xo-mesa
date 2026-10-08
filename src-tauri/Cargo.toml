@@ -13,10 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# `unstable` enables multiwebview (Window::add_child): the Pi browser harness
-# hosts real pages in a native child webview (src/harness.rs) instead of an
-# embed-blocked iframe. The flag gates that API's availability only.
-tauri = { version = "2", features = ["protocol-asset", "unstable"] }
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-fs = { version = "2", features = ["watch"] }
 # Native watcher imports this debouncer for filtered, batched delivery.
 notify-debouncer-full = "0.6"

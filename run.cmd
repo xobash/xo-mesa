@@ -10,6 +10,7 @@ set "NODE_BIN=%ProgramFiles%\nodejs"
 set "GIT_BIN=%ProgramFiles%\Git\cmd"
 set "MESA_WEBVIEW2_MIN_MAJOR=111"
 call :refresh_paths
+set /p MESA_NODE_VERSION=<.node-version
 
 echo ^> Mesa - setup ^& launch
 
@@ -37,7 +38,19 @@ if errorlevel 1 (
   echo     Install Node.js LTS, or open a new terminal if winget just installed it, then re-run run.cmd.
   exit /b 1
 )
-echo   ok Node.js present
+for /f "delims=" %%V in ('node -v') do set "MESA_NODE_ACTUAL=%%V"
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-node.ps1
+  if errorlevel 1 exit /b 1
+  set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-x64;%PATH%"
+  if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-arm64;%PATH%"
+)
+for /f "delims=" %%V in ('node -v') do set "MESA_NODE_ACTUAL=%%V"
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  echo   x Pinned Node version could not be activated.
+  exit /b 1
+)
+echo   ok Pinned Node.js present
 
 REM --- Git (Scoop) ------------------------------------------------------------
 where git >nul 2>nul
@@ -97,7 +110,7 @@ if errorlevel 1 (
     exit /b 1
   )
   echo   . Configuring the stable MSVC Rust toolchain...
-  call rustup default stable-msvc
+  call rustup default 1.96.0-msvc
   if errorlevel 1 (
     echo   x Rustup could not install or select the stable MSVC toolchain.
     echo     Check the network error above, then re-run run.cmd.
@@ -115,7 +128,7 @@ if errorlevel 1 (
 call cargo --version >nul 2>nul
 if errorlevel 1 (
   echo   x Cargo was found but the Rust toolchain is not usable.
-  echo     Run "rustup default stable-msvc", then re-run run.cmd.
+  echo     Run "rustup default 1.96.0-msvc", then re-run run.cmd.
   exit /b 1
 )
 echo   ok Rust/Cargo present

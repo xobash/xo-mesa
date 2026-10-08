@@ -106,7 +106,7 @@ the action when sync stops.
    described below; it is not a filesystem sandbox.
 2. **Research** — Pi expands your question into sub-questions and completes
    the configured rounds with its existing `browse` / `browse_read` tools (the
-   same browser harness you can watch live). Round 1 builds breadth; subsequent
+   same read-only browser reader). Round 1 builds breadth; subsequent
    rounds verify important claims, seek primary corroboration, resolve
    disagreements, and close gaps.
 3. **Live assembly** — two independent feeds keep the surface honest:
@@ -118,8 +118,8 @@ the action when sync stops.
      non-empty status from those fields. The wing shows the report taking
      shape rather than a generic spinner.
    - **Observed navigation** (Mesa's own evidence): while a run is active,
-     Mesa also feeds every REAL browser-harness navigation
-     (`mesa://browse` / `mesa://harness-nav`) into the activity feed and
+     Mesa also feeds each brokered navigation request
+     (`mesa://browse` / `mesa://browse-observed`) into the activity feed and
      unified evidence graph — search-engine URLs are shown as "Searched for …"
      with the decoded query, other pages as opened sources. This works even
      when the model never calls the progress tool, so the user always sees the
@@ -387,21 +387,13 @@ refusal.
 A live Pi process is not treated as proof that the model is still researching.
 Keep the troubleshooting kit before dismissing or replacing a failed run.
 
-## macOS WebCrypto Keychain prompt
+## Browser isolation
 
-Mesa does not create or read a Keychain item named **WebCrypto Master Key** and
-it never sends the login keychain password to Pi or to a research website. The
-desktop browser harness is a native WKWebView. When a page uses the browser's
-WebCrypto API, WebKit can create or retrieve its own cryptographic master key
-from the macOS Keychain. That is why the prompt can appear while Deep Research
-is browsing, even though Mesa has no WebCrypto call in its source.
-
-If macOS asks for access, **Deny** prevents that page's WebCrypto feature from
-using its stored key; it does not expose the vault or stop Mesa from reading
-ordinary public pages. Allowing it is only needed when the page's own secure
-session or cryptographic feature requires WebCrypto. Development builds can
-ask again after their signing identity or WebKit data changes. The prompt is a
-macOS/WebKit boundary, not a Mesa vault-password request.
+Research pages are native-fetched and sanitized. Website scripts and remote
+subresources do not run, so script-only pages and browser sign-in flows are
+unavailable. Page results are untrusted source data; neither a fetched page nor
+an observed navigation authorizes file changes. Pi itself remains an explicitly
+approved external process with normal OS permissions.
 
 ## Limitations (browser demo / native-only)
 

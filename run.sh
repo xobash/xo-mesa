@@ -69,16 +69,18 @@ fi
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-if ! command -v npm >/dev/null 2>&1; then
+MESA_NODE_VERSION="$(cat .node-version)"
+if ! command -v npm >/dev/null 2>&1 || [ "$(node -v 2>/dev/null || true)" != "v$MESA_NODE_VERSION" ]; then
   info "Node.js not found — installing the LTS locally via nvm (user-only)…"
   mkdir -p "$NVM_DIR"
   bootstrap_download https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/nvm.sh cd6f374433a22ec01919a834cf59d03e0ba07c226bed460a50ef5eecc38c39ef "$NVM_DIR/nvm.sh"
   bootstrap_download https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/nvm-exec f3b7c71ac96ca4f2f75871af20070c3063d1e3fcdc44019af0635c95112e9e76 "$NVM_DIR/nvm-exec"
   chmod 700 "$NVM_DIR/nvm-exec"
   . "$NVM_DIR/nvm.sh"
-  nvm install --lts
-  nvm use --lts
+  nvm install "$MESA_NODE_VERSION"
+  nvm use "$MESA_NODE_VERSION"
 fi
+[ "$(node -v)" = "v$MESA_NODE_VERSION" ] || { err "Pinned Node version is unavailable."; exit 1; }
 ok "Node $(node -v), npm $(npm -v)"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,7 +99,7 @@ if ! command -v cargo >/dev/null 2>&1; then
   rust_init="$(mktemp)"
   bootstrap_download "https://static.rust-lang.org/rustup/archive/1.28.2/$rust_target/rustup-init" "$rust_hash" "$rust_init"
   chmod 700 "$rust_init"
-  "$rust_init" -y --no-modify-path
+  "$rust_init" -y --no-modify-path --default-toolchain 1.96.0
   rm -f "$rust_init"
   . "$HOME/.cargo/env"
 fi

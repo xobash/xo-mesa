@@ -24,7 +24,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22.22.3
+          node-version-file: .node-version
       - run: node scripts/release-gate.mjs
         env:
           MESA_RELEASE_TAG: ${{ inputs.tag }}
@@ -46,7 +46,7 @@ jobs:
           ref: ${{ inputs.commit }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22.22.3
+          node-version-file: .node-version
           cache: npm
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -122,7 +122,7 @@ jobs:
           ref: ${{ inputs.commit }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22.22.3
+          node-version-file: .node-version
           cache: npm
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -162,7 +162,7 @@ jobs:
           ref: ${{ inputs.commit }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22.22.3
+          node-version-file: .node-version
           cache: npm
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
