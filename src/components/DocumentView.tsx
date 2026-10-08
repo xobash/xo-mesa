@@ -23,6 +23,7 @@ import { CodeView } from "./CodeView";
 import { HtmlView } from "./HtmlView";
 import { RtfView } from "./RtfView";
 import { useAppStore, getStore, type ThemeId } from "../store";
+import { isThemeId } from "../lib/persistedUi";
 import { useApplyTheme } from "./useApplyTheme";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { rtfToText } from "../lib/rtf";
@@ -45,7 +46,8 @@ export function DocumentView() {
   const params = new URLSearchParams(location.search);
   const vault = params.get("vault") ?? "";
   const initial = params.get("doc") ?? "";
-  const theme = (params.get("theme") as ThemeId) || "void";
+  const themeParam = params.get("theme");
+  const theme: ThemeId = isThemeId(themeParam) ? themeParam : "void";
 
   const [rel, setRel] = useState(initial);
   const [files, setFiles] = useState<VaultFile[]>([]);

@@ -90,3 +90,26 @@ describe("file tree context menu", () => {
     expect(document.querySelector(".context-menu")).not.toBeNull();
   });
 });
+
+
+describe("file extension badge palette", () => {
+  it("keeps green-hued extensions neutral and other hues theme-controlled", () => {
+    act(() => {
+      useAppStore.setState({
+        files: ["svg", "txt", "pdf"].map((ext) => ({
+          ...file(`example.${ext}`), ext, isMarkdown: false,
+        })),
+      });
+      root.render(<FileTree />);
+    });
+    for (const ext of ["svg", "txt"]) {
+      const badge = host.querySelector(`[data-rel="example.${ext}"] .tree-ext`) as HTMLElement;
+      expect(badge).not.toBeNull();
+      expect(badge.classList.contains("tree-ext-neutral")).toBe(true);
+      expect(badge.style.getPropertyValue("--ext-hue")).not.toBe("");
+      expect(badge.style.color).toBe("");
+    }
+    const pdfBadge = host.querySelector('[data-rel="example.pdf"] .tree-ext') as HTMLElement;
+    expect(pdfBadge.classList.contains("tree-ext-neutral")).toBe(false);
+  });
+});

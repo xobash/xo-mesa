@@ -174,10 +174,17 @@ export interface DeepResearchRunState {
   seq: number;
 }
 
-export const THEMES: { id: ThemeId; label: string; blurb: string }[] = [
-  { id: "system", label: "System", blurb: "Neutral, follows OS light/dark" },
-  { id: "void", label: "Void", blurb: "Violet pulse on black" },
-  { id: "darkroom", label: "Darkroom", blurb: "Cinematic monochrome" },
+/** `swatch` is [surface, accent] for the picker chip; keep in sync with styles.css. */
+export const THEMES: { id: ThemeId; label: string; blurb: string; swatch: [string, string] }[] = [
+  { id: "system", label: "System", blurb: "Neutral, follows OS light/dark", swatch: ["#1c1d21", "#aab4c5"] },
+  { id: "void", label: "Void", blurb: "Violet pulse on black", swatch: ["#08080a", "#7259cc"] },
+  { id: "darkroom", label: "Darkroom", blurb: "Cinematic monochrome", swatch: ["#0c0c0c", "#ffffff"] },
+  { id: "graphite", label: "Graphite", blurb: "Soft charcoal, ivory ink", swatch: ["#121213", "#eceae5"] },
+  { id: "midnight", label: "Midnight", blurb: "Ink blue, ice accent", swatch: ["#0e1117", "#8db3ff"] },
+  { id: "ember", label: "Ember", blurb: "Warm charcoal, amber light", swatch: ["#171412", "#e5a65e"] },
+  { id: "dusk", label: "Dusk", blurb: "Plum night, rose accent", swatch: ["#151119", "#eaa6bc"] },
+  { id: "fjord", label: "Fjord", blurb: "Nordic slate, frost accent", swatch: ["#1f232b", "#88c0d0"] },
+  { id: "paper", label: "Paper", blurb: "Warm light, rust accent", swatch: ["#fbf9f5", "#b0522c"] },
 ];
 
 /** Sidebar sort modes whose order depends on `size`/`mtime`, so vault open has

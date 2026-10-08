@@ -2,8 +2,30 @@ import { useEffect, useRef, useState } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState, Compartment } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags as t } from "@lezer/highlight";
 import { useAppStore, getStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
+
+// Token colors are CSS variables (--syn-*) set per theme in styles.css, so the
+// source view never falls back to CodeMirror's fixed default palette.
+const themedHighlight = HighlightStyle.define([
+  { tag: t.heading, color: "var(--syn-heading)", fontWeight: "600" },
+  { tag: [t.strong], color: "var(--syn-strong)", fontWeight: "600" },
+  { tag: [t.emphasis], color: "var(--syn-strong)", fontStyle: "italic" },
+  { tag: t.strikethrough, textDecoration: "line-through", color: "var(--text-faint)" },
+  { tag: [t.link, t.url], color: "var(--syn-link)" },
+  { tag: [t.processingInstruction, t.contentSeparator, t.meta, t.punctuation], color: "var(--syn-mark)" },
+  { tag: [t.monospace, t.string, t.special(t.string)], color: "var(--syn-code)" },
+  { tag: [t.quote], color: "var(--text-dim)", fontStyle: "italic" },
+  { tag: [t.tagName, t.angleBracket], color: "var(--syn-tag)" },
+  { tag: [t.attributeName, t.propertyName], color: "var(--syn-attr)" },
+  { tag: [t.keyword, t.operator, t.modifier], color: "var(--syn-keyword)" },
+  { tag: [t.number, t.bool, t.atom, t.literal], color: "var(--syn-number)" },
+  { tag: [t.comment, t.lineComment, t.blockComment], color: "var(--text-faint)", fontStyle: "italic" },
+  { tag: [t.function(t.variableName), t.typeName, t.className], color: "var(--syn-link)" },
+  { tag: t.invalid, color: "var(--danger)" },
+]);
 
 const editableCompartment = new Compartment();
 
@@ -42,6 +64,7 @@ function makeState(doc: string, onUserEdit: (text: string, activity: EditorActiv
     extensions: [
       basicSetup,
       markdown(),
+      syntaxHighlighting(themedHighlight),
       editorLayout,
       EditorView.lineWrapping,
       editableCompartment.of(EditorView.editable.of(editable)),

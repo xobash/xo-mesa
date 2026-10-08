@@ -925,9 +925,11 @@ function OverlaySettings({ onReset }: { onReset: () => void }) {
             <button
               key={t.id}
               className={"seg-btn" + (t.id === theme ? " on" : "")}
+              title={t.blurb}
               aria-pressed={t.id === theme}
               onClick={() => setTheme(t.id)}
             >
+              <span className="theme-swatch" aria-hidden="true" style={{ background: `linear-gradient(135deg, ${t.swatch[0]} 50%, ${t.swatch[1]} 50%)` }} />
               {t.label}
             </button>
           ))}

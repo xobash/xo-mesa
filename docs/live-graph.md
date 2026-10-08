@@ -58,13 +58,14 @@ overlap. Positional breathing is screen-constant but capped at
 Animations setting disables all of it.
 
 The main-cluster bloom uses the theme token `--graph-bloom-alpha`: Void keeps
-the full bloom, while System and Darkroom run a lower multiplier so
-their graph backgrounds do not read as a strong glowing halo.
+the full bloom; Midnight, Ember, Dusk and Fjord use a medium multiplier;
+System, Darkroom, Graphite and Paper use a low multiplier so their graph
+backgrounds do not read as a strong glowing halo.
 
 At fitted zoom, the graph must stay readable enough to inspect and grab nodes.
-Base links use visible graph-token alpha, linked notes use a green-grey
-dot, isolated notes stay dimmer but legible, and attachment dots
-use a warm yellow field. Nodes keep a visible opacity floor even while
+Base links use visible graph-token alpha. Linked notes use the theme's
+neutral `--graph-node` palette without a green tint; isolated notes stay dimmer
+but legible, and attachment dots use `--graph-node-attachment`. Nodes keep a visible opacity floor even while
 twinkling. Hover focus emphasizes a node's neighborhood without making the rest
 of the graph disappear, so topology remains visible while a hover preview is
 open.
@@ -204,3 +205,12 @@ covered by a canvas-command regression that checks all node bounds. Native
 acceptance must also confirm visible pixels, first-open fit, resizing, Fit,
 zoom, node dragging, and unchanged ambient motion. Unit tests do not establish
 WKWebView, WebView2, or WebKitGTK presentation.
+
+## Theme palette
+
+System, Void, Darkroom, Graphite, Midnight, Ember, Dusk, Fjord and Paper share
+semantic color tokens. Source-editor syntax follows each palette. File-type
+badges retain stable extension hues and theme lightness; green-hued extensions
+use zero saturation so SVG/TXT badges do not tint the workspace green. Both
+theme pickers show surface/accent swatches. Saved and standalone-window theme
+IDs are validated against the same supported list.

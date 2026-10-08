@@ -268,6 +268,7 @@ const TreeRow = memo(function TreeRow({
     const rel = node.file.relPath;
     const file = node.file;
     const isOther = !node.file.isMarkdown;
+    const extensionHue = hueFor(node.file.ext);
     if (renaming) {
       return (
         <input
@@ -330,11 +331,8 @@ const TreeRow = memo(function TreeRow({
         <span className="tree-name">{node.name}</span>
         {isOther && (
           <span
-            className="tree-ext"
-            style={{
-              color: `hsl(${hueFor(node.file.ext)} 45% 62%)`,
-              borderColor: `hsl(${hueFor(node.file.ext)} 40% 55% / 0.4)`,
-            }}
+            className={"tree-ext" + (extensionHue >= 70 && extensionHue <= 170 ? " tree-ext-neutral" : "")}
+            style={{ "--ext-hue": extensionHue } as React.CSSProperties}
           >
             {node.file.ext}
           </span>

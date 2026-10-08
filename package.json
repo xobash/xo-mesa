@@ -37,7 +37,9 @@
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.3.0",
+    "@codemirror/language": "^6.12.3",
     "@codemirror/state": "^6.4.1",
+    "@lezer/highlight": "^1.2.3",
     "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-dialog": "^2.2.0",
     "@tauri-apps/plugin-fs": "^2.2.0",

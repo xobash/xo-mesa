@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { THEME_IDS } from "../lib/persistedUi";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -60,6 +61,7 @@ beforeEach(() => {
     metadata: { currentWindow: { label: "doc-test" } },
     invoke: vi.fn(async () => {}),
   };
+  vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -75,6 +77,7 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   history.replaceState(null, "", "/");
+  vi.unstubAllGlobals();
 });
 
 describe("detached document window", () => {
@@ -107,5 +110,19 @@ describe("detached document window", () => {
     expect(host.textContent).toContain("Changed outside Mesa");
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("unavailable");
     expect(mocks.scanVault).not.toHaveBeenCalled();
+  });
+});
+
+describe("standalone document theme validation", () => {
+  it.each(THEME_IDS)("applies the %s theme from the URL", async (theme) => {
+    history.replaceState(null, "", `/?doc=note.md&vault=%2Fvault&theme=${theme}`);
+    await act(async () => { root.render(<DocumentView />); });
+    expect(document.documentElement.dataset.theme).toBe(theme);
+  });
+
+  it.each(["", "VOID", "solarized", "constructor"])("falls back to void for invalid URL theme %s", async (value) => {
+    history.replaceState(null, "", `/?doc=note.md&vault=%2Fvault&theme=${value}`);
+    await act(async () => { root.render(<DocumentView />); });
+    expect(document.documentElement.dataset.theme).toBe("void");
   });
 });

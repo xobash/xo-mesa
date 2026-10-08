@@ -1,8 +1,10 @@
 /* ============================================================
-   Themes — three built-in looks (System, Void, Darkroom),
+   Themes — nine built-in looks (System, Void, Darkroom, Graphite,
+   Midnight, Ember, Dusk, Fjord, Paper),
    switchable at runtime. System carries its own neutral palette and
    follows the OS via a data-mode attribute (see App.tsx).
    Components only ever reference these semantic variables.
+   Each named theme block must set every variable the Void base defines.
    ============================================================ */
 :root {
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
@@ -16,6 +18,18 @@
   --surface-rule: var(--border);
   --surface-radius: var(--radius);
   --control-radius: var(--radius-btn);
+  /* source-editor token colors (Editor.tsx themedHighlight); themes override */
+  --syn-heading: var(--text-strong);
+  --syn-strong: var(--text-strong);
+  --syn-link: var(--accent);
+  --syn-mark: var(--text-faint);
+  --syn-code: var(--accent-2);
+  --syn-tag: var(--text-dim);
+  --syn-attr: var(--text-dim);
+  --syn-keyword: var(--accent);
+  --syn-number: var(--accent-2);
+  --ext-sat: 28%;
+  --ext-light: 66%;
 }
 
 /* Void — Dala: violet pulse on a pure-black void, amber graph sparks. */
@@ -54,23 +68,23 @@
   --link-underline: rgba(128, 82, 255, 0.4);
   --measure: 70ch;
   --spark-3: #15846e;
-  --graph-node: #67bd78;
-  --graph-node-active: #d9dde4;
-  --graph-node-isolated: #727982;
+  --graph-node: #9088c4;
+  --graph-node-active: #e6e2ff;
+  --graph-node-isolated: #625e7a;
   --graph-link: rgba(150, 158, 164, 0.13);
-  --graph-link-active: rgba(185, 207, 190, 0.52);
+  --graph-link-active: rgba(170, 150, 255, 0.55);
   --graph-flicker-rgb: 227, 170, 96;
   --graph-label: rgba(226, 229, 240, 0.85);
   --graph-label-halo: rgba(0, 0, 0, 0.6);
   --graph-bloom-alpha: 1;
   --graph-thumb-border: rgba(180, 160, 255, 0.6);
-  --graph-node-tag: #75c6d3;
-  --graph-node-phantom: #62666f;
-  /* attachment dots — the warm yellow ring field around the note cluster */
-  --graph-node-attachment: #d6d76f;
+  --graph-node-tag: #4fb8a4;
+  --graph-node-phantom: #4e4b5e;
+  /* Attachment dots use the theme attachment token. */
+  --graph-node-attachment: #e3a948;
   /* subtler than before: a gentle violet halo near the top (mirroring the
      liked empty-preview glow) falling to pure black — not a bright center. */
-  --graph-bg: radial-gradient(820px 560px at 50% -14%, #191b1d 0%, #111215 56%, #0b0c0e 100%);
+  --graph-bg: radial-gradient(820px 560px at 50% -14%, #16131f 0%, #0d0c12 56%, #08080b 100%);
   /* atmosphere: drifting violet bloom + faint amber spark, very low alpha */
   --atmos-a: radial-gradient(
     760px 520px at 78% -8%,
@@ -85,8 +99,20 @@
   --pane-atmos: var(--atmos-a), var(--atmos-b);
 }
 
+/* Void-only tokens: the block above doubles as every theme's base, so
+   anything Void wants that other themes must not inherit lives here. */
+:root[data-theme="void"] {
+  --syn-heading: #eef0f6;
+  --syn-link: #a593ff;
+  --syn-code: #e3a948;
+  --syn-tag: #8f86c2;
+  --syn-keyword: #a593ff;
+}
+
 /* Darkroom — monopo saigon: cinematic, achromatic, whisper-weight type. */
 :root[data-theme="darkroom"] {
+  --ext-sat: 0%;
+  --ext-light: 60%;
   --bg: #000000;
   --bg-1: #0c0c0c;
   --bg-2: #171717;
@@ -120,7 +146,7 @@
   --link-underline: rgba(255, 255, 255, 0.5);
   --measure: 64ch;
   --spark-3: #9a9a9a;
-  --graph-node: #a2a7a4;
+  --graph-node: #a3a3a5;
   --graph-node-active: #ffffff;
   --graph-node-isolated: #767a7c;
   --graph-link: rgba(255, 255, 255, 0.1);
@@ -156,6 +182,8 @@
    below is the LIGHT palette (also the safe default if data-mode is unset); the
    [data-mode="dark"] block overrides surfaces/ink for dark. */
 :root[data-theme="system"] {
+  --ext-sat: 16%;
+  --ext-light: 42%;
   /* shape + type (mode-independent) */
   --radius: 10px;
   --radius-btn: 8px;
@@ -192,7 +220,7 @@
   --scrim: rgba(20, 23, 28, 0.26);
   --spark-3: #50607a;
   --graph-bg: radial-gradient(820px 560px at 50% -14%, #fbfcfd 0%, #f1f2f5 60%, #edeef2 100%);
-  --graph-node: #707a75;
+  --graph-node: #757b86;
   --graph-node-active: #50607a;
   --graph-node-isolated: #5f666d;
   --graph-link: rgba(0, 0, 0, 0.1);
@@ -209,6 +237,7 @@
   );
 }
 :root[data-theme="system"][data-mode="dark"] {
+  --ext-light: 66%;
   /* dark surfaces & ink — neutral charcoal, not pure black */
   --bg: #16171a;
   --bg-1: #1c1d21;
@@ -233,7 +262,7 @@
   --scrim: rgba(0, 0, 0, 0.5);
   --spark-3: #aab4c5;
   --graph-bg: radial-gradient(820px 560px at 50% -14%, #1a1b20 0%, #121318 56%, #0d0e11 100%);
-  --graph-node: #83a08b;
+  --graph-node: #8d94a1;
   --graph-node-active: #aab4c5;
   --graph-node-isolated: #69717a;
   --graph-link: rgba(255, 255, 255, 0.1);
@@ -253,6 +282,392 @@
     rgba(170, 180, 197, 0.02),
     transparent 72%
   );
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Graphite — Darkroom's successor: layered charcoal instead of pure black,
+   ivory ink, achromatic chrome with a whisper of steel on links and tags. */
+:root[data-theme="graphite"] {
+  --ext-sat: 10%;
+  --ext-light: 62%;
+  --bg: #0d0d0e;
+  --bg-1: #121213;
+  --bg-2: #1a1a1c;
+  --bg-3: #242427;
+  --border: rgba(255, 255, 255, 0.075);
+  --text: #d6d5d1;
+  --text-strong: #f3f2ee;
+  --text-dim: #94938f;
+  --text-faint: #63625f;
+  --accent: #eceae5;
+  --accent-2: #a9aeb7;
+  --accent-contrast: #111112;
+  --danger: #e0907f;
+  --code-bg: #18181a;
+  --radius: 8px;
+  --radius-btn: 8px;
+  --head-weight: 500;
+  --head-tracking: -0.015em;
+  --active-line: rgba(255, 255, 255, 0.03);
+  --selection: rgba(190, 200, 220, 0.16);
+  --pop-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 20px 60px rgba(0, 0, 0, 0.6);
+  --display-weight: 400;
+  --display-tracking: -0.025em;
+  --ui-letter: 0.01em;
+  --eyebrow: 0.14em;
+  --eyebrow-color: #6f6e6a;
+  --glass: rgba(16, 16, 17, 0.7);
+  --glass-blur: 22px;
+  --scrim: rgba(0, 0, 0, 0.58);
+  --link-underline: rgba(180, 190, 206, 0.4);
+  --measure: 68ch;
+  --spark-3: #a9aeb7;
+  --syn-heading: #f3f2ee;
+  --syn-strong: #f3f2ee;
+  --syn-link: #b7bfcc;
+  --syn-mark: #57575a;
+  --syn-code: #cfc6b4;
+  --syn-tag: #9fa3ab;
+  --syn-attr: #8c9099;
+  --syn-keyword: #b7bfcc;
+  --syn-number: #cfc6b4;
+  --graph-bg: radial-gradient(900px 600px at 50% -18%, #1a1a1c 0%, #111112 55%, #0b0b0c 100%);
+  --graph-node: #8f9095;
+  --graph-node-active: #f6f5f1;
+  --graph-node-isolated: #66676b;
+  --graph-link: rgba(255, 255, 255, 0.075);
+  --graph-link-active: rgba(236, 234, 229, 0.5);
+  --graph-flicker-rgb: 236, 234, 229;
+  --graph-label: rgba(243, 242, 238, 0.86);
+  --graph-label-halo: rgba(10, 10, 11, 0.7);
+  --graph-bloom-alpha: 0.18;
+  --graph-thumb-border: rgba(236, 234, 229, 0.45);
+  --graph-node-tag: #9fadc2;
+  --graph-node-phantom: #4f5054;
+  --graph-node-attachment: #bfb296;
+  --atmos-a: radial-gradient(860px 560px at 82% -12%, rgba(255, 255, 255, 0.035), transparent 70%);
+  --atmos-b: radial-gradient(620px 460px at 4% 114%, rgba(170, 182, 204, 0.025), transparent 72%);
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Midnight — deep ink-blue surfaces, ice-blue focus, lavender secondary. */
+:root[data-theme="midnight"] {
+  --ext-sat: 32%;
+  --ext-light: 70%;
+  --bg: #090b10;
+  --bg-1: #0e1117;
+  --bg-2: #151922;
+  --bg-3: #1e232f;
+  --border: rgba(150, 168, 205, 0.11);
+  --text: #c8d0df;
+  --text-strong: #eef2fb;
+  --text-dim: #8590a7;
+  --text-faint: #576178;
+  --accent: #8db3ff;
+  --accent-2: #bfa8ff;
+  --accent-contrast: #0a0d14;
+  --danger: #ff8f8f;
+  --code-bg: #131722;
+  --radius: 10px;
+  --radius-btn: 999px;
+  --head-weight: 600;
+  --head-tracking: -0.015em;
+  --active-line: rgba(141, 179, 255, 0.045);
+  --selection: rgba(141, 179, 255, 0.2);
+  --pop-shadow: 0 20px 60px rgba(2, 4, 10, 0.7);
+  --display-weight: 500;
+  --display-tracking: -0.02em;
+  --ui-letter: 0.01em;
+  --eyebrow: 0.14em;
+  --eyebrow-color: #5f6a82;
+  --glass: rgba(12, 15, 22, 0.68);
+  --glass-blur: 22px;
+  --scrim: rgba(2, 4, 10, 0.6);
+  --link-underline: rgba(141, 179, 255, 0.42);
+  --measure: 70ch;
+  --spark-3: #7fd3e6;
+  --syn-heading: #eef2fb;
+  --syn-strong: #eef2fb;
+  --syn-link: #8db3ff;
+  --syn-mark: #4b5468;
+  --syn-code: #9fd8e6;
+  --syn-tag: #bfa8ff;
+  --syn-attr: #8f9cc0;
+  --syn-keyword: #bfa8ff;
+  --syn-number: #f0c38e;
+  --graph-bg: radial-gradient(900px 600px at 50% -16%, #141a29 0%, #0c1018 56%, #080a0f 100%);
+  --graph-node: #7c8bb0;
+  --graph-node-active: #e2eaff;
+  --graph-node-isolated: #4f5a74;
+  --graph-link: rgba(141, 165, 220, 0.11);
+  --graph-link-active: rgba(141, 179, 255, 0.58);
+  --graph-flicker-rgb: 141, 179, 255;
+  --graph-label: rgba(226, 233, 250, 0.86);
+  --graph-label-halo: rgba(6, 8, 13, 0.7);
+  --graph-bloom-alpha: 0.5;
+  --graph-thumb-border: rgba(141, 179, 255, 0.55);
+  --graph-node-tag: #bfa8ff;
+  --graph-node-phantom: #434b5e;
+  --graph-node-attachment: #7fd3e6;
+  --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(110, 150, 255, 0.08), transparent 70%);
+  --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(170, 140, 255, 0.05), transparent 72%);
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Ember — warm charcoal, parchment ink, amber light. A reading-lamp palette. */
+:root[data-theme="ember"] {
+  --ext-sat: 26%;
+  --ext-light: 66%;
+  --bg: #110f0d;
+  --bg-1: #171412;
+  --bg-2: #201c19;
+  --bg-3: #2b2622;
+  --border: rgba(255, 232, 205, 0.085);
+  --text: #ddd3c4;
+  --text-strong: #f7f0e5;
+  --text-dim: #a0968a;
+  --text-faint: #6d655c;
+  --accent: #e5a65e;
+  --accent-2: #d08b6c;
+  --accent-contrast: #1a1208;
+  --danger: #e8806e;
+  --code-bg: #1e1a17;
+  --radius: 8px;
+  --radius-btn: 999px;
+  --head-weight: 500;
+  --head-tracking: -0.01em;
+  --active-line: rgba(255, 220, 170, 0.035);
+  --selection: rgba(229, 166, 94, 0.2);
+  --pop-shadow: 0 20px 60px rgba(5, 3, 1, 0.65);
+  --display-weight: 400;
+  --display-tracking: -0.02em;
+  --ui-letter: 0.01em;
+  --eyebrow: 0.14em;
+  --eyebrow-color: #7a7166;
+  --glass: rgba(20, 17, 15, 0.7);
+  --glass-blur: 20px;
+  --scrim: rgba(5, 3, 1, 0.58);
+  --link-underline: rgba(229, 166, 94, 0.42);
+  --measure: 66ch;
+  --spark-3: #c9b37a;
+  --syn-heading: #f7f0e5;
+  --syn-strong: #f7f0e5;
+  --syn-link: #e5a65e;
+  --syn-mark: #5f574f;
+  --syn-code: #d8bb8e;
+  --syn-tag: #c79a7f;
+  --syn-attr: #a8957f;
+  --syn-keyword: #d08b6c;
+  --syn-number: #d8bb8e;
+  --graph-bg: radial-gradient(900px 600px at 50% -16%, #221c17 0%, #15120f 56%, #0e0c0a 100%);
+  --graph-node: #a6978a;
+  --graph-node-active: #fbe2bc;
+  --graph-node-isolated: #6c625a;
+  --graph-link: rgba(255, 226, 190, 0.085);
+  --graph-link-active: rgba(229, 166, 94, 0.55);
+  --graph-flicker-rgb: 229, 166, 94;
+  --graph-label: rgba(247, 240, 229, 0.86);
+  --graph-label-halo: rgba(14, 11, 9, 0.7);
+  --graph-bloom-alpha: 0.42;
+  --graph-thumb-border: rgba(229, 166, 94, 0.5);
+  --graph-node-tag: #d08b6c;
+  --graph-node-phantom: #4f4842;
+  --graph-node-attachment: #c9b37a;
+  --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(229, 166, 94, 0.07), transparent 70%);
+  --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(208, 139, 108, 0.045), transparent 72%);
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Dusk — plum night, rose focus, lilac secondary, peach attachments. */
+:root[data-theme="dusk"] {
+  --ext-sat: 28%;
+  --ext-light: 72%;
+  --bg: #100d13;
+  --bg-1: #151119;
+  --bg-2: #1d1822;
+  --bg-3: #28212e;
+  --border: rgba(238, 214, 252, 0.085);
+  --text: #dad1df;
+  --text-strong: #f6f0f9;
+  --text-dim: #9c90a4;
+  --text-faint: #685e70;
+  --accent: #eaa6bc;
+  --accent-2: #b9a6ea;
+  --accent-contrast: #1c1017;
+  --danger: #ff8a8a;
+  --code-bg: #1b1620;
+  --radius: 12px;
+  --radius-btn: 999px;
+  --head-weight: 500;
+  --head-tracking: -0.015em;
+  --active-line: rgba(234, 166, 188, 0.04);
+  --selection: rgba(234, 166, 188, 0.2);
+  --pop-shadow: 0 20px 60px rgba(6, 2, 8, 0.66);
+  --display-weight: 400;
+  --display-tracking: -0.02em;
+  --ui-letter: 0.01em;
+  --eyebrow: 0.14em;
+  --eyebrow-color: #786c80;
+  --glass: rgba(18, 14, 22, 0.7);
+  --glass-blur: 22px;
+  --scrim: rgba(6, 2, 8, 0.58);
+  --link-underline: rgba(234, 166, 188, 0.42);
+  --measure: 68ch;
+  --spark-3: #b9a6ea;
+  --syn-heading: #f6f0f9;
+  --syn-strong: #f6f0f9;
+  --syn-link: #eaa6bc;
+  --syn-mark: #5c5264;
+  --syn-code: #ecc7a6;
+  --syn-tag: #b9a6ea;
+  --syn-attr: #a497b5;
+  --syn-keyword: #b9a6ea;
+  --syn-number: #ecc7a6;
+  --graph-bg: radial-gradient(900px 600px at 50% -16%, #221a29 0%, #141018 56%, #0e0b11 100%);
+  --graph-node: #a397ad;
+  --graph-node-active: #fbdde8;
+  --graph-node-isolated: #675d6f;
+  --graph-link: rgba(238, 214, 252, 0.09);
+  --graph-link-active: rgba(234, 166, 188, 0.55);
+  --graph-flicker-rgb: 234, 166, 188;
+  --graph-label: rgba(246, 240, 249, 0.86);
+  --graph-label-halo: rgba(12, 9, 14, 0.7);
+  --graph-bloom-alpha: 0.45;
+  --graph-thumb-border: rgba(234, 166, 188, 0.5);
+  --graph-node-tag: #b9a6ea;
+  --graph-node-phantom: #4c4453;
+  --graph-node-attachment: #ecc7a6;
+  --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(234, 166, 188, 0.07), transparent 70%);
+  --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(185, 166, 234, 0.05), transparent 72%);
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Fjord — cool slate after the Nord palette (nordtheme.com): frost accents,
+   aurora purple tags, soft yellow attachments. */
+:root[data-theme="fjord"] {
+  --ext-sat: 24%;
+  --ext-light: 68%;
+  --bg: #1a1d24;
+  --bg-1: #1f232b;
+  --bg-2: #262b35;
+  --bg-3: #303644;
+  --border: rgba(216, 222, 233, 0.085);
+  --text: #d1d7e1;
+  --text-strong: #eceff4;
+  --text-dim: #949daf;
+  --text-faint: #677083;
+  --accent: #88c0d0;
+  --accent-2: #81a1c1;
+  --accent-contrast: #14181e;
+  --danger: #d58a8f;
+  --code-bg: #242933;
+  --radius: 8px;
+  --radius-btn: 8px;
+  --head-weight: 600;
+  --head-tracking: -0.01em;
+  --active-line: rgba(136, 192, 208, 0.045);
+  --selection: rgba(136, 192, 208, 0.2);
+  --pop-shadow: 0 20px 56px rgba(8, 10, 14, 0.55);
+  --display-weight: 500;
+  --display-tracking: -0.015em;
+  --ui-letter: 0;
+  --eyebrow: 0.12em;
+  --eyebrow-color: #6f788b;
+  --glass: rgba(30, 34, 42, 0.72);
+  --glass-blur: 20px;
+  --scrim: rgba(10, 12, 16, 0.5);
+  --link-underline: rgba(136, 192, 208, 0.42);
+  --measure: 70ch;
+  --spark-3: #8fbcbb;
+  --syn-heading: #eceff4;
+  --syn-strong: #eceff4;
+  --syn-link: #88c0d0;
+  --syn-mark: #59627a;
+  --syn-code: #a3be8c;
+  --syn-tag: #81a1c1;
+  --syn-attr: #8fbcbb;
+  --syn-keyword: #b48ead;
+  --syn-number: #d8b4a0;
+  --graph-bg: radial-gradient(900px 600px at 50% -16%, #283040 0%, #1d2129 56%, #171a20 100%);
+  --graph-node: #8794a8;
+  --graph-node-active: #e5f3f7;
+  --graph-node-isolated: #5c6577;
+  --graph-link: rgba(216, 222, 233, 0.09);
+  --graph-link-active: rgba(136, 192, 208, 0.58);
+  --graph-flicker-rgb: 136, 192, 208;
+  --graph-label: rgba(236, 239, 244, 0.88);
+  --graph-label-halo: rgba(20, 23, 29, 0.72);
+  --graph-bloom-alpha: 0.35;
+  --graph-thumb-border: rgba(136, 192, 208, 0.5);
+  --graph-node-tag: #b48ead;
+  --graph-node-phantom: #4c5466;
+  --graph-node-attachment: #ebcb8b;
+  --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(136, 192, 208, 0.06), transparent 70%);
+  --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(180, 142, 173, 0.04), transparent 72%);
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Paper — warm editorial light theme: off-white stock, soft ink, rust accent. */
+:root[data-theme="paper"] {
+  --ext-sat: 30%;
+  --ext-light: 40%;
+  --bg: #f2efe9;
+  --bg-1: #fbf9f5;
+  --bg-2: #f6f3ed;
+  --bg-3: #e8e3d9;
+  --border: #e0dacd;
+  --text: #2b2825;
+  --text-strong: #13110f;
+  --text-dim: #6a645c;
+  --text-faint: #9a9389;
+  --accent: #b0522c;
+  --accent-2: #8a4225;
+  --accent-contrast: #ffffff;
+  --danger: #b3402b;
+  --code-bg: #efebe3;
+  --radius: 8px;
+  --radius-btn: 999px;
+  --head-weight: 600;
+  --head-tracking: -0.015em;
+  --active-line: rgba(60, 40, 20, 0.035);
+  --selection: rgba(176, 82, 44, 0.16);
+  --pop-shadow: 0 1px 2px rgba(40, 30, 20, 0.06), 0 18px 48px rgba(40, 30, 20, 0.14);
+  --display-weight: 500;
+  --display-tracking: -0.02em;
+  --ui-letter: 0;
+  --eyebrow: 0.12em;
+  --eyebrow-color: #9a9389;
+  --glass: rgba(251, 249, 245, 0.78);
+  --glass-blur: 20px;
+  --scrim: rgba(40, 30, 20, 0.22);
+  --link-underline: rgba(176, 82, 44, 0.38);
+  --measure: 68ch;
+  --spark-3: #5d7c8c;
+  --syn-heading: #13110f;
+  --syn-strong: #13110f;
+  --syn-link: #b0522c;
+  --syn-mark: #b8b0a4;
+  --syn-code: #5d7c8c;
+  --syn-tag: #7a6a8c;
+  --syn-attr: #8a7a5a;
+  --syn-keyword: #8a4225;
+  --syn-number: #8a6a2a;
+  --graph-bg: radial-gradient(900px 600px at 50% -16%, #fdfcf9 0%, #f4f1eb 58%, #ede9e1 100%);
+  --graph-node: #8e867b;
+  --graph-node-active: #b0522c;
+  --graph-node-isolated: #b2aa9e;
+  --graph-link: rgba(60, 45, 30, 0.11);
+  --graph-link-active: rgba(176, 82, 44, 0.5);
+  --graph-flicker-rgb: 176, 82, 44;
+  --graph-label: rgba(30, 27, 24, 0.9);
+  --graph-label-halo: rgba(251, 249, 245, 0.85);
+  --graph-bloom-alpha: 0.12;
+  --graph-thumb-border: rgba(60, 45, 30, 0.2);
+  --graph-node-tag: #5d7c8c;
+  --graph-node-phantom: #cbc4b8;
+  --graph-node-attachment: #c09a4e;
+  --atmos-a: radial-gradient(860px 540px at 82% -10%, rgba(176, 82, 44, 0.03), transparent 70%);
+  --atmos-b: radial-gradient(620px 460px at 4% 114%, rgba(93, 124, 140, 0.025), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);
 }
 
@@ -2501,11 +2916,22 @@ body.is-dragging iframe {
   overflow: visible;
 }
 .theme-seg .seg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   min-width: 0;
   white-space: nowrap;
   text-align: center;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.theme-swatch {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 22%, transparent);
 }
 .setting-row {
   display: flex;
@@ -3902,17 +4328,23 @@ body,
 .tree-file.other {
   color: var(--text-faint);
 }
+/* FileTree supplies per-extension hue; themes control saturation and lightness. */
 .tree-ext {
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-faint);
-  border: 1px solid var(--border);
+  color: hsl(var(--ext-hue, 0) var(--ext-sat) var(--ext-light));
+  border: 1px solid hsl(var(--ext-hue, 0) var(--ext-sat) var(--ext-light) / 0.32);
   border-radius: 4px;
   padding: 0 4px;
   margin-left: auto;
   flex: 0 0 auto;
 }
+/* Green-hued extensions stay neutral instead of tinting every theme. */
+.tree-ext-neutral {
+  --ext-sat: 0%;
+}
+
 .doc-media {
   display: block;
   max-width: 100%;

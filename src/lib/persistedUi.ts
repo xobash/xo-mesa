@@ -5,8 +5,22 @@ export const THEME_KEY = "mesa:theme";
 export const RECENTS_KEY = "mesa:recentVaults";
 export const MAX_RECENTS = 8;
 
-export type ThemeId = "system" | "void" | "darkroom";
-const THEME_IDS: ThemeId[] = ["system", "void", "darkroom"];
+export const THEME_IDS = [
+  "system",
+  "void",
+  "darkroom",
+  "graphite",
+  "midnight",
+  "ember",
+  "dusk",
+  "fjord",
+  "paper",
+] as const;
+export type ThemeId = (typeof THEME_IDS)[number];
+
+export function isThemeId(value: unknown): value is ThemeId {
+  return typeof value === "string" && (THEME_IDS as readonly string[]).includes(value);
+}
 
 export function initialRecents(): string[] {
   try {
@@ -27,8 +41,8 @@ export function initialRecents(): string[] {
 
 export function initialTheme(): ThemeId {
   try {
-    const value = localStorage.getItem(THEME_KEY) as ThemeId | null;
-    if (value && THEME_IDS.includes(value)) return value;
+    const value = localStorage.getItem(THEME_KEY);
+    if (isThemeId(value)) return value;
   } catch {
     // Use the system default.
   }
