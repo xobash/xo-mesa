@@ -1898,7 +1898,9 @@ mod tests {
     }
 
     /// A writer that never returns, standing in for a Pi that stopped reading stdin.
+    #[cfg(unix)]
     struct StuckWriter(mpsc::Receiver<()>);
+    #[cfg(unix)]
     impl Write for StuckWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let _ = self.0.recv();

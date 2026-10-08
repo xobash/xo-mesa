@@ -34,7 +34,7 @@ names the executing test; it is not a source-string assertion.
 
 | ID | Purpose | Origin | Regression |
 | --- | --- | --- | --- |
-| CONTROL-001 | Restrict staged files to the exact sorted, unique public allowlist; reject missing approved files | INCIDENT-001; AUDIT | `rejects publication paths outside the exact allowlist and missing approved paths`; `rejects duplicate and unsorted allowlists` |
+| CONTROL-001 | Restrict staged files to the exact sorted, unique public allowlist; reject missing files and private working documents in staged inputs or candidate ancestry | INCIDENT-001; AUDIT | `rejects publication paths outside the exact allowlist and missing approved paths`; `rejects duplicate and unsorted allowlists`; private-document input/ancestry regressions |
 | CONTROL-002 | Keep performance fixtures and example PDFs out of public release inputs while retaining frontend behavior tests | AUDIT; no separate published incident recorded | `rejects performance fixtures and example PDFs even when allowlisted` |
 | CONTROL-003 | Restrict ignore-file paths to the approved root names | INCIDENT-001 | `restricts ignore-file paths to the approved root names` |
 | CONTROL-004 | Detect personal filesystem paths and named external volumes in staged text | AUDIT; no separate published incident recorded | `rejects personal filesystem and external-volume paths` |
@@ -125,3 +125,5 @@ reviewed 2026-10-07 and expire after 2026-11-06. The expiry regression in
 `release-gate.check.mjs` rejects the same warnings after that date. Removal
 requires a compatible complete Linux binding-chain upgrade and Linux acceptance;
 the exception does not fix the upstream advisories.
+
+Private working-document path checks apply to the staged tree and candidate ancestry. Secret-byte and identity checks still cover every fetched public ref. Other published branches require their own content review and cleanup; a passing candidate scan does not establish their removal.
