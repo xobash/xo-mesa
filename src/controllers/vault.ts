@@ -45,12 +45,7 @@ import { stat } from "@tauri-apps/plugin-fs";
 import { forEachConcurrent } from "../lib/concurrency";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { invalidatePdfThumb } from "../lib/pdfThumbInvalidation";
-import {
-  LAST_VAULT_KEY,
-  MAX_RECENTS,
-  RECENTS_KEY
-} from "../lib/persistedUi";
-import { rememberRecentVault } from "../lib/recentVaults";
+import { rememberRecentVaultNative, type RecentVaultState } from "../lib/persistedUi";
 import { resetSearchEligibility } from "../lib/searchMatch";
 import {
   STARTUP_TEXT_READ_CONCURRENCY,
@@ -693,14 +688,16 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
 
         const name =
           root === DEMO_ROOT ? "Demo Vault" : root.split(/[\\/]/).pop() || root;
-        // Track recent vaults (most-recent first, deduped, capped) — the real
-        // folders only, never the in-browser demo sentinel.
-        const recents = rememberRecentVault(
-          get().recentVaults,
-          root,
-          MAX_RECENTS,
-          DEMO_ROOT
-        );
+        let recentState: RecentVaultState | null = null;
+        let recentWarning = "";
+        if (IN_TAURI && root !== DEMO_ROOT) {
+          try { recentState = await rememberRecentVaultNative(root); }
+          catch (error) {
+            if (!String(error).includes("not allowed") && !String(error).includes("main workspace")) recentWarning = " Recent vaults could not be saved.";
+          }
+          if (!isCurrentOpen()) return;
+        }
+
         // Scanning leaves the outgoing editor mounted. Drain edits made during
         // that scan immediately before the synchronous state swap; after this
         // await, no user event can interleave before `set` replaces the old vault.
@@ -727,18 +724,13 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           }
           if (!isCurrentOpen()) return;
         }
-        try {
-          localStorage.setItem(LAST_VAULT_KEY, root);
-          localStorage.setItem(RECENTS_KEY, JSON.stringify(recents));
-        } catch {
-          /* ignore */
-        }
 
         set({
           vaultPath: root,
           vaultName: name,
           unavailableVault: null,
-          recentVaults: recents,
+          recentVaults: recentState?.entries ?? get().recentVaults,
+          currentRecentVaultId: recentState?.last ?? get().currentRecentVaultId,
           calendarEvents,
           files,
           notes: {},
@@ -754,7 +746,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           unreadableTextReasons: {},
           indexingTextFiles: files.filter(isTextualVaultFile).length,
           loading: false,
-          status: `${files.length} files found. Indexing text…`,
+          status: `${files.length} files found. Indexing text…${recentWarning}`,
         });
         if (resumeListening) {
           try {

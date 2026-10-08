@@ -19,12 +19,25 @@
     "allow-quit-after-save",
     "allow-vault-apply-research",
     "allow-vault-purge-recovery",
+    "allow-vault-revoke",
     "allow-vault-move-to-recovery",
     "allow-vault-restore-recovery",
     "allow-vault-recover-artifact",
     "allow-sync-fetch-manifest",
     "allow-sync-secrets-import",
     "allow-sync-secrets-generate",
-    "allow-sync-secrets-show"
+    "allow-sync-secrets-show",
+    "allow-sync-status",
+    "allow-sync-local-addr",
+    "allow-sync-identity",
+    "allow-sync-cancel",
+    "allow-activity-start",
+    "allow-activity-set-context",
+    "allow-deep-research-respond",
+    "allow-activity-stop",
+    "allow-terminal-prepare-handoff",
+    "allow-vault-recents",
+    "allow-vault-recent-resolve",
+    "core:webview:allow-create-webview-window"
   ]
 }

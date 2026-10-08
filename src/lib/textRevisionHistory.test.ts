@@ -6,10 +6,12 @@ import {
   migrateTextRevisions,
   recordTextRevision,
   recordTextRevisionAsync,
+  migrateRevisionNamespaces,
 } from "./textRevisionHistory";
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   clearTextRevisionsForTests();
 });
 
@@ -85,4 +87,57 @@ describe("text revision history", () => {
     expect(revision?.id).not.toBe(first?.id);
     expect(revision?.order).toBeGreaterThan(first?.order ?? 0);
   });
+});
+
+/** Transaction fixture retains staged writes until commit, including rollback. */
+function historyDatabase(entries: Array<Record<string, unknown>>, rejectWrite = false) {
+  const records = new Map(entries.map(entry => [entry.id, entry]));
+  const db = {
+    close: () => {},
+    transaction: () => {
+      const staged = new Map(records);
+      let aborted = false;
+      const tx = {
+        oncomplete: null as (() => void) | null,
+        onabort: null as (() => void) | null,
+        onerror: null as (() => void) | null,
+        error: new Error("transaction aborted"),
+        abort: () => { aborted = true; tx.onabort?.(); },
+        objectStore: () => ({
+          put: (entry: Record<string, unknown>) => { if (rejectWrite) throw Error("quota"); staged.set(entry.id, entry); },
+          getAll: () => {
+            const request = { result: [...records.values()], onsuccess: null as (() => void) | null, onerror: null, error: null };
+            queueMicrotask(() => {
+              request.onsuccess?.();
+              if (!aborted) { records.clear(); for (const [id, value] of staged) records.set(id, value); tx.oncomplete?.(); }
+            });
+            return request;
+          },
+        }),
+      };
+      return tx;
+    },
+  };
+  vi.stubGlobal("indexedDB", { open: () => {
+    const request = { result: db, onsuccess: null as (() => void) | null, onerror: null, onblocked: null, onupgradeneeded: null };
+    queueMicrotask(() => request.onsuccess?.());
+    return request;
+  } });
+  return records;
+}
+it("migrates IndexedDB recovery identities without losing revisions or save ordering", async () => {
+  const original = { id: "stored", root: "/synthetic/old", relPath: "note.md", content: "disk baseline", savedAt: 1, order: 2 };
+  const records = historyDatabase([original]);
+  localStorage.setItem("mesa:textRevisionHistory:v1", JSON.stringify([{ ...original, id: "legacy", content: "older draft", order: 1 }]));
+  await migrateRevisionNamespaces(() => "opaque-id");
+  expect([...records.values()]).toEqual([{ ...original, root: "opaque-id" }, { ...original, id: "legacy", root: "opaque-id", content: "older draft", order: 1 }]);
+  expect(localStorage.getItem("mesa:textRevisionHistory:v1")).toBeNull();
+});
+it("rolls back a rejected history migration and retains the legacy recovery source", async () => {
+  const original = { id: "stored", root: "/synthetic/old", relPath: "note.md", content: "disk baseline", savedAt: 1 };
+  const records = historyDatabase([original], true);
+  localStorage.setItem("mesa:textRevisionHistory:v1", JSON.stringify([original]));
+  await expect(migrateRevisionNamespaces(() => "opaque-id")).rejects.toThrow("transaction aborted");
+  expect(records.get("stored")).toEqual(original);
+  expect(localStorage.getItem("mesa:textRevisionHistory:v1")).toContain("disk baseline");
 });

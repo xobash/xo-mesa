@@ -600,7 +600,9 @@ impl RootedTarget {
             Err(std::io::Error::last_os_error())
         } else {
             // SAFETY: open returned a nonnegative descriptor with no other owner.
-            Ok(unsafe { std::fs::File::from_raw_fd(raw) })
+            let file = unsafe { std::fs::File::from_raw_fd(raw) };
+            file_metadata::private(&file)?;
+            Ok(file)
         }
     }
 
@@ -688,7 +690,9 @@ impl RootedTarget {
             Err(std::io::Error::last_os_error())
         } else {
             // SAFETY: openat returned a nonnegative descriptor with no other owner.
-            Ok(unsafe { std::fs::File::from_raw_fd(raw) })
+            let file = unsafe { std::fs::File::from_raw_fd(raw) };
+            file_metadata::private(&file)?;
+            Ok(file)
         }
     }
 
@@ -1033,12 +1037,20 @@ impl StagedFile {
         let mut opened = None;
         for _ in 0..16 {
             let path = candidate_path(target);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+            }
+            match options.open(&path) {
                 Ok(file) => {
+                    #[cfg(unix)]
+                    if let Err(error) = file_metadata::private(&file) {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(ReceiveError::Write(error));
+                    }
                     opened = Some((path, file));
                     break;
                 }
@@ -1225,6 +1237,35 @@ impl StagedFile {
         };
         if !fingerprint_matches(&from, expected_size, expected_hash) {
             return Err(collision_error(&target_path));
+        }
+        #[cfg(unix)]
+        {
+            let original = RootedTarget::resolve(root, rel, false)?.open_read()?;
+            let candidate = if let Some(rooted) = &self.rooted {
+                {
+                    use std::os::fd::{AsRawFd, FromRawFd};
+                    // SAFETY: held parent and NUL-terminated candidate remain live.
+                    let fd = unsafe {
+                        libc::openat(
+                            rooted.parent.as_raw_fd(),
+                            rooted.candidate.as_ptr(),
+                            libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                        )
+                    };
+                    if fd < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    // SAFETY: fd has exactly one owner.
+                    unsafe { std::fs::File::from_raw_fd(fd) }
+                }
+            } else {
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&self.path)?
+            };
+            file_metadata::preserve(&original, &candidate)?;
         }
         for offset in 0..16u64 {
             let tomb_rel = format!(

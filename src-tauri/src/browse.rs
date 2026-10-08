@@ -205,7 +205,12 @@ fn is_texty(content_type: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn browse_fetch(app: tauri::AppHandle, url: String) -> Result<BrowsePage, String> {
+pub async fn browse_fetch(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<BrowsePage, String> {
+    crate::require_agent_surface(window.label())?;
     use tauri::Emitter;
     let page = fetch_inner(url, false).await?;
     let _ = app.emit(

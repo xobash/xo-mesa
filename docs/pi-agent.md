@@ -74,7 +74,7 @@ sequence number. Preserving the grid-size timeline matters for full-screen
 terminal UIs: replaying cursor-up/rewrite bytes at only the new window's width
 changes line wrapping and leaves stale or duplicated lines. This preserves the
 visible conversation without losing or duplicating bytes during the handoff.
-Because Rust's `TerminalState` and the `terminal://output` event are app-global
+Because Rust's `TerminalState` is app-global and terminal output uses authorized native IPC channels
 (not per-window), both windows can stay attached to the same live session
 during the handoff.
 
@@ -336,3 +336,17 @@ into the reader. `browse_read()` returns the latest fetched source and its age,
 not a page-controlled DOM snapshot or proof of what the user saw. User browsing
 and Pi browsing retain separate in-memory cookie jars. Page data is untrusted
 and is encoded as evidence rather than instructions or authorization.
+
+## Session and bridge authority
+
+Every terminal operation checks native caller grants. A session ID is not a
+credential. Main prepares a random, single-use handoff bound to the new Pi
+window label for 30 seconds; successful adoption revokes the prior Pi-window
+grant. Output and exit data reach only authorized native IPC channel subscribers. Main retains
+control for docking. Destroying the detached window or explicit main reclaim
+revokes its grant, including for a later reused window label. Only main has arbitrary native window creation; secondary surfaces use a
+native-validated document/panel/research factory that cannot mint main/agent labels. Native launch injects the loopback bearer token, port and
+bundled extension arguments; Pi renderers do not receive those credentials.
+Normal launcher errors list search categories without home/install prefixes;
+troubleshooting exports scrub common local prefixes. Pi itself still has the
+OS permissions approved in the external-process consent dialog.

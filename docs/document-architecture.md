@@ -25,6 +25,16 @@ lists those files but does not claim to parse, render, or serialize them.
 ordinary files. Very large code and data files use a windowed row view, so file
 open and scroll work scales with the viewport instead of total line count.
 
+## Shell subscriptions
+
+The workspace shell subscribes to its layout and narrow lifecycle inputs.
+Vault status/loading are read by Welcome and status surfaces; document navigation,
+file catalogs and Deep Research progress are read by their owning views.
+Research snapshots and Pi context are published through effect-owned store
+subscriptions, preserving initial delivery and cleanup without redrawing the shell.
+Pi context publishes only when vault, document, tabs or settings inputs change.
+`src/App.rerender.test.tsx` checks this boundary and retains a layout-render control.
+
 ## Shared Lifecycle
 
 1. `scanVault` discovers files without reading content.
@@ -43,6 +53,24 @@ open and scroll work scales with the viewport instead of total line count.
    wrapper. Drop imports and ZIP extraction use the same boundary.
 6. The watcher refreshes metadata. A clean open PDF adopts external bytes;
    unsaved edits remain visible and block stale overwrite.
+
+## Standalone document windows
+
+Graph node clicks open a decorated native document window. Its only header
+and close control is the OS title bar. The title uses the file name without its
+extension, independent of frontmatter, and follows wikilinks in the same window.
+Dragging that title bar over the main Mesa window docks the current file.
+
+`DocumentView` retains the native close guard: unsaved PDF edits keep the window
+open and show a Close stopped alert until Save succeeds. Shared window capability
+permissions explicitly grant close, destroy and set-title; Tauri's JS
+close-request listener calls destroy after the guard admits a request.
+`nativeWindowConfig.test.ts` pins those grants and `doc-*` coverage;
+`DocumentView.test.tsx` checks titles, docking cleanup and PDF refusal/retry.
+Actual OS close and drag behavior still require native interaction checks.
+
+The browser fallback retains its modal Close button. Other torn-out panel
+headers keep their existing controls.
 
 ## PDF Lifecycle
 

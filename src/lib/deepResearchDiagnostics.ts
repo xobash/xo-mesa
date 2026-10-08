@@ -185,7 +185,9 @@ export function buildResearchTroubleshootingKit(input: ResearchDiagnosticsInput)
   const now = input.now ?? new Date();
   const { run } = input;
   const lines: string[] = [];
-  const push = (s: string) => lines.push(redactResearchContent(s).content);
+  const push = (s: string) => lines.push(redactResearchContent(s).content
+    .replace(/\/(?:Users|home|Volumes)\/[^\s/"\x60]+/g, "[LOCAL]")
+    .replace(/[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^\s\\/"\x60]+/gi, "[LOCAL]"));
 
   push("# Mesa Deep Research troubleshooting kit");
   push("");

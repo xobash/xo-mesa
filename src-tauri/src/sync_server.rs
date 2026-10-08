@@ -94,21 +94,95 @@ pub(super) fn make_identity_proof(
     })
 }
 
+/// Decodes exactly `2 * N` ASCII hex digits. Works on bytes so multi-byte text
+/// from a peer or LAN client can never split a character.
 pub(super) fn parse_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
-    if value.len() != N * 2 {
+    let bytes = value.as_bytes();
+    if bytes.len() != N * 2 {
         return None;
     }
     let mut result = [0u8; N];
-    for (index, byte) in result.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    for (byte, pair) in result.iter_mut().zip(bytes.chunks_exact(2)) {
+        *byte = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
     }
     Some(result)
+}
+
+fn hex_nibble(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit - b'0'),
+        b'a'..=b'f' => Some(digit - b'a' + 10),
+        b'A'..=b'F' => Some(digit - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct IdentityProof {
     pub(super) message: String,
     pub(super) proof: String,
+}
+
+/// Serves one HTTP/1 connection. Request headers must arrive within
+/// `header_timeout`, which also closes idle keep-alive connections, and the
+/// whole connection is drained and closed after `CONNECTION_LIFETIME`, so unauthenticated hosts
+/// cannot hold the small connection pool open.
+pub(super) async fn serve_bounded<I, S>(io: I, service: S, header_timeout: Duration)
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin,
+    S: hyper::service::HttpService<Incoming, ResBody = HyperBody>,
+    S::Error: Into<BoxError>,
+{
+    let connection = hyper::server::conn::http1::Builder::new()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(header_timeout)
+        .serve_connection(io, service);
+    let mut connection = std::pin::pin!(connection);
+    tokio::select! {
+        _ = connection.as_mut() => return,
+        _ = tokio::time::sleep(CONNECTION_LIFETIME) => {}
+    }
+    // Finish the request in flight, then close.
+    connection.as_mut().graceful_shutdown();
+    let _ = tokio::time::timeout(CONNECTION_DRAIN, connection).await;
+}
+
+/// Concurrent connections allowed per source address (IPv6 per /64), below the
+/// global limit, so one LAN host cannot take every slot.
+#[derive(Default)]
+pub(super) struct PeerSlots(pub(super) Mutex<HashMap<IpAddr, usize>>);
+
+pub(super) struct PeerSlot {
+    slots: Arc<PeerSlots>,
+    peer: IpAddr,
+}
+
+impl PeerSlots {
+    pub(super) fn acquire(slots: &Arc<Self>, peer: IpAddr) -> Option<PeerSlot> {
+        let peer = AuthLimiter::bucket(peer);
+        let mut counts = slots.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = counts.entry(peer).or_insert(0);
+        if *count >= PEER_CONNECTION_LIMIT {
+            return None;
+        }
+        *count += 1;
+        Some(PeerSlot {
+            slots: slots.clone(),
+            peer,
+        })
+    }
+}
+
+impl Drop for PeerSlot {
+    fn drop(&mut self) {
+        let mut counts = self.slots.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = counts.get_mut(&self.peer) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&self.peer);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -311,6 +385,16 @@ pub(super) fn open_sync_file_no_follow(path: &Path) -> std::io::Result<std::fs::
     sync_core::open_file_no_follow(path)
 }
 
+/// Next body frame. A sender that stays silent past the idle limit yields an
+/// error rather than a clean end, so a stalled body is never taken as complete
+/// and never holds a connection slot.
+async fn next_body_frame(body: &mut Incoming) -> Option<Result<Frame<Bytes>, ()>> {
+    match tokio::time::timeout(REQUEST_BODY_IDLE_TIMEOUT, body.frame()).await {
+        Ok(frame) => frame.map(|frame| frame.map_err(|_| ())),
+        Err(_) => Some(Err(())),
+    }
+}
+
 pub(super) async fn handle_hyper(
     mut req: HyperRequest<Incoming>,
     root: Arc<PathBuf>,
@@ -374,7 +458,7 @@ pub(super) async fn handle_hyper(
 
     if path == "/activity" && method == HyperMethod::POST {
         let mut body = Vec::new();
-        while let Some(frame) = req.body_mut().frame().await {
+        while let Some(frame) = next_body_frame(req.body_mut()).await {
             let frame = match frame {
                 Ok(frame) => frame,
                 Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "read error"),
@@ -483,7 +567,7 @@ pub(super) async fn handle_hyper(
         // delete cannot be immediately reintroduced by the receiver's stale
         // manifest during that same sync.
         let mut body = Vec::new();
-        while let Some(frame) = req.body_mut().frame().await {
+        while let Some(frame) = next_body_frame(req.body_mut()).await {
             let frame = match frame {
                 Ok(frame) => frame,
                 Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "could not read journal"),
@@ -554,7 +638,7 @@ pub(super) async fn handle_hyper(
             return hyper_response(StatusCode::BAD_REQUEST, "missing peer identity");
         };
         let mut body = Vec::new();
-        while let Some(frame) = req.body_mut().frame().await {
+        while let Some(frame) = next_body_frame(req.body_mut()).await {
             let frame = match frame {
                 Ok(frame) => frame,
                 Err(_) => {
@@ -586,7 +670,7 @@ pub(super) async fn handle_hyper(
             let offered: Vec<ManifestEntry> = offered
                 .into_iter()
                 .filter_map(|entry| {
-                    sync_core::safe_join(&base_root, &entry.rel).map(|_| ManifestEntry {
+                    sync_core::is_peer_rel(&entry.rel).then_some(ManifestEntry {
                         rel: entry.rel,
                         size: entry.size,
                         hash: entry.hash,
@@ -609,7 +693,7 @@ pub(super) async fn handle_hyper(
         let Some(rel) = sync_core::query_param(&query, "rel") else {
             return hyper_response(StatusCode::BAD_REQUEST, "missing rel");
         };
-        let Some(full) = sync_core::safe_join_confined(&root, &rel) else {
+        let Some(full) = sync_core::peer_join_confined(&root, &rel) else {
             emit_log(
                 &app,
                 "warn",
@@ -909,7 +993,8 @@ pub(super) fn ipv6_listener(
     Ok(socket.into())
 }
 
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn sync_start(
     app: tauri::AppHandle,
     port: u16,
@@ -985,6 +1070,7 @@ pub fn sync_start(
             let acceptor = TlsAcceptor::from(tls_config);
             let connection_slots = Arc::new(tokio::sync::Semaphore::new(SERVER_CONNECTION_LIMIT));
             let auth_limiter = Arc::new(AuthLimiter::default());
+            let peer_slots = Arc::new(PeerSlots::default());
             while running_for_thread.load(Ordering::Relaxed) {
                 let accepted =
                     tokio::time::timeout(Duration::from_millis(250), listener.accept()).await;
@@ -992,6 +1078,14 @@ pub fn sync_start(
                     continue;
                 };
                 let acceptor = acceptor.clone();
+                let Some(peer_slot) = PeerSlots::acquire(&peer_slots, peer.ip()) else {
+                    emit_log(
+                        &app_for_thread,
+                        "warn",
+                        "[serve] per-device connection limit reached; refused peer",
+                    );
+                    continue;
+                };
                 let slot = match connection_slots.clone().try_acquire_owned() {
                     Ok(slot) => slot,
                     Err(_) => {
@@ -1009,6 +1103,7 @@ pub fn sync_start(
                 let auth_limiter = auth_limiter.clone();
                 tokio::spawn(async move {
                     let _slot = slot;
+                    let _peer_slot = peer_slot;
                     let tls =
                         match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream))
                             .await
@@ -1028,9 +1123,7 @@ pub fn sync_start(
                             )
                         }
                     });
-                    let _ = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(TokioIo::new(tls), service)
-                        .await;
+                    serve_bounded(TokioIo::new(tls), service, CONNECTION_HEADER_TIMEOUT).await;
                 });
             }
         });
@@ -1046,7 +1139,8 @@ pub fn sync_start(
     Ok(())
 }
 
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn sync_stop() -> Result<(), String> {
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(st) = guard.take() {
@@ -1069,4 +1163,68 @@ pub fn sync_status() -> bool {
 #[tauri::command]
 pub fn sync_local_addr() -> Result<String, String> {
     local_lan_ip()
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::{parse_hex, parse_identity_request};
+
+    #[test]
+    fn hex_and_identity_parsers_reject_non_ascii_without_panicking() {
+        let zeros = "0".repeat(64);
+        assert_eq!(parse_hex::<32>(&zeros), Some([0u8; 32]));
+        assert_eq!(parse_hex::<2>("00FF"), Some([0, 255]));
+        assert_eq!(parse_hex::<2>("00+f"), None);
+        for at in 0..66 {
+            // One 3-byte character at every byte offset, total length 66 and 64.
+            let mut chars: Vec<char> = "0".repeat(64).chars().collect();
+            chars.insert(at.min(64), '€');
+            let text: String = chars.iter().collect();
+            assert_eq!(parse_hex::<33>(&text), None);
+            assert_eq!(parse_hex::<32>(&text), None);
+            let query = format!("pake={text}&nonce={zeros}");
+            assert_eq!(parse_identity_request(&query), None);
+        }
+        for odd in ["", "0", "€", "0€", "€0", "ab€"] {
+            assert_eq!(parse_hex::<1>(odd), None);
+        }
+        let valid = format!("pake={}&nonce={zeros}", "0".repeat(66));
+        assert!(parse_identity_request(&valid).is_some());
+    }
+
+    #[test]
+    fn short_id_is_character_safe() {
+        assert_eq!(crate::sync::short_id("abc"), "abc");
+        assert_eq!(crate::sync::short_id("€€€€€€€€€€€€€"), "€€€€€€€€€€€€");
+    }
+
+    /// Release builds abort on panic, so hostile text must never panic a parser.
+    /// A fixed-seed generator mixes ASCII, multi-byte and control characters.
+    #[test]
+    fn parsers_never_panic_on_arbitrary_text() {
+        use crate::sync_core::{is_peer_rel, query_param, safe_join, url_decode};
+        let alphabet: Vec<char> = "ab09%&=+/.\\:?#\0\n €Κ😀é".chars().collect();
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..20_000 {
+            let length = (next() % 140) as usize;
+            let text: String = (0..length)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect();
+            let _ = parse_hex::<33>(&text);
+            let _ = parse_hex::<32>(&text);
+            let _ = parse_identity_request(&text);
+            let _ = parse_identity_request(&format!("pake={text}&nonce={text}"));
+            let _ = url_decode(&text);
+            let _ = query_param(&text, "rel");
+            let _ = query_param(&format!("rel={text}"), "rel");
+            let _ = is_peer_rel(&text);
+            let _ = safe_join(std::path::Path::new("/vault"), &text);
+        }
+    }
 }

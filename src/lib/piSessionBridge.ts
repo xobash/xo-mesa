@@ -58,3 +58,17 @@ export function onSharedPiRestart(fn: () => void): () => void {
     restartListeners.delete(fn);
   };
 }
+
+const exitListeners = new Set<(code: number | null) => void>();
+
+/** Tell mounted Pi surfaces that the shared session ended on its own. */
+export function notifySharedPiExit(code: number | null): void {
+  for (const listener of exitListeners) listener(code);
+}
+
+export function onSharedPiExit(fn: (code: number | null) => void): () => void {
+  exitListeners.add(fn);
+  return () => {
+    exitListeners.delete(fn);
+  };
+}

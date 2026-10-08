@@ -6,11 +6,11 @@ use std::{
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock},
+    sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock},
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Manager, State};
 
 #[cfg(target_os = "windows")]
 use std::fs;
@@ -105,15 +105,78 @@ pub struct TerminalState {
     sessions: Mutex<HashMap<String, TerminalSession>>,
 }
 
+#[derive(Clone)]
+struct SessionAccess {
+    labels: HashSet<String>,
+    handoff: Option<(String, String, Instant)>,
+}
+impl SessionAccess {
+    fn new(owner: &str) -> Self {
+        Self {
+            labels: HashSet::from(["main".into(), owner.into()]),
+            handoff: None,
+        }
+    }
+    fn require(&self, label: &str) -> Result<(), String> {
+        if self.labels.contains(label) {
+            Ok(())
+        } else {
+            Err("Terminal session is owned by another window".into())
+        }
+    }
+    fn prepare(&mut self, caller: &str, target: &str) -> Result<String, String> {
+        crate::require_main(caller)?;
+        self.require(caller)?;
+        if !target.starts_with("agent-") || target.len() > 128 {
+            return Err("Invalid Pi handoff target".into());
+        }
+        let token = session_id()?;
+        self.handoff = Some((target.into(), token.clone(), Instant::now()));
+        Ok(token)
+    }
+    fn revoke(&mut self, label: &str) {
+        self.labels.remove(label);
+        if self
+            .handoff
+            .as_ref()
+            .is_some_and(|(target, _, _)| target == label)
+        {
+            self.handoff = None;
+        }
+    }
+    fn attach(&mut self, label: &str, token: Option<&str>) -> Result<(), String> {
+        if self.labels.contains(label) {
+            return Ok(());
+        }
+        let valid = self
+            .handoff
+            .as_ref()
+            .is_some_and(|(target, expected, created)| {
+                target == label
+                    && token == Some(expected.as_str())
+                    && created.elapsed() <= Duration::from_secs(30)
+            });
+        if !valid {
+            return Err("Pi handoff is missing, expired, or belongs to another window".into());
+        }
+        self.handoff = None;
+        self.labels.retain(|label| label == "main");
+        self.labels.insert(label.into());
+        Ok(())
+    }
+}
+
 struct TerminalSession {
     child: Box<dyn portable_pty::Child + Send>,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Ordered input queue drained by one writer thread, so a Pi that stops
+    /// reading stdin can never block an IPC thread or the sessions lock.
+    input: mpsc::SyncSender<Vec<u8>>,
     stream: Arc<TerminalStream>,
-    /// The Mesa window currently responsible for PTY dimensions. Output/input
-    /// remain app-global, but only the focused/adopting renderer may resize:
-    /// two xterms fighting over one PTY width corrupt TUI cursor arithmetic.
+    /// Only an authorized focused/adopting renderer may resize the shared PTY.
     resize_owner: String,
+    access: SessionAccess,
+    subscribers: HashMap<String, (String, tauri::ipc::Channel<serde_json::Value>)>,
     rows: u16,
     cols: u16,
     /// Dropping this handle kills the whole Windows ConPTY process tree.
@@ -482,10 +545,7 @@ fn pi_command(pi: &Path) -> Result<CommandBuilder, String> {
         }
     }
 
-    Err(format!(
-        "Resolved Pi path '{}' is not a native Windows executable, Node-backed script, or runnable .cmd/.bat shim. Point MESA_PI_BIN at the native Pi launcher or its adjacent Node script.",
-        pi.to_string_lossy()
-    ))
+    Err("Resolved Pi launcher is not a native Windows executable, Node-backed script, or runnable .cmd/.bat shim. Point MESA_PI_BIN at the native Pi launcher or its adjacent Node script.".into())
 }
 
 #[cfg(unix)]
@@ -566,12 +626,9 @@ fn resolve_pi_binary() -> Result<PathBuf, String> {
 }
 
 fn find_pi_binary() -> Result<PathBuf, String> {
-    let mut checked: Vec<PathBuf> = Vec::new();
-
     for key in ["MESA_PI_BIN", "PI_BIN"] {
         if let Some(raw) = env::var_os(key).filter(|value| !value.is_empty()) {
             let candidate = PathBuf::from(raw);
-            checked.push(candidate.clone());
             if let Some(executable) = resolve_explicit_pi_candidate(&candidate) {
                 return Ok(executable);
             }
@@ -580,8 +637,6 @@ fn find_pi_binary() -> Result<PathBuf, String> {
 
     if let Some(path) = env::var_os("PATH") {
         for dir in env::split_paths(&path) {
-            let candidate = dir.join("pi");
-            checked.push(candidate);
             if let Some(executable) = executable_in_dir(&dir, "pi") {
                 return Ok(executable);
             }
@@ -589,20 +644,12 @@ fn find_pi_binary() -> Result<PathBuf, String> {
     }
 
     for dir in common_bin_dirs() {
-        checked.push(dir.join("pi"));
         if let Some(executable) = executable_in_dir(&dir, "pi") {
             return Ok(executable);
         }
     }
 
-    let checked = checked
-        .iter()
-        .map(|path| path.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(format!(
-        "Unable to spawn pi because it was not found in PATH or Mesa's known install locations. Set MESA_PI_BIN to the Pi executable path, or install Pi in a standard bin directory. Checked: {checked}"
-    ))
+    Err("Unable to spawn Pi. Checked PATH, user-local package locations, and Mesa's standard Pi locations. Set MESA_PI_BIN or install Pi in a standard bin directory.".into())
 }
 
 #[cfg(target_os = "windows")]
@@ -712,10 +759,7 @@ fn resolve_node_binary_for_script(script: &Path) -> Result<PathBuf, String> {
         }
     }
 
-    Err(format!(
-        "Pi resolved to the Node script '{}', but Mesa could not find node.exe to launch it. Install Node.js or point MESA_PI_BIN at a native Pi executable.",
-        script.to_string_lossy()
-    ))
+    Err("Pi resolved to a Node script, but Mesa could not find node.exe to launch it. Install Node.js or point MESA_PI_BIN at a native Pi executable.".into())
 }
 
 fn merged_path(prefixes: &[PathBuf]) -> Option<OsString> {
@@ -872,19 +916,58 @@ fn next_output_batch(stream: &TerminalStream) -> Vec<(String, u64)> {
     batch
 }
 
-/// Emit coalesced output batches for one PTY session.
+#[derive(Clone, Serialize)]
+struct TerminalExit {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+    code: Option<u32>,
+}
+
+/// Remove a session whose PTY reached EOF and reap its child. Returns the exit
+/// code when this call retired the session; `None` when `terminal_stop` (or an
+/// earlier call) already did, so exactly one exit is ever reported.
+fn retire_exited_session(
+    sessions: &Mutex<HashMap<String, TerminalSession>>,
+    session_id: &str,
+) -> Option<Option<u32>> {
+    let session = sessions
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(session_id)?;
+    let mut child = session.child;
+    Some(child.wait().ok().map(|status| status.exit_code()))
+}
+
+/// Emit coalesced output batches for one PTY session, then report its exit.
 fn spawn_flusher(stream: Arc<TerminalStream>, app: AppHandle, id: String, name: &'static str) {
     let _ = thread::Builder::new()
         .name("mesa-terminal-flusher".to_string())
         .spawn(move || loop {
             let batch = next_output_batch(&stream);
             if batch.is_empty() {
+                // All output is delivered; only now announce the exit so the
+                // webview never sees it ahead of the final bytes.
+                let state = app.state::<TerminalState>();
+                let labels = session_recipients(&app, &id);
+                if let Some(code) = retire_exited_session(&state.sessions, &id) {
+                    emit_terminal(
+                        &app,
+                        &labels,
+                        "terminal://exit",
+                        TerminalExit {
+                            session_id: id.clone(),
+                            code,
+                        },
+                    );
+                }
                 return;
             }
             for (data, seq) in batch {
                 // Emission stays on this one thread, so `seq` reaches the
                 // webview in the order the bytes left the PTY.
-                let _ = app.emit(
+                emit_terminal(
+                    &app,
+                    &session_recipients(&app, &id),
                     "terminal://output",
                     TerminalOutput {
                         session_id: id.clone(),
@@ -913,6 +996,7 @@ pub async fn terminal_start(
     rows: Option<u16>,
     cols: Option<u16>,
 ) -> Result<String, String> {
+    crate::require_agent_surface(window.label())?;
     let root = cwd.as_deref().ok_or("Pi needs an approved vault folder")?;
     let root = crate::vaultscope::require_approved(&app, root)?;
     let (mut cmd, path_prefixes) = terminal_command(program.as_deref())?;
@@ -946,12 +1030,37 @@ pub async fn terminal_start(
     if let Some(path) = merged_path(&path_prefixes) {
         cmd.env("PATH", path.to_string_lossy().to_string());
     }
-    if let Some(envs) = envs {
-        for (key, value) in envs {
-            if key.starts_with("MESA_") {
-                cmd.env(key, value);
-            }
+    let envs = envs.unwrap_or_default();
+    let research = envs
+        .get("MESA_DEEP_RESEARCH_RUN_ID")
+        .filter(|id| !id.trim().is_empty());
+    for (key, value) in &envs {
+        if key.starts_with("MESA_")
+            && !matches!(key.as_str(), "MESA_ACTIVITY_TOKEN" | "MESA_ACTIVITY_PORT")
+        {
+            cmd.env(key, value);
         }
+    }
+    // Bridge secrets travel directly to the approved process, never to a renderer.
+    if let Ok(activity) = crate::activity::start_native(app.clone()) {
+        for path in [
+            &activity.extension_path,
+            &activity.goal_extension_path,
+            &activity.context_extension_path,
+            &activity.browser_extension_path,
+        ] {
+            cmd.arg("--extension");
+            cmd.arg(path);
+        }
+        cmd.env("MESA_ACTIVITY_PORT", activity.port.to_string());
+        cmd.env("MESA_ACTIVITY_TOKEN", &activity.token);
+        if research.is_some() {
+            cmd.arg("--extension");
+            cmd.arg(&activity.deep_research_extension_path);
+            cmd.env("MESA_DEEP_RESEARCH", "1");
+        }
+    } else if research.is_some() {
+        return Err("Deep Research bridge is unavailable; Pi was not started".into());
     }
 
     let rows = rows.unwrap_or(24).clamp(2, 500);
@@ -980,30 +1089,35 @@ pub async fn terminal_start(
         }
     };
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let input = spawn_input_writer(pair.master.take_writer().map_err(|e| e.to_string())?);
     drop(pair.slave);
 
     let mut initial_history = TerminalHistory::default();
     initial_history.push_resize(rows, cols);
     let stream = Arc::new(TerminalStream::new(initial_history));
+    {
+        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        sessions.insert(
+            id.clone(),
+            TerminalSession {
+                child,
+                master: pair.master,
+                input,
+                stream: Arc::clone(&stream),
+                resize_owner: window.label().to_string(),
+                access: SessionAccess::new(window.label()),
+                subscribers: HashMap::new(),
+                rows,
+                cols,
+                #[cfg(target_os = "windows")]
+                _job: job,
+            },
+        );
+    }
+    // Start the pump only after the session is registered, so an immediate
+    // exit is still retired by the flusher.
     spawn_reader(reader, Arc::clone(&stream));
-    spawn_flusher(Arc::clone(&stream), app, id.clone(), "stdout");
-
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    sessions.insert(
-        id.clone(),
-        TerminalSession {
-            child,
-            master: pair.master,
-            writer,
-            stream,
-            resize_owner: window.label().to_string(),
-            rows,
-            cols,
-            #[cfg(target_os = "windows")]
-            _job: job,
-        },
-    );
+    spawn_flusher(stream, app, id.clone(), "stdout");
     Ok(id)
 }
 
@@ -1036,6 +1150,104 @@ fn resize_master(session: &mut TerminalSession, rows: u16, cols: u16) -> Result<
     Ok(())
 }
 
+#[tauri::command]
+pub fn terminal_prepare_handoff(
+    window: tauri::Window,
+    state: State<TerminalState>,
+    session_id: String,
+    target_label: String,
+) -> Result<String, String> {
+    crate::require_main(window.label())?;
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "Terminal state unavailable")?;
+    sessions
+        .get_mut(&session_id)
+        .ok_or("Terminal session not found")?
+        .access
+        .prepare(window.label(), &target_label)
+}
+
+fn session_recipients(app: &AppHandle, id: &str) -> Vec<tauri::ipc::Channel<serde_json::Value>> {
+    app.state::<TerminalState>()
+        .sessions
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(id)
+        .map(|session| {
+            session
+                .subscribers
+                .iter()
+                .filter(|(label, _)| session.access.require(label).is_ok())
+                .map(|(_, (_, channel))| channel.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+fn emit_terminal<S: Serialize + Clone>(
+    _app: &AppHandle,
+    channels: &[tauri::ipc::Channel<serde_json::Value>],
+    event: &str,
+    payload: S,
+) {
+    // General event listeners can bypass target filters; use caller-bound IPC.
+    let message = serde_json::json!({ "event": event, "payload": payload });
+    for channel in channels {
+        let _ = channel.send(message.clone());
+    }
+}
+fn subscribe_session(
+    session: &mut TerminalSession,
+    caller: &str,
+    channel: tauri::ipc::Channel<serde_json::Value>,
+) -> Result<String, String> {
+    session.access.require(caller)?;
+    let id = session_id()?;
+    session
+        .subscribers
+        .insert(caller.into(), (id.clone(), channel));
+    Ok(id)
+}
+#[tauri::command]
+pub fn terminal_subscribe(
+    window: tauri::Window,
+    state: State<TerminalState>,
+    session_id: String,
+    on_event: tauri::ipc::Channel<serde_json::Value>,
+) -> Result<String, String> {
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "Terminal state unavailable")?;
+    let session = sessions
+        .get_mut(&session_id)
+        .ok_or("Terminal session not found")?;
+    subscribe_session(session, window.label(), on_event)
+}
+#[tauri::command]
+pub fn terminal_unsubscribe(
+    window: tauri::Window,
+    state: State<TerminalState>,
+    session_id: String,
+    subscription_id: String,
+) -> Result<(), String> {
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "Terminal state unavailable")?;
+    if let Some(session) = sessions.get_mut(&session_id) {
+        if session
+            .subscribers
+            .get(window.label())
+            .is_some_and(|(id, _)| id == &subscription_id)
+        {
+            session.subscribers.remove(window.label());
+        }
+    }
+    Ok(())
+}
+
 /// Adopt resize ownership for an existing shared PTY. A detached Pi webview
 /// calls this before replaying output; focus changes call it again when the
 /// session docks back. The mutex makes owner change + resize one transaction,
@@ -1047,11 +1259,22 @@ pub fn terminal_attach(
     session_id: String,
     rows: u16,
     cols: u16,
+    handoff_token: Option<String>,
+    reclaim: Option<bool>,
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| "Terminal session not found".to_string())?;
+    session
+        .access
+        .attach(window.label(), handoff_token.as_deref())?;
+    if reclaim.unwrap_or(false) {
+        crate::require_main(window.label())?;
+        session.access.labels.retain(|label| label == "main");
+        session.access.handoff = None;
+        session.subscribers.retain(|label, _| label == "main");
+    }
     resize_master(session, rows, cols)?;
     session.resize_owner = window.label().to_string();
     Ok(())
@@ -1059,6 +1282,7 @@ pub fn terminal_attach(
 
 #[tauri::command]
 pub fn terminal_snapshot(
+    window: tauri::Window,
     state: State<TerminalState>,
     session_id: String,
 ) -> Result<TerminalSnapshot, String> {
@@ -1066,6 +1290,7 @@ pub fn terminal_snapshot(
     let session = sessions
         .get(&session_id)
         .ok_or_else(|| "Terminal session not found".to_string())?;
+    session.access.require(window.label())?;
     // Staged-but-uncommitted bytes are deliberately excluded: they will arrive
     // as a live event with `seq > snapshot.seq`, which is exactly what the
     // frontend's replay/dedupe path expects.
@@ -1089,6 +1314,7 @@ pub fn terminal_resize(
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| "Terminal session not found".to_string())?;
+    session.access.require(window.label())?;
     if session.resize_owner != window.label() {
         return Ok(false);
     }
@@ -1096,26 +1322,71 @@ pub fn terminal_resize(
     Ok(true)
 }
 
+/// Queued input chunks per session. A paste is one chunk.
+const INPUT_QUEUE_CHUNKS: usize = 256;
+
+/// One thread per session owns the PTY writer. It performs the blocking
+/// `write_all`/`flush` in submission order and ends when the session drops its
+/// sender or the PTY closes.
+fn spawn_input_writer<W>(mut writer: W) -> mpsc::SyncSender<Vec<u8>>
+where
+    W: Write + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE_CHUNKS);
+    let _ = thread::Builder::new()
+        .name("mesa-terminal-writer".to_string())
+        .spawn(move || {
+            while let Ok(chunk) = receiver.recv() {
+                if writer.write_all(&chunk).is_err() || writer.flush().is_err() {
+                    return;
+                }
+            }
+        });
+    sender
+}
+
+/// Queue input without blocking: the sessions lock is released before the send.
+fn queue_input(
+    sessions: &Mutex<HashMap<String, TerminalSession>>,
+    session_id: &str,
+    input: String,
+    caller: &str,
+) -> Result<(), String> {
+    let sessions = sessions.lock().map_err(|e| e.to_string())?;
+    let session = sessions
+        .get(session_id)
+        .ok_or("Terminal session not found")?;
+    session.access.require(caller)?;
+    let sender = session.input.clone();
+    drop(sessions);
+    sender
+        .try_send(input.into_bytes())
+        .map_err(|error| match error {
+            mpsc::TrySendError::Full(_) => "Pi is not reading input; try again shortly".to_string(),
+            mpsc::TrySendError::Disconnected(_) => "Terminal session has ended".to_string(),
+        })
+}
+
 #[tauri::command]
 pub fn terminal_write(
+    window: tauri::Window,
     state: State<TerminalState>,
     session_id: String,
     input: String,
 ) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    let session = sessions
-        .get_mut(&session_id)
-        .ok_or_else(|| "Terminal session not found".to_string())?;
-    session
-        .writer
-        .write_all(input.as_bytes())
-        .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())
+    queue_input(&state.sessions, &session_id, input, window.label())
 }
 
 #[tauri::command]
-pub fn terminal_stop(state: State<TerminalState>, session_id: String) -> Result<(), String> {
+pub fn terminal_stop(
+    window: tauri::Window,
+    state: State<TerminalState>,
+    session_id: String,
+) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(session) = sessions.get(&session_id) {
+        session.access.require(window.label())?;
+    }
     if let Some(mut session) = sessions.remove(&session_id) {
         let _ = session.child.kill();
         // Waiting for a PTY child is allowed to block indefinitely on some
@@ -1129,6 +1400,18 @@ pub fn terminal_stop(state: State<TerminalState>, session_id: String) -> Result<
             });
     }
     Ok(())
+}
+
+/// Destroyed windows cannot retain grants through a reused label.
+pub fn revoke_window(state: &TerminalState, label: &str) {
+    let mut sessions = state.sessions.lock().unwrap_or_else(|p| p.into_inner());
+    for session in sessions.values_mut() {
+        session.access.revoke(label);
+        session.subscribers.remove(label);
+        if session.resize_owner == label {
+            session.resize_owner = "main".into();
+        }
+    }
 }
 
 /// Best-effort PTY teardown from RunEvent::Exit. Recover a poisoned session lock and never block app exit.
@@ -1612,5 +1895,172 @@ mod tests {
             vec![("\u{fffd}".to_string(), 1)]
         );
         assert!(next_output_batch(&stream).is_empty());
+    }
+
+    /// A writer that never returns, standing in for a Pi that stopped reading stdin.
+    struct StuckWriter(mpsc::Receiver<()>);
+    impl Write for StuckWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.recv();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    pub(super) fn spawn_test_session(script: &str) -> TerminalSession {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.arg("-c");
+        cmd.arg(script);
+        let child = pair.slave.spawn_command(cmd).expect("spawn");
+        let input = spawn_input_writer(pair.master.take_writer().expect("writer"));
+        drop(pair.slave);
+        TerminalSession {
+            child,
+            master: pair.master,
+            input,
+            stream: Arc::new(TerminalStream::new(TerminalHistory::default())),
+            resize_owner: "main".to_string(),
+            access: SessionAccess::new("main"),
+            subscribers: HashMap::new(),
+            rows: 24,
+            cols: 80,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stuck_writer_does_not_block_other_session_commands() {
+        let (release, stuck) = mpsc::channel();
+        let sender = spawn_input_writer(StuckWriter(stuck));
+        let mut stuck_session = spawn_test_session("sleep 30");
+        stuck_session.input = sender;
+        let sessions = Mutex::new(HashMap::from([
+            ("a".to_string(), stuck_session),
+            ("b".to_string(), spawn_test_session("sleep 30")),
+        ]));
+
+        let started = Instant::now();
+        queue_input(&sessions, "a", "first".into(), "main").unwrap();
+        // The writer thread is now blocked inside write_all. Fill the queue
+        // and prove overflow is an error instead of a blocked IPC thread.
+        let mut overflowed = false;
+        for _ in 0..INPUT_QUEUE_CHUNKS + 8 {
+            overflowed |= queue_input(&sessions, "a", "x".into(), "main").is_err();
+        }
+        assert!(overflowed);
+        // Other commands still take the sessions lock and finish at once.
+        assert!(sessions.lock().unwrap().get("b").unwrap().stream.lock().seq == 0);
+        queue_input(&sessions, "b", "echo\n".into(), "main").unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // Closing a PTY master can itself block on some hosts; clean up apart
+        // from the assertions above.
+        let leftover: Vec<_> = sessions.lock().unwrap().drain().collect();
+        thread::spawn(move || {
+            for (_, mut session) in leftover {
+                let _ = session.child.kill();
+                let _ = session.child.wait();
+            }
+        });
+        drop(release);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_exited_child_is_retired_exactly_once_with_its_code() {
+        let sessions = Mutex::new(HashMap::from([(
+            "s".to_string(),
+            spawn_test_session("exit 3"),
+        )]));
+        assert_eq!(retire_exited_session(&sessions, "s"), Some(Some(3)));
+        assert!(sessions.lock().unwrap().is_empty());
+        assert_eq!(retire_exited_session(&sessions, "s"), None);
+        assert_eq!(
+            queue_input(&sessions, "s", "late".into(), "main").unwrap_err(),
+            "Terminal session not found"
+        );
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+    #[test]
+    fn session_handoff_is_label_bound_single_use_and_expires() {
+        let mut access = SessionAccess::new("main");
+        for label in ["doc-one", "panel-one", "agent-other"] {
+            assert!(access.require(label).is_err());
+        }
+        assert!(access.prepare("agent-other", "agent-new").is_err());
+        let token = access.prepare("main", "agent-new").unwrap();
+        assert!(access.attach("agent-other", Some(&token)).is_err());
+        assert!(access.attach("agent-new", None).is_err());
+        access.attach("agent-new", Some(&token)).unwrap();
+        assert!(access.handoff.is_none());
+        access.require("agent-new").unwrap();
+        access.require("main").unwrap();
+        assert!(access.attach("agent-other", Some(&token)).is_err());
+        let second = access.prepare("main", "agent-next").unwrap();
+        access.handoff.as_mut().unwrap().2 = Instant::now() - Duration::from_secs(31);
+        assert!(access.attach("agent-next", Some(&second)).is_err());
+        let second = access.prepare("main", "agent-next").unwrap();
+        access.attach("agent-next", Some(&second)).unwrap();
+        assert!(access.require("agent-new").is_err());
+        access.revoke("agent-next");
+        assert!(access.attach("agent-next", Some(&second)).is_err());
+        assert!(access.require("agent-next").is_err());
+        access.require("main").unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn subscriptions_require_the_session_grant_and_deliver_directly() {
+        let mut session = super::tests::spawn_test_session("sleep 30");
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let sink = messages.clone();
+        let channel = tauri::ipc::Channel::<serde_json::Value>::new(move |message| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = message {
+                sink.lock()
+                    .unwrap()
+                    .push(serde_json::from_str::<serde_json::Value>(&json).unwrap());
+            }
+            Ok(())
+        });
+        assert!(subscribe_session(&mut session, "agent-other", channel.clone()).is_err());
+        assert!(session.subscribers.is_empty());
+        subscribe_session(&mut session, "main", channel.clone()).unwrap();
+        channel
+            .send(serde_json::json!({"event":"terminal://output","payload":{"data":"private"}}))
+            .unwrap();
+        assert_eq!(messages.lock().unwrap()[0]["payload"]["data"], "private");
+        session.child.kill().unwrap();
+        session.child.wait().unwrap();
+    }
+    #[cfg(unix)]
+    #[test]
+    fn unauthorized_input_never_reaches_the_session_writer() {
+        let mut sessions = HashMap::new();
+        let mut session = super::tests::spawn_test_session("sleep 30");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        session.input = sender;
+        sessions.insert("session".into(), session);
+        let sessions = Mutex::new(sessions);
+        assert!(queue_input(&sessions, "session", "injected".into(), "agent-other").is_err());
+        assert!(receiver.try_recv().is_err());
+        queue_input(&sessions, "session", "allowed".into(), "main").unwrap();
+        assert_eq!(receiver.try_recv().unwrap(), b"allowed");
+        let mut sessions = sessions.lock().unwrap();
+        let child = &mut sessions.get_mut("session").unwrap().child;
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }

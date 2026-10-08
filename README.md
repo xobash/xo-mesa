@@ -123,7 +123,8 @@ backups. See [document architecture](docs/document-architecture.md) for details.
 
 Mesa has no telemetry integration or hosted account service. Optional Pi
 providers, browsing, approved HTML online resources and device sync contact
-their configured destinations.
+their configured destinations. Remote images in notes load only after you choose
+to load them for that note.
 
 Folder approval, verified saves and sync certificate checks have regression
 coverage. Independent penetration testing, complete native acceptance and broad

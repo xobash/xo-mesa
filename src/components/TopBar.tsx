@@ -12,6 +12,9 @@ function VaultSwitcher() {
   const vaultName = useAppStore((s) => s.vaultName);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const recents = useAppStore((s) => s.recentVaults);
+  const currentId = useAppStore((s) => s.currentRecentVaultId);
+  const openRecentVault = useAppStore((s) => s.openRecentVault);
+  const clearRecentVaults = useAppStore((s) => s.clearRecentVaults);
   const openVault = useAppStore((s) => s.openVault);
   const removeRecentVault = useAppStore((s) => s.removeRecentVault);
   const [open, setOpen] = useState(false);
@@ -36,8 +39,8 @@ function VaultSwitcher() {
   }, [open]);
 
   if (!vaultName) return null;
-  const others = recents.filter((r) => r !== vaultPath);
-  const currentIsRecent = !!vaultPath && recents.includes(vaultPath);
+  const others = recents.filter((r) => r.id !== currentId);
+  const currentIsRecent = !!currentId && recents.some((r) => r.id === currentId);
 
   return (
     <div className="vault-switcher" ref={ref}>
@@ -73,7 +76,7 @@ function VaultSwitcher() {
                 <button
                   type="button"
                   className="vault-menu-forget"
-                  onClick={() => removeRecentVault(vaultPath)}
+                  onClick={() => { if (currentId) void removeRecentVault(currentId); }}
                   title="Remove this vault from the recent list"
                   aria-label="Remove current vault from recent list"
                 >
@@ -87,31 +90,32 @@ function VaultSwitcher() {
             <div className="vault-menu-label">Recent vaults</div>
           )}
           {others.map((r) => (
-            <div key={r} className="vault-menu-row">
+            <div key={r.id} className="vault-menu-row">
               <button
                 type="button"
                 className="vault-menu-item"
                 role="menuitem"
-                title={r}
+                title={r.label}
                 onClick={() => {
                   setOpen(false);
-                  void openVault(r);
+                  void openRecentVault(r.id);
                 }}
               >
-                <span className="vault-menu-name">{r.split(/[\\/]/).pop() || r}</span>
-                <span className="vault-menu-path">{r}</span>
+                <span className="vault-menu-name">{r.label}</span>
+
               </button>
               <button
                 type="button"
                 className="vault-menu-forget"
-                onClick={() => removeRecentVault(r)}
+                onClick={() => { void removeRecentVault(r.id); }}
                 title="Remove this vault from the recent list"
-                aria-label={`Remove ${r.split(/[\\/]/).pop() || r} from recent list`}
+                aria-label={`Remove ${r.label} from recent list`}
               >
                 ×
               </button>
             </div>
           ))}
+          {recents.length > 0 && <button type="button" className="vault-menu-open" role="menuitem" onClick={() => { void clearRecentVaults(); }}>Clear recent vaults</button>}
           <button
             type="button"
             className="vault-menu-open"

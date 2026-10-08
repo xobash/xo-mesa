@@ -376,3 +376,14 @@ Artifact restoration accepts stale recognized originals, retains rescue copies,
 and fails when a destination appears. Native tests exercise collisions, symlink
 parents, fresh artifacts and concurrent edits; capability tests cover every window.
 Pi and other OS processes remain outside this renderer boundary.
+
+## Unix access metadata
+
+Native atomic saves and received sync replacements preserve the existing file
+owner/group, permission bits, access ACL and extended attributes through held
+file handles. A preservation failure stops publication. New files and temporary
+stages use mode 0600; macOS inherited ACL grants are removed before bytes are
+written. These controls do not lock out existing external handles or guarantee
+Windows directory-metadata power-loss durability. Native regression tests cover
+macOS modes, ACL/xattr retention and inherited-ACL removal; Linux ACL/xattr
+execution requires Linux.

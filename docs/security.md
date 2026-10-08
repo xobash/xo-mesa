@@ -6,7 +6,7 @@ can contact websites. Mesa has no telemetry integration or hosted account servic
 
 ## Model version and scope
 
-**TM-3 · 2026-10-07.** Covers native permissions, vault writes/recovery, sync,
+**TM-4 · 2026-10-07.** Covers native permissions, vault writes/recovery, sync,
 saved-content rendering, Pi/browser integration and release admission. Change
 this version when those boundaries change; bind test results to a source revision.
 
@@ -23,7 +23,7 @@ independent security assessment.
 
 | Evidence | Status |
 | --- | --- |
-| Versioned model | TM-3; no external review recorded |
+| Versioned model | TM-4; no external review recorded |
 | Automated rejection/recovery coverage | Markdown/HTML, archive bounds, sync proof/pin/path checks, native URL/reader isolation and sync parser, write interruption and stale-baseline tests |
 | Penetration testing | No independent report recorded |
 | Coverage-guided fuzzing, including native IPC | Bounded sync parser fuzz smoke only; broad campaigns and native IPC fuzzing are not established |
@@ -42,12 +42,12 @@ it. Publication controls have individual origins in the [control register](secur
 | Boundary / failure | Enforcing code | Regression evidence | Dependent behavior and limit |
 | --- | --- | --- | --- |
 | Release: substituted packages or an unverified revision | `scripts/release-gate.mjs`, `release-products.mjs`, `release-acceptance.mjs`; release workflows | `scripts/release-gate.check.mjs` rejects bad tags, changed packages and stale acceptance | Download verification binds a candidate to its revision; no signed public release is established here. |
-| Public files: accidental private content or omitted build inputs | `scripts/public-release-audit.mjs`, `independent-privacy.mjs`, `asset-metadata.mjs` | `scripts/public-release-audit.check.mjs` executes staged-tree rejection cases | Exact-tree and reachable-history scans include a pinned independent secret scanner. Raster metadata is checked; pixels and provider caches still need separate review. |
+| Public files: accidental private content or omitted build inputs | `scripts/public-release-audit.mjs`, `independent-privacy.mjs`, `asset-metadata.mjs` | `scripts/public-release-audit.check.mjs` executes staged-tree rejection cases | Exact-tree and reachable-history scans include a pinned independent secret scanner. Every binary is inventoried and metadata-checked. Candidate release admission requires exact-hash human pixel review; provider caches remain outside this check. |
 | Native acceptance: CI or a different artifact presented as desktop evidence | `scripts/native-acceptance-check.mjs`, `release-acceptance.mjs` | `scripts/release-gate.check.mjs` rejects missing, stale, failed or private records | Platform support depends on real installation and interaction records. The checker validates submitted records, not the truth of observations. |
 | Bootstrap: unverified code execution or loss of existing source work | `install.sh`, `install.ps1`, `run.sh`, `run.cmd`, `scripts/launch-cache.mjs` | `scripts/install-behavior.check.mjs`, `launch-cache.check.mjs`, `windows-installer-behavior.check.ps1` | Versioned setup verifies bytes/tags and preserves local work; native setup remains a separate acceptance requirement. |
 | Dependency floors: return to a known vulnerable version | Lockfiles; `scripts/native-advisory-check.mjs`; CI advisory gates | `src/lib/supplyChainContract.test.ts`; advisory cases in `scripts/release-gate.check.mjs` | Builds reject known covered regressions; new advisories require current registry checks. |
 | Untrusted markup: executable content in Mesa's privileged document | `src/lib/markdown.ts`, `markdownDom.ts`, `html.ts`; Tauri CSP | `src/lib/markdown.test.ts`, `markdownNode.test.ts`, `htmlFrame.test.ts`, `src/components/HtmlView.test.tsx` | Notes render sanitized; saved HTML is offline by default. Scripts stay blocked; online resources need per-version consent. Packaged webview checks remain incomplete. |
-| Vault access and writes: unauthorized roots, stale overwrite, truncation or lost recovery | `src-tauri/src/vaultscope.rs`, `vaultwrite.rs`, `vaultops.rs`, `vaulttransaction.rs`; `src/lib/verifiedWrite.ts` | Native module tests; `src/lib/nativeScope.test.ts`, `verifiedWrite.test.ts`, `writeRecovery.test.ts`, `vaultRecovery.test.ts` | Approved-folder saves check expected bytes and retain recovery. External processes are not locked out; Windows power-loss durability remains unverified. |
+| Vault access and writes: unauthorized roots, stale overwrite, truncation or lost recovery | `src-tauri/src/vaultscope.rs`, `vaultwrite.rs`, `vaultops.rs`, `vaulttransaction.rs`; `src/lib/verifiedWrite.ts` | Native module tests; `src/lib/nativeScope.test.ts`, `verifiedWrite.test.ts`, `writeRecovery.test.ts`, `vaultRecovery.test.ts` | Approved-folder saves check expected bytes, retain recovery and preserve Unix access metadata; new stages/files are private. External processes are not locked out; Windows power-loss durability remains unverified. |
 | Sync: wrong peer, escaping path, corrupt bytes or destructive stale journal | `src-tauri/src/sync.rs`, `sync_core.rs`; `src/lib/syncWorkflow.ts` | Native proof/pin/path/transfer tests; `src/lib/syncWorkflow.test.ts`, `syncConflicts.test.ts` | Direct sync checks key proof, TLS pin and file bytes. Windows parent handles block ancestor replacement during operations; physical Windows and multi-device acceptance remain pending. |
 | Research: unsupported proposals or overwriting an unreviewed baseline | `src/lib/deepResearch.ts`, `src/controllers/research.ts`, `src/lib/deepResearchRun.ts`; `src-tauri/src/vaulttransaction.rs` | `src/lib/deepResearch.test.ts`, `deepResearchRun.test.ts`; native transaction tests | Mesa's apply path requires review and expected bytes. Accepted-source archives are automatic; Pi shell actions remain outside this transaction. Observed text changes retain the last known clean revision and preserve dirty edits. |
 | Browser: a second DNS path bypasses public-address checks | `src-tauri/src/browse.rs`; `src/lib/browserReader.ts` | Native URL/final-resolver tests; `browserReader.test.ts`, `BrowserHarness.test.tsx`, `browserExtension.test.ts` | Only the native broker connects to remote sites. Website scripts, subresources, remote webviews and page snapshot ingestion are removed. Packaged CSP acceptance remains pending. |
@@ -60,9 +60,22 @@ Raw HTML spanning Markdown blocks is sanitized as one context. Rendering fails
 if the sanitizer is unavailable.
 
 The policy removes scripts, event handlers, executable URLs, embedded frames,
-forms, plugins, base elements, inline styles and navigation attributes. It keeps
-Mesa's links, callouts, tasks and benign formatting. `markdown.test.ts` tests both
-rejection and retained markup; `markdownNode.test.ts` checks the missing-DOM path.
+forms, plugins, base elements and `style` attributes (a note cannot overlay or
+hide Mesa's interface). It keeps Mesa's links, callouts, tasks and benign
+formatting. `markdown.test.ts` tests both rejection and retained markup;
+`markdownNode.test.ts` checks the missing-DOM path.
+
+Remote images and media (`http:`, `https:`, `//` sources) are not requested when a
+note renders or a hover preview opens, because the request would tell a third
+party that you opened the note. The sanitizer parks each URL in `data-remote-*`
+and `MarkdownView` shows a notice with **Load remote images for this note**; the
+choice lasts while that view is open. This is why the app CSP still lists `https:`
+in `img-src`. Links in a note never navigate Mesa's own window: `http(s)` links
+ask before opening in Mesa's read-only reader (it needs a mounted Pi surface),
+vault-relative links open the note, and every other scheme is ignored. A native
+navigation guard (`navigation_allowed` in `src-tauri/src/lib.rs`) also refuses
+top-level navigation of any Mesa webview to a non-app origin. The guard is unit
+tested; its behavior in a packaged webview is not yet accepted on each platform.
 
 Bounded linkification prevents covered repeated-input parser failures.
 `markdown.test.ts` and `scripts/markdown-behavior.check.mjs` exercise them.
@@ -88,8 +101,7 @@ See [saved HTML](saved-html.md). Packaged webview checks remain incomplete.
 Native folder selection grants recursive vault access; a renderer-provided path
 cannot create approval. Remembered roots require the native approval record.
 
-Main alone controls sync secrets, receive/discovery, peer retirement and reviewed
-research application. Detached document/panel/agent windows can edit approved
+Main alone controls sync secrets, receive/discovery, peer retirement, sync cancellation, activity lifecycle/context, recent-root resolution and reviewed research application. Browse IPC is restricted to main and Pi windows. Only main has arbitrary native window creation. The narrow `workspace_open_surface` helper preserves secondary document/panel/research creation without granting main/agent labels. Terminal grants are revoked on window destruction or explicit main reclaim. Terminal output and exit data use caller-bound IPC channels; general event target filters are not an authorization boundary. Terminal operations require native session grants; IDs alone cannot attach or control a session. Detached document/panel/agent windows can edit approved
 vault content through expected-state native transactions. No app window has
 filesystem-plugin write, mkdir, remove, rename, copy, create or open authority.
 Directories and recoverable moves use narrow native operations; recovery
@@ -144,8 +156,21 @@ The native audit admits only these documented warning/version pairs:
 
 | Advisory | Dependency path | Mesa usage | Acceptance and removal path |
 | --- | --- | --- | --- |
-| `glib 0.18.5` (`RUSTSEC-2024-0429`, unsound `VariantStrIter` iterator impls) | Linux-only GTK/WebKitGTK stack: `tauri`/`tauri-runtime-wry` -> `wry`/`webkit2gtk`/`gtk` -> `glib` | Mesa does not import `glib` or call `VariantStrIter`; it arrives through Tauri's Linux webview/menu stack. | Tracked warning. Removal path: an upstream Tauri/wry/WebKitGTK binding line that uses a patched `glib`; after that upgrade, rerun Linux smoke and native acceptance. |
-| `proc-macro-error 1.0.4` (`RUSTSEC-2024-0370`, unmaintained) | Linux GTK macro chain: `gtk3-macros`/`glib-macros` -> `proc-macro-error` | Build-time proc macro dependency only; Mesa does not import it directly. | Tracked warning. Removal path: the same Tauri/wry/GTK binding upgrade that removes the old `glib` line. |
+| `glib 0.18.5` (`RUSTSEC-2024-0429`, unsound `VariantStrIter` iterator impls) | Linux-only GTK/WebKitGTK stack: `tauri`/`tauri-runtime-wry` -> `wry`/`webkit2gtk`/`gtk` -> `glib` | Mesa does not import `glib` or call `VariantStrIter`; it arrives through Tauri's Linux webview/menu stack. | Reviewed 2026-10-07; exception expires after 2026-11-06. Removal path: an upstream Tauri/wry/WebKitGTK binding line that uses a patched `glib`; after that upgrade, rerun Linux smoke and native acceptance. |
+| `proc-macro-error 1.0.4` (`RUSTSEC-2024-0370`, unmaintained) | Linux GTK macro chain: `gtk3-macros`/`glib-macros` -> `proc-macro-error` | Build-time proc macro dependency only; Mesa does not import it directly. | Reviewed 2026-10-07; exception expires after 2026-11-06. Removal path: the same Tauri/wry/GTK binding upgrade that removes the old `glib` line. |
+
+Recent vault roots and native remembered approvals live in protected native app-data
+storage with owner-only permissions and inherited macOS ACL grants removed. Main receives IDs/labels and resolves a root for restore/open. Forget/clear
+revokes remembered access without deleting vault files. Legacy renderer recent/last
+keys are removed only after successful migration. Main startup migrates legacy draft/history identities even with no available vault.
+Draft/history/cache identities use a native HMAC namespace; recovery migration preserves original data on failure.
+Graph handoff records use relative paths. This removes incidental root metadata,
+not absolute paths deliberately authored in note or revision content. Diagnostic
+exports scrub common home/install prefixes and recognized credentials.
+
+Peer manifests have a 256 MiB streamed-byte ceiling even without Content-Length,
+1,000,000-file ceiling, 4096-byte visible relative-path ceiling, unique paths and
+fixed lowercase SHA-256 hashes. Rejected or partial manifests never become a baseline.
 
 ## Release and private-storage controls
 

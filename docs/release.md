@@ -296,3 +296,17 @@ acceptance, not a forced incompatible dependency override.
 
 The source installer checks that the final checkout commit equals the signed
 release tag; an ahead checkout is preserved and never launched by this path.
+
+## Binary publication review
+
+Run `node scripts/asset-metadata.mjs --inventory inventory.json` against the
+exact candidate. It inventories every binary in the public allowlist, including
+icon containers, and rejects unsupported formats or textual/location metadata.
+A human must inspect each static image and every demo frame for personal
+content before recording `status: "approved"`, `reviewerType: "human"`, a
+`reviewedOn` date and concise evidence for its exact SHA-256 in
+`docs/binary-review.json`. Record no personal names or local paths. Changed
+hashes require renewed review. `node scripts/asset-metadata.mjs --review
+docs/binary-review.json` rejects pending, missing or stale entries; the release
+candidate gate executes it against the requested commit. Metadata checks and
+automated frame sampling do not establish human pixel approval.

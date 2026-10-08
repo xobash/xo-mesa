@@ -375,3 +375,11 @@ describe("unfinished-run evidence", () => {
     expect(kit).not.toContain(providerCredentialFixture);
   });
 });
+
+it("scrubs local home/install prefixes from exported diagnostic data", () => {
+  const mac = ["", "Users", "synthetic-person", "private-vault"].join("/");
+  const windows = ["C:", "Users", "synthetic-person", "private-vault"].join("\\");
+  const kit = buildResearchTroubleshootingKit({ run: run({ error: `Cannot start: ${mac} ${windows}` }), piSessionLive: false, vaultFileCount: 1, vaultNoteCount: 1, appVersion: "test", userAgent: "test", now: new Date(T0) });
+  expect(kit).not.toContain("synthetic-person");
+  expect(kit).toContain("[LOCAL]");
+});

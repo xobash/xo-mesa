@@ -1,17 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { type UnlistenFn } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
 import {
   buildAgentContext,
   contextPrompt,
-  piActivityLaunch,
-  piDeepResearchLaunch,
-  piStartupArgs,
   type AgentContext,
-  type ActivityInfo,
 } from "../lib/agent";
 import { IN_TAURI } from "../lib/vault";
 import {
@@ -25,13 +21,17 @@ import { shouldAcceptTerminalOutput } from "../lib/terminalOutput";
 import { createLatestTerminalResizeQueue } from "../lib/terminalResize";
 import {
   replayTerminalSnapshot,
+  createTerminalReplayGate,
   type TerminalSnapshot,
 } from "../lib/terminalReplay";
+import { piExitMessage, retireExitedPiSession, type PiExitEvent } from "../lib/piExit";
 import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
 import {
   setPiSessionSnapshot,
   registerSharedPiRestart,
   onSharedPiRestart,
+  onSharedPiExit,
+  notifySharedPiExit,
 } from "../lib/piSessionBridge";
 import { BrowserHarness } from "./BrowserHarness";
 import { DeepResearchPanel } from "./DeepResearchPanel";
@@ -358,35 +358,36 @@ async function disposeSharedPiOutputListener(): Promise<void> {
 async function attachSharedPiOutputListener(): Promise<void> {
   await disposeSharedPiOutputListener();
   const outputGeneration = SHARED_PI_SESSION.outputGeneration;
-  const pending: TerminalEvent[] = [];
-  let replaying = true;
-  SHARED_PI_SESSION.outputUnlisten = await listen<TerminalEvent>(
-    "terminal://output",
-    (event) => {
-      if (
-        !shouldAcceptTerminalOutput({
-          eventSessionId: event.payload.sessionId,
-          activeSessionId: SHARED_PI_SESSION.sessionId,
-          eventGeneration: outputGeneration,
-          activeGeneration: SHARED_PI_SESSION.outputGeneration,
-        })
-      ) {
-        return;
-      }
-      if (event.payload.seq <= SHARED_PI_SESSION.lastOutputSeq) return;
-      if (replaying) {
-        pending.push(event.payload);
-        return;
-      }
-      SHARED_PI_SESSION.lastOutputSeq = event.payload.seq;
-      SHARED_PI_SESSION.terminal?.write(event.payload.data);
-    }
-  );
-
   const sessionId = SHARED_PI_SESSION.sessionId;
+  if (!sessionId) return;
+  const gate = createTerminalReplayGate<TerminalEvent, PiExitEvent>(payload => {
+    if (!shouldAcceptTerminalOutput({ eventSessionId: payload.sessionId, activeSessionId: SHARED_PI_SESSION.sessionId, eventGeneration: outputGeneration, activeGeneration: SHARED_PI_SESSION.outputGeneration })) return;
+    if (payload.seq <= SHARED_PI_SESSION.lastOutputSeq) return;
+    SHARED_PI_SESSION.lastOutputSeq = payload.seq;
+    SHARED_PI_SESSION.terminal?.write(payload.data);
+  }, exit => {
+    if (outputGeneration !== SHARED_PI_SESSION.outputGeneration || !retireExitedPiSession(SHARED_PI_SESSION, exit)) return;
+    void disposeSharedPiOutputListener();
+    SHARED_PI_SESSION.terminal?.writeln(`\r\n\x1b[33m${piExitMessage(exit.code)}\x1b[0m`);
+    publishPiSessionSnapshot(); notifySharedPiExit(exit.code);
+  });
+  const channel = new Channel<{ event: string; payload: TerminalEvent | PiExitEvent }>();
+  channel.onmessage = message => {
+    if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) return;
+    if (message.event === "terminal://exit") gate.exit(message.payload as PiExitEvent);
+    else if (message.event === "terminal://output") gate.output(message.payload as TerminalEvent);
+  };
+  const subscriptionId = await invoke<string>("terminal_subscribe", { sessionId, onEvent: channel });
+  if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) {
+    await invoke("terminal_unsubscribe", { sessionId, subscriptionId });
+    return;
+  }
+  SHARED_PI_SESSION.outputUnlisten = async () => { await invoke("terminal_unsubscribe", { sessionId, subscriptionId }); };
+
   if (sessionId) {
     try {
       const snapshot = await invoke<TerminalSnapshot>("terminal_snapshot", { sessionId });
+      if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) return;
       const terminal = SHARED_PI_SESSION.terminal;
       if (terminal) {
         replayingTerminalSnapshot = true;
@@ -397,18 +398,14 @@ async function attachSharedPiOutputListener(): Promise<void> {
           reconcileSharedPiSizeAfterReplay(terminal);
         }
       }
+      if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) return;
       SHARED_PI_SESSION.lastOutputSeq = snapshot.seq;
     } catch {
       // If the session disappears between attach and replay, draining the
       // already-buffered live events still preserves the best available view.
     }
   }
-  replaying = false;
-  for (const event of pending) {
-    if (event.seq <= SHARED_PI_SESSION.lastOutputSeq) continue;
-    SHARED_PI_SESSION.lastOutputSeq = event.seq;
-    SHARED_PI_SESSION.terminal?.write(event.data);
-  }
+  gate.complete();
 }
 
 async function ensureSharedPiSession(
@@ -449,26 +446,6 @@ async function ensureSharedPiSession(
   SHARED_PI_SESSION.startingContextText = contextText;
   SHARED_PI_SESSION.startPromise = (async () => {
     terminal.reset();
-    // Set the context before activity_start so the first turn is correct even
-    // when this surface is a detached `?agent` realm and the main renderer has
-    // not published its first update yet. The command is independent of the
-    // loopback server lifecycle and remains safe when the server is unavailable.
-    try {
-      await invoke("activity_set_context", { context: contextText });
-    } catch {
-      /* startup prompt remains the final context fallback */
-    }
-    // Start (or reuse) the loopback activity server so Pi's reads/edits/writes
-    // light up the living graph. Best-effort: if it fails, Pi still launches —
-    // the graph just won't flicker for agent reads. `activity_start` is
-    // idempotent, so repeated context restarts don't spawn duplicate servers.
-    let activity: ActivityInfo | null = null;
-    try {
-      activity = await invoke<ActivityInfo>("activity_start");
-    } catch {
-      activity = null;
-    }
-    const { env: activityEnv, args: activityArgs } = piActivityLaunch(activity);
     // Deep Research: while a run is active, ALSO load the deep-research
     // extension + mark the run so its fail-safe write/edit block engages for
     // the whole session. Read from the store (not props) so every Pi surface
@@ -478,7 +455,7 @@ async function ensureSharedPiSession(
       dr && (dr.phase === "planning" || dr.phase === "researching" || dr.phase === "synthesizing")
         ? dr
         : null;
-    const { env: drEnv, args: drArgs } = piDeepResearchLaunch(activity, drActive?.runId ?? "");
+    const drEnv = drActive ? { MESA_DEEP_RESEARCH: "1", MESA_DEEP_RESEARCH_RUN_ID: drActive.runId } : {};
     const envs = {
       MESA_VAULT_NAME: ctx.vaultName,
       MESA_VAULT_PATH: ctx.vaultPath ?? "",
@@ -489,13 +466,12 @@ async function ensureSharedPiSession(
       MESA_CENTER_VIEW: ctx.centerView,
       MESA_RIGHT_VIEWS: ctx.rightViews.join(","),
       MESA_CONTEXT: contextText,
-      ...activityEnv,
       ...drEnv,
     };
     const id = await invoke<string>("terminal_start", {
       cwd: vaultPath,
       program: "pi",
-      args: [...piStartupArgs(contextText), ...activityArgs, ...drArgs],
+      args: [],
       envs,
       rows: terminal.rows,
       cols: terminal.cols,
@@ -531,6 +507,7 @@ async function adoptSharedPiSession(
   }
   await invoke("terminal_attach", {
     sessionId,
+    handoffToken: new URLSearchParams(window.location.search).get("piHandoff"),
     cols: terminal.cols,
     rows: terminal.rows,
   });
@@ -624,6 +601,8 @@ export function AgentSurface({
   // config instead of leaving the session stopped.
   const [restartTick, setRestartTick] = useState(0);
   useEffect(() => onSharedPiRestart(() => setRestartTick((t) => t + 1)), []);
+  const [piExit, setPiExit] = useState<{ code: number | null } | null>(null);
+  useEffect(() => onSharedPiExit((code) => setPiExit({ code })), []);
   // Browser harness wing: slides out from behind the Pi window (slide-out
   // contexts) or opens as an inline sibling (workspace / popped-out window).
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -759,6 +738,7 @@ export function AgentSurface({
             : await ensureSharedPiSession(vaultPath, ctx, contextText, term);
         if (!alive) return;
         setSessionId(id);
+        setPiExit(null);
         if (term === xtermRef.current) {
           term.focus();
           fitRef.current?.fit();
@@ -902,6 +882,12 @@ export function AgentSurface({
   return (
     <div className={"agent-surface terminal-first" + (embedded ? " embedded" : "")}>
       <section className="agent-terminal-pane" data-native-webview-occluder="">
+        {piExit && (
+          <div className="pi-exit-banner" role="status">
+            {piExitMessage(piExit.code)}{" "}
+            <button type="button" onClick={() => { setPiExit(null); setRestartTick((t) => t + 1); }}>Restart Pi</button>
+          </div>
+        )}
         <div
           className={"pi-terminal-chrome" + (windowTitle ? " window-titlebar" : "")}
           data-tauri-drag-region={nativeDragRegion ? "" : undefined}

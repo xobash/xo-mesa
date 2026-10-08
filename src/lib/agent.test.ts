@@ -8,7 +8,6 @@ import {
   piActivityLaunch,
   piBinaryWriteBlock,
   piDeepResearchLaunch,
-  piStartupArgs,
   PI_BLOCKED_BINARY_EXTENSIONS,
   resolveNavTarget,
   vaultFilePath,
@@ -109,14 +108,6 @@ describe("Pi agent context", () => {
     expect(vaultFilePath("C:\\Vault", "Folder/Note.md")).toBe(
       "C:\\Vault\\Folder\\Note.md"
     );
-  });
-
-  it("passes Mesa context through Pi's supported startup system prompt hook", () => {
-    expect(piStartupArgs("Vault path: /vault\nActive file path: /vault/a.md")).toEqual([
-      "--append-system-prompt",
-      "Vault path: /vault\nActive file path: /vault/a.md",
-    ]);
-    expect(piStartupArgs("  ")).toEqual([]);
   });
 });
 

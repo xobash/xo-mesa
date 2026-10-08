@@ -1,3 +1,4 @@
+import { vaultStorageId } from "./vaultStorage";
 import { readLocalNote, writeLocalNote, type LocalNoteWrite } from "./localNotes";
 
 export interface OverlayDraft {
@@ -9,7 +10,7 @@ export interface OverlayDraft {
 }
 
 export function overlayDraftKey(root: string | null, rel: string): string {
-  return `mesa:overlay-draft:${JSON.stringify([root, rel])}`;
+  return `mesa:overlay-draft:${JSON.stringify([root === null ? null : vaultStorageId(root), rel])}`;
 }
 
 const unsavedMemory = new Map<string, OverlayDraft>();

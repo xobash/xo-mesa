@@ -208,6 +208,20 @@ Mesa keeps a conflict copy. A second different conflict from the same peer
 on the same day gets a numbered sibling (`… (2).md`, `… (3).md`) instead of
 replacing the first copy.
 
+**Hidden paths.** A peer can read, create, replace, rename or delete only paths the
+vault walk would list: any name starting with `.` and any `node_modules` folder
+are refused on the file routes, in journal operations and in manifest or baseline
+entries (`is_peer_rel` in `sync_core`). A peer therefore cannot reach `.git/`,
+`.obsidian/`, `.env`, `.mesa-trash/` or the journal. The client ignores such
+remote manifest entries and logs a warning. Mesa's own recovery paths never come
+from a peer.
+
+**Connection limits.** The receiver closes a connection that does not finish its
+request headers within 10 seconds (this also closes idle keep-alive connections),
+drains and closes any connection after one hour, and times out silent request bodies after 60
+seconds. Of the 8 global connection slots, one source address (IPv6 /64) may hold
+6. The client caps a peer's manifest at 256 MiB and its journal at 32 MiB.
+
 **Deletes and renames.** Mesa keeps a hidden, vault-local operation journal
 (`.mesa-sync-journal.json`). It is not a vault note and never appears in the
 sidebar. Before a sync, Mesa compares its last durable manifest snapshot with
@@ -452,3 +466,13 @@ manifest/hash/diff contracts, `sync_journal.rs` durable operation reconciliation
 held-parent filesystem primitives. The same production functions are exercised
 by `sync_tests.rs`, `sync_runtime_tests.rs` and the isolated parser fuzz target.
 Keep cross-module invariants in this document and executable tests.
+
+## Peer manifest admission
+
+The native client limits each manifest to 256 MiB of streamed bytes, whether
+or not Content-Length is present. It admits at most 1,000,000 files, at most
+4096 UTF-8 bytes per visible relative path, unique paths and exactly 64
+lowercase hexadecimal hash characters. Invalid/partial manifests do not update
+a baseline. Declared-size and chunked-response tests exercise this limit.
+Received replacements share the private staging and Unix access-metadata
+preservation described in [vault safety](vault-safety.md#unix-access-metadata).

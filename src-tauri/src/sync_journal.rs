@@ -286,7 +286,7 @@ pub fn validate_journal(journal: &SyncJournal, label: &str) -> std::io::Result<(
             || op.sequence == 0
             || op.id != format!("{}:{}", op.device, op.sequence)
             || !ids.insert(op.id.clone())
-            || safe_join(Path::new("."), &op.from).is_none()
+            || !is_peer_rel(&op.from)
             || !is_valid_hash(&op.hash)
         {
             return Err(invalid_data(format!("invalid {label} operation")));
@@ -301,7 +301,7 @@ pub fn validate_journal(journal: &SyncJournal, label: &str) -> std::io::Result<(
                 let Some(to) = op.to.as_deref() else {
                     return Err(invalid_data(format!("invalid {label} rename destination")));
                 };
-                if safe_join(Path::new("."), to).is_none() || to == op.from {
+                if !is_peer_rel(to) || to == op.from {
                     return Err(invalid_data(format!("invalid {label} rename destination")));
                 }
             }

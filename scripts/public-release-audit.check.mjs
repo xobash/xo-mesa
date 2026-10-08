@@ -19,6 +19,7 @@ function auditFixture({ name = 'xobash', email = 'xobash@users.noreply.github.co
       writeFileSync(join(dir, path), content);
     }
     git('init', '-q');
+    git('config', 'core.excludesFile', '');
     git('add', '--', ...Object.keys({ ...entries, ...historicalFiles }));
     git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'Verify public identity');
     if(Object.keys(historicalFiles).length) {
@@ -196,4 +197,18 @@ it('rejects private bytes retained only in reachable history',()=>{
   assert.notEqual(result.status,0);
   assert.match(result.stderr,/historical blob .* contains personal filesystem path/);
   assert.doesNotMatch(result.stderr,/synthetic-person/);
+});
+
+it("rejects private working documents even when mistakenly allowlisted", () => {
+  for (const path of ["AGENTS.md", "src/AGENTS.md", "docs/example.local.md", "output/example.md"]) {
+    const result = auditFixture({ files: { [path]: "# Local instructions\n" } });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /private working document/);
+  }
+});
+
+it("rejects private instruction documents retained only in public history", () => {
+  const result = auditFixture({ historicalFiles: { "src/AGENTS.md": "# Local instructions\n" } });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /historical path .*private working document/);
 });

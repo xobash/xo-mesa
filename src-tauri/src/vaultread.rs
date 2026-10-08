@@ -30,9 +30,24 @@ fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
         if seg.is_empty() || seg == "." || seg == ".." {
             return None;
         }
+        // Only plain names: a Windows drive prefix such as `D:x` would make
+        // `push` replace the whole path.
+        let mut parts = Path::new(seg).components();
+        if !matches!(
+            (parts.next(), parts.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        ) {
+            return None;
+        }
         p.push(seg);
     }
     Some(p)
+}
+
+/// The joined path must still resolve inside the vault once symlinked
+/// directories are followed.
+fn confined(canonical_root: &Path, path: &Path) -> bool {
+    std::fs::canonicalize(path).is_ok_and(|resolved| resolved.starts_with(canonical_root))
 }
 
 /// Workers pull paths from a shared cursor and store results in request order.
@@ -54,6 +69,10 @@ fn read_all(
         .unwrap_or(DEFAULT_BULK_READ_WORKERS)
         .clamp(1, available);
     let cursor = AtomicUsize::new(0);
+    let Ok(canonical_root) = std::fs::canonicalize(root) else {
+        return out;
+    };
+    let canonical_root = &canonical_root;
 
     // Each worker collects (index, bytes) locally and the results are placed
     // after the join, so no shared mutable buffer is needed and the response
@@ -73,6 +92,7 @@ fn read_all(
                         // failure of the batch: one bad file must not cost the
                         // other 127 their content.
                         let result = safe_join(root, &rels[i])
+                            .filter(|path| confined(canonical_root, path))
                             .map(|path| read_file(&path, max_text_file_bytes))
                             .unwrap_or(Ok(ReadResult::Failed))
                             .unwrap_or(ReadResult::Failed);
@@ -100,7 +120,7 @@ fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
     // Regular files only, matching `vault_scan`'s `is_file` rule: a directory
     // or a device node named in `rels` must read as a failure, not hang or
     // return something the text cache would then hold forever.
-    let meta = std::fs::metadata(path)?;
+    let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_file() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a file"));
     }
@@ -330,6 +350,28 @@ mod tests {
         assert_eq!(got[3], None, "empty");
         assert_eq!(got[4], Some(b"inside".to_vec()));
         let _ = fs::remove_file(v.0.parent().unwrap().join("mesa-outside.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_cannot_read_outside_the_vault() {
+        let v = TempVault::new("symlink");
+        v.file("in.md", b"inside");
+        let outside = TempVault::new("symlink-outside");
+        outside.file("secret.md", b"outside");
+        std::os::unix::fs::symlink(&outside.0, v.0.join("linked-dir")).unwrap();
+        std::os::unix::fs::symlink(outside.0.join("secret.md"), v.0.join("linked.md")).unwrap();
+        let got = round_trip(&v.0, &["linked-dir/secret.md", "linked.md", "in.md"]);
+        assert_eq!(got, vec![None, None, Some(b"inside".to_vec())]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_prefix_segments_are_rejected() {
+        let v = TempVault::new("prefix");
+        v.file("in.md", b"inside");
+        let got = round_trip(&v.0, &["C:Windows/win.ini", "D:x", "sub/C:x", "in.md"]);
+        assert_eq!(got, vec![None, None, None, Some(b"inside".to_vec())]);
     }
 
     #[test]

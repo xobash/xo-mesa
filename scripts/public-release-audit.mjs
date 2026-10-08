@@ -124,7 +124,14 @@ function checkMarkdownTargets(file, text) {
   }
 }
 
+function privateWorkingPath(path) {
+  return /(^|\/)(?:agents|handoff)\.md$|(^|\/)DOX-.*\.local\.md$|\.local\.md$|^output\//i.test(path);
+}
+
 for (const path of tracked) {
+  if (privateWorkingPath(path)) {
+    failures.push(`${path}: private working document is not a public input`);
+  }
   const testFile = /\.test\.[cm]?[jt]sx?$/i.test(path);
   if ((testFile && !/^src\/.+\.test\.tsx?$/.test(path)) || /\.perf\.|\.pdf$/i.test(path)) {
     failures.push(`${path}: test fixture or example PDF is not a public release input`);
@@ -159,6 +166,7 @@ for (const object of objects) {
   if(kind!=="blob"||content.includes(0)) continue;
   historicalBlobs++;
   const name=object.slice(id.length+1), text=content.toString("utf8");
+  if(privateWorkingPath(name)) failures.push(`historical path ${name}: private working document is not a public input`);
   for(const {pattern,label} of forbiddenContent) if(pattern.test(text)) failures.push(`historical blob ${id}: contains ${label}`);
   if(name!=="public/THIRD_PARTY_NOTICES.txt" && name!=="scripts/public-files.txt" && hasPersonalEmail(text)) failures.push(`historical blob ${id}: contains non-example email address`);
   if(hasPrivateIpv4(text)) failures.push(`historical blob ${id}: contains private IPv4 literal`);

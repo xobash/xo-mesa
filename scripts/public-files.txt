@@ -12,6 +12,7 @@ LICENSE
 README.md
 SECURITY.md
 docs/activity-api.md
+docs/binary-review.json
 docs/cross-platform.md
 docs/deep-research.md
 docs/diagnostics.md
@@ -113,9 +114,12 @@ src-tauri/src/activity.rs
 src-tauri/src/bearer.rs
 src-tauri/src/browse.rs
 src-tauri/src/diagnostics.rs
+src-tauri/src/file_metadata.rs
 src-tauri/src/lib.rs
 src-tauri/src/main.rs
+src-tauri/src/recents.rs
 src-tauri/src/secrets.rs
+src-tauri/src/surfaces.rs
 src-tauri/src/sync.rs
 src-tauri/src/sync_core.rs
 src-tauri/src/sync_fs.rs
@@ -139,6 +143,7 @@ src-tauri/src/vaultwrite.rs
 src-tauri/tauri.conf.json
 src-tauri/tauri.windows.conf.json
 src-tauri/tauri.windows.offline.conf.json
+src/App.rerender.test.tsx
 src/App.tsx
 src/components/AgentPanel.tsx
 src/components/Backlinks.tsx
@@ -217,6 +222,7 @@ src/controllers/vault.test.ts
 src/controllers/vault.ts
 src/controllers/workspace.test.ts
 src/controllers/workspace.ts
+src/controllers/workspaceWindows.test.ts
 src/lib/activity.test.ts
 src/lib/activity.ts
 src/lib/agent.test.ts
@@ -309,6 +315,7 @@ src/lib/menuPosition.test.ts
 src/lib/menuPosition.ts
 src/lib/mesaPerf.test.ts
 src/lib/mesaPerf.ts
+src/lib/nativeCommandThreading.test.ts
 src/lib/nativeScope.test.ts
 src/lib/nativeWindowConfig.test.ts
 src/lib/navigationFilters.test.ts
@@ -349,6 +356,8 @@ src/lib/pdfWorkerPool.ts
 src/lib/persistedUi.test.ts
 src/lib/persistedUi.ts
 src/lib/piBinaryWrite.test.ts
+src/lib/piExit.test.ts
+src/lib/piExit.ts
 src/lib/piSessionBridge.ts
 src/lib/processResources.test.ts
 src/lib/processResources.ts
@@ -430,6 +439,8 @@ src/lib/vaultRecovery.test.ts
 src/lib/vaultScan.test.ts
 src/lib/vaultScanBehavior.test.ts
 src/lib/vaultScanNative.test.ts
+src/lib/vaultStorage.test.ts
+src/lib/vaultStorage.ts
 src/lib/vaultSwitcher.test.ts
 src/lib/vaultSwitcher.ts
 src/lib/vaultWatchContract.test.ts

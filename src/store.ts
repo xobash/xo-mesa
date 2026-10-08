@@ -41,7 +41,7 @@ import {
   type TextRevision
 } from "./lib/textRevisionHistory";
 import {
-  IN_TAURI, authorizeVaultRoot, canonicalRoot, copyVaultFile, createFolder, createNote, importDroppedPaths, isTextualVaultFile, normalizeVaultRelPath, pickVault, readNote,
+  IN_TAURI, authorizeVaultRoot, copyVaultFile, createFolder, createNote, importDroppedPaths, isTextualVaultFile, normalizeVaultRelPath, pickVault, readNote,
   readNoteResult, readReviewText, removeFile,
   removeVaultEntry, renameVaultFile, writeNote, writeVaultBinaryFile, writeVaultTextFile, type RecoveryEntry
 } from "./lib/vault";
@@ -71,14 +71,14 @@ import type {
 import { createFileIndex } from "./lib/fileIndex";
 import { normalizeRelativeTarget, referenceMayTarget, rewriteInboundLinks } from "./lib/linkRewrite";
 import {
-  LAST_VAULT_KEY,
-  RECENTS_KEY,
   THEME_KEY,
   initialRecents,
+  forgetRecentVaultNative,
+  resolveRecentVault,
+  type RecentVault,
   initialTheme,
   type ThemeId
 } from "./lib/persistedUi";
-import { forgetRecentVault } from "./lib/recentVaults";
 import { createSyncEventBridge } from "./lib/syncEventBridge";
 import {
   updateTaskLine,
@@ -202,7 +202,10 @@ export interface AppState {
   /** Remembered network/removable vault that is selected but not currently
    * reachable. It is not a valid empty workspace; App retries it in place. */
   unavailableVault: VaultUnavailableState | null;
-  recentVaults: string[];
+  recentVaults: RecentVault[];
+  currentRecentVaultId: string | null;
+  openRecentVault: (id: string) => Promise<void>;
+  clearRecentVaults: () => Promise<void>;
   calendarEvents: CalEvent[];
   files: VaultFile[];
   notes: Record<string, NoteMeta>;
@@ -389,7 +392,7 @@ export interface AppState {
   /** Open the shared Deep Research view in a separate Mesa native window. */
   openResearchWindow: (placement?: DetachedWindowPlacement) => Promise<boolean>;
   openVault: (path?: string) => Promise<void>;
-  removeRecentVault: (path: string) => void;
+  removeRecentVault: (id: string) => Promise<void>;
   selectFile: (relPath: string) => Promise<void>;
   loadActiveContent: () => Promise<void>;
   openFile: (relPath: string) => Promise<void>;
@@ -657,6 +660,7 @@ export const useAppStore = create<AppState>((set, get) => {
     vaultName: "",
     unavailableVault: null,
     recentVaults: initialRecents(),
+    currentRecentVaultId: null,
     calendarEvents: [],
     files: [],
     notes: {},
@@ -833,21 +837,20 @@ export const useAppStore = create<AppState>((set, get) => {
     setSyncOpen: (open) => set({ syncOpen: open }),
 
     revealActiveFile: () => set((s) => ({ revealTick: s.revealTick + 1 })),
-    removeRecentVault: (path) => {
-      const root = canonicalRoot(path);
-      if (!root) return;
-      const recents = forgetRecentVault(get().recentVaults, root);
-      void forgetVaultIndex(root);
+    openRecentVault: async (id) => {
+      try { await get().openVault(await resolveRecentVault(id)); }
+      catch { set({ status: "Could not open the recent vault. Select its folder again." }); }
+    },
+    removeRecentVault: async (id) => {
       try {
-        localStorage.setItem(RECENTS_KEY, JSON.stringify(recents));
-        const last = localStorage.getItem(LAST_VAULT_KEY);
-        if (last && canonicalRoot(last) === root) {
-          localStorage.removeItem(LAST_VAULT_KEY);
-        }
-      } catch {
-        /* ignore */
-      }
-      set({ recentVaults: recents });
+        const state = await forgetRecentVaultNative(id);
+        if (id === get().currentRecentVaultId && get().vaultPath) void forgetVaultIndex(get().vaultPath!);
+        set({ recentVaults: state.entries, currentRecentVaultId: id === get().currentRecentVaultId ? null : get().currentRecentVaultId });
+      } catch { set({ status: "Could not remove the recent vault." }); }
+    },
+    clearRecentVaults: async () => {
+      try { await forgetRecentVaultNative(); set({ recentVaults: [], currentRecentVaultId: null }); }
+      catch { set({ status: "Could not clear recent vaults." }); }
     },
 
     addPeer: (input, name, fingerprint) => {

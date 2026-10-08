@@ -30,8 +30,27 @@ pub(super) fn fingerprint_from_cert_pem(cert_pem: &str) -> Result<String, String
     Ok(sha256_hex(block.contents()))
 }
 
+/// Windows tool by absolute System32 path, with no console window flashing
+/// from the GUI process.
+#[cfg(windows)]
+fn system_tool(relative: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    let mut command =
+        std::process::Command::new(std::path::Path::new(&root).join("System32").join(relative));
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
 /// Establish private identity storage before reading or creating any key.
 pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
+    protect_private_directory(dir, &["cert.pem", "key.pem", "identity.json"])
+}
+pub(crate) fn protect_private_directory(
+    dir: &std::path::Path,
+    names: &[&str],
+) -> Result<(), String> {
     use std::fs;
     if dir.exists()
         && fs::symlink_metadata(dir)
@@ -63,7 +82,16 @@ pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), St
                     .map_err(|e| e.to_string())?;
             }
         }
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(dir)
+            .map_err(|e| e.to_string())?;
+        sync_core::file_metadata::private(&directory).map_err(|e| e.to_string())?;
+        directory
+            .set_permissions(fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
         if fs::metadata(dir)
             .map_err(|e| e.to_string())?
             .permissions()
@@ -80,19 +108,23 @@ pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), St
         // Use the process identity SID, never a renderer-provided account name.
         // The path travels as data through an environment variable, not code.
         let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p -AclObject $acl; $actual=Get-Acl -LiteralPath $p; if(-not $actual.AreAccessRulesProtected){throw 'Unprotected identity ACL'}; foreach($r in $actual.Access){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){throw 'Unexpected identity access'}}"#;
-        let status = std::process::Command::new("powershell.exe")
+        let status = system_tool("WindowsPowerShell\\v1.0\\powershell.exe")
             // A PowerShell 7 parent passes incompatible module paths through
             // native child processes. Let Windows PowerShell use its own modules.
             .env_remove("PSModulePath")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("MESA_IDENTITY_DIRECTORY", dir)
+            .env(
+                "MESA_PRIVATE_FILE_NAMES",
+                serde_json::to_string(names).map_err(|_| "Cannot encode private filenames")?,
+            )
             .status()
             .map_err(|e| e.to_string())?;
         if !status.success() {
             return Err("could not restrict sync identity ACL".into());
         }
     }
-    for name in ["cert.pem", "key.pem", "identity.json"] {
+    for &name in names {
         let path = dir.join(name);
         if let Ok(meta) = fs::symlink_metadata(&path) {
             if !meta.is_file() || meta.file_type().is_symlink() {
@@ -100,8 +132,15 @@ pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), St
             }
             #[cfg(unix)]
             if name != "cert.pem" {
+                use std::os::unix::fs::OpenOptionsExt;
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                let file = fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(&path)
+                    .map_err(|e| e.to_string())?;
+                sync_core::file_metadata::private(&file).map_err(|e| e.to_string())?;
+                file.set_permissions(fs::Permissions::from_mode(0o600))
                     .map_err(|e| e.to_string())?;
                 if fs::metadata(&path)
                     .map_err(|e| e.to_string())?
@@ -116,7 +155,7 @@ pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), St
             #[cfg(windows)]
             {
                 // Reset old explicit file grants to the private parent ACL.
-                let status = std::process::Command::new("icacls.exe")
+                let status = system_tool("icacls.exe")
                     .arg(&path)
                     .args(["/reset", "/Q"])
                     .status()
@@ -129,13 +168,17 @@ pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), St
     }
     #[cfg(windows)]
     {
-        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; foreach($name in @('cert.pem','key.pem','identity.json')) { $file=Join-Path $p $name; if(Test-Path -LiteralPath $file) { $acl=Get-Acl -LiteralPath $file; $rules=@($acl.Access); if($rules.Count -eq 0){throw 'Missing identity access'}; foreach($r in $rules){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected identity file access'}} } }"#;
-        let status = std::process::Command::new("powershell.exe")
+        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; foreach($name in (ConvertFrom-Json -InputObject $env:MESA_PRIVATE_FILE_NAMES)) { $file=Join-Path $p $name; if(Test-Path -LiteralPath $file) { $acl=Get-Acl -LiteralPath $file; $rules=@($acl.Access); if($rules.Count -eq 0){throw 'Missing identity access'}; foreach($r in $rules){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected identity file access'}} } }"#;
+        let status = system_tool("WindowsPowerShell\\v1.0\\powershell.exe")
             // A PowerShell 7 parent passes incompatible module paths through
             // native child processes. Let Windows PowerShell use its own modules.
             .env_remove("PSModulePath")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("MESA_IDENTITY_DIRECTORY", dir)
+            .env(
+                "MESA_PRIVATE_FILE_NAMES",
+                serde_json::to_string(names).map_err(|_| "Cannot encode private filenames")?,
+            )
             .status()
             .map_err(|e| e.to_string())?;
         if !status.success() {
@@ -155,6 +198,8 @@ pub(super) fn persist_identity_key(path: &std::path::Path, bytes: &[u8]) -> Resu
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     let mut file = options.open(path).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    sync_core::file_metadata::private(&file).map_err(|e| e.to_string())?;
     file.write_all(bytes).map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())
 }
@@ -297,7 +342,8 @@ pub(super) fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
 
 /// This device's certificate fingerprint (lowercase hex SHA-256), for the UI to
 /// display so users can compare it out-of-band with a peer.
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn sync_identity(app: tauri::AppHandle) -> Result<String, String> {
     Ok(get_identity(&app)?.fingerprint)
 }

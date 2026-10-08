@@ -16,7 +16,7 @@ import {
 } from "../lib/vault";
 import { installCloseGuard } from "../lib/closeGuard";
 import { resolveTarget } from "../lib/graph";
-import { closeCurrentPopoutWindow, dockIntoMainWindow } from "../lib/windowDock";
+import { installNativeDragDock } from "../lib/windowDock";
 import { MarkdownView } from "./MarkdownView";
 import { Modal } from "./Modal";
 import { CodeView } from "./CodeView";
@@ -160,7 +160,14 @@ export function DocumentView() {
   useEffect(() => {
     let alive = true;
     setTitle(selectedFile.name);
-    document.title = selectedFile.name + " — Mesa";
+    document.title = selectedFile.name;
+    if (IN_TAURI) {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => {
+          if (alive) return getCurrentWindow().setTitle(selectedFile.name);
+        })
+        .catch((error) => console.warn("[mesa] document window title update failed:", error));
+    }
     if (!isTextualVaultFile(selectedFile) || selectedFile.ext === "html" || selectedFile.ext === "htm") {
       setContent("");
       return () => {
@@ -179,6 +186,16 @@ export function DocumentView() {
     };
   }, [selectedFile]);
 
+  useEffect(() => {
+    if (!IN_TAURI || !rel) return;
+    let dispose: (() => void) | undefined;
+    let alive = true;
+    void installNativeDragDock({ kind: "doc", relPath: rel })
+      .then((cleanup) => { if (alive) dispose = cleanup; else cleanup(); })
+      .catch((error) => console.warn("[mesa] native document docking unavailable:", error));
+    return () => { alive = false; dispose?.(); };
+  }, [rel]);
+
   const onWiki = (target: string) => {
     const hit = resolveTextVaultLink(files, target);
     if (hit) setRel(hit.relPath);
@@ -194,24 +211,6 @@ export function DocumentView() {
   }, [kind, selectedFile.isMarkdown]);
   return (
     <div className="doc-window">
-      <header className="doc-window-bar">
-        <span>{title}</span>
-        <div className="dock-actions">
-          <button
-            className="dock-btn"
-            onClick={() => void dockIntoMainWindow({ kind: "doc", relPath: rel })}
-          >
-            Dock
-          </button>
-          <button
-            className="icon-btn"
-            onClick={() => void closeCurrentPopoutWindow()}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </div>
-      </header>
       {closeIssue && <div className="doc-window-issue" role="alert">{closeIssue}</div>}
       {viewIssue && <div className="doc-window-issue" role="alert">{viewIssue}</div>}
       <div className="doc-window-body">

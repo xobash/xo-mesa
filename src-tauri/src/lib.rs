@@ -4,7 +4,9 @@ mod activity;
 mod bearer;
 mod browse;
 mod diagnostics;
+mod recents;
 mod secrets;
+mod surfaces;
 mod sync;
 mod sync_core;
 mod sync_policy;
@@ -17,6 +19,21 @@ mod vaultscope;
 mod vaulttransaction;
 mod vaultwatch;
 mod vaultwrite;
+
+pub(crate) fn require_main(label: &str) -> Result<(), String> {
+    if label == "main" {
+        Ok(())
+    } else {
+        Err("This operation belongs to the main workspace".into())
+    }
+}
+pub(crate) fn require_agent_surface(label: &str) -> Result<(), String> {
+    if label == "main" || label.starts_with("agent-") {
+        Ok(())
+    } else {
+        Err("This operation requires a Pi surface".into())
+    }
+}
 
 #[cfg(desktop)]
 const PI_AGENT_SHORTCUT_EVENT: &str = "mesa://global-agent";
@@ -43,9 +60,32 @@ fn quit_after_save(app: tauri::AppHandle, state: tauri::State<'_, QuitGuard>) {
     std::thread::spawn(move || app.exit(0));
 }
 
+/// Top-level navigation is limited to the app's own origin. Mesa renders
+/// untrusted note content in its privileged webviews; a link or script that
+/// navigates them would show attacker pages under the app's title with IPC
+/// access, so everything else is refused.
+fn navigation_allowed(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        // `asset` serves approved vault files to PDF/media frames.
+        "tauri" | "asset" | "about" | "blob" | "data" => true,
+        "http" | "https" => {
+            let host = url.host_str();
+            matches!(host, Some("tauri.localhost" | "asset.localhost"))
+                || (cfg!(debug_assertions) && matches!(host, Some("localhost" | "127.0.0.1")))
+        }
+        _ => false,
+    }
+}
+
+fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("mesa-navigation-guard")
+        .on_navigation(|_, url| navigation_allowed(url))
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(navigation_guard());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
         use tauri::Manager;
@@ -153,7 +193,10 @@ pub fn run() {
             diagnostics::diagnostics_process_tree,
             terminal::terminal_start,
             terminal::terminal_attach,
+            terminal::terminal_prepare_handoff,
             terminal::terminal_snapshot,
+            terminal::terminal_subscribe,
+            terminal::terminal_unsubscribe,
             terminal::terminal_resize,
             terminal::terminal_write,
             terminal::terminal_stop,
@@ -164,6 +207,11 @@ pub fn run() {
             vaultmove::vault_rename_no_replace,
             vaultmove::vault_purge_recovery,
             vaultscope::vault_authorize,
+            vaultscope::vault_revoke,
+            recents::vault_recents,
+            recents::vault_recent_resolve,
+            recents::vault_storage_id,
+            surfaces::workspace_open_surface,
             vaultscope::vault_authorize_artifacts,
             vaultscope::vault_flush_file,
             vaultwrite::vault_write_atomic,
@@ -185,6 +233,15 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running Mesa")
         .run(|app, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Destroyed,
+                ..
+            } = &event
+            {
+                use tauri::Manager;
+                terminal::revoke_window(&app.state::<terminal::TerminalState>(), label);
+            }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 use tauri::{Emitter, Manager};
                 if app
@@ -205,7 +262,50 @@ pub fn run() {
                 // server keeps its thread and its bound port until the process
                 // is reaped. Both are best-effort: exiting must not be blocked.
                 terminal::stop_all_sessions(&app.state::<terminal::TerminalState>());
-                let _ = activity::activity_stop();
+                let _ = activity::stop_native();
             }
         });
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::navigation_allowed;
+
+    fn allowed(url: &str) -> bool {
+        navigation_allowed(&url.parse().unwrap())
+    }
+
+    #[test]
+    fn only_app_origins_may_be_navigated_to() {
+        assert!(allowed("tauri://localhost/index.html"));
+        assert!(allowed("http://tauri.localhost/index.html"));
+        assert!(allowed("about:blank"));
+        assert!(allowed("asset://localhost/vault/a.pdf"));
+        assert!(allowed("http://asset.localhost/vault/a.pdf"));
+        for url in [
+            "https://evil.example/x",
+            "http://evil.example/",
+            "http://tauri.localhost.evil.example/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ftp://example.com/",
+        ] {
+            assert!(!allowed(url), "{url}");
+        }
+        assert_eq!(allowed("http://localhost:1420/"), cfg!(debug_assertions));
+    }
+}
+
+#[cfg(test)]
+mod authority_tests {
+    #[test]
+    fn native_sensitive_commands_reject_secondary_window_labels() {
+        for label in ["doc-one", "panel-one", "agent-one", ""] {
+            assert!(super::require_main(label).is_err());
+        }
+        assert!(super::require_main("main").is_ok());
+        assert!(super::require_agent_surface("main").is_ok());
+        assert!(super::require_agent_surface("agent-one").is_ok());
+        assert!(super::require_agent_surface("doc-one").is_err());
+    }
 }

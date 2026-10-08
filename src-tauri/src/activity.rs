@@ -565,7 +565,15 @@ fn bind_activity_server(first: u16, last: u16) -> Result<(Server, u16), String> 
 /// port/token/extension path, so surface switches and context restarts never
 /// spawn duplicate servers.
 #[tauri::command]
-pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
+pub fn activity_start(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<ActivityInfo, String> {
+    crate::require_main(window.label())?;
+    start_native(app)
+}
+
+pub(crate) fn start_native(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(existing) = guard.as_ref() {
         return Ok(existing.info.clone());
@@ -631,14 +639,21 @@ pub fn activity_start(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
 /// independent of the loopback server lifecycle, so the main renderer can
 /// update it before Pi starts and the first agent turn still sees it.
 #[tauri::command]
-pub fn activity_set_context(context: String) -> Result<(), String> {
+pub fn activity_set_context(window: tauri::Window, context: String) -> Result<(), String> {
+    crate::require_main(window.label())?;
     let mut current = context_state().lock().map_err(|e| e.to_string())?;
     *current = bounded_context(context);
     Ok(())
 }
 
-#[tauri::command]
-pub fn activity_stop() -> Result<(), String> {
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
+pub fn activity_stop(window: tauri::Window) -> Result<(), String> {
+    crate::require_main(window.label())?;
+    stop_native()
+}
+
+pub(crate) fn stop_native() -> Result<(), String> {
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     let stopped = guard.take();
     if let Some(st) = stopped.as_ref() {

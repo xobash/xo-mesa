@@ -13,10 +13,11 @@
     "core:event:default",
     "core:window:default",
     "core:window:allow-close",
+    "core:window:allow-destroy",
+    "core:window:allow-set-title",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "core:webview:default",
-    "core:webview:allow-create-webview-window",
     "dialog:default",
     "dialog:allow-open",
     "fs:allow-read-text-file",
@@ -29,15 +30,6 @@
       "identifier": "fs:scope",
       "allow": []
     },
-    "allow-sync-status",
-    "allow-sync-local-addr",
-    "allow-sync-identity",
-    "allow-sync-cancel",
-    "allow-activity-start",
-    "allow-activity-set-context",
-    "allow-deep-research-respond",
-    "allow-activity-stop",
-    "allow-browse-fetch",
     "allow-diagnostics-process-tree",
     "allow-vault-scan",
     "allow-vault-read-text",
@@ -52,6 +44,8 @@
     "allow-vault-create-directory",
     "fs:deny-default",
     "allow-vault-read-bytes",
-    "allow-vault-list-recovery"
+    "allow-vault-list-recovery",
+    "allow-vault-storage-id",
+    "allow-workspace-open-surface"
   ]
 }

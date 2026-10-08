@@ -1,3 +1,5 @@
+import { vaultStorageId } from "./vaultStorage";
+
 export interface TextRevision {
   id: string;
   root: string;
@@ -192,6 +194,7 @@ export function recordTextRevisionAsync(
   content: string,
   now = Date.now()
 ): Promise<TextRevision | null> {
+  root = vaultStorageId(root);
   if (!root || !relPath) return Promise.resolve(null);
   if (typeof indexedDB === "undefined") return Promise.resolve(recordTextRevision(root, relPath, content, now));
   return mutateDatabase((entries) => {
@@ -205,6 +208,7 @@ export function recordTextRevisionAsync(
 }
 
 export async function listTextRevisionsAsync(root: string, relPath: string): Promise<TextRevision[]> {
+  root = vaultStorageId(root);
   if (typeof indexedDB === "undefined") return listTextRevisions(root, relPath);
   try {
     return await mutateDatabase((entries) => ({
@@ -219,6 +223,7 @@ export async function listTextRevisionsAsync(root: string, relPath: string): Pro
 }
 
 export async function migrateTextRevisionsAsync(root: string, fromRelPath: string, toRelPath: string): Promise<boolean> {
+  root = vaultStorageId(root);
   if (!root || !fromRelPath || !toRelPath || fromRelPath === toRelPath) return true;
   if (typeof indexedDB === "undefined") return migrateTextRevisions(root, fromRelPath, toRelPath);
   try {
@@ -234,6 +239,7 @@ export async function migrateTextRevisionsAsync(root: string, fromRelPath: strin
 
 /** Explicitly remove one revision copy; this never touches the vault file. */
 export async function purgeTextRevisionAsync(root: string, relPath: string, revisionId: string): Promise<boolean> {
+  root = vaultStorageId(root);
   if (!root || !relPath || !revisionId) return false;
   if (typeof indexedDB === "undefined") {
     const entries = readAll();
@@ -256,6 +262,7 @@ export function recordTextRevision(
   content: string,
   now = Date.now()
 ): TextRevision | null {
+  root = vaultStorageId(root);
   if (!root || !relPath) return null;
   const entries = readAll();
   const last = entries.filter((entry) => entry.root === root && entry.relPath === relPath).sort(compareNewestFirst)[0];
@@ -272,11 +279,13 @@ export function recordTextRevision(
 }
 
 export function listTextRevisions(root: string, relPath: string): TextRevision[] {
+  root = vaultStorageId(root);
   return readAll().filter((entry) => entry.root === root && entry.relPath === relPath);
 }
 
 /** Move local recovery identity after Mesa's verified filesystem rename. */
 export function migrateTextRevisions(root: string, fromRelPath: string, toRelPath: string): boolean {
+  root = vaultStorageId(root);
   if (!root || !fromRelPath || !toRelPath || fromRelPath === toRelPath) return true;
   const entries = readAll();
   let changed = false;
@@ -291,4 +300,41 @@ export function migrateTextRevisions(root: string, fromRelPath: string, toRelPat
 export function clearTextRevisionsForTests(): void {
   fallbackSequence = 0;
   if (typeof localStorage !== "undefined") localStorage.removeItem(STORAGE_KEY);
+}
+
+/** Enumerate recovery identities without exposing their contents or trimming data. */
+async function allDatabaseRevisions(): Promise<TextRevision[]> {
+  const db = await revisionDatabase();
+  try { return await new Promise((resolve, reject) => {
+    const tx = db.transaction(DATABASE_STORE, "readonly");
+    const request = tx.objectStore(DATABASE_STORE).getAll();
+    request.onsuccess = () => resolve((request.result as unknown[]).filter(isTextRevision));
+    request.onerror = () => reject(request.error); tx.onabort = () => reject(tx.error);
+  }); } finally { db.close(); }
+}
+export async function legacyRevisionRoots(): Promise<Set<string>> {
+  const entries = typeof indexedDB === "undefined" ? readAll() : [...await allDatabaseRevisions(), ...readAll()];
+  return new Set(entries.map(entry => entry.root));
+}
+/** Rewrite identities atomically; never expire or clear authored recovery records. */
+export async function migrateRevisionNamespaces(identity: (root: string) => string): Promise<void> {
+  const legacy = readAll();
+  if (typeof indexedDB !== "undefined") {
+    const db = await revisionDatabase();
+    try { await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(DATABASE_STORE, "readwrite");
+      const store = tx.objectStore(DATABASE_STORE); const request = store.getAll();
+      request.onsuccess = () => {
+        try {
+          const entries = (request.result as unknown[]).filter(isTextRevision);
+          for (const entry of entries) if (identity(entry.root) !== entry.root) store.put({ ...entry, root: identity(entry.root) });
+          for (const entry of legacy) if (!entries.some(existing => existing.id === entry.id)) store.put({ ...entry, root: identity(entry.root) });
+        } catch { tx.abort(); }
+      };
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error ?? new Error("History privacy migration failed"));
+    }); } finally { db.close(); }
+    localStorage.removeItem(STORAGE_KEY);
+  } else if (legacy.length && !writeAll(legacy.map(entry => ({ ...entry, root: identity(entry.root) })))) {
+    throw new Error("History privacy migration failed; original recovery data was retained");
+  }
 }

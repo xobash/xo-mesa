@@ -1874,3 +1874,63 @@ fn query_param_decodes() {
     assert_eq!(query_param("rel=a+b", "rel").as_deref(), Some("a b"));
     assert_eq!(query_param("x=1", "rel"), None);
 }
+
+#[test]
+fn peer_path_policy_rejects_hidden_and_ignored_segments() {
+    for rel in [
+        ".git/config",
+        "a/.hidden/b.md",
+        "node_modules/x",
+        "a/node_modules/x.js",
+        ".mesa-sync-journal.json",
+        ".mesa-trash/old.md",
+        ".env",
+        "../escape.md",
+        "",
+    ] {
+        assert!(!is_peer_rel(rel), "{rel:?} must be rejected");
+        let dir = std::env::temp_dir();
+        assert!(peer_join_confined(&dir, rel).is_none(), "{rel:?}");
+    }
+    for rel in ["note.md", "a/b/c.md", "name with space.txt"] {
+        assert!(is_peer_rel(rel), "{rel:?} must be accepted");
+    }
+}
+
+#[test]
+fn incoming_journal_rejects_hidden_sources_and_destinations() {
+    let op = |kind, from: &str, to: Option<&str>| SyncJournal {
+        version: JOURNAL_VERSION,
+        device: "peer".to_string(),
+        next_sequence: 2,
+        operations: vec![JournalOperation {
+            id: "peer:1".to_string(),
+            device: "peer".to_string(),
+            sequence: 1,
+            at_ms: 0,
+            kind,
+            from: from.to_string(),
+            to: to.map(str::to_string),
+            size: 1,
+            hash: content_hash_hex(b"x"),
+        }],
+        applied: vec![],
+        acked_by: Default::default(),
+        peers_seen: vec![],
+        known: vec![],
+        peer_bases: Default::default(),
+        peer_bindings: Default::default(),
+        retired_peers: vec![],
+        retired_fingerprints: vec![],
+    };
+    for from in [".git/config", "node_modules/x", "a/.x/b.md"] {
+        assert!(validate_journal(&op(JournalOperationKind::Delete, from, None), "j").is_err());
+        assert!(
+            validate_journal(&op(JournalOperationKind::Rename, "ok.md", Some(from)), "j").is_err()
+        );
+        assert!(
+            validate_journal(&op(JournalOperationKind::Rename, from, Some("ok2.md")), "j").is_err()
+        );
+    }
+    assert!(validate_journal(&op(JournalOperationKind::Delete, "ok.md", None), "j").is_ok());
+}

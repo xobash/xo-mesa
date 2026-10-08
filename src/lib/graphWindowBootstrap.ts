@@ -1,3 +1,4 @@
+import { privateImagePath, restoreImagePath } from "./vaultStorage";
 import type { NoteMeta, Settings, VaultFile } from "../types";
 
 const PREFIX = "mesa:graph-window:";
@@ -22,7 +23,7 @@ export function saveGraphWindowBootstrap(
   storage: StorageLike = localStorage
 ): boolean {
   try {
-    storage.setItem(PREFIX + id, JSON.stringify(snapshot));
+    storage.setItem(PREFIX + id, JSON.stringify({ ...snapshot, vaultPath: "", files: snapshot.files.map(file => ({ ...file, path: file.relPath })), notes: Object.fromEntries(Object.entries(snapshot.notes).map(([rel, note]) => [rel, { ...note, firstImagePath: privateImagePath(note.firstImagePath, snapshot.vaultPath) }])) }));
     return true;
   } catch {
     return false;
@@ -31,7 +32,8 @@ export function saveGraphWindowBootstrap(
 
 export function consumeGraphWindowBootstrap(
   id: string,
-  storage: StorageLike = localStorage
+  storage: StorageLike = localStorage,
+  root?: string
 ): GraphWindowBootstrap | null {
   const key = PREFIX + id;
   try {
@@ -39,8 +41,8 @@ export function consumeGraphWindowBootstrap(
     storage.removeItem(key);
     if (!raw) return null;
     const value = JSON.parse(raw) as GraphWindowBootstrap;
-    if (!value.vaultPath || !Array.isArray(value.files) || !value.notes) return null;
-    return value;
+    if (!root || !Array.isArray(value.files) || !value.notes) return null;
+    return { ...value, vaultPath: root, files: value.files.map(file => ({ ...file, path: root.replace(/\/$/, "") + "/" + file.relPath })), notes: Object.fromEntries(Object.entries(value.notes).map(([rel, note]) => [rel, { ...note, firstImagePath: restoreImagePath(note.firstImagePath, root) }])) };
   } catch {
     try {
       storage.removeItem(key);

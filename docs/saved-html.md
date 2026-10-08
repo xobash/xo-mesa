@@ -8,6 +8,11 @@ metadata, frames, base elements, and navigation links. The frame policy blocks
 network connections and remote resources, including CSS imports, images,
 fonts, media, nested frames, and objects. Local styles and scoped asset images
 remain available; local stylesheet links are hydrated without loading scripts.
+Stylesheet and script links are read and inlined only when they resolve inside the
+saved page's own folder (for example a browser's `<name>_files/` folder), end in
+`.css` (styles) or `.js`/`.mjs` (scripts), and are at most 4 MiB. A link that
+climbs out of that folder, such as `../Private/journal.md`, is never read, so a
+saved page cannot pull other vault notes into itself.
 Referrer policy is always `no-referrer`.
 
 **Enable online resources** asks for confirmation before remote resources may

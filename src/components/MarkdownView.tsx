@@ -13,15 +13,39 @@ import { markMesaPerf } from "../lib/mesaPerf";
  * `files`/`onWikiClick` default to the global store, but can be supplied so the
  * popout document windows can render against their own vault scan.
  */
+/** Restore media that the sanitizer parked in `data-remote-*` until the reader consents. */
+const REMOTE_SELECTOR = "[data-remote-src],[data-remote-poster],[data-remote-srcset]";
+function restoreRemoteMedia(root: Element) {
+  const found = [...root.querySelectorAll<HTMLElement>(REMOTE_SELECTOR)];
+  if (root.matches(REMOTE_SELECTOR)) found.push(root as HTMLElement);
+  found.forEach((el) => {
+    for (const name of ["src", "poster", "srcset"]) {
+      const value = el.getAttribute(`data-remote-${name}`);
+      if (value === null) continue;
+      el.setAttribute(name, value);
+      el.removeAttribute(`data-remote-${name}`);
+    }
+  });
+}
+
+/** Default for http(s) links: Mesa's read-only reader, never the app webview itself. */
+function openExternalInReader(url: string) {
+  if (!window.confirm(`Open ${url} in Mesa's reader? This contacts that website.`)) return;
+  useAppStore.setState((s) => ({ piBrowse: { url, seq: (s.piBrowse?.seq ?? 0) + 1 } }));
+}
+
 export function MarkdownView({
   source,
   files,
   onWikiClick,
+  onExternalLink,
   highlight,
 }: {
   source: string;
   files?: VaultFile[];
   onWikiClick?: (target: string) => void;
+  /** Receives http(s) link targets; defaults to Mesa's read-only reader. */
+  onExternalLink?: (url: string) => void;
   /** Highlight + scroll to the first occurrence of this text (the live change). */
   highlight?: string;
 }) {
@@ -32,11 +56,18 @@ export function MarkdownView({
   const onClick = onWikiClick ?? storeOpen;
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
+  const [allowRemote, setAllowRemote] = useState(false);
+  const [remoteCount, setRemoteCount] = useState(0);
+  const allowRemoteRef = useRef(false);
+  allowRemoteRef.current = allowRemote;
   const rendererRef = useRef<ReturnType<typeof import("../lib/markdownRender").createMarkdownRenderer> | null>(null);
   const domRef = useRef<ReturnType<typeof import("../lib/markdownDom").createMarkdownDom> | null>(null);
   const filesRef = useRef(useFiles);
   filesRef.current = useFiles;
   const resolveImages = (nodes: readonly Node[]) => {
+    if (allowRemoteRef.current) {
+      for (const node of nodes) if (node instanceof Element) restoreRemoteMedia(node);
+    }
     const resolve = (img: HTMLImageElement) => {
       const raw = img.getAttribute("data-embed") ?? img.getAttribute("src") ?? "";
       if (!raw || /^(https?:|data:|asset:|blob:|tauri:|file:)/i.test(raw)) return;
@@ -84,20 +115,42 @@ export function MarkdownView({
 
     const onLinkClick = (e: Event) => {
       const link = (e.target as Element).closest?.("a.wikilink, span.wikilink");
-      if (!link || !el.contains(link)) return;
-      const target = link.getAttribute("data-target");
-      if (target) { e.preventDefault(); onClick(target); }
+      if (link && el.contains(link)) {
+        const target = link.getAttribute("data-target");
+        if (target) { e.preventDefault(); onClick(target); }
+        return;
+      }
+      // Every other link would navigate Mesa's own webview; route or block it.
+      const anchor = (e.target as Element).closest?.("a[href]");
+      if (!anchor || !el.contains(anchor)) return;
+      e.preventDefault();
+      const href = anchor.getAttribute("href") ?? "";
+      if (/^https?:\/\//i.test(href)) {
+        (onExternalLink ?? openExternalInReader)(href);
+      } else if (!/^[a-z][a-z0-9+.-]*:|^\/\/|^#/i.test(href)) {
+        let path = href.replace(/[?#].*$/, "");
+        try { path = decodeURIComponent(path); } catch { /* keep the raw path */ }
+        path = path.replace(/\.md$/i, "");
+        if (path) onClick(path);
+      }
     };
 
     el.addEventListener("click", onLinkClick);
     return () => el.removeEventListener("click", onLinkClick);
-  }, [onClick]);
+  }, [onClick, onExternalLink]);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     resolveImages([...el.childNodes]);
   }, [useFiles]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (allowRemote) restoreRemoteMedia(el);
+    setRemoteCount(el.querySelectorAll(REMOTE_SELECTOR).length);
+  }, [revision, allowRemote]);
 
   useEffect(() => {
     const el = ref.current;
@@ -145,6 +198,12 @@ export function MarkdownView({
   return (
     <>
       {error && <div role="alert">Preview unavailable: {error}</div>}
+      {remoteCount > 0 && (
+        <div className="md-remote-notice" role="status">
+          Remote images and media are not loaded. Loading them tells their servers you opened this note.{" "}
+          <button type="button" onClick={() => setAllowRemote(true)}>Load remote images for this note</button>
+        </div>
+      )}
       <div
         className="markdown-body"
         ref={ref}

@@ -118,7 +118,8 @@ pub struct WatchState {
 /// The debouncer callback runs on notify's own thread (never the UI thread);
 /// it filters + coalesces in Rust and does at most one `Channel::send` per
 /// debounce window.
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn vault_watch(
     app: tauri::AppHandle,
     state: tauri::State<'_, WatchState>,
@@ -167,11 +168,10 @@ pub fn vault_watch(
 
 /// Stop a watcher started by `vault_watch`. Idempotent: an unknown id is a
 /// no-op, so a double-unwatch (e.g. React strict-mode remount) is harmless.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn vault_unwatch(state: tauri::State<'_, WatchState>, id: u32) {
-    if let Ok(mut map) = state.inner.lock() {
-        map.remove(&id);
-    }
+    let removed = state.inner.lock().ok().and_then(|mut map| map.remove(&id));
+    drop(removed);
 }
 
 #[cfg(test)]

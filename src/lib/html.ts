@@ -134,6 +134,37 @@ export function localSavedHtmlAssetPath(
   return joinRelative(dirname(ownerPath), raw);
 }
 
+/** Largest local stylesheet or script a saved page may pull in. */
+export const MAX_SAVED_HTML_ASSET_CHARS = 4 * 1024 * 1024;
+
+/**
+ * Resolve a stylesheet or script link for inlining. The path must stay inside
+ * the saved document's own folder, so a hostile page cannot make Mesa read
+ * other vault notes into itself, and the file must have the expected type.
+ */
+export function savedHtmlInlineAssetPath(
+  rawValue: string,
+  documentPath: string,
+  kind: "style" | "script"
+): string | null {
+  const resolved = localSavedHtmlAssetPath(rawValue, documentPath);
+  if (!resolved) return null;
+  const raw = decodeUrlAttr(rawValue.trim())
+    .replace(/\\/g, "/")
+    .replace(/[?#].*$/, "");
+  let depth = 0;
+  for (const part of raw.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      depth -= 1;
+      if (depth < 0) return null;
+    } else depth += 1;
+  }
+  const allowed = kind === "style" ? /\.css$/i : /\.m?js$/i;
+  if (!allowed.test(raw)) return null;
+  return resolved.replace(/[?#].*$/, "");
+}
+
 function rewriteSrcset(
   rawValue: string,
   filePath: string,
@@ -259,10 +290,11 @@ export async function hydrateSavedHtml(
   out = await replaceAsync(out, STYLE_LINK_RE, async (tag) => {
     const href = getAttr(tag, "href");
     if (!href) return tag;
-    const cssPath = localSavedHtmlAssetPath(href, filePath);
+    const cssPath = savedHtmlInlineAssetPath(href, filePath, "style");
     if (!cssPath) return tag;
     try {
       const css = await readTextAsset(cssPath);
+      if (css.length > MAX_SAVED_HTML_ASSET_CHARS) return tag;
       const rewritten = rewriteCssAssetUrls(css, cssPath, toAssetUrl, originalUrl);
       return `<style data-mesa-href="${escapeAttr(href)}">${escapeStyleText(
         rewritten
@@ -278,10 +310,11 @@ export async function hydrateSavedHtml(
       SCRIPT_TAG_RE,
       async (tag, quoted: string, doubleValue?: string, singleValue?: string) => {
         const src = doubleValue ?? singleValue ?? quoted.slice(1, -1);
-        const scriptPath = localSavedHtmlAssetPath(src, filePath);
+        const scriptPath = savedHtmlInlineAssetPath(src, filePath, "script");
         if (!scriptPath) return tag;
         try {
           const script = await readTextAsset(scriptPath);
+          if (script.length > MAX_SAVED_HTML_ASSET_CHARS) return tag;
           const attrs = tag
             .replace(/\s+src=("([^"]*)"|'([^']*)')/i, "")
             .replace(/>\s*<\/script>\s*$/i, "");

@@ -51,5 +51,14 @@ export default defineConfig({
     // judged by. `tmp/` is gitignored scratch (corpora, measurement harnesses),
     // so it is excluded for the same reason as `.backups/`.
     exclude: ["**/node_modules/**", "**/dist/**", "**/.backups/**", "**/tmp/**", "**/output/**"],
+    coverage: {
+      provider: "v8",
+      include: ["src/lib/**/*.ts", "src/controllers/**/*.ts"],
+      exclude: ["**/*.test.ts", "**/*.d.ts"],
+      reporter: ["text-summary"],
+      // Floors sit just below the measured 76.7% / 69.6% / 76.3% / 80.9% so a
+      // large untested addition fails CI; raise them as coverage grows.
+      thresholds: { statements: 74, branches: 67, functions: 74, lines: 78 },
+    },
   },
 });

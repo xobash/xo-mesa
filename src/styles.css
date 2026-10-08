@@ -7672,3 +7672,29 @@ body,
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 6px 10px; color: var(--text-dim); font-size: 11px;
 }
+
+.md-remote-notice,
+.pi-exit-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-control);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.md-remote-notice button,
+.pi-exit-banner button {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface-control-hover);
+  color: var(--text-strong);
+  font: inherit;
+  cursor: pointer;
+}

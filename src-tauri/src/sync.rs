@@ -1,5 +1,6 @@
 #[path = "sync_identity.rs"]
 mod identity;
+pub(crate) use identity::protect_private_directory;
 pub use identity::*;
 #[path = "sync_server.rs"]
 mod server;
@@ -15,7 +16,7 @@ use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -57,6 +58,12 @@ const SERVER_WORKERS: usize = 4;
 /// concurrency.  A peer that opens sockets and sends no request must not grow
 /// a task per connection or consume all server workers.
 const SERVER_CONNECTION_LIMIT: usize = 8;
+/// One pooled client uses up to four transfer connections plus control calls
+/// and a lingering probe or retry connection.
+const PEER_CONNECTION_LIMIT: usize = 6;
+const CONNECTION_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECTION_LIFETIME: Duration = Duration::from_secs(60 * 60);
+const CONNECTION_DRAIN: Duration = Duration::from_secs(30);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Concurrent file transfers during `sync_run`. Multiplexed over one pooled
@@ -346,10 +353,10 @@ fn sync_emitter(app: &tauri::AppHandle) -> Arc<SyncEmitter> {
 fn sync_flusher_loop(e: &SyncEmitter) {
     loop {
         let (logs, progress) = {
-            let mut st = e.state.lock().unwrap();
+            let mut st = e.state.lock().unwrap_or_else(PoisonError::into_inner);
             // Zero-cost sleep until a caller stages the first item of a burst.
             while !st.has_pending() && !st.flush_now {
-                st = e.cv.wait(st).unwrap();
+                st = e.cv.wait(st).unwrap_or_else(PoisonError::into_inner);
             }
             // Early notifications do not end the coalescing window; only the fixed deadline or flush_now does.
             let deadline = Instant::now() + Duration::from_millis(SYNC_EVENT_FLUSH_MS);
@@ -358,7 +365,9 @@ fn sync_flusher_loop(e: &SyncEmitter) {
                 if now >= deadline {
                     break;
                 }
-                let (guard, timed) = e.cv.wait_timeout(st, deadline - now).unwrap();
+                let (guard, timed) =
+                    e.cv.wait_timeout(st, deadline - now)
+                        .unwrap_or_else(PoisonError::into_inner);
                 st = guard;
                 if timed.timed_out() {
                     break;
@@ -375,10 +384,18 @@ fn sync_flusher_loop(e: &SyncEmitter) {
     }
 }
 
+/// First 12 characters of an identifier, safe for any UTF-8 input.
+fn short_id(value: &str) -> &str {
+    value
+        .char_indices()
+        .nth(12)
+        .map_or(value, |(end, _)| &value[..end])
+}
+
 fn emit_log(app: &tauri::AppHandle, level: &str, msg: impl Into<String>) {
     let e = sync_emitter(app);
     {
-        let mut st = e.state.lock().unwrap();
+        let mut st = e.state.lock().unwrap_or_else(PoisonError::into_inner);
         st.logs.push(SyncLogLine {
             ts: sync_core::now_ms(),
             level: level.to_string(),
@@ -391,7 +408,7 @@ fn emit_log(app: &tauri::AppHandle, level: &str, msg: impl Into<String>) {
 fn emit_progress(app: &tauri::AppHandle, phase: &str, done: usize, total: usize, rel: &str) {
     let e = sync_emitter(app);
     {
-        let mut st = e.state.lock().unwrap();
+        let mut st = e.state.lock().unwrap_or_else(PoisonError::into_inner);
         st.progress =
             Some(serde_json::json!({ "phase": phase, "done": done, "total": total, "rel": rel }));
     }
@@ -405,7 +422,7 @@ fn emit_progress(app: &tauri::AppHandle, phase: &str, done: usize, total: usize,
 fn flush_sync_events(app: &tauri::AppHandle) {
     let e = sync_emitter(app);
     {
-        let mut st = e.state.lock().unwrap();
+        let mut st = e.state.lock().unwrap_or_else(PoisonError::into_inner);
         st.flush_now = true;
     }
     e.cv.notify_one();
@@ -654,23 +671,56 @@ async fn fetch_manifest_with(
     if !status.is_success() {
         return Err(format!("Device responded {}.", status.as_u16()));
     }
-    let bytes = tokio::select! {
-        _ = wait_for_cancel() => return Err(cancelled_error()),
-        result = res.bytes() => result.map_err(|e| e.to_string())?,
-    };
+    let bytes = read_capped(res, MAX_MANIFEST_WIRE_BYTES, "Peer manifest").await?;
     let body: ManifestBody = serde_json::from_slice(&bytes)
         .map_err(|_| "That address isn't sharing a Mesa vault.".to_string())?;
+    validate_remote_manifest(&body.files)?;
     Ok(body)
 }
 
-async fn read_journal_response(
+const MAX_MANIFEST_FILES: usize = 1_000_000;
+const MAX_MANIFEST_REL_BYTES: usize = 4096;
+fn validate_remote_manifest(files: &[ManifestEntry]) -> Result<(), String> {
+    if files.len() > MAX_MANIFEST_FILES {
+        return Err("Peer manifest contains too many files".into());
+    }
+    let mut paths = std::collections::HashSet::with_capacity(files.len());
+    for file in files {
+        if file.rel.len() > MAX_MANIFEST_REL_BYTES
+            || !sync_core::is_peer_rel(&file.rel)
+            || file.hash.len() != 64
+            || !file
+                .hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !paths.insert(&file.rel)
+        {
+            return Err("Peer manifest contains an invalid or duplicate file entry".into());
+        }
+    }
+    Ok(())
+}
+
+/// Largest manifest a peer may send (about a million files).
+const MAX_MANIFEST_WIRE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Read a response body without ever holding more than `limit` bytes.
+async fn read_capped(
     mut response: reqwest::Response,
-) -> Result<sync_core::SyncJournal, String> {
+    limit: usize,
+    what: &str,
+) -> Result<Vec<u8>, String> {
+    let too_large = || {
+        format!(
+            "{what} exceeds the {} MiB exchange limit",
+            limit / (1024 * 1024)
+        )
+    };
     if response
         .content_length()
-        .is_some_and(|size| size > sync_core::MAX_JOURNAL_WIRE_BYTES as u64)
+        .is_some_and(|size| size > limit as u64)
     {
-        return Err("Peer journal exceeds the 32 MiB exchange limit".to_string());
+        return Err(too_large());
     }
     let mut body = Vec::new();
     loop {
@@ -681,11 +731,18 @@ async fn read_journal_response(
         let Some(chunk) = chunk else {
             break;
         };
-        if body.len().saturating_add(chunk.len()) > sync_core::MAX_JOURNAL_WIRE_BYTES {
-            return Err("Peer journal exceeds the 32 MiB exchange limit".to_string());
+        if body.len().saturating_add(chunk.len()) > limit {
+            return Err(too_large());
         }
         body.extend_from_slice(&chunk);
     }
+    Ok(body)
+}
+
+async fn read_journal_response(
+    response: reqwest::Response,
+) -> Result<sync_core::SyncJournal, String> {
+    let body = read_capped(response, sync_core::MAX_JOURNAL_WIRE_BYTES, "Peer journal").await?;
     let journal = serde_json::from_slice(&body)
         .map_err(|_| "Peer returned an invalid sync journal".to_string())?;
     sync_core::validate_journal(&journal, "peer journal").map_err(|error| error.to_string())?;
@@ -1191,9 +1248,11 @@ async fn run_job_once(
 
 /// Cancel the in-flight `sync_run` after the transfers already in the air.
 #[tauri::command]
-pub fn sync_cancel() {
+pub fn sync_cancel(window: tauri::Window) -> Result<(), String> {
+    crate::require_main(window.label())?;
     cancel_flag().store(true, Ordering::Release);
     cancel_notify().notify_waiters();
+    Ok(())
 }
 
 /// Run one native sync with fresh manifests, journal reconciliation, bounded transfers, and final verification.
@@ -1230,7 +1289,7 @@ pub async fn sync_run(
         format!(
             "sync started — peer {base}, pin {}{}",
             pin.as_deref()
-                .map(|p| &p[..12.min(p.len())])
+                .map(short_id)
                 .unwrap_or("none (trust-on-first-use)"),
             retry_set
                 .as_ref()
@@ -1275,6 +1334,18 @@ pub async fn sync_run(
         );
     }
     let mut remote = remote_manifest.files;
+    let offered = remote.len();
+    remote.retain(|entry| sync_core::is_peer_rel(&entry.rel));
+    if remote.len() != offered {
+        emit_log(
+            &app,
+            "warn",
+            format!(
+                "ignored {} remote manifest entries with hidden, ignored or unsafe paths",
+                offered - remote.len()
+            ),
+        );
+    }
     emit_log(
         &app,
         "info",
@@ -1283,7 +1354,7 @@ pub async fn sync_run(
             remote.len(),
             remote.iter().map(|e| e.size).sum::<u64>(),
             manifest_started.elapsed().as_millis(),
-            &fingerprint[..12.min(fingerprint.len())]
+            short_id(&fingerprint)
         ),
     );
 
@@ -1867,7 +1938,8 @@ pub fn sync_discovery_start(
     Ok(())
 }
 
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn sync_discovery_stop() -> Result<(), String> {
     let mut guard = discovery_state().lock().map_err(|e| e.to_string())?;
     if let Some(mut st) = guard.take() {

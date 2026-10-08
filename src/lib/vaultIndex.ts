@@ -1,3 +1,4 @@
+import { vaultStorageId, privateImagePath, restoreImagePath, VAULT_INDEX_STORAGE_VERSION } from "./vaultStorage";
 import { extractLinksAndFirstImage } from "./markdownExtract";
 import type { NoteMeta, VaultFile } from '../types';
 import { buildNotes, createImageResolver } from './graph';
@@ -9,7 +10,7 @@ import { runCancellableBackgroundWork } from "./backgroundWorkGovernor";
 // Version 2 separates cache accounting from document payloads. Diagnostics
 // polls this information while its window is open; reading every compressed
 // document just to report a byte count made that observation itself expensive.
-const VERSION = 4;
+const VERSION = VAULT_INDEX_STORAGE_VERSION;
 interface RecordEntry { digest: string; document: IndexedDocument; note: NoteMeta; integrity: string; imageTarget?: string }
 interface Snapshot { version: number; root: string; entries: [string, RecordEntry][]; cachedAt: number }
 interface SnapshotMetadata { root: string; bytes: number; cachedAt: number }
@@ -62,8 +63,11 @@ const vaultIndexStorage: VaultIndexStorage = {
   async load(root) {
     const db = await database();
     try { return await new Promise((resolve, reject) => {
-      const tx = db.transaction('vaults', 'readonly'); const request = tx.objectStore('vaults').get(root);
-      request.onsuccess = () => resolve(request.result ?? null); request.onerror = () => reject(request.error); tx.onabort = () => reject(tx.error);
+      const tx = db.transaction('vaults', 'readonly'); const request = tx.objectStore('vaults').get(vaultStorageId(root));
+      request.onsuccess = () => {
+        const value = request.result as Snapshot | undefined;
+        resolve(value ? { ...value, root, entries: value.entries.map(([rel, entry]) => [rel, { ...entry, note: { ...entry.note, firstImagePath: restoreImagePath(entry.note.firstImagePath, root) } }]) } : null);
+      }; request.onerror = () => reject(request.error); tx.onabort = () => reject(tx.error);
     }); } finally { db.close(); }
   },
   async save(snapshot) {
@@ -74,15 +78,16 @@ const vaultIndexStorage: VaultIndexStorage = {
       const tx = db.transaction(['vaults', 'metadata'], 'readwrite');
       const store = tx.objectStore('vaults');
       const metadata = tx.objectStore('metadata');
-      const current = snapshotMetadata(snapshot);
-      store.put(snapshot);
+      const stored: Snapshot = { ...snapshot, root: vaultStorageId(snapshot.root), entries: snapshot.entries.map(([rel, entry]) => [rel, { ...entry, note: { ...entry.note, firstImagePath: privateImagePath(entry.note.firstImagePath, snapshot.root) } }]) };
+      const current = snapshotMetadata(stored);
+      store.put(stored);
       metadata.put(current);
       // Metadata is a few numbers per vault; never pull compressed document
       // bodies into Diagnostics or retention accounting.
       const all = metadata.getAll();
       all.onsuccess = () => {
         const records = (all.result as SnapshotMetadata[]).filter(value => value?.root && Number.isFinite(value.bytes));
-        const retained = retainedSnapshotMetadata(records.filter(value => value.root !== snapshot.root).concat(current));
+        const retained = retainedSnapshotMetadata(records.filter(value => value.root !== stored.root).concat(current));
         const keep = new Set(retained.map(value => value.root));
         for (const value of records) if (!keep.has(value.root)) {
           store.delete(value.root);
@@ -249,7 +254,7 @@ export async function forgetVaultIndex(root: string): Promise<void> {
   try {
     const db = await database();
     try { await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(['vaults', 'metadata'], 'readwrite'); tx.objectStore('vaults').delete(root); tx.objectStore('metadata').delete(root);
+      const tx = db.transaction(['vaults', 'metadata'], 'readwrite'); tx.objectStore('vaults').delete(vaultStorageId(root)); tx.objectStore('metadata').delete(vaultStorageId(root));
       tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
     }); } finally { db.close(); }
   } catch { /* unavailable storage holds no usable index */ }

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   hydrateSavedHtml,
   localSavedHtmlAssetPath,
+  MAX_SAVED_HTML_ASSET_CHARS,
+  savedHtmlInlineAssetPath,
   rewriteCssAssetUrls,
   rewriteSavedHtml,
   rewriteSavedHtmlUrl,
@@ -97,6 +99,55 @@ describe("saved webpage HTML rewriting", () => {
     ).toBe("/vault/web/shared/app.css");
     expect(localSavedHtmlAssetPath("/_next/app.css", "/vault/web/Page.html")).toBeNull();
     expect(localSavedHtmlAssetPath("https://site.test/app.css", "/vault/web/Page.html")).toBeNull();
+  });
+
+  it("never inlines assets outside the saved document's folder", async () => {
+    const doc = "/vault/web/saved/page.html";
+    expect(savedHtmlInlineAssetPath("../../Private/journal.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("a/../../b.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("..\\secret.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("/other/private.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("file:///other/private.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("./page_files/notes.md", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("./page_files/app.css", doc, "script")).toBeNull();
+    expect(savedHtmlInlineAssetPath("./page_files/app.css", doc, "style")).toBe(
+      "/vault/web/saved/page_files/app.css"
+    );
+    expect(savedHtmlInlineAssetPath("./page_files/../b.js?v=1", doc, "script")).toBe(
+      "/vault/web/saved/b.js"
+    );
+
+    const reads: string[] = [];
+    const html = await hydrateSavedHtml(
+      [
+        '<link rel="stylesheet" href="../../Private/journal.md">',
+        '<link rel="stylesheet" href="../secret.css">',
+        '<script src="../keys.js"></script>',
+        '<script src="./page_files/data.md"></script>',
+        '<link rel="stylesheet" href="./page_files/ok.css">',
+      ].join(""),
+      doc,
+      asset,
+      async (path) => {
+        reads.push(path);
+        return "p{color:red}";
+      }
+    );
+    expect(reads).toEqual(["/vault/web/saved/page_files/ok.css"]);
+    expect(html).not.toContain("data-mesa-href=\"../../Private");
+    expect(html).not.toContain("data-mesa-src");
+    expect(html).toContain("p{color:red}");
+  });
+
+  it("leaves oversize local assets unhydrated", async () => {
+    const html = await hydrateSavedHtml(
+      '<link rel="stylesheet" href="./big.css">',
+      "/vault/a.html",
+      asset,
+      async () => "x".repeat(MAX_SAVED_HTML_ASSET_CHARS + 1)
+    );
+    expect(html).toContain('<link rel="stylesheet"');
+    expect(html).not.toContain("<style");
   });
 
   it("rewrites CSS url() references relative to the stylesheet path", () => {

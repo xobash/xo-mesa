@@ -736,3 +736,229 @@ fn retry_filter_admits_only_named_failed_paths() {
     assert!(retry_allows(Some(&retry), "nested/b.pdf"));
     assert!(!retry_allows(Some(&retry), "other.md"));
 }
+
+async fn bounded_test_server(header_timeout: Duration) -> (std::net::SocketAddr, Arc<PeerSlots>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let slots = Arc::new(PeerSlots::default());
+    let accept_slots = slots.clone();
+    tokio::spawn(async move {
+        loop {
+            let (stream, peer) = listener.accept().await.unwrap();
+            let Some(slot) = PeerSlots::acquire(&accept_slots, peer.ip()) else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let _slot = slot;
+                let service = service_fn(|req: HyperRequest<Incoming>| async move {
+                    // Mirrors the identity route: hostile query bytes get 400.
+                    let status = match req.uri().query().map(parse_identity_request) {
+                        Some(None) => StatusCode::BAD_REQUEST,
+                        _ => StatusCode::OK,
+                    };
+                    Ok::<_, hyper::Error>(hyper_response(status, "x"))
+                });
+                serve_bounded(TokioIo::new(stream), service, header_timeout).await;
+            });
+        }
+    });
+    (addr, slots)
+}
+
+async fn raw_exchange(addr: std::net::SocketAddr, request: &[u8]) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut response = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buffer = [0u8; 256];
+        loop {
+            match stream.read(&mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    response.extend_from_slice(&buffer[..n]);
+                    if response.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+    .await;
+    response
+}
+
+#[tokio::test]
+async fn stalled_connections_are_closed_and_real_clients_still_served() {
+    use tokio::io::AsyncReadExt;
+    let (addr, _slots) = bounded_test_server(Duration::from_millis(300)).await;
+    let mut stalled = Vec::new();
+    for _ in 0..PEER_CONNECTION_LIMIT {
+        stalled.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+    }
+    // Connections that send no request headers are closed by the server.
+    for stream in &mut stalled {
+        let mut byte = [0u8; 1];
+        let closed = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte))
+            .await
+            .expect("server must close a silent connection");
+        assert!(matches!(closed, Ok(0) | Err(_)));
+    }
+    let reply = raw_exchange(
+        addr,
+        b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(reply.starts_with(b"HTTP/1.1 200"), "{reply:?}");
+}
+
+#[tokio::test]
+async fn one_address_cannot_take_every_connection_slot() {
+    let (addr, slots) = bounded_test_server(Duration::from_secs(5)).await;
+    let mut held = Vec::new();
+    for _ in 0..PEER_CONNECTION_LIMIT + 3 {
+        held.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let counts = slots.0.lock().unwrap();
+    assert_eq!(counts.values().copied().max(), Some(PEER_CONNECTION_LIMIT));
+}
+
+#[tokio::test]
+async fn non_ascii_identity_query_gets_400_and_server_keeps_serving() {
+    let (addr, _slots) = bounded_test_server(Duration::from_secs(5)).await;
+    let mut request = b"GET /sync/identity?pake=a".to_vec();
+    request.extend_from_slice("€".as_bytes());
+    request.extend_from_slice("0".repeat(62).as_bytes());
+    request.extend_from_slice(
+        format!(
+            "&nonce={} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+            "0".repeat(64)
+        )
+        .as_bytes(),
+    );
+    let reply = raw_exchange(addr, &request).await;
+    assert!(
+        reply.starts_with(b"HTTP/1.1 400"),
+        "{:?}",
+        String::from_utf8_lossy(&reply)
+    );
+    let ok = raw_exchange(
+        addr,
+        b"GET /x HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(ok.starts_with(b"HTTP/1.1 200"));
+}
+
+#[tokio::test]
+async fn oversize_response_is_rejected_without_buffering_past_the_cap() {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let address = server.server_addr().to_ip().unwrap();
+    let handle = std::thread::spawn(move || {
+        server
+            .recv()
+            .unwrap()
+            .respond(tiny_http::Response::from_data(vec![b' '; 3 * 1024 * 1024]))
+            .unwrap();
+    });
+    let response = reqwest::get(format!("http://{address}")).await.unwrap();
+    let error = read_capped(response, 1024 * 1024, "Peer manifest")
+        .await
+        .unwrap_err();
+    assert_eq!(error, "Peer manifest exceeds the 1 MiB exchange limit");
+    // The runtime must stay free to close the abandoned socket, or the sender
+    // blocks on its unread data.
+    let _ = tokio::task::spawn_blocking(move || handle.join()).await;
+}
+
+#[tokio::test]
+async fn chunked_manifest_without_length_stops_at_stream_cap() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let sender = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0; 1024];
+        let count = socket.read(&mut request).unwrap();
+        assert!(count > 0, "test client must send a request");
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        for _ in 0..3 {
+            if socket
+                .write_all(b"400\r\n")
+                .and_then(|_| socket.write_all(&[b' '; 1024]))
+                .and_then(|_| socket.write_all(b"\r\n"))
+                .is_err()
+            {
+                return;
+            }
+        }
+        let _ = socket.write_all(b"0\r\n\r\n");
+    });
+    let response = reqwest::get(format!("http://{addr}")).await.unwrap();
+    assert!(response.content_length().is_none());
+    assert!(read_capped(response, 1024, "Peer manifest")
+        .await
+        .unwrap_err()
+        .contains("exchange limit"));
+    tokio::task::spawn_blocking(move || sender.join().unwrap())
+        .await
+        .unwrap();
+}
+#[test]
+fn remote_manifest_rejects_invalid_fields_duplicates_and_count() {
+    let entry = ManifestEntry {
+        rel: "note.md".into(),
+        size: 7,
+        hash: "a".repeat(64),
+    };
+    assert!(validate_remote_manifest(std::slice::from_ref(&entry)).is_ok());
+    assert!(validate_remote_manifest(&[entry.clone(), entry.clone()]).is_err());
+    for rel in [
+        "../outside".into(),
+        ".hidden/note.md".into(),
+        "x".repeat(MAX_MANIFEST_REL_BYTES + 1),
+    ] {
+        let mut bad = entry.clone();
+        bad.rel = rel;
+        assert!(validate_remote_manifest(&[bad]).is_err());
+    }
+    for hash in ["a".repeat(65), "g".repeat(64), "A".repeat(64)] {
+        let mut bad = entry.clone();
+        bad.hash = hash;
+        assert!(validate_remote_manifest(&[bad]).is_err());
+    }
+    assert!(validate_remote_manifest(&vec![entry; MAX_MANIFEST_FILES + 1]).is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn private_directory_clears_inherited_acl_grants_before_storage() {
+    let dir = identity_test_dir("private-acl");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(std::process::Command::new("chmod")
+        .args([
+            "+a",
+            "everyone allow read,search,file_inherit,directory_inherit"
+        ])
+        .arg(&dir)
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(dir.join("private.json"), b"synthetic").unwrap();
+    protect_private_directory(&dir, &["private.json"]).unwrap();
+    for path in [&dir, &dir.join("private.json")] {
+        let listing = std::process::Command::new("ls")
+            .arg("-lde")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(listing.status.success());
+        assert!(!String::from_utf8_lossy(&listing.stdout).contains("everyone allow"));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

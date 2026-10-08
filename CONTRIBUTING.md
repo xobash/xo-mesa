@@ -5,10 +5,10 @@ and easy to review.
 
 ## Development setup
 
-Install Node.js 20.19 or later and Rust. Then run:
+Use Node.js 22.22.3 and Rust 1.96.0 (the repository pins). Then run:
 
 ```bash
-npm install
+npm ci
 npm run mesa
 ```
 
@@ -22,9 +22,11 @@ npm run mesa
   exact helper names. Tests added with code are regression coverage, not
   independent validation.
 - Run the frontend CI checks: `npm ci`, `npm run typecheck`, `npm run lint`,
-  `npm test`, `npm run test:bootstrap`, `npm run test:index`,
-  `npm run test:markdown`, `npm run test:notices`, `npm run build`,
-  `npm run audit:public`, and `npm audit --audit-level=moderate`.
+  `npm run test:coverage` (the test suite plus coverage floors for `src/lib` and
+  `src/controllers`), `npm run test:release`, `npm run test:bootstrap`, `npm run test:index`,
+  `npm run test:markdown`, `npm run test:notices`, `npm run test:toolchains`,
+  `npm run test:assets`, `npm run audit:assets`, `npm run test:documents`, `npm run build`,
+  `npm run audit:public`, `npm run audit:independent`, and `npm audit --audit-level=moderate`.
 - Native CI runs `cargo test --locked --manifest-path src-tauri/Cargo.toml`
   and `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`
   on Linux, macOS, and Windows. It also runs `cargo audit --file src-tauri/Cargo.lock`

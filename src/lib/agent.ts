@@ -74,11 +74,6 @@ export function contextPrompt(ctx: AgentContext): string {
     .join("\n");
 }
 
-export function piStartupArgs(contextText: string): string[] {
-  const prompt = contextText.trim();
-  return prompt ? ["--append-system-prompt", prompt] : [];
-}
-
 /** Details returned by the Rust `activity_start` command: the loopback port and
  * bearer token the Pi extension reports to, plus the on-disk paths of Mesa's
  * bundled extensions so Mesa can hand them to Pi via repeatable `--extension`

@@ -53,3 +53,21 @@ export async function replayTerminalSnapshot(
     }
   }
 }
+
+/** Keep an exit behind live bytes received while snapshot replay is pending. */
+export function createTerminalReplayGate<T, E>(output: (event: T) => void, exit: (event: E) => void) {
+  let replaying = true;
+  let pending: T[] = [];
+  let pendingExit: E | undefined;
+  return {
+    output(event: T) { if (replaying) pending.push(event); else output(event); },
+    exit(event: E) { if (replaying) pendingExit = event; else exit(event); },
+    complete() {
+      if (!replaying) return;
+      replaying = false;
+      for (const event of pending) output(event);
+      pending = [];
+      if (pendingExit !== undefined) { const event = pendingExit; pendingExit = undefined; exit(event); }
+    },
+  };
+}

@@ -72,7 +72,7 @@ that a signed end-user release or completed native acceptance exists. See the
 | CONTROL-016 | Require a verified annotated tag, protected-main ancestry and the successful exact-commit CI matrix | PREVENTIVE; no compromised release recorded | [release-gate.check.mjs](../scripts/release-gate.check.mjs): `accepts only a verified signed tag on protected main with the entire exact-commit CI matrix` | Enforced by `release-gate.mjs` |
 | CONTROL-017 | Reject changed package bytes, mixed revisions and unexpected product formats | PREVENTIVE; no substituted package recorded | [release-gate.check.mjs](../scripts/release-gate.check.mjs): `admits exact package inventories and rejects changed bytes or unapproved extra products` | Enforced by `release-acceptance.mjs` |
 | CONTROL-018 | Bind native acceptance to the exact package/commit and remove private fields from public summaries | PREVENTIVE; no falsified acceptance incident recorded | [release-gate.check.mjs](../scripts/release-gate.check.mjs): `requires every native target and row and rejects stale, failed or private evidence` | Enforced by `release-acceptance.mjs`; hashes do not independently prove observations |
-| CONTROL-019 | Reject native dependency vulnerabilities and unreviewed warning/version combinations | Preventive advisory policy; dependency findings are recorded in [security.md](security.md#supply-chain) | [release-gate.check.mjs](../scripts/release-gate.check.mjs): `permits only the exact tracked upstream warning versions and fails on new vulnerabilities` | Enforced by `native-advisory-check.mjs` |
+| CONTROL-019 | Reject native dependency vulnerabilities, unreviewed warning/version combinations and expired exceptions | Preventive advisory policy; dependency findings are recorded in [security.md](security.md#supply-chain) | [release-gate.check.mjs](../scripts/release-gate.check.mjs): `permits only the exact tracked upstream warning versions and fails on new vulnerabilities` | Enforced by `native-advisory-check.mjs` |
 | CONTROL-020 | Stop source bootstrap at unverified tags, ahead checkouts or mismatched prerequisite/installer bytes | PREVENTIVE; no installed-user compromise recorded | [install-behavior.check.mjs](../scripts/install-behavior.check.mjs): `never launches an unverified tag or a checkout ahead of that tag`; `publishes only matching bytes and preserves an existing destination on mismatch`; `release guide bootstrap checksums match the complete installer bytes` | Enforced by bootstrap scripts and checksum checks; native installation needs separate acceptance |
 | CONTROL-021 | Bind shipped notices to locked dependency inventories and preserve upstream license material | Preventive attribution and inventory requirement; no license incident asserted | [third-party-notices.check.mjs](../scripts/third-party-notices.check.mjs): `rejects changed native license bytes`; `rejects changed frontend license bytes`; `rejects a changed lock even with the original notice bytes` | Enforced by `third-party-notices.mjs`; not legal-compliance certification |
 
@@ -93,7 +93,7 @@ past run is current or that every attack variant is covered.
 | ID | Purpose | Origin | Regression / enforcement |
 | --- | --- | --- | --- |
 | CONTROL-022 | Detect additional secret formats in reachable public history and exact committed bytes | INCIDENT-001; AUDIT | `independent-privacy.mjs` verifies Gitleaks 8.30.1 by SHA-256, scans full Git history and exported HEAD in frontend CI; upstream detector suite supplies format coverage. Redacted failures stop CI. |
-| CONTROL-023 | Reject personal raster metadata without interpreting compressed pixels as comments | PREVENTIVE | `asset-metadata.check.mjs` executes EXIF, PNG text/trailing data and GIF compressed-marker regressions; `audit:assets` scans committed asset paths in CI. |
+| CONTROL-023 | Reject personal raster metadata without interpreting compressed pixels as comments | PREVENTIVE | `asset-metadata.check.mjs` executes EXIF, PNG text/trailing data and GIF compressed-marker regressions; `audit:assets` scans every binary in the exact public allowlist, including nested icon payloads and unsupported formats, in CI. |
 | CONTROL-024 | Prevent compiler/runtime drift between development, CI and release | AUDIT | `toolchain-contract.check.mjs` checks exact Node/Rust/container pins and wrappers; frontend CI executes it. |
 | CONTROL-025 | Check release/security scripts for undefined names, unreachable code and unused variables | PREVENTIVE | `npm run lint` covers `src` and `scripts`; CI rejects warnings. Existing behavior suites remain required. |
 
@@ -113,3 +113,15 @@ with the private-content rules, not only current staged files or author names.
 `rejects private bytes retained only in reachable history` exercises a replaced
 private fixture and confirms redacted reporting. Binary pixels, unknown secret
 formats and provider caches remain outside this claim.
+
+CONTROL-028 (AUDIT; enforced): exact-hash human pixel review for every binary
+in the candidate public allowlist. `asset-metadata.check.mjs` rejects missing,
+stale and non-human review records; `release-candidate.yml` checks the requested
+commit with `--review docs/binary-review.json`. Pending records block admission.
+The checker verifies records, not the truth of human observations.
+
+CONTROL-029 (AUDIT; enforced): the two exact native advisory exceptions are
+reviewed 2026-10-07 and expire after 2026-11-06. The expiry regression in
+`release-gate.check.mjs` rejects the same warnings after that date. Removal
+requires a compatible complete Linux binding-chain upgrade and Linux acceptance;
+the exception does not fix the upstream advisories.

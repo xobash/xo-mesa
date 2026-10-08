@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "path": "docs/mesa-demo.gif",
+      "bytes": 23465443,
+      "sha256": "c623d8ea3e70b1c45d64324c0837a42a353f229221dd4a1c8ffdde4221e5366a",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "docs/mesa-hero-themes.png",
+      "bytes": 2298085,
+      "sha256": "c79466949dd7c82050dd7b191cd886af38d61c35b3876852717ca22b1e39e3f8",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "docs/mesa-wordmark.png",
+      "bytes": 143490,
+      "sha256": "9bf522b4cd53a4c0e7dc9f6d337ed7d8cf8a471fbe9052b340249a285e8ba2b8",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/128x128.png",
+      "bytes": 13499,
+      "sha256": "68f47193df21f9fd1a7cc001f63127e9c256c2e2a06ee38b2866a43fd72efc54",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/128x128@2x.png",
+      "bytes": 34150,
+      "sha256": "94fd71672c29e5832836cedc712345744ded8052d304bc9e1832c2dd7c354a4b",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/32x32.png",
+      "bytes": 1703,
+      "sha256": "7b4a22f78348c559c0c8fb8643175da282676907ec7deb8c610583273381a8ba",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/icon.icns",
+      "bytes": 457830,
+      "sha256": "70872622da69a82f3ae1ea6fc5e01ad7d02967b2bd53e7a248bfae8519533655",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/icon.ico",
+      "bytes": 58429,
+      "sha256": "29aa77a23ff039f2995058d4cd71abf63bdf76d7f85f6f9c5c6915c63c73c08a",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/icon.png",
+      "bytes": 55430,
+      "sha256": "e96aedc58793b028c505e6cb0b4e1de9ee2f399a080c64ab12802ab6a07d092d",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    }
+  ]
+}

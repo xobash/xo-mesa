@@ -52,8 +52,82 @@ pub struct Change {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     rel: String,
+    #[serde(with = "hex_bytes_option")]
     before: Option<Vec<u8>>,
+    #[serde(with = "hex_bytes")]
     after: Vec<u8>,
+}
+
+/// Record bytes as hex text: a 16 MiB entry stays near 32 MiB of JSON instead
+/// of a number array several times larger. Records written as number arrays by
+/// earlier versions still load.
+mod hex_bytes {
+    use serde::de::{self, SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut text = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            text.push_str(&format!("{byte:02x}"));
+        }
+        serializer.serialize_str(&text)
+    }
+
+    struct BytesVisitor;
+    impl<'de> Visitor<'de> for BytesVisitor {
+        type Value = Vec<u8>;
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("hex text or a byte array")
+        }
+        fn visit_str<E: de::Error>(self, text: &str) -> Result<Vec<u8>, E> {
+            let bytes = text.as_bytes();
+            if !bytes.len().is_multiple_of(2) {
+                return Err(E::custom("odd-length hex"));
+            }
+            bytes
+                .chunks_exact(2)
+                .map(|pair| {
+                    let digit = |byte: u8| (byte as char).to_digit(16).map(|value| value as u8);
+                    Some(digit(pair[0])? << 4 | digit(pair[1])?)
+                })
+                .collect::<Option<Vec<u8>>>()
+                .ok_or_else(|| E::custom("invalid hex"))
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+            let mut bytes = Vec::new();
+            while let Some(byte) = seq.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        deserializer.deserialize_any(BytesVisitor)
+    }
+}
+
+mod hex_bytes_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize)]
+    struct Hex<'a>(#[serde(with = "super::hex_bytes")] &'a Vec<u8>);
+    #[derive(Deserialize)]
+    struct Owned(#[serde(with = "super::hex_bytes")] Vec<u8>);
+
+    pub fn serialize<S: Serializer>(
+        bytes: &Option<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        bytes.as_ref().map(Hex).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<u8>>, D::Error> {
+        Ok(Option::<Owned>::deserialize(deserializer)?.map(|owned| owned.0))
+    }
 }
 #[derive(Serialize, Deserialize)]
 struct Record {
@@ -461,5 +535,39 @@ mod tests {
         assert!(!root.join("new.md").exists());
         assert!(!root.join(RECORD).exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn record_bytes_use_hex_and_legacy_number_arrays_still_load() {
+        let record = Record {
+            version: 1,
+            committed: false,
+            entries: vec![
+                Entry {
+                    rel: "a.md".into(),
+                    before: Some(vec![0, 255, 16]),
+                    after: vec![1, 2],
+                },
+                Entry {
+                    rel: "b.md".into(),
+                    before: None,
+                    after: vec![],
+                },
+            ],
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains(r#""before":"00ff10""#), "{json}");
+        let loaded: Record = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.entries[0].before, Some(vec![0, 255, 16]));
+        assert_eq!(loaded.entries[1].before, None);
+        assert_eq!(loaded.entries[1].after, Vec::<u8>::new());
+        let legacy = r#"{"version":1,"committed":false,"entries":[{"rel":"a.md","before":[104,105],"after":[1]},{"rel":"b.md","before":null,"after":[]}]}"#;
+        let loaded: Record = serde_json::from_str(legacy).unwrap();
+        assert_eq!(loaded.entries[0].before, Some(b"hi".to_vec()));
+        assert_eq!(loaded.entries[0].after, vec![1]);
+        for bad in [r#""abc""#, r#""zz""#] {
+            let text = format!(r#"{{"rel":"x","before":null,"after":{bad}}}"#);
+            assert!(serde_json::from_str::<Entry>(&text).is_err());
+        }
     }
 }

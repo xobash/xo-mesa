@@ -30,7 +30,8 @@ it('permits only the exact tracked upstream warning versions and fails on new vu
   const clean = { vulnerabilities: { found: false, count: 0, list: [] }, warnings: {} };
   assert.equal(validateNativeAudit(clean), 0);
   const old = { ...clean, warnings: { unsound: [{ advisory: { id: 'RUSTSEC-2024-0429' }, package: { name: 'glib', version: '0.18.5' } }] } };
-  assert.equal(validateNativeAudit(old), 1);
+  assert.equal(validateNativeAudit(old, new Date("2026-10-07")), 1);
+  assert.throws(() => validateNativeAudit(old, new Date('2026-11-07')), /expired/);
   old.warnings.unsound[0].package.version = '0.18.6';
   assert.throws(() => validateNativeAudit(old));
   assert.throws(() => validateNativeAudit({ ...clean, vulnerabilities: { found: true, count: 1 } }));

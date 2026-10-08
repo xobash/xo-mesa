@@ -1,3 +1,4 @@
+import { initializeVaultStorage } from "./vaultStorage";
 import { readBoundedText } from "./boundedText";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
@@ -83,7 +84,13 @@ export async function nativeVaultWriteAtomic(
             .map((byte) => byte.toString(16).padStart(2, "0")).join(""),
           size: expectedCurrentBytes.length,
         };
-  await invoke("vault_write_atomic", { path, data, expected });
+  // Bytes are the raw IPC body; a nested Uint8Array would be sent as a JSON
+  // number array several times the file's size.
+  const pathHex = Array.from(new TextEncoder().encode(path))
+    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  await invoke("vault_write_atomic", data, {
+    headers: { "x-mesa-path": pathHex, "x-mesa-expected": JSON.stringify(expected) },
+  });
 }
 
 
@@ -295,6 +302,17 @@ export async function pickVault(): Promise<string | null> {
 export async function authorizeVaultRoot(root: string): Promise<void> {
   if (isDemo(root)) return;
   await invoke("vault_authorize", { root });
+  await initializeVaultStorage(root);
+}
+
+/** Forget a vault folder's native approval ("Remove from recents"). Best effort. */
+export async function revokeVaultRoot(root: string): Promise<void> {
+  if (!IN_TAURI || isDemo(root)) return;
+  try {
+    await invoke("vault_revoke", { root });
+  } catch {
+    /* an unavailable record must not block removing the recents entry */
+  }
 }
 
 /** Require a reachable remembered directory; unavailable roots must not become empty vaults. */

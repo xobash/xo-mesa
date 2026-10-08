@@ -187,12 +187,24 @@ describe("sanitizeHtml / renderMarkdown XSS defense", () => {
     expect(html).toContain('class="wikilink"');
   });
 
-  it("keeps safe links and images with http(s)/relative sources", () => {
+  it("keeps safe links and local images but defers remote media", () => {
     const out = sanitizeHtml(
-      '<a href="https://example.com">x</a><img src="images/local.png">'
+      '<a href="https://example.com">x</a><img src="images/local.png"><img src="https://t.example/p.gif" srcset="https://t.example/2x.gif 2x"><video poster="http://t.example/p.jpg" src="//t.example/v.mp4"></video>'
     );
     expect(out).toContain('href="https://example.com"');
     expect(out).toContain('src="images/local.png"');
+    expect(out).not.toMatch(/\s(src|srcset|poster)="(https?:)?\/\//);
+    expect(out).toContain('data-remote-src="https://t.example/p.gif"');
+    expect(out).toContain('data-remote-srcset');
+    expect(out).toContain('data-remote-poster');
+  });
+
+  it("removes inline styles that could overlay the app", () => {
+    const out = sanitizeHtml(
+      '<a href="https://evil.example/x" style="position:fixed;inset:0;opacity:0">x</a><div style="z-index:9">y</div>'
+    );
+    expect(out).not.toContain("style");
+    expect(out).toContain("x</a>");
   });
 });
 

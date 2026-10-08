@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { replayTerminalSnapshot } from "./terminalReplay";
+import { createTerminalReplayGate, replayTerminalSnapshot } from "./terminalReplay";
 
 describe("replayTerminalSnapshot", () => {
   it("replays output at the historical dimensions in exact order", async () => {
@@ -49,4 +49,24 @@ describe("replayTerminalSnapshot", () => {
     );
     expect(writes).toEqual(["legacy"]);
   });
+});
+
+it("delivers buffered final output before an exit that arrives during replay", () => {
+  const seen: string[] = [];
+  let snapshotSeq = 0;
+  const gate = createTerminalReplayGate<{ seq: number; data: string }, string>(event => {
+    if (event.seq > snapshotSeq) { snapshotSeq = event.seq; seen.push(event.data); }
+  }, code => seen.push(code));
+  gate.output({ seq: 10, data: "already in snapshot" });
+  gate.output({ seq: 11, data: "final bytes" });
+  gate.exit("exited");
+  expect(seen).toEqual([]);
+  snapshotSeq = 10; gate.complete(); gate.complete();
+  expect(seen).toEqual(["final bytes", "exited"]);
+});
+it("delivers output and exit directly after replay completion", () => {
+  const seen: string[] = [];
+  const gate = createTerminalReplayGate<string, string>(data => seen.push(data), code => seen.push(code));
+  gate.complete(); gate.output("tail"); gate.exit("done");
+  expect(seen).toEqual(["tail", "done"]);
 });

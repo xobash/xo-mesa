@@ -1,5 +1,6 @@
 import {
-  IN_TAURI
+  IN_TAURI,
+  stripExt
 } from "../lib/vault";
 import type {
   Settings
@@ -23,6 +24,25 @@ import { createWorkspaceActions } from "../lib/workspaceActions";
 import type { StoreApi } from "zustand";
 import type { AppState } from "../store";
 type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
+/** Secondary windows may create only native-validated peer document surfaces. */
+export async function createSurfaceWindow(
+  WindowClass: typeof import("@tauri-apps/api/webviewWindow").WebviewWindow,
+  label: string,
+  options: NonNullable<ConstructorParameters<typeof WindowClass>[1]>,
+) {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  if (getCurrentWindow().label === "main") return new WindowClass(label, options);
+  await invoke("workspace_open_surface", { request: {
+    label, url: options.url, title: options.title, width: options.width, height: options.height,
+    minWidth: options.minWidth, minHeight: options.minHeight, x: options.x, y: options.y,
+    dark: options.theme === "dark", overlay: options.titleBarStyle === "overlay",
+    background: Array.isArray(options.backgroundColor) ? options.backgroundColor.slice(0, 3) : undefined,
+  } });
+  const window = await WindowClass.getByLabel(label);
+  if (!window) throw new Error("Secondary window could not open");
+  return window;
+}
+
 async function reclaimMainPiResizeOwnership(): Promise<void> {
   const session = getPiSessionSnapshot();
   if (!session.sessionId) return;
@@ -31,6 +51,7 @@ async function reclaimMainPiResizeOwnership(): Promise<void> {
       sessionId: session.sessionId,
       cols: session.cols,
       rows: session.rows,
+      reclaim: true,
     });
   } catch {
     // Best effort: the fallback AgentSurface will claim on focus/mount too.
@@ -60,9 +81,9 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
           const url = `index.html?doc=${encodeURIComponent(
             relPath
           )}&vault=${encodeURIComponent(vault)}&theme=${theme}`;
-          const win = new WebviewWindow(label, {
+          const win = await createSurfaceWindow(WebviewWindow, label, {
             url,
-            title: get().notes[relPath]?.title ?? relPath,
+            title: stripExt(relPath.replace(/.*[\\/]/, "")),
             width: 760,
             height: 860,
             resizable: true,
@@ -113,11 +134,12 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
             liveSession.sessionId
           )}`;
           const label = `agent-${Date.now().toString(36)}`;
+          const handoffToken = await invoke<string>("terminal_prepare_handoff", { sessionId: liveSession.sessionId, targetLabel: label });
           const titleOverlay = /Macintosh|Mac OS X/i.test(navigator.userAgent);
           const url = `index.html?agent=1&vault=${encodeURIComponent(
             vault
           )}&theme=${theme}&agentLabel=${encodeURIComponent(label)}${titleOverlay ? "&titleOverlay=1" : ""
-            }${docParam}${sessionParam}`;
+            }${docParam}${sessionParam}&piHandoff=${encodeURIComponent(handoffToken)}`;
           let resolveReady: (ready: boolean) => void = () => undefined;
           const ready = new Promise<boolean>((resolve) => {
             resolveReady = resolve;
@@ -247,7 +269,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
         const surface = `native:${label}`;
         const url = `index.html?research=1&vault=${encodeURIComponent(vault)}&theme=${theme}&researchLabel=${encodeURIComponent(label)}`;
         const titleOverlay = /Macintosh|Mac OS X/i.test(navigator.userAgent);
-        const win = new WebviewWindow(label, {
+        const win = await createSurfaceWindow(WebviewWindow, label, {
           url,
           title: `Deep Research — ${get().vaultName || "Mesa"}`,
           width: Math.max(520, placement?.width ?? 760),
@@ -348,7 +370,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
         const url = `index.html?panel=${panel}&vault=${encodeURIComponent(
           vault
         )}&theme=${theme}${docParam}${bootstrapParam}`;
-        const win = new WebviewWindow(label, {
+        const win = await createSurfaceWindow(WebviewWindow, label, {
           url,
           title: panel[0].toUpperCase() + panel.slice(1),
           width: Math.max(360, placement?.width ?? 720),

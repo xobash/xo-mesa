@@ -12,6 +12,12 @@ test('development, CI and release use the exact reviewed toolchains', () => {
     assert.match(workflow, /node-version-file: \.node-version/);
     for (const block of workflow.split('- uses: dtolnay/rust-toolchain').slice(1)) assert.match(block.split('- uses:')[0], /toolchain: 1\.96\.0/);
   }
+  // Jobs that hold signing secrets or id-token must not restore shared caches.
+  for (const file of ['.github/workflows/release-candidate.yml', '.github/workflows/release.yml']) {
+    const workflow = read(file);
+    assert.doesNotMatch(workflow, /^\s*cache:/m, `${file} restores a package cache`);
+    assert.doesNotMatch(workflow, /rust-cache|actions\/cache/, `${file} restores a shared cache`);
+  }
   assert.match(read('.github/workflows/parser-fuzz.yml'), /cargo \+1\.96\.0 install/);
   assert.match(read('.github/workflows/parser-fuzz.yml'), /cargo \+nightly-2026-10-06 fuzz/);
   assert.match(read('run.sh'), /nvm install "\$MESA_NODE_VERSION"/);

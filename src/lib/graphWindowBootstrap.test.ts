@@ -21,7 +21,8 @@ describe("graph window bootstrap", () => {
       settings: { graphShowTags: true },
     };
     expect(saveGraphWindowBootstrap("graph-1", snapshot, storage)).toBe(true);
-    expect(consumeGraphWindowBootstrap("graph-1", storage)).toEqual(snapshot);
-    expect(consumeGraphWindowBootstrap("graph-1", storage)).toBeNull();
+    expect(storage.getItem("mesa:graph-window:graph-1")).not.toContain("/vault");
+    expect(consumeGraphWindowBootstrap("graph-1", storage, "/vault")).toEqual(snapshot);
+    expect(consumeGraphWindowBootstrap("graph-1", storage, "/vault")).toBeNull();
   });
 });

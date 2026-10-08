@@ -14,7 +14,7 @@ struct ApprovedRoots {
 }
 
 #[derive(Default)]
-pub struct VaultScopeState(Mutex<()>);
+pub struct VaultScopeState(pub(crate) Mutex<()>);
 
 fn normalized_root(root: &str) -> Result<String, String> {
     let path = Path::new(root);
@@ -37,14 +37,36 @@ fn normalized_root(root: &str) -> Result<String, String> {
 }
 
 fn approved_roots_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
+    let app_data = app
+        .path()
         .app_data_dir()
-        .map(|dir| dir.join(APPROVED_ROOTS_FILE))
-        .map_err(|error| format!("cannot resolve Mesa app-data folder: {error}"))
+        .map_err(|_| "Cannot locate private vault storage")?;
+    let dir = app_data.join("vault-state");
+    crate::sync::protect_private_directory(&dir, &[APPROVED_ROOTS_FILE, "recent-vaults.json"])?;
+    let path = dir.join(APPROVED_ROOTS_FILE);
+    let legacy = app_data.join(APPROVED_ROOTS_FILE);
+    if !path.exists() && legacy.exists() {
+        let roots = load_approved_roots(&legacy)?;
+        save_approved_roots(&path, &roots)?;
+        fs::remove_file(legacy).map_err(|_| "Cannot remove legacy vault approval metadata")?;
+    }
+    Ok(path)
 }
 
 fn load_approved_roots(path: &Path) -> Result<ApprovedRoots, String> {
-    match fs::read(path) {
+    match super::sync_core::open_file_no_follow(path).and_then(|mut file| {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.by_ref()
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 1024 * 1024 {
+            return Err(std::io::Error::other(
+                "Vault approval record exceeds its limit",
+            ));
+        }
+        Ok(bytes)
+    }) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|error| format!("cannot read approved vault roots: {error}")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ApprovedRoots::default()),
@@ -159,7 +181,8 @@ fn sync_file(path: &Path) -> std::io::Result<()> {
 
 /// Flush a verified vault file and its containing directory after a write or
 /// rename. The renderer can request this only for an existing approved file.
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn vault_flush_file(app: AppHandle, path: String) -> Result<(), String> {
     let canonical = require_approved_file_from(&approved_roots_path(&app)?, &path)?;
     sync_file(&canonical).map_err(|error| format!("cannot flush vault file: {error}"))?;
@@ -186,8 +209,24 @@ fn save_approved_roots(path: &Path, roots: &ApprovedRoots) -> Result<(), String>
     let bytes = serde_json::to_vec(roots)
         .map_err(|error| format!("cannot encode approved vault roots: {error}"))?;
     let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, bytes)
-        .map_err(|error| format!("cannot save approved vault roots: {error}"))?;
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|_| "Cannot stage vault approvals")?;
+    #[cfg(unix)]
+    super::sync_core::file_metadata::private(&file)
+        .map_err(|_| "Cannot restrict vault approvals")?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "Cannot save vault approvals")?;
+    drop(file);
     replace_file(&temporary, path)
         .map_err(|error| format!("cannot publish approved vault roots: {error}"))
 }
@@ -222,7 +261,8 @@ fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
 /// Restores access only to a vault the user selected previously. A newly picked
 /// folder is already in Tauri's runtime scope because plugin-dialog grants it;
 /// that native grant is the proof used to remember the folder for later runs.
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn vault_authorize(
     app: AppHandle,
     state: State<'_, VaultScopeState>,
@@ -272,6 +312,61 @@ pub fn vault_authorize(
     Ok(())
 }
 
+/// Remove one folder from the approval record. Matches the spelling the user
+/// saw or its resolved form, and works when the folder no longer exists.
+fn revoke_from(approval_path: &Path, root: &str) -> Result<bool, String> {
+    let mut spellings = BTreeSet::from([normalized_root(root)?]);
+    // Resolve through the nearest existing ancestor so an OS alias such as
+    // /var still matches after the folder itself was deleted.
+    let path = Path::new(root);
+    for ancestor in path.ancestors() {
+        let Ok(resolved) = fs::canonicalize(ancestor) else {
+            continue;
+        };
+        let rest = path.strip_prefix(ancestor).map_err(|e| e.to_string())?;
+        if let Some(text) = resolved.join(rest).to_str() {
+            spellings.insert(normalized_root(text)?);
+        }
+        break;
+    }
+    let mut approved = load_approved_roots(approval_path)?;
+    let before = approved.roots.len();
+    approved
+        .roots
+        .retain(|approved_root| !spellings.contains(approved_root));
+    if approved.roots.len() == before {
+        return Ok(false);
+    }
+    save_approved_roots(approval_path, &approved)?;
+    Ok(true)
+}
+
+pub(crate) fn revoke_native(app: &AppHandle, root: &str) -> Result<bool, String> {
+    revoke_from(&approved_roots_path(app)?, root)
+}
+
+/// Forget a vault folder ("Remove from recents"). Native commands refuse the
+/// root immediately and it can return only through a new folder-dialog pick.
+/// The fs/asset plugin scopes cannot drop an allowed directory at runtime and
+/// are rebuilt from the record on the next launch.
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
+pub fn vault_revoke(
+    window: tauri::Window,
+    app: AppHandle,
+    state: State<'_, VaultScopeState>,
+    root: String,
+) -> Result<bool, String> {
+    if window.label() != "main" {
+        return Err("vault approval belongs to the main workspace".into());
+    }
+    let _guard = state
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    revoke_from(&approved_roots_path(&app)?, &root)
+}
+
 fn is_write_artifact_name(name: &str) -> bool {
     if let Some(rest) = name.strip_prefix(".mesa-sync-tmp-") {
         return rest.split_once('-').is_some_and(|(stamp, suffix)| {
@@ -310,7 +405,8 @@ fn is_write_artifact_name(name: &str) -> bool {
 /// Give the fs plugin exact paths for Mesa's hidden write artifacts. The
 /// configured directory scope excludes dot-prefixed names, including backups.
 /// Only paths inside a previously approved vault can be added.
-#[tauri::command]
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
 pub fn vault_authorize_artifacts(
     app: AppHandle,
     state: State<'_, VaultScopeState>,
@@ -424,6 +520,38 @@ pub(crate) fn approved_path(app: &AppHandle, raw: &str) -> Result<(PathBuf, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoked_roots_are_refused_and_other_roots_survive() {
+        let base = std::env::temp_dir().join(format!("mesa-scope-revoke-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (a, b) = (base.join("a"), base.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let record = base.join("approved.json");
+        let mut roots = ApprovedRoots::default();
+        for root in [&a, &b] {
+            roots.roots.insert(
+                normalized_root(fs::canonicalize(root).unwrap().to_str().unwrap()).unwrap(),
+            );
+        }
+        save_approved_roots(&record, &roots).unwrap();
+        assert!(require_approved_from(&record, a.to_str().unwrap()).is_ok());
+
+        assert!(revoke_from(&record, a.to_str().unwrap()).unwrap());
+        assert!(require_approved_from(&record, a.to_str().unwrap()).is_err());
+        assert!(require_approved_from(&record, b.to_str().unwrap()).is_ok());
+        assert!(
+            !revoke_from(&record, a.to_str().unwrap()).unwrap(),
+            "second revoke is a no-op"
+        );
+
+        // A folder the user already deleted can still be forgotten.
+        fs::remove_dir_all(&b).unwrap();
+        assert!(revoke_from(&record, b.to_str().unwrap()).unwrap());
+        assert!(revoke_from(&record, "relative/path").is_err());
+        fs::remove_dir_all(base).unwrap();
+    }
     #[test]
     fn relative_paths_match_components_without_slicing_unicode() {
         let root = std::env::temp_dir().join("mesa-İ-root");

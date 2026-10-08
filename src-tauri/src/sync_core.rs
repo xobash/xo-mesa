@@ -1,3 +1,5 @@
+#[path = "file_metadata.rs"]
+pub(crate) mod file_metadata;
 #[path = "sync_fs.rs"]
 mod filesystem;
 pub use filesystem::*;
@@ -222,6 +224,22 @@ fn hash_open_file_until(
 /// `.obsidian`, `.DS_Store`) and `node_modules`.
 pub fn ignored_name(name: &str) -> bool {
     name.starts_with('.') || name == "node_modules"
+}
+
+/// Peer-facing sync path policy: everything `safe_join` accepts, minus any
+/// segment the vault walk ignores. Peers may never read or change `.git/`,
+/// `.obsidian/`, `.mesa-trash/`, the journal or `node_modules`; Mesa's own
+/// recovery paths use `safe_join` directly and never come from a peer.
+pub fn is_peer_rel(rel: &str) -> bool {
+    safe_join(Path::new("."), rel).is_some() && !rel.split('/').any(ignored_name)
+}
+
+/// `safe_join_confined` restricted to `is_peer_rel` paths.
+pub fn peer_join_confined(root: &Path, rel: &str) -> Option<PathBuf> {
+    if !is_peer_rel(rel) {
+        return None;
+    }
+    safe_join_confined(root, rel)
 }
 
 /// Recursively list every syncable file under `root` as
