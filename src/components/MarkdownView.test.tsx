@@ -95,6 +95,7 @@ it('counts and restores SVG and background carriers only after consent', async (
     await act(async () => { button.click(); });
     expect(host.querySelector('image')?.getAttribute('href')).toBe('https://tracker.example/a.png');
     expect(host.querySelector('feImage')?.getAttribute('xlink:href')).toBe('https://tracker.example/b.png');
+    expect(host.querySelector('feImage')?.getAttributeNS('http://www.w3.org/1999/xlink', 'href')).toBe('https://tracker.example/b.png');
     expect(host.querySelector('table')?.getAttribute('background')).toBe('https://tracker.example/bg.png');
     expect(host.querySelector('input')?.getAttribute('src')).toBe('https://tracker.example/c.png');
     expect(host.querySelector('.md-remote-notice')).toBeNull();

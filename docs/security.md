@@ -74,6 +74,7 @@ classification strips browser-ignored whitespace/control characters. Authored
 The tag/attribute/scheme regression matrix checks surviving live attributes
 with an independent URL parser. The sanitizer parks each URL in `data-remote-*`
 and `MarkdownView` shows a notice with **Load remote images for this note**; the
+SVG XLink namespace is restored with the URL after consent. The
 choice lasts while that rendered source remains unchanged in the open view.
 A new source requires new consent, including navigation in a reused viewer. This is why the app CSP still lists `https:`
 in `img-src`. This is a sanitizer boundary with regression coverage, not a

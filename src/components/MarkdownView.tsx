@@ -23,7 +23,8 @@ function restoreRemoteMedia(root: Element) {
     for (const name of REMOTE_ATTRIBUTES) {
       const value = el.getAttribute(`data-remote-${name.replace(":", "-")}`);
       if (value === null) continue;
-      el.setAttribute(name, value);
+      if (name === "xlink:href") el.setAttributeNS("http://www.w3.org/1999/xlink", name, value);
+      else el.setAttribute(name, value);
       el.removeAttribute(`data-remote-${name.replace(":", "-")}`);
     }
   });
