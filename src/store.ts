@@ -392,6 +392,7 @@ export interface AppState {
   /** Open the shared Deep Research view in a separate Mesa native window. */
   openResearchWindow: (placement?: DetachedWindowPlacement) => Promise<boolean>;
   openVault: (path?: string) => Promise<void>;
+  registerVaultFile: (relPath: string) => Promise<void>;
   removeRecentVault: (id: string) => Promise<void>;
   selectFile: (relPath: string) => Promise<void>;
   loadActiveContent: () => Promise<void>;
@@ -1726,6 +1727,14 @@ export const useAppStore = create<AppState>((set, get) => {
     ...documents.actions,
     ...research.actions,
     ...vault.actions,
+    registerVaultFile: async (relPath) => {
+      const root = get().vaultPath;
+      if (!root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
+      await vault.registerExternalFile(relPath, current);
+      if (!get().fileFor(relPath) && current()) await vault.refreshMissingExternalFiles(root, current);
+    },
     ...windows.actions,
     fileFor: (relPath) => fileIndexFor(get().files).get(relPath),
   };

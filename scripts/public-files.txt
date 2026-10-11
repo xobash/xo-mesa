@@ -473,6 +473,7 @@ src/lib/writeRecovery.ts
 src/lib/zipCodec.test.ts
 src/lib/zipCodec.ts
 src/main.tsx
+src/store.archiveRegister.test.ts
 src/store.conflictReview.test.ts
 src/store.lifecycle.test.ts
 src/store.research.test.ts

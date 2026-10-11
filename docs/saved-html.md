@@ -41,3 +41,5 @@ files larger than four million characters and never use truncated text as a
 complete HTML document. Tests cover hydration, hostile metadata and links,
 offline policy, confirmation, consent revocation, detached files, archive
 metadata, and stale preview reads.
+
+Archiving a browser page registers that file in the current vault before opening it. It preserves existing tabs and the active Deep Research run; it does not reopen or re-index the vault. A vault change during archiving prevents publication into the new vault.

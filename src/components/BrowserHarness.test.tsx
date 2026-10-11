@@ -2,7 +2,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-const mock = vi.hoisted(() => ({ invoke: vi.fn(), state: { vaultPath: '/vault', openVault: vi.fn(), openFile: vi.fn() } }));
+const mock = vi.hoisted(() => ({ invoke: vi.fn(), state: { vaultPath: '/vault', openVault: vi.fn(), registerVaultFile: vi.fn(), openFile: vi.fn() } }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }));
 vi.mock('../lib/vault', () => ({ IN_TAURI: true, writeVaultTextFile: vi.fn() }));
 vi.mock('../store', () => ({ useAppStore: Object.assign((fn: (s: unknown) => unknown) => fn(mock.state), { getState: () => mock.state }) }));
@@ -82,4 +82,17 @@ it('shows the direct-connection guidance returned by the broker', async () => {
   await navigate('https://example.com');
   expect(host.querySelector('[role=alert]')?.textContent).toContain('Mesa does not use system proxies');
   expect(host.querySelector('iframe')).toBeNull();
+});
+
+it('registers and opens an archive without reopening the vault', async () => {
+  await mount();
+  mock.state.openVault.mockClear(); mock.state.openFile.mockClear(); mock.state.registerVaultFile.mockClear();
+  mock.invoke.mockResolvedValue(page('https://example.com/archive', '<p>Saved page</p>'));
+  await navigate('https://example.com/archive');
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Archive page to vault"]')!.click());
+  expect(mock.state.openVault).not.toHaveBeenCalled();
+  const rel = mock.state.registerVaultFile.mock.calls[0][0];
+  expect(rel).toMatch(/\.html$/);
+  expect(mock.state.openFile).toHaveBeenCalledWith(rel);
+  expect(mock.state.registerVaultFile.mock.invocationCallOrder[0]).toBeLessThan(mock.state.openFile.mock.invocationCallOrder[0]);
 });

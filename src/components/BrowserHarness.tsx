@@ -20,7 +20,7 @@ export function BrowserHarness({ externalNav, onClose }: {
   onClose?: () => void;
 }) {
   const vaultPath = useAppStore(s => s.vaultPath);
-  const openVault = useAppStore(s => s.openVault);
+  const registerVaultFile = useAppStore(s => s.registerVaultFile);
   const openFile = useAppStore(s => s.openFile);
   const [input, setInput] = useState("");
   const [url, setUrl] = useState("");
@@ -108,7 +108,7 @@ export function BrowserHarness({ externalNav, onClose }: {
         },
       }, { cachedPage: page });
       if (useAppStore.getState().vaultPath !== root) return;
-      await openVault(root);
+      await registerVaultFile(result.relPath);
       if (useAppStore.getState().vaultPath !== root) return;
       await openFile(result.relPath);
       if (request === generation.current) setArchiveStatus(`Archived to ${result.relPath}`);
