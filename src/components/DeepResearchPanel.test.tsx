@@ -143,7 +143,11 @@ describe("Deep Research validation and visible recovery", () => {
     await start();
     await emit({ kind: "agent-end", reason: "Pi ended without finish" });
     const remote = { ...useAppStore.getState().deepResearch!, piSessionId: "captured-research-session" };
-    await act(async () => root.render(<DeepResearchPanel runOverride={remote} readOnly />));
+    await act(async () => {
+      useAppStore.setState({ vaultPath: null });
+      root.render(<DeepResearchPanel runOverride={remote} readOnly />);
+    });
+    expect(host.textContent).not.toContain("Open a vault to run Deep Research");
     expect(button("Cancel")).toBeUndefined();
     expect(button("Copy troubleshooting kit")).toHaveProperty("textContent", "Copy troubleshooting kit");
     await act(async () => {

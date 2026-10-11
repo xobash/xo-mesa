@@ -774,7 +774,7 @@ export function DeepResearchPanel({
           prepare a query, but the run itself needs the Mesa desktop app.
         </div>
       )}
-      {inTauri && !vaultPath && (
+      {inTauri && !vaultPath && !readOnly && (
         <div className="dr-note">Open a vault to run Deep Research — it reads and writes notes there.</div>
       )}
 
