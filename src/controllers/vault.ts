@@ -67,6 +67,12 @@ interface Dependencies extends Port {
   setupActivityBridge: () => Promise<void>; ensureSyncEventBridge: () => Promise<void>;
   stopListening: () => Promise<boolean>; startListening: (root: string) => Promise<void>;
 }
+/** One event per path, latest kind wins, ordered by its last occurrence. */
+export function mergeWatchEvents(events: VaultWatchEvent[]): VaultWatchEvent[] {
+  const last = new Map<string, VaultWatchEvent["kind"]>();
+  for (const event of events) for (const path of event.paths) { last.delete(path); last.set(path, event.kind); }
+  return [...last].map(([path, kind]) => ({ kind, paths: [path] }));
+}
 export function createVaultController({ get, set, textSaves, resetDocuments, stopResearch, setupActivityBridge, ensureSyncEventBridge, stopListening, startListening }: Dependencies) {
   // A path is not a lifecycle identity: reopening the same vault must cancel
   // the previous open's scan and background metadata/search work too.
@@ -512,9 +518,19 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     }
     unwatch = undefined;
     const generation = vaultOpenGeneration;
-    const stop = await watchVault(root, (events) =>
-      void handleExternalChange(events, root, generation)
-    );
+    let tail: Promise<void> = Promise.resolve();
+    let pending: VaultWatchEvent[] | null = null;
+    const enqueue = (events: VaultWatchEvent[]) => {
+      if (pending) { pending.push(...events); return; }
+      pending = [...events];
+      tail = tail.then(async () => {
+        const batch = mergeWatchEvents(pending!);
+        pending = null;
+        if (setupGeneration !== watcherSetupGeneration) return;
+        await handleExternalChange(batch, root, generation);
+      }).catch(error => console.warn("[mesa] external change batch failed:", error));
+    };
+    const stop = await watchVault(root, enqueue);
     if (setupGeneration !== watcherSetupGeneration) {
       // A newer vault opened while this watcher was starting. Do not retain a
       // late watcher whose cleanup handle belongs to an older vault.
