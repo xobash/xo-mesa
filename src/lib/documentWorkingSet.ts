@@ -6,18 +6,18 @@ export type { IndexedDocument } from "./documentCodec";
 interface Entry { value?: string; indexed?: IndexedDocument }
 interface State { buckets: Map<string, Entry>[]; shared: Set<number>; pool: WorkingSet }
 const states = new WeakMap<object, State>();
-const cacheLineage = new WeakMap<object, { parent: object; changed: Set<string>; taskStable: Set<string> }>();
+const cacheLineage = new WeakMap<object, { parent: WeakRef<object>; changed: Set<string>; taskStable: Set<string> }>();
 /** Changed keys in one cache fork; null means the caller must use a full pass. */
 export function cacheChangedKeysSince(cache: Record<string, string>, parent: Record<string, string>): ReadonlySet<string> | null {
   const lineage = cacheLineage.get(cache);
-  return lineage?.parent === parent ? lineage.changed : null;
+  return lineage?.parent.deref() === parent ? lineage.changed : null;
 }
 export function markCacheTaskStable(cache: Record<string, string>, key: string): void {
   cacheLineage.get(cache)?.taskStable.add(key);
 }
 export function cacheTaskStableSince(cache: Record<string, string>, parent: Record<string, string>, key: string): boolean {
   const lineage = cacheLineage.get(cache);
-  return lineage?.parent === parent && lineage.taskStable.has(key) || false;
+  return lineage?.parent.deref() === parent && lineage.taskStable.has(key) || false;
 }
 
 const compactions: WeakRef<Entry>[] = [];
@@ -131,7 +131,7 @@ export function forkContentCache(cache: Record<string, string>, changes: Record<
   const shared = new Set(Array.from({ length: BUCKETS }, (_, i) => i));
   source.shared = new Set(shared);
   const copy = wrap({ buckets: source.buckets.slice(), shared, pool: source.pool });
-  cacheLineage.set(copy, { parent: cache, changed: new Set(), taskStable: new Set() });
+  cacheLineage.set(copy, { parent: new WeakRef(cache), changed: new Set(), taskStable: new Set() });
   for (const [key, value] of Object.entries(changes)) copy[key] = value;
   return copy;
 }

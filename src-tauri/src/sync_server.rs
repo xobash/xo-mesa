@@ -1,5 +1,51 @@
 use super::*;
 
+async fn accepted_connection<T>(
+    accepted: Result<std::io::Result<T>, tokio::time::error::Elapsed>,
+    warned: &mut bool,
+    warn: impl FnOnce(&std::io::Error),
+) -> Option<T> {
+    match accepted {
+        Err(_) => None,
+        Ok(Err(error)) => {
+            if !*warned {
+                warn(&error);
+                *warned = true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            None
+        }
+        Ok(Ok(connection)) => Some(connection),
+    }
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn repeated_accept_errors_back_off_and_warn_once() {
+        let mut warned = false;
+        let mut warnings = 0;
+        let start = tokio::time::Instant::now();
+        for _ in 0..3 {
+            let result = accepted_connection::<()>(
+                Ok(Err(std::io::Error::other("forced accept failure"))),
+                &mut warned,
+                |_| warnings += 1,
+            )
+            .await;
+            assert!(result.is_none());
+        }
+        assert!(start.elapsed() >= Duration::from_millis(150));
+        assert_eq!(warnings, 1);
+        assert_eq!(
+            accepted_connection(Ok(Ok(7)), &mut warned, |_| panic!("success warned")).await,
+            Some(7)
+        );
+    }
+}
+
 pub(super) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub(super) type HyperBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
@@ -1071,10 +1117,20 @@ pub fn sync_start(
             let connection_slots = Arc::new(tokio::sync::Semaphore::new(SERVER_CONNECTION_LIMIT));
             let auth_limiter = Arc::new(AuthLimiter::default());
             let peer_slots = Arc::new(PeerSlots::default());
+            let mut accept_warned = false;
             while running_for_thread.load(Ordering::Relaxed) {
                 let accepted =
                     tokio::time::timeout(Duration::from_millis(250), listener.accept()).await;
-                let Ok(Ok((stream, peer))) = accepted else {
+                let Some((stream, peer)) =
+                    accepted_connection(accepted, &mut accept_warned, |error| {
+                        emit_log(
+                            &app_for_thread,
+                            "warn",
+                            format!("[serve] sync accept failed: {error}"),
+                        );
+                    })
+                    .await
+                else {
                     continue;
                 };
                 let acceptor = acceptor.clone();

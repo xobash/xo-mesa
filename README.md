@@ -101,6 +101,9 @@ press `Shift+Tab` to open the overlay with Calendar and other tools. See
 
 ## Development
 
+The Docker image is demo-only, not a production deployment. Its browser-preview
+policy permits online resources; use the desktop app for native vault workflows.
+
 To work on Mesa, use the pinned Node.js 22.22.3, npm, Rust 1.96.0 and the
 [native platform prerequisites](docs/cross-platform.md). From the checkout:
 

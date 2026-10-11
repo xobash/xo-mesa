@@ -1,6 +1,6 @@
 Mesa third-party notices
 Generated from installed, locked dependencies. Mesa's own MIT license is separate.
-package-lock-sha256: 994e0bca51feec9f43407236090e9f842108ec810e4e04a99c7878cb1f31e0f2
+package-lock-sha256: 5bc49f8da5b8cb255f403d033294372ec02e38471f7d5238854c750b8da367bc
 Cargo-lock-sha256: e62438feee8d1de71a1c45ce720951aea60de539b6d4c49905d3cee3de21f45c
 native-notices-sha256: 21174247b986aab7db6db79840585a5ea5a76813c7aa995a15fd0cb3f18ad98b
 

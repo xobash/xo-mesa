@@ -176,8 +176,8 @@ slowed by its own output. Bytes and their order are preserved exactly, and any
 output read before a terminal resize is recorded ahead of that resize, which is
 what keeps a detached window's replay wrapping lines the way Pi wrote them.
 
-Mesa caches the resolved Pi executable after the first successful launch and
-starts the PTY at the terminal's current columns/rows to avoid a visible resize
+Mesa checks the cached Pi executable before each launch, resolves it again
+when it is no longer executable, and starts the PTY at the terminal's current columns/rows to avoid a visible resize
 round trip during startup.
 
 On Windows, Mesa prefers a real `PATHEXT` launcher (`.exe`, `.com`, `.cmd`,

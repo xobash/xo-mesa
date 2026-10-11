@@ -252,3 +252,8 @@ describe("saved webpage HTML rewriting", () => {
     expect(html).not.toContain("</style><script>bad()");
   });
 });
+
+it("preview code stripping is not a sanitizer or network policy", () => {
+  const html = '<form action="https://example.com"><input></form><img src="https://example.com/image.png">';
+  expect(stripSavedHtmlPreviewCode(html)).toBe(html);
+});

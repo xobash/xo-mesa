@@ -67,6 +67,9 @@ export function BrowserHarness({ externalNav, onClose }: {
     setHistory(previous => [...previous.slice(0, position + 1), target]);
     setPosition(position + 1); setInput(""); void load(target);
   }
+  const latestNavigate = useRef(navigate);
+  latestNavigate.current = navigate;
+
   function move(next: number) {
     if (next < 0 || next >= history.length) return;
     setPosition(next); void load(history[next]);
@@ -83,11 +86,11 @@ export function BrowserHarness({ externalNav, onClose }: {
     const receive = (event: MessageEvent) => {
       if (event.source !== iframe.current?.contentWindow) return;
       const target = (event.data as { __mesaBrowse?: { url?: unknown } } | null)?.__mesaBrowse?.url;
-      if (typeof target === "string" && /^https?:\/\//i.test(target)) navigate(target);
+      if (typeof target === "string" && /^https?:\/\//i.test(target)) latestNavigate.current(target);
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
-  });
+  }, []);
 
   async function archive() {
     if (archiveBusy.current) return;

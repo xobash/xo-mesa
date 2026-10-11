@@ -194,13 +194,14 @@ it("separates enlarged hubs across spatial cells using their displayed radii", (
   expect(Math.abs(nodes[1].x! - nodes[0].x!)).toBeGreaterThanOrEqual(112);
 });
 
-// The app's TypeScript configuration deliberately excludes Node globals.
-declare const process: { env: Record<string, string | undefined> };
-it.skipIf(!process.env.MESA_GRAPH_FIXTURE)("replays and drags the supplied real-vault graph without non-finite physics", async () => {
-  const { readFileSync } = await vi.importActual<{
-    readFileSync(path: string, encoding: "utf8"): string;
-  }>("node:fs");
-  const fixture = JSON.parse(readFileSync(process.env.MESA_GRAPH_FIXTURE!, "utf8"));
+it("replays and drags a synthetic large graph without non-finite physics", () => {
+  const entries = Object.fromEntries(Array.from({ length: 2100 }, (_, i) =>
+    [`Node-${i}.md`, i > 0 && i < 100 ? "[[Node-0]]" : ""]));
+  const files: VaultFile[] = Object.keys(entries).map((relPath, i) => ({
+    path: `/demo/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md",
+    isMarkdown: true, createdAt: i,
+  }));
+  const fixture = { files, notes: buildNotes(files, new Map(Object.entries(entries))) };
   act(() => {
     useAppStore.setState({ files: fixture.files, notes: fixture.notes,
       settings: { ...initial.settings, graphShowTags: false, graphShowAttachments: true, graphShowOrphans: true, graphExistingFilesOnly: true, animations: false },
@@ -259,4 +260,4 @@ it.skipIf(!process.env.MESA_GRAPH_FIXTURE)("replays and drags the supplied real-
   }
   expect(sim.nodes()).toHaveLength(fullCount);
   expect(simulation()).toBe(sim);
-}, 20000);
+}, 60000);

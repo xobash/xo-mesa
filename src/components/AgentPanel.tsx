@@ -471,7 +471,6 @@ async function ensureSharedPiSession(
     const id = await invoke<string>("terminal_start", {
       cwd: vaultPath,
       program: "pi",
-      args: [],
       envs,
       rows: terminal.rows,
       cols: terminal.cols,

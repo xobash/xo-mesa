@@ -228,6 +228,7 @@ src/lib/activity.test.ts
 src/lib/activity.ts
 src/lib/agent.test.ts
 src/lib/agent.ts
+src/lib/auditGuards.test.ts
 src/lib/backgroundWorkGovernor.test.ts
 src/lib/backgroundWorkGovernor.ts
 src/lib/boundedLru.test.ts

@@ -82,7 +82,7 @@ export function savedFromUrl(html: string): string | null {
   }
 }
 
-/** Remove code a fully sandboxed markup-only preview can never execute. */
+/** Preview optimization, not a sanitizer. Render only in sandbox="" iframes with the saved-HTML frame policy. */
 export function stripSavedHtmlPreviewCode(html: string): string {
   return html
     .replace(ALL_SCRIPT_TAG_RE, "")

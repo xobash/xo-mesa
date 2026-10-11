@@ -425,7 +425,7 @@ pub struct TerminalReplayEvent {
     cols: Option<u16>,
 }
 
-static PI_BINARY: OnceLock<PathBuf> = OnceLock::new();
+static PI_BINARY: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 fn session_id() -> Result<String, String> {
     let mut bytes = [0u8; 16];
@@ -616,12 +616,22 @@ fn common_bin_dirs() -> Vec<PathBuf> {
 }
 
 fn resolve_pi_binary() -> Result<PathBuf, String> {
-    if let Some(cached) = PI_BINARY.get() {
-        return Ok(cached.clone());
-    }
+    resolve_cached_pi_binary(&PI_BINARY, find_pi_binary)
+}
 
-    let resolved = find_pi_binary()?;
-    let _ = PI_BINARY.set(resolved.clone());
+fn resolve_cached_pi_binary(
+    cache: &Mutex<Option<PathBuf>>,
+    find: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    let mut cached = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(path) = cached.as_ref().filter(|path| is_executable(path)) {
+        return Ok(path.clone());
+    }
+    *cached = None;
+    let resolved = find()?;
+    *cached = Some(resolved.clone());
     Ok(resolved)
 }
 
@@ -980,6 +990,27 @@ fn spawn_flusher(stream: Arc<TerminalStream>, app: AppHandle, id: String, name: 
         });
 }
 
+fn apply_frontend_env(cmd: &mut CommandBuilder, envs: &HashMap<String, String>) {
+    for (key, value) in envs {
+        if matches!(
+            key.as_str(),
+            "MESA_VAULT_NAME"
+                | "MESA_VAULT_PATH"
+                | "MESA_ACTIVE_PATH"
+                | "MESA_ACTIVE_FILE_PATH"
+                | "MESA_OPEN_PATHS"
+                | "MESA_OPEN_FILE_PATHS"
+                | "MESA_CENTER_VIEW"
+                | "MESA_RIGHT_VIEWS"
+                | "MESA_CONTEXT"
+                | "MESA_DEEP_RESEARCH"
+                | "MESA_DEEP_RESEARCH_RUN_ID"
+        ) {
+            cmd.env(key, value);
+        }
+    }
+}
+
 // The parameter list is the IPC contract with the frontend's `terminal_start`
 // invoke — every argument arrives as a named field, so a params struct would
 // only obscure the wire shape.
@@ -991,7 +1022,6 @@ pub async fn terminal_start(
     state: State<'_, TerminalState>,
     cwd: Option<String>,
     program: Option<String>,
-    args: Option<Vec<String>>,
     envs: Option<HashMap<String, String>>,
     rows: Option<u16>,
     cols: Option<u16>,
@@ -1018,11 +1048,6 @@ pub async fn terminal_start(
     }).await.map_err(|_| "Pi permission dialog failed")??;
     let id = session_id()?;
     cmd.cwd(root);
-    if let Some(args) = args {
-        for arg in args {
-            cmd.arg(arg);
-        }
-    }
     cmd.env("MESA_TERMINAL", "1");
     cmd.env("TERM", "xterm-256color");
     cmd.env("TERM_PROGRAM", "Mesa");
@@ -1034,13 +1059,7 @@ pub async fn terminal_start(
     let research = envs
         .get("MESA_DEEP_RESEARCH_RUN_ID")
         .filter(|id| !id.trim().is_empty());
-    for (key, value) in &envs {
-        if key.starts_with("MESA_")
-            && !matches!(key.as_str(), "MESA_ACTIVITY_TOKEN" | "MESA_ACTIVITY_PORT")
-        {
-            cmd.env(key, value);
-        }
-    }
+    apply_frontend_env(&mut cmd, &envs);
     // Bridge secrets travel directly to the approved process, never to a renderer.
     if let Ok(activity) = crate::activity::start_native(app.clone()) {
         for path in [
@@ -1432,6 +1451,71 @@ pub fn stop_all_sessions(state: &TerminalState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_cached_pi_is_resolved_again_and_failed_lookup_clears_cache() {
+        let dir = std::env::temp_dir().join(format!("mesa-pi-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = dir.join("pi.exe");
+        std::fs::write(&binary, b"fixture").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let cache = Mutex::new(Some(binary.clone()));
+        assert_eq!(
+            resolve_cached_pi_binary(&cache, || panic!("valid cache searched")),
+            Ok(binary.clone())
+        );
+        std::fs::remove_file(&binary).unwrap();
+        let replacement = dir.join("replacement.exe");
+        std::fs::write(&replacement, b"replacement").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&replacement, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert_eq!(
+            resolve_cached_pi_binary(&cache, || Ok(replacement.clone())),
+            Ok(replacement.clone())
+        );
+        assert_eq!(*cache.lock().unwrap(), Some(replacement.clone()));
+        assert_eq!(
+            resolve_cached_pi_binary(&cache, || panic!("replacement cache searched")),
+            Ok(replacement.clone())
+        );
+        std::fs::remove_file(&replacement).unwrap();
+        assert!(resolve_cached_pi_binary(&cache, || Err("not found".into())).is_err());
+        assert!(cache.lock().unwrap().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn frontend_environment_cannot_supply_args_or_native_overrides() {
+        let mut cmd = CommandBuilder::new("pi");
+        let before = cmd.get_argv().to_vec();
+        let envs = HashMap::from([
+            ("MESA_CONTEXT".into(), "--extension malicious.js".into()),
+            ("MESA_DEEP_RESEARCH_RUN_ID".into(), "run-1".into()),
+            ("MESA_UNLISTED".into(), "injected".into()),
+            ("MESA_ACTIVITY_TOKEN".into(), "injected".into()),
+            ("PATH".into(), "injected".into()),
+        ]);
+        apply_frontend_env(&mut cmd, &envs);
+        assert_eq!(cmd.get_argv(), &before);
+        assert_eq!(
+            cmd.get_env("MESA_CONTEXT"),
+            Some(std::ffi::OsStr::new("--extension malicious.js"))
+        );
+        assert_eq!(
+            cmd.get_env("MESA_DEEP_RESEARCH_RUN_ID"),
+            Some(std::ffi::OsStr::new("run-1"))
+        );
+        for key in ["MESA_UNLISTED", "MESA_ACTIVITY_TOKEN", "PATH"] {
+            assert_ne!(cmd.get_env(key), Some(std::ffi::OsStr::new("injected")));
+        }
+    }
 
     #[test]
     fn terminal_ids_are_random_128_bit_identifiers() {

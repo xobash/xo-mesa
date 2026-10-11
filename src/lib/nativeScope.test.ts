@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import defaultCapability from "../../src-tauri/capabilities/default.json";
 import tauriConfig from "../../src-tauri/tauri.conf.json";
+import manifest from "../../src-tauri/build.rs?raw";
+import registered from "../../src-tauri/src/lib.rs?raw";
 
 const capabilities = Object.values(import.meta.glob<{ windows?: string[]; permissions?: Array<string | { identifier: string }> }>(
   "../../src-tauri/capabilities/*.json", { eager: true, import: "default" },
@@ -66,4 +68,18 @@ it("does not let secondary windows mint privileged window labels or bridge autho
   }
   for (const label of ["doc-one", "panel-one"]) expect(grants(label)).not.toContain("allow-browse-fetch");
   expect(grants("agent-one")).toContain("allow-browse-fetch");
+});
+
+it("resolves every capability command and confines destructive lifecycle grants to main", () => {
+  const build = manifest;
+  const handlers = registered.split("generate_handler![")[1].split("]")[0];
+  const mainOnly = /^(vault_(?:move_to_recovery|restore_recovery|purge_recovery|recover_artifact|apply_research|revoke|recents|recent_resolve)|sync_|activity_|deep_research_respond|quit_|terminal_prepare_handoff)/;
+  for (const capability of capabilities) for (const permission of capability.permissions ?? []) {
+    const identifier = typeof permission === "string" ? permission : permission.identifier;
+    if (!identifier.startsWith("allow-")) continue;
+    const command = identifier.slice(6).replaceAll("-", "_");
+    expect(build, command).toContain(`"${command}"`);
+    expect(handlers, command).toMatch(new RegExp(`\\b${command}\\b`));
+    if (mainOnly.test(command)) expect(capability.windows, command).toEqual(["main"]);
+  }
 });

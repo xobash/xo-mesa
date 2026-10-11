@@ -54,3 +54,24 @@ it('retains back and forward navigation through the broker', async () => {
   await act(async () => host.querySelector<HTMLButtonElement>('[aria-label=Forward]')!.click());
   expect(mock.invoke.mock.lastCall?.[1].url).toBe('https://example.com/two');
 });
+
+it('registers one message listener and uses current history after rerenders', async () => {
+  const add = vi.spyOn(window, 'addEventListener');
+  const remove = vi.spyOn(window, 'removeEventListener');
+  await mount();
+  mock.invoke.mockImplementation((_command, args) => Promise.resolve(page(args.url, '<p>Page</p>')));
+  await navigate('https://example.com/one');
+  await navigate('https://example.com/two');
+  const frame = host.querySelector('iframe')!;
+  await act(async () => window.dispatchEvent(new MessageEvent('message', {
+    source: frame.contentWindow, data: { __mesaBrowse: { url: 'https://example.com/three' } },
+  })));
+  expect(mock.invoke.mock.lastCall?.[1].url).toBe('https://example.com/three');
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label=Back]')!.click());
+  expect(mock.invoke.mock.lastCall?.[1].url).toBe('https://example.com/two');
+  const listeners = add.mock.calls.filter(([type]) => type === 'message');
+  expect(listeners).toHaveLength(1);
+  await act(async () => root.unmount());
+  expect(remove.mock.calls.filter(([type]) => type === 'message')).toEqual([['message', listeners[0][1]]]);
+  add.mockRestore(); remove.mockRestore();
+});

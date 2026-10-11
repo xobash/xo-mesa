@@ -53,12 +53,12 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "**/dist/**", "**/.backups/**", "**/tmp/**", "**/output/**"],
     coverage: {
       provider: "v8",
-      include: ["src/lib/**/*.ts", "src/controllers/**/*.ts"],
-      exclude: ["**/*.test.ts", "**/*.d.ts"],
+      include: ["src/lib/**/*.ts", "src/controllers/**/*.ts", "src/components/**/*.tsx"],
+      exclude: ["**/*.test.ts", "**/*.test.tsx", "**/*.d.ts"],
       reporter: ["text-summary"],
-      // Floors sit just below the measured 76.7% / 69.6% / 76.3% / 80.9% so a
-      // large untested addition fails CI; raise them as coverage grows.
-      thresholds: { statements: 74, branches: 67, functions: 74, lines: 78 },
+      // Floors are two points below the measured statement/branch/function/line
+      // coverage: 73.64 / 62.88 / 70.71 / 77.02, including UI components.
+      thresholds: { statements: 71.64, branches: 60.88, functions: 68.71, lines: 75.02 },
     },
   },
 });

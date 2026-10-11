@@ -32,7 +32,11 @@ writes a source-link record when fetching fails. The offline renderer removes
 that base and disables navigation links in both modes. Capture
 metadata does not grant networking permission on reopen.
 
-The shared rendering boundary is `src/lib/html.ts`. Preview cards decline
+The shared rendering boundary is `src/lib/html.ts`.
+`stripSavedHtmlPreviewCode` is a preview optimization, not a sanitizer. Its
+output must use the shared frame policy and an iframe with `sandbox=""`;
+code stripping alone does not remove forms or block remote resources.
+Preview cards decline
 files larger than four million characters and never use truncated text as a
 complete HTML document. Tests cover hydration, hostile metadata and links,
 offline policy, confirmation, consent revocation, detached files, archive

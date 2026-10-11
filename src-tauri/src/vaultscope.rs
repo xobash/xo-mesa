@@ -6,9 +6,11 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_fs::FsExt;
 
+static APPROVED_ROOTS: Mutex<Option<(PathBuf, ApprovedRoots)>> = Mutex::new(None);
+
 const APPROVED_ROOTS_FILE: &str = "approved-vault-roots.json";
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct ApprovedRoots {
     roots: BTreeSet<String>,
 }
@@ -54,6 +56,33 @@ fn approved_roots_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn load_approved_roots(path: &Path) -> Result<ApprovedRoots, String> {
+    cached_approved_roots(path, &APPROVED_ROOTS)
+}
+
+fn cached_approved_roots(
+    path: &Path,
+    cache: &Mutex<Option<(PathBuf, ApprovedRoots)>>,
+) -> Result<ApprovedRoots, String> {
+    let mut cached = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_path, roots)) = cached.as_ref() {
+        if cached_path == path {
+            return Ok(roots.clone());
+        }
+    }
+    let roots = read_approved_roots(path)?;
+    *cached = Some((path.to_path_buf(), roots.clone()));
+    Ok(roots)
+}
+
+fn invalidate_approved_roots() {
+    *APPROVED_ROOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+fn read_approved_roots(path: &Path) -> Result<ApprovedRoots, String> {
     match super::sync_core::open_file_no_follow(path).and_then(|mut file| {
         use std::io::Read;
         let mut bytes = Vec::new();
@@ -95,6 +124,13 @@ pub fn require_approved(app: &AppHandle, root: &str) -> Result<PathBuf, String> 
     require_approved_from(&approved_roots_path(app)?, root)
 }
 
+fn visible_vault_path(path: &Path) -> bool {
+    path.components().all(|part| {
+        matches!(part, Component::Normal(name)
+        if name.to_str().is_some_and(|name| !name.starts_with('.') && name != "node_modules"))
+    })
+}
+
 fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Result<PathBuf, String> {
     normalized_root(path)?;
     let input = Path::new(path);
@@ -102,7 +138,7 @@ fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Resul
     let name = input.file_name().ok_or("vault file has no name")?;
     if name
         .to_str()
-        .is_none_or(|name| name.is_empty() || name.starts_with('.'))
+        .is_none_or(|name| name.is_empty() || !visible_vault_path(Path::new(name)))
     {
         return Err("invalid vault file name".into());
     }
@@ -110,13 +146,12 @@ fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Resul
         .map_err(|error| format!("vault folder is unavailable: {error}"))?;
     let approved = load_approved_roots(approval_path)?;
     if !approved.roots.iter().any(|root| {
-        fs::canonicalize(root)
-            .ok()
-            .is_some_and(|approved_root| {
-                canonical_parent.strip_prefix(approved_root).ok().is_some_and(|relative| {
-                    relative.components().all(|part| matches!(part, Component::Normal(name) if name.to_str().is_some_and(|name| !name.starts_with('.') && name != "node_modules")))
-                })
-            })
+        fs::canonicalize(root).ok().is_some_and(|approved_root| {
+            canonical_parent
+                .strip_prefix(approved_root)
+                .ok()
+                .is_some_and(visible_vault_path)
+        })
     }) {
         return Err("vault file is outside the approved folders".into());
     }
@@ -146,9 +181,12 @@ fn require_approved_file_from(approval_path: &Path, path: &str) -> Result<PathBu
         fs::canonicalize(input).map_err(|error| format!("vault file is unavailable: {error}"))?;
     let approved = load_approved_roots(approval_path)?;
     let inside = approved.roots.iter().any(|root| {
-        fs::canonicalize(root)
-            .ok()
-            .is_some_and(|approved_root| canonical.starts_with(&approved_root))
+        fs::canonicalize(root).ok().is_some_and(|approved_root| {
+            canonical
+                .strip_prefix(&approved_root)
+                .ok()
+                .is_some_and(visible_vault_path)
+        })
     });
     if !inside {
         return Err("vault file is outside the approved folders".into());
@@ -201,6 +239,11 @@ fn load_for_authorization(path: &Path, granted_by_dialog: bool) -> Result<Approv
 }
 
 fn save_approved_roots(path: &Path, roots: &ApprovedRoots) -> Result<(), String> {
+    // Hold the cache lock through publication so a read cannot restore stale approvals.
+    let mut cached = APPROVED_ROOTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *cached = None;
     let parent = path
         .parent()
         .ok_or_else(|| "approved vault roots path has no parent".to_string())?;
@@ -283,6 +326,7 @@ pub fn vault_authorize(
     let fs_scope = app.fs_scope();
     let granted_by_dialog = fs_scope.is_allowed(&path);
     let approval_path = approved_roots_path(&app)?;
+    invalidate_approved_roots();
     let mut approved = load_for_authorization(&approval_path, granted_by_dialog)?;
 
     if !granted_by_dialog && !approved.roots.contains(&normalized) {
@@ -315,6 +359,7 @@ pub fn vault_authorize(
 /// Remove one folder from the approval record. Matches the spelling the user
 /// saw or its resolved form, and works when the folder no longer exists.
 fn revoke_from(approval_path: &Path, root: &str) -> Result<bool, String> {
+    invalidate_approved_roots();
     let mut spellings = BTreeSet::from([normalized_root(root)?]);
     // Resolve through the nearest existing ancestor so an OS alias such as
     // /var still matches after the folder itself was deleted.
@@ -520,6 +565,71 @@ pub(crate) fn approved_path(app: &AppHandle, raw: &str) -> Result<(PathBuf, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approvals_load_from_disk_once_and_reload_after_invalidation() {
+        let dir = std::env::temp_dir().join(format!("mesa-scope-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("approved.json");
+        fs::write(&path, br#"{"roots":["/vault"]}"#).unwrap();
+        let cache = Mutex::new(None);
+        assert!(cached_approved_roots(&path, &cache)
+            .unwrap()
+            .roots
+            .contains("/vault"));
+        fs::write(&path, br#"{"roots":[]}"#).unwrap();
+        assert!(cached_approved_roots(&path, &cache)
+            .unwrap()
+            .roots
+            .contains("/vault"));
+        *cache.lock().unwrap() = None;
+        assert!(cached_approved_roots(&path, &cache)
+            .unwrap()
+            .roots
+            .is_empty());
+        fs::write(&path, b"corrupt").unwrap();
+        *cache.lock().unwrap() = None;
+        assert!(cached_approved_roots(&path, &cache).is_err());
+        assert!(cache.lock().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn file_and_write_checks_share_visible_segment_policy() {
+        let dir = std::env::temp_dir().join(format!("mesa-visible-policy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let vault = dir.join("vault");
+        fs::create_dir_all(&vault).unwrap();
+        let root = fs::canonicalize(&vault).unwrap();
+        let approval = dir.join("approved.json");
+        let roots = ApprovedRoots {
+            roots: BTreeSet::from([normalized_root(root.to_str().unwrap()).unwrap()]),
+        };
+        save_approved_roots(&approval, &roots).unwrap();
+        for (rel, allowed) in [
+            ("notes/ok.md", true),
+            (".hidden/note.md", false),
+            ("notes/.hidden.md", false),
+            ("node_modules/note.md", false),
+            ("notes/node_modules", false),
+        ] {
+            let file = root.join(rel);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(&file, b"content").unwrap();
+            assert_eq!(
+                require_approved_file_from(&approval, file.to_str().unwrap()).is_ok(),
+                allowed,
+                "read {rel}"
+            );
+            assert_eq!(
+                require_approved_write_target_from(&approval, file.to_str().unwrap()).is_ok(),
+                allowed,
+                "write {rel}"
+            );
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn revoked_roots_are_refused_and_other_roots_survive() {
