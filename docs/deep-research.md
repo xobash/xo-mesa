@@ -346,7 +346,10 @@ inactivity clock. The kit contains the Mesa and webview environment,
 run phase, launch boundary, prompt size/submission time, whether the first
 model/browser signal arrived, context summary, source counts, and the
 observed-versus-self-reported activity timeline. It withholds the vault's
-absolute path and provider/API keys. If the desktop clipboard rejects the
+absolute path and provider/API keys. Clipboard authorization starts in the click,
+while the native terminal snapshot resolves through a deferred text item. This
+preserves WebKit user-gesture requirements without granting native clipboard or
+filesystem authority. If the desktop clipboard rejects the
 copy, Mesa opens a native save dialog and writes the same kit to the path the
 user selects. The fallback does not choose a vault path. Detached read-only
 Research windows expose the same diagnostic export and snapshot the run's

@@ -179,6 +179,42 @@ describe("Deep Research validation and visible recovery", () => {
     expect(boundary.writeText).toHaveBeenCalledTimes(1);
   });
 
+  it("starts clipboard authorization in the click before the native snapshot resolves", async () => {
+    await start();
+    await emit({ kind: "agent-end", reason: "No accepted finish" });
+    let resolveSnapshot!: (snapshot: { data: string }) => void;
+    const pending = new Promise<{ data: string }>(resolve => { resolveSnapshot = resolve; });
+    boundary.invoke.mockImplementationOnce(() => pending);
+    let payload!: Promise<Blob>;
+    vi.stubGlobal("ClipboardItem", class {
+      constructor(items: Record<string, Promise<Blob>>) { payload = items["text/plain"]; }
+    });
+    let inClick = false;
+    const write = vi.fn(async () => {
+      expect(inClick).toBe(true);
+      await payload;
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write } });
+    await act(async () => {
+      inClick = true;
+      button("Copy troubleshooting kit")!.click();
+      inClick = false;
+      expect(write).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(boundary.invoke).toHaveBeenCalledWith("terminal_snapshot", { sessionId: "pi-test" }));
+      expect(host.textContent).not.toContain("Copied");
+      resolveSnapshot({ data: "deferred retained transcript" });
+      await payload;
+    });
+    expect(host.textContent).toContain("Copied");
+    const blob = await payload;
+    vi.useRealTimers();
+    const reader = new FileReader();
+    const text = new Promise<string>(resolve => { reader.onload = () => resolve(String(reader.result)); });
+    reader.readAsText(blob);
+    expect(await text).toContain("deferred retained transcript");
+    expect(boundary.save).not.toHaveBeenCalled();
+  });
+
   it("stops after three rejected submissions and retains the rejected report and exact issues", async () => {
     await start();
     const bad = result(); bad.report.markdown = "# Incomplete draft";

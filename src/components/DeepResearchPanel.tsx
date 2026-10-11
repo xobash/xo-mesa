@@ -61,17 +61,29 @@ function num(lo: number, hi: number, set: (n: number) => void) {
   };
 }
 
-async function copyText(text: string): Promise<boolean> {
+async function copyText(text: string | Promise<string>): Promise<boolean> {
+  if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+    try {
+      // Begin within the click; WebKit can resolve the native snapshot afterward.
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/plain": Promise.resolve(text).then(value => new Blob([value], { type: "text/plain" })),
+      })]);
+      return true;
+    } catch {
+      /* Keep the existing text and disk fallbacks. */
+    }
+  }
+  const resolved = typeof text === "string" ? text : await text;
   try {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(resolved);
       return true;
     }
   } catch {
     /* Fall through to the legacy WebKit/Tauri clipboard path. */
   }
   const area = document.createElement("textarea");
-  area.value = text;
+  area.value = resolved;
   area.setAttribute("readonly", "true");
   area.style.position = "fixed";
   area.style.opacity = "0";
@@ -499,40 +511,43 @@ export function DeepResearchPanel({
   const copyKit = async (completed = false) => {
     const cur = runOverride ?? getStore().deepResearch;
     if (!cur) return;
-    let appVersion = "dev";
-    if (IN_TAURI) {
-      try {
-        const { getVersion } = await import("@tauri-apps/api/app");
-        appVersion = await getVersion();
-      } catch {
-        /* keep "dev" */
-      }
-    }
-    const sessionId = cur.piSessionId ?? currentPiSessionId();
-    const input = {
-      appVersion,
-      userAgent: navigator.userAgent,
-      vaultFileCount: fileCount,
-      vaultNoteCount: noteCount,
-      piSessionLive: Boolean(sessionId),
-      piSessionTranscript: null as string | null,
-      run: cur,
-    };
-    if (IN_TAURI) {
-      if (sessionId) {
+    const kitPromise = (async () => {
+      let appVersion = "dev";
+      if (IN_TAURI) {
         try {
-          const snapshot = await invoke<{ data: string }>("terminal_snapshot", { sessionId });
-          input.piSessionTranscript = snapshot.data;
+          const { getVersion } = await import("@tauri-apps/api/app");
+          appVersion = await getVersion();
         } catch {
-          input.piSessionLive = false;
-          // The PTY can close as a run finishes; keep the structured export.
+          /* keep "dev" */
         }
       }
-    }
-    const kit = completed
-      ? buildResearchCompletionExport(input)
-      : buildResearchTroubleshootingKit(input);
-    const copied = await copyText(kit);
+      const sessionId = cur.piSessionId ?? currentPiSessionId();
+      const input = {
+        appVersion,
+        userAgent: navigator.userAgent,
+        vaultFileCount: fileCount,
+        vaultNoteCount: noteCount,
+        piSessionLive: Boolean(sessionId),
+        piSessionTranscript: null as string | null,
+        run: cur,
+      };
+      if (IN_TAURI) {
+        if (sessionId) {
+          try {
+            const snapshot = await invoke<{ data: string }>("terminal_snapshot", { sessionId });
+            input.piSessionTranscript = snapshot.data;
+          } catch {
+            input.piSessionLive = false;
+            // The PTY can close as a run finishes; keep the structured export.
+          }
+        }
+      }
+      return completed
+        ? buildResearchCompletionExport(input)
+        : buildResearchTroubleshootingKit(input);
+    })();
+    const copied = await copyText(kitPromise);
+    const kit = await kitPromise;
     const saved = !copied && (await saveKitToDisk(kit, cur.runId, completed));
     setCopiedKit(copied ? "copied" : saved ? "saved" : "failed");
     setTimeout(() => setCopiedKit("idle"), 1800);
