@@ -73,6 +73,12 @@ export function mergeWatchEvents(events: VaultWatchEvent[]): VaultWatchEvent[] {
   for (const event of events) for (const path of event.paths) { last.delete(path); last.set(path, event.kind); }
   return [...last].map(([path, kind]) => ({ kind, paths: [path] }));
 }
+const fileOrder = new Intl.Collator(undefined).compare;
+function vaultFileFor(root: string, rel: string): VaultFile {
+  const base = rel.replace(/.*\//, "");
+  const ext = extOf(base);
+  return { path: `${root.replace(/\/+$/, "")}/${rel}`, relPath: rel, name: stripExt(base), ext, isMarkdown: /^(md|markdown)$/i.test(ext) };
+}
 export function createVaultController({ get, set, textSaves, resetDocuments, stopResearch, setupActivityBridge, ensureSyncEventBridge, stopListening, startListening }: Dependencies) {
   // A path is not a lifecycle identity: reopening the same vault must cancel
   // the previous open's scan and background metadata/search work too.
@@ -89,12 +95,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     if (!root || get().fileFor(rel) || !isCurrent()) return;
     // One definition of what belongs in a vault, shared with scanVault's walk.
     if (!isIndexableVaultRelPath(rel)) return;
-    const base = rel.replace(/.*\//, "");
-    const ext = extOf(base);
-    const isMarkdown = /^(md|markdown)$/i.test(ext);
-    const path = `${root.replace(/\/+$/, "")}/${rel}`;
-    const name = stripExt(base);
-    const file: VaultFile = { path, relPath: rel, name, ext, isMarkdown };
+    const file = vaultFileFor(root, rel);
+    const { path, name } = file;
     if (isTextualVaultFile(file)) {
       let content = "";
       try {
@@ -105,7 +107,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       if (get().fileFor(rel) || !isCurrent()) return; // lost a race — already added
       set({
         files: [...get().files, file].sort((a, b) =>
-          a.relPath.localeCompare(b.relPath)
+          fileOrder(a.relPath, b.relPath)
         ),
         notes: {
           ...get().notes,
@@ -134,7 +136,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       if (get().fileFor(rel) || !isCurrent()) return; // lost a race
       set({
         files: [...get().files, file].sort((a, b) =>
-          a.relPath.localeCompare(b.relPath)
+          fileOrder(a.relPath, b.relPath)
         ),
       });
     }
@@ -189,7 +191,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       if (!(file.relPath in notes) && file.relPath in nextNotes) notes[file.relPath] = nextNotes[file.relPath];
     }
     set({
-      files: [...current.files, ...remaining].sort((a, b) => a.relPath.localeCompare(b.relPath)),
+      files: [...current.files, ...remaining].sort((a, b) => fileOrder(a.relPath, b.relPath)),
       notes,
       contentCache: cache,
     });
@@ -254,6 +256,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     const seen = new Set<string>();
     // Deduplicate changed paths and publish accumulated results once per batch.
     const pendingContent = new Map<string, string>();
+    const created = new Map<string, VaultFile>();
     const pendingNotes = new Map<string, NoteMeta>();
     let filesDirty = false;
     // Build alias-path lookup lists only when needed; cache by files-array identity.
@@ -363,36 +366,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           }
 
           // --- Create or Modify ---
-          let file = get().fileFor(rel);
+          const file = get().fileFor(rel);
           if (!file) {
-            // a brand-new file appeared on disk — register it
-            await registerExternalFile(rel, isCurrent);
-            if (!isCurrent()) return;
-            file = get().fileFor(rel);
-            if (!file) {
-              await rescanOnce();
-              if (!isCurrent()) return;
-              file = get().fileFor(rel);
-            }
-            scheduleExternalRefresh(rootRaw, isCurrent);
-            if (file) {
-              let detail = "";
-              let added = 0;
-              if (isTextualVaultFile(file)) {
-                watcherReads++;
-                const startedAt = performance.now();
-                const text = await readNote(file).finally(() => {
-                  watcherReadMs += performance.now() - startedAt;
-                });
-                if (!isCurrent()) return;
-                detail = text.slice(0, 160);
-                added = changedLineStats("", text).added;
-              }
-              bumpActivityAmount(rel, 1.3, "create", undefined, detail, {
-                added,
-                removed: 0,
-              });
-            }
+            created.set(rel, vaultFileFor(rootRaw, rel));
             continue;
           }
 
@@ -488,6 +464,46 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             } catch {
               /* stat failed — leave as-is */
             }
+          }
+        }
+      }
+      if (created.size) {
+        const additions = [...created.values()];
+        const texts = new Map<string, string>();
+        await forEachConcurrent(additions, STARTUP_TEXT_READ_CONCURRENCY, async file => {
+          if (isTextualVaultFile(file)) {
+            watcherReads++;
+            const startedAt = performance.now();
+            try {
+              const result = await readNoteResult(file);
+              if (result.ok) texts.set(file.relPath, result.text);
+              else if (isCurrent()) set({ status: `External create could not be read: ${file.relPath}.` });
+            } catch {
+              if (isCurrent()) set({ status: `External create could not be read: ${file.relPath}.` });
+            } finally { watcherReadMs += performance.now() - startedAt; }
+          } else {
+            try {
+              const info = await stat(file.path);
+              file.size = info.size; file.mtime = info.mtime ? new Date(info.mtime).getTime() : undefined;
+            } catch { /* Names remain available when metadata cannot be read. */ }
+          }
+        }, () => !isCurrent());
+        if (!isCurrent()) return;
+        const present = new Set(get().files.map(file => file.relPath));
+        const fresh = additions.filter(file => !present.has(file.relPath));
+        if (fresh.length) {
+          const notes = { ...get().notes };
+          const cache = forkContentCache(get().contentCache);
+          for (const file of fresh) {
+            const text = texts.get(file.relPath);
+            if (text === undefined) continue;
+            cache[file.relPath] = text;
+            notes[file.relPath] = { relPath: file.relPath, title: file.name, rawLinks: extractLinks(text), tags: extractTags(text), aliases: extractAliases(text), firstImagePath: undefined };
+          }
+          set({ files: [...get().files, ...fresh].sort((a,b) => fileOrder(a.relPath,b.relPath)), notes, contentCache: cache });
+          for (const file of fresh) {
+            const text = texts.get(file.relPath) ?? "";
+            bumpActivityAmount(file.relPath, 1.3, "create", undefined, text.slice(0,160), { added: changedLineStats("",text).added, removed: 0 });
           }
         }
       }

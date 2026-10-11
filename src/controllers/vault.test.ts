@@ -83,3 +83,19 @@ it('coalesces paths with their latest kind in last occurrence order', () => {
   expect(mergeWatchEvents([{kind:'remove',paths:['/v/a.md']},{kind:'modify',paths:['/v/b.md']},{kind:'create',paths:['/v/a.md']}]))
     .toEqual([{kind:'modify',paths:['/v/b.md']},{kind:'create',paths:['/v/a.md']}]);
 });
+
+it('ingests 200 external creates with one read each and one sorted catalogue commit', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const existing = Array.from({length:2000}, (_, i) => file(`Old-${i}.md`));
+  f.state.setState({files: existing, fileFor: rel => f.state.getState().files.find(file => file.relPath === rel)});
+  io.read.mockReset().mockResolvedValue({ok:true, text:'new text'}); io.scan.mockClear();
+  let commits = 0;
+  const stop = f.state.subscribe((state, previous) => { if (state.files !== previous.files) commits++; });
+  const additions = Array.from({length:200}, (_, i) => `New-${i}.md`);
+  f.change([{kind:'create',paths:additions.map(rel => `/v/${rel}`)}]);
+  await vi.waitFor(() => expect(f.state.getState().files).toHaveLength(2200));
+  expect(io.read).toHaveBeenCalledTimes(200); expect(commits).toBeLessThanOrEqual(2);
+  expect(f.state.getState().files.map(file => file.relPath)).toEqual([...existing.map(file => file.relPath), ...additions].sort((a,b) => a.localeCompare(b)));
+  await new Promise(resolve => setTimeout(resolve, 220)); expect(io.scan).not.toHaveBeenCalled();
+  stop(); f.controller.dispose();
+});
