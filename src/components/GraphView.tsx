@@ -1,3 +1,4 @@
+import { prefersReducedMotion, onReducedMotionChange } from "../lib/motion";
 import { useEffect, useRef, useState } from "react";
 import {
   forceSimulation,
@@ -367,6 +368,8 @@ export function GraphView() {
   }>({ sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] });
   // Dirty flag: when false and sim is settled, we skip the expensive redraw.
   const needsRedrawRef = useRef(true);
+  const reducedMotionRef = useRef(prefersReducedMotion());
+  const canvasVisibleRef = useRef(true);
   // Skip idle overlap checks once settled; simulation ticks re-arm them.
   // Ambient motion changes render coordinates only, not layout x/y.
   const layoutSettledRef = useRef(false);
@@ -1168,7 +1171,7 @@ export function GraphView() {
       const t = transformRef.current;
       const dpr = window.devicePixelRatio || 1;
       const lnow = now / 1000;
-      const animationsOn = getStore().settings.animations;
+      const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
       const fastDraw =
         now < fastDrawUntilRef.current ||
         dragRef.current.panning ||
@@ -1972,7 +1975,7 @@ export function GraphView() {
 
     const frame = () => {
       const now = performance.now();
-      const animationsOn = getStore().settings.animations;
+      const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
       const currentWindowPos = {
         x: window.screenX ?? 0,
         y: window.screenY ?? 0,
@@ -2110,7 +2113,10 @@ export function GraphView() {
     // loop alive, log (throttled) for diagnosis, and force a clean redraw.
     let lastFrameErrorAt = 0;
     let hadFrameError = false;
+    let alive = true;
     const loop = () => {
+      raf = 0;
+      if (!alive || document.hidden || !canvasVisibleRef.current) return;
       try {
         frame();
         if (hadFrameError) {
@@ -2129,8 +2135,29 @@ export function GraphView() {
       }
       raf = requestAnimationFrame(loop);
     };
-    raf = requestAnimationFrame(loop);
+    const resume = () => {
+      if (alive && !raf && !document.hidden && canvasVisibleRef.current) {
+        needsRedrawRef.current = true;
+        raf = requestAnimationFrame(loop);
+      }
+    };
+    const stopMotion = onReducedMotionChange(reduce => {
+      reducedMotionRef.current = reduce;
+      needsRedrawRef.current = true;
+      resume();
+    });
+    const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(entries => {
+      const entry = entries[entries.length - 1];
+      if (entry) canvasVisibleRef.current = entry.isIntersecting;
+      resume();
+    });
+    if (wrapRef.current) observer?.observe(wrapRef.current);
+    document.addEventListener("visibilitychange", resume);
+    resume();
     return () => {
+      alive = false;
+      stopMotion(); observer?.disconnect();
+      document.removeEventListener("visibilitychange", resume);
       cancelAnimationFrame(raf);
       if (activityClearTimerRef.current) clearTimeout(activityClearTimerRef.current);
     };

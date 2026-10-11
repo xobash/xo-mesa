@@ -322,6 +322,7 @@ src/lib/menuPosition.test.ts
 src/lib/menuPosition.ts
 src/lib/mesaPerf.test.ts
 src/lib/mesaPerf.ts
+src/lib/motion.ts
 src/lib/nativeCommandThreading.test.ts
 src/lib/nativeScope.test.ts
 src/lib/nativeWindowConfig.test.ts

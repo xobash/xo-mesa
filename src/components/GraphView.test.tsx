@@ -45,6 +45,7 @@ function pointer(type: string, x: number, y: number, button = 0) {
 }
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.spyOn(document, "hidden", "get").mockReturnValue(false);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
@@ -261,3 +262,44 @@ it("replays and drags a synthetic large graph without non-finite physics", () =>
   expect(sim.nodes()).toHaveLength(fullCount);
   expect(simulation()).toBe(sim);
 }, 60000);
+
+function frameHarness() {
+  let callback: FrameRequestCallback = () => {};
+  const clear = vi.fn();
+  const context = new Proxy({clearRect:clear,createRadialGradient:()=>({addColorStop:()=>{}}),measureText:(text:string)=>({width:text.length*7})}, {get:(target,key)=>key in target?target[key as keyof typeof target]:()=>{}});
+  vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockReturnValue({x:0,y:0,left:0,top:0,right:640,bottom:480,width:640,height:480,toJSON:()=>({})});
+  const raf = vi.fn((next:FrameRequestCallback)=>{callback=next;return 1;});vi.stubGlobal('requestAnimationFrame',raf);
+  mount();simulation().alpha(0);simulation().nodes().forEach((node,i)=>{node.x=i*100;node.y=100;});
+  const tick=()=>act(()=>callback(performance.now()));
+  return {clear,raf,tick};
+}
+it('honours reduced motion and draws no ambient frames after settling',()=>{
+  vi.stubGlobal('matchMedia',()=>({matches:true,addEventListener:vi.fn(),removeEventListener:vi.fn()}));
+  const f=frameHarness();act(()=>useAppStore.setState({settings:{...useAppStore.getState().settings,animations:true}}));
+  for(let i=0;i<20;i++)f.tick();f.clear.mockClear();
+  for(let i=0;i<60;i++)f.tick();expect(f.clear).not.toHaveBeenCalled();
+});
+it('stops hidden frames and resumes once on visibility change',()=>{
+  const f=frameHarness();f.tick();const hidden=vi.spyOn(document,'hidden','get').mockReturnValue(true);
+  f.raf.mockClear();f.tick();expect(f.raf).not.toHaveBeenCalled();
+  hidden.mockReturnValue(false);act(()=>document.dispatchEvent(new Event('visibilitychange')));expect(f.raf).toHaveBeenCalledOnce();
+});
+it('stops off-screen frames, resumes on intersection and ignores callbacks after cleanup',()=>{
+  let notify!: (entries:IntersectionObserverEntry[])=>void;const disconnect=vi.fn();
+  vi.stubGlobal('IntersectionObserver',class{constructor(cb:typeof notify){notify=cb;}observe(){}disconnect=disconnect;});
+  const f=frameHarness();act(()=>notify([{isIntersecting:false} as IntersectionObserverEntry]));f.raf.mockClear();f.tick();expect(f.raf).not.toHaveBeenCalled();
+  act(()=>notify([{isIntersecting:true} as IntersectionObserverEntry]));expect(f.raf).toHaveBeenCalledOnce();
+  act(()=>root.unmount());f.raf.mockClear();act(()=>notify([{isIntersecting:true} as IntersectionObserverEntry]));expect(f.raf).not.toHaveBeenCalled();expect(disconnect).toHaveBeenCalledOnce();
+});
+
+it('updates reduced motion while mounted and removes the subscription',()=>{
+  let notify!: (event:MediaQueryListEvent)=>void;const remove=vi.fn();
+  vi.stubGlobal('matchMedia',()=>({matches:false,addEventListener:(_name:string,listener:typeof notify)=>{notify=listener;},removeEventListener:remove}));
+  const f=frameHarness();act(()=>useAppStore.setState({settings:{...useAppStore.getState().settings,animations:true}}));
+  for(let i=0;i<20;i++){vi.advanceTimersByTime(20);f.tick();}
+  f.clear.mockClear();for(let i=0;i<3;i++){vi.advanceTimersByTime(20);f.tick();}expect(f.clear).toHaveBeenCalled();
+  act(()=>notify({matches:true} as MediaQueryListEvent));f.tick();f.clear.mockClear();
+  for(let i=0;i<60;i++){vi.advanceTimersByTime(20);f.tick();}expect(f.clear).not.toHaveBeenCalled();
+  act(()=>root.unmount());expect(remove).toHaveBeenCalledWith('change',notify);
+});

@@ -73,7 +73,9 @@ open.
 Ambient redraws are an explicit draw reason, not a side effect of the graph
 being marked dirty. When animations are enabled and nodes are visible, the
 settled canvas must continue drawing at the living cadence after pointer
-interaction ends; otherwise render-only breathing/twinkle appears to freeze even
+interaction ends. The OS reduced-motion preference suppresses ambient motion,
+and hidden windows or off-screen canvases pause the frame loop until visible.
+Visible animation retains the 60 fps budget. Otherwise render-only breathing/twinkle appears to freeze even
 though the force layout is correctly settled.
 
 ## Activity Cards
