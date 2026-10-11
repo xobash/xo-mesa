@@ -115,3 +115,19 @@ it('handles vertical Identity-V displacement without keeping removed text',async
   const text=(await extract(output)).map(i=>i.str).join(' ');
   expect(text).not.toContain('SECRET-123');expect(text).toContain('X');
 });
+
+it('keeps EI-looking operator bytes inside a raw inline image unchanged',async()=>{
+  const pixels=' EI BT /F1 12 Tf 1 0 0 1 60 200 Tm (IMAGE-DATA) Tj ET ';
+  const image=`BI /W ${pixels.length} /H 1 /CS /G /BPC 8 ID ${pixels} EI\n`;
+  const input=await fixture(image+prefix+'(SECRET-123) Tj'+suffix);
+  const output=await replaceText(input,target);
+  const doc=await PDFDocument.load(output),contents=doc.getPage(0).node.Contents() as PDFArray;
+  expect(strFromU8(unzlibSync((contents.lookup(1) as PDFRawStream).getContents()),true)).toContain(image.trimEnd());
+  expect((await extract(output)).map(i=>i.str).join(' ')).not.toContain('SECRET-123');
+});
+
+it.each(['BI /W 2 /H 1 /CS /G /BPC 8 ID x EI\n', 'BI /W 1 /H 1 /CS /G /BPC 8 /F /Fl ID x EI\n'])('refuses uncertain inline image boundaries without changing the input: %s',async image=>{
+  const input=await fixture(image+prefix+'(SECRET-123) Tj'+suffix),copy=input.slice();
+  await expect(replaceText(input,target)).rejects.toThrow(PdfEditUnsupported);
+  expect(input).toEqual(copy);
+});

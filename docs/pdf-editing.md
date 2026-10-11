@@ -24,9 +24,9 @@ paint reliably.
 
 Mesa decodes the selected page's content streams, removes glyphs inside the selected box, and draws replacement text. Removed glyphs become text-positioning adjustments, so following text retains its position. Undo/redo and verified Save use the same byte-history path as other edits. Unreachable original streams are removed from the saved document. Inline ActualText accessibility text is updated for edited spans.
 
-Supported content includes simple Type1/TrueType/MMType1 fonts, Standard-14 metrics, and Type0 Identity-H/Identity-V fonts with their declared widths. Tj, TJ, both quote operators, split page streams, text spacing, scaling and graphics transforms are interpreted. Inline images and other drawing content remain in place.
+Supported content includes simple Type1/TrueType/MMType1 fonts, Standard-14 metrics, and Type0 Identity-H/Identity-V fonts with their declared widths. Tj, TJ, both quote operators, split page streams, text spacing, scaling and graphics transforms are interpreted. Raw inline images with standard Gray/RGB/CMYK color spaces and image masks remain byte-identical; their declared pixel lengths prevent image bytes from being interpreted as text operators. Other drawing content remains in place.
 
-Unsupported font CMaps, Type3 fonts, intersecting Form XObjects, text clipping, inherited accessibility metadata, unsupported compression and malformed streams fail with a visible explanation. The input bytes and unsaved edit history remain unchanged. Mesa never substitutes a rasterized page or a visual text cover.
+Unsupported font CMaps, Type3 fonts, intersecting Form XObjects, text clipping, inherited accessibility metadata, unsupported compression, filtered inline images, unsupported inline image color spaces and malformed streams fail with a visible explanation. The input bytes and unsaved edit history remain unchanged. Mesa never substitutes a rasterized page or a visual text cover.
 
 Replacement text still uses Helvetica and its WinAnsi encoding. Reusing embedded fonts, Unicode replacement text and editing within Form XObjects remain future work. Text replacement is not document-wide redaction: other pages, attachments, metadata, existing copies and undo history can contain the same information.
 

@@ -53,12 +53,34 @@ function tokenize(source: string): Token[] {
     skip(); if (i >= source.length) break;
     const token = next();
     if (token.kind === 'word' && token.value === 'BI') {
-      // Preserve the entire inline image region, including binary bytes.
-      let id: Token;
-      do { id = next(); if (i >= source.length && id.value !== 'ID') throw new PdfEditUnsupported('The inline image has no data delimiter.'); } while (id.kind !== 'word' || id.value !== 'ID');
-      const end = new RegExp('[\\s'+String.fromCharCode(0)+']EI(?=[\\s'+String.fromCharCode(0)+'])','g'); end.lastIndex=i;
-      const match=end.exec(source); if (!match) throw new PdfEditUnsupported('The inline image has no end delimiter.');
-      i=match.index+match[0].length; token.end=i; token.value=source.slice(token.start,i);
+      // Raw image length keeps EI-looking pixel bytes out of the operator parser.
+      const fields = new Map<string, Token>();
+      let key = next();
+      while (key.value !== 'ID' || key.kind !== 'word') {
+        if (key.kind !== 'name') throw new PdfEditUnsupported('The inline image dictionary is malformed.');
+        fields.set(key.value, next());
+        key = next();
+        if (i >= source.length && key.value !== 'ID') throw new PdfEditUnsupported('The inline image has no data delimiter.');
+      }
+      if (fields.has('/F') || fields.has('/Filter')) throw new PdfEditUnsupported('This inline image encoding cannot be skipped safely yet.');
+      const width = Number((fields.get('/W') ?? fields.get('/Width'))?.value);
+      const height = Number((fields.get('/H') ?? fields.get('/Height'))?.value);
+      const mask = (fields.get('/IM') ?? fields.get('/ImageMask'))?.value === 'true';
+      const bits = mask ? 1 : Number((fields.get('/BPC') ?? fields.get('/BitsPerComponent'))?.value);
+      const color = (fields.get('/CS') ?? fields.get('/ColorSpace'))?.value;
+      const components = mask || ['/G', '/DeviceGray'].includes(color ?? '') ? 1
+        : ['/RGB', '/DeviceRGB'].includes(color ?? '') ? 3
+        : ['/CMYK', '/DeviceCMYK'].includes(color ?? '') ? 4 : 0;
+      if (![width, height].every(n => Number.isSafeInteger(n) && n > 0) || ![1, 2, 4, 8, 16].includes(bits) || !components)
+        throw new PdfEditUnsupported('The inline image dimensions or color space are unsupported.');
+      const length = Math.ceil(width * components * bits / 8) * height;
+      if (!Number.isSafeInteger(length) || !space(source[i])) throw new PdfEditUnsupported('The inline image data is malformed.');
+      i += source[i] === '\r' && source[i + 1] === '\n' ? 2 : 1;
+      i += length;
+      if (i >= source.length || !space(source[i])) throw new PdfEditUnsupported('The inline image data length is invalid.');
+      while (i < source.length && space(source[i])) i++;
+      if (source.slice(i, i + 2) !== 'EI' || !delimiter(source[i + 2])) throw new PdfEditUnsupported('The inline image has no valid end delimiter.');
+      i += 2; token.end = i; token.value = source.slice(token.start, i);
     }
     tokens.push(token);
   }
