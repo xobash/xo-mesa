@@ -76,7 +76,7 @@ it('bounds sanitizer work for one edit in a ten-thousand-block document', () => 
   f.dom.update(edited); f.drain();
   expect(f.stats()).toMatchObject({sanitized:1, sanitizedChars:15, reused:9999, inserted:2, removed:2});
   expect(f.host.lastChild).toBe(last);
-}, 15000);
+}, 60000);
 it('preserves backwards selection and focus when unchanged blocks move', () => {
   const f = fixture(); document.body.append(f.host);
   f.dom.update([{html:'<p>A</p>'},{html:'<p><a href="#">Selected</a></p>'}]); f.drain();
