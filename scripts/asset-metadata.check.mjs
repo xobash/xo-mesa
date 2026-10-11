@@ -40,3 +40,20 @@ test('icon containers cannot conceal textual metadata in their nested PNGs',()=>
   const ico=Buffer.alloc(22);ico.writeUInt16LE(1,2);ico.writeUInt16LE(1,4);ico.writeUInt32LE(png.length,14);ico.writeUInt32LE(22,18);
   assert.throws(()=>inspectImage(Buffer.concat([ico,png]),'ico'),/metadata/);
 });
+
+function webpChunk(type,data=Buffer.alloc(0)) { const b=Buffer.alloc(8+data.length+(data.length%2));b.write(type);b.writeUInt32LE(data.length,4);data.copy(b,8);return b; }
+function webp(...chunks) { const payload=Buffer.concat(chunks),h=Buffer.alloc(12);h.write('RIFF');h.writeUInt32LE(payload.length+4,4);h.write('WEBP',8);return Buffer.concat([h,payload]); }
+test('WebP admits animated payloads and rejects top-level or nested metadata and invalid bounds',()=>{
+  const frame=webpChunk('ANMF',Buffer.concat([Buffer.alloc(16),webpChunk('VP8 ',Buffer.from([1]))]));
+  const clean=webp(webpChunk('VP8X',Buffer.alloc(10)),webpChunk('ANIM',Buffer.alloc(6)),frame);
+  assert.doesNotThrow(()=>inspectImage(clean,'webp'));
+  for(const kind of ['EXIF','XMP ','ICCP','JUNK']) {
+    assert.throws(()=>inspectImage(webp(frame,webpChunk(kind)),'webp'),/metadata/);
+    assert.throws(()=>inspectImage(webp(webpChunk('ANMF',Buffer.concat([Buffer.alloc(16),webpChunk(kind)]))),'webp'),/metadata/);
+  }
+  assert.throws(()=>inspectImage(Buffer.concat([clean,Buffer.from([0])]),'webp'),/bounds/);
+  assert.throws(()=>inspectImage(clean.subarray(0,clean.length-1),'webp'),/bounds/);
+  const flags=Buffer.alloc(10);flags[0]=0x08;
+  assert.throws(()=>inspectImage(webp(webpChunk('VP8X',flags),frame),'webp'),/metadata/);
+  assert.throws(()=>inspectImage(webp(webpChunk('ANMF',Buffer.alloc(15))),'webp'),/frame/);
+});

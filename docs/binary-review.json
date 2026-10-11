@@ -2,18 +2,27 @@
   "schema": 1,
   "assets": [
     {
-      "path": "docs/mesa-demo.gif",
-      "bytes": 23465443,
-      "sha256": "c623d8ea3e70b1c45d64324c0837a42a353f229221dd4a1c8ffdde4221e5366a",
-      "status": "pending",
+      "path": "docs/mesa-demo.webp",
+      "bytes": 95969336,
+      "sha256": "420bd153d268a82b2b5c2b06094c697bc7598310e0e97872820070d46a9cd75c",
+      "status": "approved",
       "reviewerType": "human",
-      "reviewedOn": null,
-      "evidence": ""
+      "reviewedOn": "2026-10-10",
+      "evidence": "Project owner approved the Documents-first sample-vault recording and authorized README replacement. The full-resolution animated conversion was checked against the approved recording, fully decoded and inspected in browser playback."
     },
     {
       "path": "docs/mesa-hero-themes.png",
-      "bytes": 2298085,
-      "sha256": "c79466949dd7c82050dd7b191cd886af38d61c35b3876852717ca22b1e39e3f8",
+      "bytes": 2799309,
+      "sha256": "aecf1f870939ca105cbf18e5006fce22009701a2ad67e45b303e6dd29667b040",
+      "status": "approved",
+      "reviewerType": "human",
+      "reviewedOn": "2026-10-08",
+      "evidence": "Project owner approved the cropped Midnight and Dusk hero with its diagonal divider and authorized publication on 2026-10-08."
+    },
+    {
+      "path": "docs/mesa-wordmark.gif",
+      "bytes": 2709372,
+      "sha256": "79ad3fb414f7caaf364016c2d62eee0713735054e555339549a2b5b406db7103",
       "status": "pending",
       "reviewerType": "human",
       "reviewedOn": null,

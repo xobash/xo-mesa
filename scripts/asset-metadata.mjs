@@ -51,6 +51,29 @@ export function inspectImage(bytes, extension) {
     }
     throw new Error('GIF trailer is missing.');
   }
+  if (extension === 'webp') {
+    if (bytes.length<12 || bytes.toString('ascii',0,4)!=='RIFF' || bytes.toString('ascii',8,12)!=='WEBP' || bytes.readUInt32LE(4)+8!==bytes.length) throw new Error('Invalid WebP container bounds.');
+    const chunks=(start,end,frame=false)=>{
+      let at=start, image=false;
+      while(at<end) {
+        if(at+8>end) throw new Error('Truncated WebP chunk.');
+        const type=bytes.toString('ascii',at,at+4), length=bytes.readUInt32LE(at+4), next=at+8+length+(length%2);
+        if(next>end) throw new Error('Invalid WebP chunk bounds.');
+        const allowed=frame ? ['ALPH','VP8 ','VP8L'] : ['VP8X','ALPH','VP8 ','VP8L','ANIM','ANMF'];
+        if(!allowed.includes(type)) throw new Error('WebP metadata or unknown chunks are not admitted.');
+        if(type==='VP8X' && (length!==10 || (bytes[at+8]&0x2c))) throw new Error('WebP metadata flags are not admitted.');
+        if(type==='ANIM' && length!==6) throw new Error('Invalid WebP animation header.');
+        if(type==='ANMF') {
+          if(length<16) throw new Error('Truncated WebP frame.');
+          chunks(at+24,at+8+length,true); image=true;
+        }
+        if(type==='VP8 ' || type==='VP8L') image=true;
+        at=next;
+      }
+      if(!image) throw new Error('WebP image payload is missing.');
+    };
+    chunks(12,bytes.length); return;
+  }
   if (extension === 'ico') {
     if (bytes.length < 6 || bytes.readUInt16LE(0) !== 0 || bytes.readUInt16LE(2) !== 1) throw new Error('Invalid ICO header.');
     const count = bytes.readUInt16LE(4); let end = 6 + count * 16;

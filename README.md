@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/mesa-wordmark.png" alt="Mesa" width="440" />
+  <img src="docs/mesa-wordmark.gif" alt="Mesa" width="440" />
 </p>
 
 <p align="center">
@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/mesa-hero-themes.png" alt="Mesa showing a sample document, its linked notes and the living graph" width="100%" />
+  <img src="docs/mesa-hero-themes.png" alt="Mesa sample workspace in Midnight and Dusk with its living graph" width="100%" />
 </p>
 
 <p align="center">
@@ -83,14 +83,25 @@ release, which is still pending.
 
 ## Demo
 
-Explore a sample vault in Darkroom: navigate notes, search their contents, and
-expand the living graph.
+Explore a sample vault across System, Darkroom and Midnight: animate the graph,
+preview search results, open an image, and use Calendar and Pi in the overlay.
 
-![90-second Mesa demo in Darkroom](docs/mesa-demo.gif)
+![67-second Mesa workspace demo](https://raw.githubusercontent.com/xobash/xo-mesa/main/docs/mesa-demo.webp)
+
+## Configuration and usage
+
+Choose a folder as your vault when Mesa opens. No database or environment file
+is required for the core workspace. Use Settings to choose a theme and graph
+settings to adjust the graph. Optional Pi setup is covered in [Pi agent](docs/pi-agent.md).
+
+Open a note from the sidebar, switch between Source and Live, and hover a graph
+node to preview its document. Use the Search button for indexed text and previews;
+press `Shift+Tab` to open the overlay with Calendar and other tools. See
+[keyboard navigation](docs/keyboard-navigation.md) for shortcuts.
 
 ## Development
 
-To work on Mesa, install Node.js 20.19+, npm, Rust and the
+To work on Mesa, use the pinned Node.js 22.22.3, npm, Rust 1.96.0 and the
 [native platform prerequisites](docs/cross-platform.md). From the checkout:
 
 ```bash
@@ -100,6 +111,14 @@ npm run mesa
 
 `npm run dev` starts the browser demo. For tests, builds and contribution guidance,
 see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Contributing and support
+
+Fork the repository, create a focused branch, make your change, run the relevant
+checks, and open a pull request. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+full development and test workflow. Report bugs or ask for help in
+[GitHub Issues](https://github.com/xobash/xo-mesa/issues); include reproduction
+steps and your operating system, and keep private vault data out of reports.
 
 ## Architecture
 

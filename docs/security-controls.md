@@ -93,7 +93,7 @@ past run is current or that every attack variant is covered.
 | ID | Purpose | Origin | Regression / enforcement |
 | --- | --- | --- | --- |
 | CONTROL-022 | Detect additional secret formats in reachable public history and exact committed bytes | INCIDENT-001; AUDIT | `independent-privacy.mjs` verifies Gitleaks 8.30.1 by SHA-256, scans full Git history and exported HEAD in frontend CI; upstream detector suite supplies format coverage. Redacted failures stop CI. |
-| CONTROL-023 | Reject personal raster metadata without interpreting compressed pixels as comments | PREVENTIVE | `asset-metadata.check.mjs` executes EXIF, PNG text/trailing data and GIF compressed-marker regressions; `audit:assets` scans every binary in the exact public allowlist, including nested icon payloads and unsupported formats, in CI. |
+| CONTROL-023 | Reject personal raster metadata without interpreting compressed pixels as comments | PREVENTIVE | `asset-metadata.check.mjs` executes EXIF, PNG text/trailing data, GIF compressed-marker and WebP nested-metadata/bounds regressions; `audit:assets` scans every binary in the exact public allowlist, including nested icon payloads and unsupported formats, in CI. |
 | CONTROL-024 | Prevent compiler/runtime drift between development, CI and release | AUDIT | `toolchain-contract.check.mjs` checks exact Node/Rust/container pins and wrappers; frontend CI executes it. |
 | CONTROL-025 | Check release/security scripts for undefined names, unreachable code and unused variables | PREVENTIVE | `npm run lint` covers `src` and `scripts`; CI rejects warnings. Existing behavior suites remain required. |
 
@@ -127,3 +127,8 @@ requires a compatible complete Linux binding-chain upgrade and Linux acceptance;
 the exception does not fix the upstream advisories.
 
 Private working-document path checks apply to the staged tree and candidate ancestry. Secret-byte and identity checks still cover every fetched public ref. Other published branches require their own content review and cleanup; a passing candidate scan does not establish their removal.
+
+The historical text scan reads object-sized batches, so accumulated binary media
+does not exhaust one response buffer. The regression
+`scans history beyond the aggregate buffer limit and still rejects historical private text`
+checks both clean large histories and private text retained beside those binaries.

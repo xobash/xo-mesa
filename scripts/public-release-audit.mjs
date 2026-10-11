@@ -2,8 +2,8 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
-function git(args, encoding = "utf8", input) {
-  const result = spawnSync("git", args, { encoding, input, maxBuffer: 64 * 1024 * 1024 });
+function git(args, encoding = "utf8", input, maxBuffer = 128 * 1024 * 1024) {
+  const result = spawnSync("git", args, { encoding, input, maxBuffer });
   if (result.status !== 0) {
     process.stderr.write(result.stderr?.toString() || `git ${args[0]} failed\n`);
     process.exit(result.status || 1);
@@ -162,21 +162,45 @@ for (const entry of git(["rev-list", "--objects", "HEAD"]).trim().split("\n")) {
 
 // Inspect each reachable historical blob once; report categories without private bytes.
 const objects = git(["rev-list", "--objects", "--all"]).trim().split("\n").filter(Boolean);
-const batch = git(["cat-file", "--batch"], null, objects.map(line=>line.split(" ")[0]).join("\n")+"\n");
-let offset=0, historicalBlobs=0;
-for (const object of objects) {
-  const end=batch.indexOf(10,offset);
-  if(end<0) throw new Error("Incomplete historical object response.");
-  const [id,kind,length]=batch.toString("ascii",offset,end).split(" ");
-  const size=Number(length);if(!Number.isSafeInteger(size)||size<0||end+1+size>=batch.length) throw new Error("Invalid historical object bounds.");
-  const content=batch.subarray(end+1,end+1+size);offset=end+size+2;
-  if(kind!=="blob"||content.includes(0)) continue;
-  historicalBlobs++;
-  const name=object.slice(id.length+1), text=content.toString("utf8");
-
-  for(const {pattern,label} of forbiddenContent) if(pattern.test(text)) failures.push(`historical blob ${id}: contains ${label}`);
-  if(name!=="public/THIRD_PARTY_NOTICES.txt" && name!=="scripts/public-files.txt" && hasPersonalEmail(text)) failures.push(`historical blob ${id}: contains non-example email address`);
-  if(hasPrivateIpv4(text)) failures.push(`historical blob ${id}: contains private IPv4 literal`);
+const ids = objects.map(line => line.split(" ")[0]);
+const sizes = git(["cat-file", "--batch-check=%(objectsize)"], "utf8", ids.join("\n") + "\n")
+  .trim().split("\n").map(Number);
+if (sizes.length !== objects.length || sizes.some(size => !Number.isSafeInteger(size) || size < 0)) {
+  throw new Error("Invalid historical object sizes.");
+}
+let historicalBlobs = 0;
+for (let start = 0; start < objects.length;) {
+  let stop = start, bytes = 0;
+  while (stop < objects.length && (stop === start || bytes + sizes[stop] + 128 <= 32 * 1024 * 1024)) {
+    bytes += sizes[stop] + 128;
+    stop++;
+  }
+  // Bound each response by object bytes, rather than accumulated history size.
+  const batch = git(["cat-file", "--batch"], null, ids.slice(start, stop).join("\n") + "\n",
+    Math.max(64 * 1024 * 1024, bytes));
+  let offset = 0;
+  for (let index = start; index < stop; index++) {
+    const end = batch.indexOf(10, offset);
+    if (end < 0) throw new Error("Incomplete historical object response.");
+    const [id, kind, length] = batch.toString("ascii", offset, end).split(" ");
+    const size = Number(length);
+    if (id !== ids[index] || size !== sizes[index] || end + 1 + size >= batch.length) {
+      throw new Error("Invalid historical object bounds.");
+    }
+    const content = batch.subarray(end + 1, end + 1 + size);
+    offset = end + size + 2;
+    if (kind !== "blob" || content.includes(0)) continue;
+    historicalBlobs++;
+    const name = objects[index].slice(id.length + 1), text = content.toString("utf8");
+    for (const { pattern, label } of forbiddenContent) {
+      if (pattern.test(text)) failures.push(`historical blob ${id}: contains ${label}`);
+    }
+    if (name !== "public/THIRD_PARTY_NOTICES.txt" && name !== "scripts/public-files.txt" && hasPersonalEmail(text)) {
+      failures.push(`historical blob ${id}: contains non-example email address`);
+    }
+    if (hasPrivateIpv4(text)) failures.push(`historical blob ${id}: contains private IPv4 literal`);
+  }
+  start = stop;
 }
 
 // GitHub-generated PR preview/squash commits use the same owner's numeric

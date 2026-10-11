@@ -224,3 +224,22 @@ it("separates candidate document ancestry from unrelated public refs", () => {
   const result = auditFixture({ unrelatedPrivateBranch: true });
   assert.equal(result.status, 0, result.stderr);
 });
+
+it('scans history beyond the aggregate buffer limit and still rejects historical private text', () => {
+  const first = Buffer.alloc(33 * 1024 * 1024);
+  const second = Buffer.alloc(33 * 1024 * 1024, 1);
+  second[0] = 0;
+  const historicalFiles = { 'old-a.bin': first, 'old-b.bin': second };
+  const clean = auditFixture({ historicalFiles });
+  assert.equal(clean.status, 0, clean.stderr);
+  const privateText = ['', 'Users', 'example', 'vault'].join('/');
+  const rejected = auditFixture({ historicalFiles: { ...historicalFiles, 'old.txt': privateText } });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /historical blob .* contains personal filesystem path/);
+});
+
+it('audits allowed binary assets larger than 64 MiB', () => {
+  const result = auditFixture({ files: { 'docs/demo.webp': Buffer.alloc(65 * 1024 * 1024) } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /2 approved files/);
+});

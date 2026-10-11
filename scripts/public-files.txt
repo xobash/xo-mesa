@@ -20,8 +20,9 @@ docs/document-architecture.md
 docs/keyboard-navigation.md
 docs/live-graph.md
 docs/live-preview-editing.md
-docs/mesa-demo.gif
+docs/mesa-demo.webp
 docs/mesa-hero-themes.png
+docs/mesa-wordmark.gif
 docs/mesa-wordmark.png
 docs/native-acceptance.md
 docs/overlay.md
