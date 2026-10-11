@@ -49,6 +49,8 @@ run.cmd
 run.sh
 rust-toolchain.toml
 scripts/acceptance.html
+scripts/activity-api.check.mjs
+scripts/activity-client.mjs
 scripts/asset-metadata.check.mjs
 scripts/asset-metadata.mjs
 scripts/bootstrap-download.sh
@@ -180,6 +182,7 @@ src/components/Modal.tsx
 src/components/Overlay.tsx
 src/components/PdfThumb.test.tsx
 src/components/PdfThumb.tsx
+src/components/PdfView.test.tsx
 src/components/PdfView.tsx
 src/components/Preview.tsx
 src/components/PreviewCard.test.tsx

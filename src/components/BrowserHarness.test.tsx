@@ -75,3 +75,11 @@ it('registers one message listener and uses current history after rerenders', as
   expect(remove.mock.calls.filter(([type]) => type === 'message')).toEqual([['message', listeners[0][1]]]);
   add.mockRestore(); remove.mockRestore();
 });
+
+it('shows the direct-connection guidance returned by the broker', async () => {
+  await mount();
+  mock.invoke.mockRejectedValue('Direct connection failed. Mesa does not use system proxies. Check your connection.');
+  await navigate('https://example.com');
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('Mesa does not use system proxies');
+  expect(host.querySelector('iframe')).toBeNull();
+});

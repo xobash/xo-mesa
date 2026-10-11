@@ -82,6 +82,22 @@ for diagnosis, but they do not pass native acceptance rows.
 | Long session resources | Repeated document and sync use reaches a stable process-tree memory and CPU plateau |
 | Signing, notarization, and OS prompts | Release build identity, permission prompts, and installer warnings are recorded separately from app behavior |
 
+### Renderer and activity checks within the required workflows
+
+For window interactions, verify that top-level data and unregistered blob
+navigation is denied, saved-HTML frames remain usable, and a forced PDF
+render-error fallback still displays the open bytes in main and detached
+windows. Exact PDF blob grants must disappear on replacement or window close.
+For graph activity, run a pinned client against a Receive-mode instance and
+verify an activity event reaches the matching note; exercise a `409` during
+vault recovery. For interruption flows, kill and restart a synthetic Pi session
+and verify only confirmed-dead, non-fresh extension directories are removed,
+including a quick restart after the one-minute follow-up sweep.
+
+The Markdown sanitizer matrix, PDF admission tests, TLS example-client tests,
+and native navigation/cleanup tests supply regression evidence. They do not
+complete these desktop workflow rows or another platform's acceptance.
+
 ## Diagnostics
 
 Use the Diagnostics window during long-session and sync runs. Record

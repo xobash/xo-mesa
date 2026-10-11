@@ -28,8 +28,11 @@ export function sanitizeHtml(html: string): string {
   }
 }
 
-const REMOTE_MEDIA_TAGS = new Set(["IMG", "SOURCE", "VIDEO", "AUDIO", "TRACK"]);
-const REMOTE_URL_RE = /^\s*(?:https?:)?\/\//i;
+const REMOTE_URL_RE = /^(?:https?:)?\/\//i;
+const MEDIA_URL_ATTRIBUTES = ["src", "poster", "background", "data", "href", "xlink:href", "srcset"];
+// URL parsing ignores ASCII tabs/newlines; classify before the browser can load.
+// eslint-disable-next-line no-control-regex -- Browser URL normalization ignores these characters.
+const normalizedMediaUrl = (value: string) => value.replace(/\s/g, "").replace(/[\x00-\x20]/g, "");
 
 /**
  * Remote media would load the moment a note is rendered or hovered, telling a
@@ -37,16 +40,18 @@ const REMOTE_URL_RE = /^\s*(?:https?:)?\/\//i;
  * `data-remote-*` attribute; MarkdownView restores them after consent.
  */
 function deferRemoteMedia(node: Element) {
-  if (!REMOTE_MEDIA_TAGS.has(node.tagName)) return;
-  for (const name of ["src", "poster", "srcset"]) {
+  // Authored data attributes must never mint consent-restorable URLs.
+  for (const name of MEDIA_URL_ATTRIBUTES) node.removeAttribute(`data-remote-${name.replace(":", "-")}`);
+  for (const name of MEDIA_URL_ATTRIBUTES) {
+    if (name === "href" && node.localName === "a") continue;
     const value = node.getAttribute(name);
     if (value === null) continue;
     const remote =
       name === "srcset"
-        ? value.split(",").some((part) => REMOTE_URL_RE.test(part))
-        : REMOTE_URL_RE.test(value);
+        ? value.split(",").some((part) => REMOTE_URL_RE.test(normalizedMediaUrl(part)))
+        : REMOTE_URL_RE.test(normalizedMediaUrl(value));
     if (!remote) continue;
-    node.setAttribute(`data-remote-${name}`, value);
+    node.setAttribute(`data-remote-${name.replace(":", "-")}`, value);
     node.removeAttribute(name);
   }
 }

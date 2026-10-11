@@ -1,6 +1,7 @@
 fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "navigation_pdf_preview",
             "sync_start",
             "sync_stop",
             "sync_status",

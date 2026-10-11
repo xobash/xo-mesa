@@ -67,15 +67,25 @@ formatting. `markdown.test.ts` tests both rejection and retained markup;
 
 Remote images and media (`http:`, `https:`, `//` sources) are not requested when a
 note renders or a hover preview opens, because the request would tell a third
-party that you opened the note. The sanitizer parks each URL in `data-remote-*`
+party that you opened the note. All sanitized tags are checked for URL carriers,
+including SVG images/filters, image inputs and legacy backgrounds. URL
+classification strips browser-ignored whitespace/control characters. Authored
+`data-remote-*` attributes are removed so they cannot bypass URL sanitization.
+The tag/attribute/scheme regression matrix checks surviving live attributes
+with an independent URL parser. The sanitizer parks each URL in `data-remote-*`
 and `MarkdownView` shows a notice with **Load remote images for this note**; the
-choice lasts while that view is open. This is why the app CSP still lists `https:`
-in `img-src`. Links in a note never navigate Mesa's own window: `http(s)` links
+choice lasts while that rendered source remains unchanged in the open view.
+A new source requires new consent, including navigation in a reused viewer. This is why the app CSP still lists `https:`
+in `img-src`. This is a sanitizer boundary with regression coverage, not a
+second network-denial layer for HTTPS images. Links in a note never navigate
+Mesa's own window: `http(s)` links
 ask before opening in Mesa's read-only reader (it needs a mounted Pi surface),
 vault-relative links open the note, and every other scheme is ignored. A native
 navigation guard (`navigation_allowed` in `src-tauri/src/lib.rs`) also refuses
-top-level navigation of any Mesa webview to a non-app origin. The guard is unit
-tested; its behavior in a packaged webview is not yet accepted on each platform.
+data and unregistered blob navigation as well as non-app origins. PDF
+fallbacks register exact app-origin blobs for their own window and revoke them
+on replacement, unmount or destruction. Wry does not expose frame identity on
+every platform. The guard is unit-tested; its behavior in a packaged webview is not yet accepted on each platform.
 
 Bounded linkification prevents covered repeated-input parser failures.
 `markdown.test.ts` and `scripts/markdown-behavior.check.mjs` exercise them.
@@ -89,6 +99,10 @@ base URLs and framing of Mesa. Inline styles support React. Arbitrary inline scr
 permits local IPC and asset endpoints only; arbitrary HTTPS connections are blocked. The read-only browser navigation bridge
 is allowed by its exact SHA-256 hash; the test recomputes that hash from the
 executed script. Saved markup never enables scripts.
+
+The demo nginx policy has the same directive/source sets with native IPC and
+asset sources removed. The production build checks this parity; demo scripts
+cannot run arbitrary inline code or connect/frame arbitrary HTTPS origins.
 
 Saved HTML has an additional policy placed before its markup. Offline mode blocks
 scripts, remote resources, network connections, forms and navigation. Online-resource mode requires per-document/version consent and retains an
@@ -112,7 +126,9 @@ browser webview is created. Read-only page frames cannot invoke native commands.
 
 Native fetch response URLs supply source identity. Source titles, text and links
 remain untrusted and are encoded as evidence, not instructions or authorization.
-No remote page can submit a DOM snapshot into Mesa.
+No remote page can submit a DOM snapshot into Mesa. Direct connection and
+timeout errors explain that Mesa ignores system proxies; a proxy-only network
+is unsupported because proxy DNS could bypass public-address validation.
 
 ## Security domains
 

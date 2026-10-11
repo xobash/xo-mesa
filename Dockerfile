@@ -5,9 +5,9 @@ FROM node:22.22.3-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY index.html vite.config.ts tsconfig.json tsconfig.node.json Dockerfile .dockerignore ./
+COPY index.html vite.config.ts tsconfig.json tsconfig.node.json Dockerfile nginx.conf .dockerignore ./
 COPY scripts/third-party-notices.mjs scripts/docker-context.check.mjs scripts/bundle-boundaries.check.mjs ./scripts/
-COPY src-tauri/Cargo.lock ./src-tauri/
+COPY src-tauri/Cargo.lock src-tauri/tauri.conf.json ./src-tauri/
 COPY src ./src
 COPY public ./public
 RUN npm run build

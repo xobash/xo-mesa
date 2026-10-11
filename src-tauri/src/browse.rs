@@ -226,6 +226,27 @@ pub fn browse_fetch_blocking(url: String) -> Result<BrowsePage, String> {
     tauri::async_runtime::block_on(fetch_inner(url, true))
 }
 
+fn fetch_error(error: reqwest::Error) -> String {
+    // Preserve the broker's explicit DNS/redirect rejection before classifying transport errors.
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(cause) = source {
+        for reason in [
+            "private network address is blocked",
+            "redirect to a private network is blocked",
+        ] {
+            if cause.to_string().contains(reason) {
+                return reason.into();
+            }
+        }
+        source = cause.source();
+    }
+    if error.is_connect() || error.is_timeout() {
+        "Direct connection failed. Mesa does not use system proxies. Check your connection; networks that require a proxy need a direct connection for Mesa's reader.".into()
+    } else {
+        format!("Page request failed: {}", error.without_url())
+    }
+}
+
 async fn fetch_inner(url: String, agent: bool) -> Result<BrowsePage, String> {
     let parsed = reqwest::Url::parse(&url).map_err(|e| format!("invalid url: {e}"))?;
     match parsed.scheme() {
@@ -240,7 +261,7 @@ async fn fetch_inner(url: String, agent: bool) -> Result<BrowsePage, String> {
         .header("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(fetch_error)?;
 
     let status = resp.status().as_u16();
     let final_url = resp.url().to_string();
@@ -276,6 +297,39 @@ async fn fetch_inner(url: String, agent: bool) -> Result<BrowsePage, String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn connection_error_classification_preserves_dns_rejection() {
+        let error = super::client_for_agent(false)
+            .unwrap()
+            .get("http://localhost:1")
+            .send()
+            .await
+            .unwrap_err();
+        assert_eq!(
+            super::fetch_error(error),
+            "private network address is blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_failure_explains_direct_only_browsing() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap_err();
+        let message = super::fetch_error(error);
+        assert!(message.contains("Direct connection failed"));
+        assert!(message.contains("does not use system proxies"));
+        assert!(!message.contains(&address.to_string()));
+    }
+
     use super::*;
 
     #[test]

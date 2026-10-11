@@ -274,12 +274,106 @@ pub(crate) fn make_token() -> Result<String, String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = i32::try_from(pid) else {
+            return true;
+        };
+        // Permission failures are unknown, never evidence that a process died.
+        unsafe {
+            libc::kill(pid, 0) == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER},
+            System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            },
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return GetLastError() != ERROR_INVALID_PARAMETER;
+            }
+            let mut code = 0;
+            let alive = GetExitCodeProcess(handle, &mut code) == 0 || code == 259;
+            CloseHandle(handle);
+            alive
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+fn sweep_extensions_in(
+    temp: &std::path::Path,
+    now: u128,
+    alive: impl Fn(u32) -> bool,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(temp)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str().and_then(|name| name.strip_prefix("mesa-pi-")) else {
+            continue;
+        };
+        let Some((pid, created)) = name.split_once('-') else {
+            continue;
+        };
+        let (Ok(pid), Ok(created)) = (pid.parse::<u32>(), created.parse::<u128>()) else {
+            continue;
+        };
+        if pid == 0
+            || now.saturating_sub(created) < Duration::from_secs(60).as_nanos()
+            || alive(pid)
+        {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                continue;
+            }
+        }
+        // remove_dir_all does not follow directory or descendant symlinks.
+        std::fs::remove_dir_all(entry.path())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sweep_stale_extensions() {
+    if let Err(error) = sweep_extensions_in(&std::env::temp_dir(), nanos(), process_alive) {
+        eprintln!("Mesa could not clean stale Pi extension directories: {error}");
+    }
+}
+
+fn create_extension_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
 /// Materialize the bundled Pi extensions; returns
 /// (activity_path, goal_path, context_path, browser_path, deep_research_path).
 fn write_extensions() -> Result<(String, String, String, String, String), String> {
     // A unique directory and create_new files fail closed on a collision.
     let dir = std::env::temp_dir().join(format!("mesa-pi-{}-{}", std::process::id(), nanos()));
-    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    create_extension_dir(&dir).map_err(|e| e.to_string())?;
     let write = |path: &std::path::Path, source: &str| -> Result<(), String> {
         let mut file = OpenOptions::new()
             .write(true)
@@ -288,25 +382,31 @@ fn write_extensions() -> Result<(String, String, String, String, String), String
             .map_err(|e| e.to_string())?;
         file.write_all(source.as_bytes()).map_err(|e| e.to_string())
     };
-    let activity = dir.join("mesa-activity.ts");
-    write(&activity, EXTENSION_SRC)?;
-    let goal = dir.join("mesa-goal.ts");
-    write(&goal, GOAL_EXTENSION_SRC)?;
-    let context = dir.join("mesa-context.ts");
-    write(&context, CONTEXT_EXTENSION_SRC)?;
-    let browser = dir.join("mesa-browser.ts");
-    write(&browser, BROWSER_EXTENSION_SRC)?;
-    let browser_queue = dir.join("mesa-browser-queue.ts");
-    write(&browser_queue, BROWSER_QUEUE_SRC)?;
-    let deep_research = dir.join("mesa-deep-research.ts");
-    write(&deep_research, DEEP_RESEARCH_EXTENSION_SRC)?;
-    Ok((
-        activity.to_string_lossy().to_string(),
-        goal.to_string_lossy().to_string(),
-        context.to_string_lossy().to_string(),
-        browser.to_string_lossy().to_string(),
-        deep_research.to_string_lossy().to_string(),
-    ))
+    let result = (|| {
+        let activity = dir.join("mesa-activity.ts");
+        write(&activity, EXTENSION_SRC)?;
+        let goal = dir.join("mesa-goal.ts");
+        write(&goal, GOAL_EXTENSION_SRC)?;
+        let context = dir.join("mesa-context.ts");
+        write(&context, CONTEXT_EXTENSION_SRC)?;
+        let browser = dir.join("mesa-browser.ts");
+        write(&browser, BROWSER_EXTENSION_SRC)?;
+        let browser_queue = dir.join("mesa-browser-queue.ts");
+        write(&browser_queue, BROWSER_QUEUE_SRC)?;
+        let deep_research = dir.join("mesa-deep-research.ts");
+        write(&deep_research, DEEP_RESEARCH_EXTENSION_SRC)?;
+        Ok((
+            activity.to_string_lossy().to_string(),
+            goal.to_string_lossy().to_string(),
+            context.to_string_lossy().to_string(),
+            browser.to_string_lossy().to_string(),
+            deep_research.to_string_lossy().to_string(),
+        ))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    result
 }
 
 fn auth_ok(req: &Request, token: &str) -> bool {
@@ -675,6 +775,92 @@ pub(crate) fn stop_native() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_extensions_from_exited_process_are_removed() {
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .spawn()
+            .unwrap();
+        #[cfg(any(unix, windows))]
+        {
+            let pid = child.id();
+            child.wait().unwrap();
+            assert!(!process_alive(pid));
+            let temp = std::env::temp_dir().join(format!(
+                "mesa-exited-test-{}-{}",
+                std::process::id(),
+                nanos()
+            ));
+            create_extension_dir(&temp).unwrap();
+            let stale = temp.join(format!("mesa-pi-{pid}-1"));
+            create_extension_dir(&stale).unwrap();
+            sweep_extensions_in(&temp, nanos(), process_alive).unwrap();
+            assert!(!stale.exists());
+            std::fs::remove_dir(temp).unwrap();
+        }
+    }
+
+    #[test]
+    fn sweeps_only_old_dead_process_directories() {
+        let temp = std::env::temp_dir().join(format!(
+            "mesa-sweep-test-{}-{}",
+            std::process::id(),
+            nanos()
+        ));
+        std::fs::create_dir(&temp).unwrap();
+        let now = 120_000_000_000_u128;
+        for name in [
+            "mesa-pi-123-1",
+            "mesa-pi-124-119000000000",
+            "mesa-pi-125-1",
+            "mesa-pi-0-1",
+            "mesa-pi-invalid-1",
+            "other",
+        ] {
+            create_extension_dir(&temp.join(name)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(temp.join("mesa-pi-123-1"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            std::os::unix::fs::symlink(temp.join("other"), temp.join("mesa-pi-126-1")).unwrap();
+        }
+        sweep_extensions_in(&temp, now, |pid| pid == 125).unwrap();
+        assert!(!temp.join("mesa-pi-123-1").exists());
+        for name in [
+            "mesa-pi-124-119000000000",
+            "mesa-pi-125-1",
+            "mesa-pi-0-1",
+            "mesa-pi-invalid-1",
+            "other",
+        ] {
+            assert!(temp.join(name).exists());
+        }
+        #[cfg(unix)]
+        assert!(temp.join("mesa-pi-126-1").is_symlink());
+        sweep_extensions_in(&temp, now + Duration::from_secs(60).as_nanos(), |pid| {
+            pid == 125
+        })
+        .unwrap();
+        assert!(!temp.join("mesa-pi-124-119000000000").exists());
+        assert!(temp.join("mesa-pi-125-1").exists());
+        assert!(process_alive(std::process::id()));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
 
     #[test]
     fn bounded_activity_and_browse_bodies_reject_oversize_payloads() {

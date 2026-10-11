@@ -421,6 +421,10 @@ fn first_contact_credential_is_certificate_bound() {
     );
     assert_ne!(credential, scoped_sync_credential("shared-key", &b));
     assert_ne!(credential, "shared-key");
+    assert_eq!(
+        scoped_sync_credential(&"0123456789abcdef".repeat(4), &a),
+        "7f7eb47de4883660fabc22d30deda7a71d5dcaf433e8997f79dde376ca90efb5"
+    );
 }
 
 #[tokio::test]

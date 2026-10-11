@@ -14,16 +14,17 @@ import { markMesaPerf } from "../lib/mesaPerf";
  * popout document windows can render against their own vault scan.
  */
 /** Restore media that the sanitizer parked in `data-remote-*` until the reader consents. */
-const REMOTE_SELECTOR = "[data-remote-src],[data-remote-poster],[data-remote-srcset]";
+const REMOTE_ATTRIBUTES = ["src", "poster", "background", "data", "href", "xlink:href", "srcset"];
+const REMOTE_SELECTOR = REMOTE_ATTRIBUTES.map(name => `[data-remote-${name.replace(":", "-")}]`).join(",");
 function restoreRemoteMedia(root: Element) {
-  const found = [...root.querySelectorAll<HTMLElement>(REMOTE_SELECTOR)];
-  if (root.matches(REMOTE_SELECTOR)) found.push(root as HTMLElement);
+  const found = [...root.querySelectorAll<Element>(REMOTE_SELECTOR)];
+  if (root.matches(REMOTE_SELECTOR)) found.push(root);
   found.forEach((el) => {
-    for (const name of ["src", "poster", "srcset"]) {
-      const value = el.getAttribute(`data-remote-${name}`);
+    for (const name of REMOTE_ATTRIBUTES) {
+      const value = el.getAttribute(`data-remote-${name.replace(":", "-")}`);
       if (value === null) continue;
       el.setAttribute(name, value);
-      el.removeAttribute(`data-remote-${name}`);
+      el.removeAttribute(`data-remote-${name.replace(":", "-")}`);
     }
   });
 }
@@ -56,7 +57,9 @@ export function MarkdownView({
   const onClick = onWikiClick ?? storeOpen;
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
-  const [allowRemote, setAllowRemote] = useState(false);
+  const [remoteConsent, setRemoteConsent] = useState({ source, allowed: false });
+  if (remoteConsent.source !== source) setRemoteConsent({ source, allowed: false });
+  const allowRemote = remoteConsent.source === source && remoteConsent.allowed;
   const [remoteCount, setRemoteCount] = useState(0);
   const allowRemoteRef = useRef(false);
   allowRemoteRef.current = allowRemote;
@@ -201,7 +204,7 @@ export function MarkdownView({
       {remoteCount > 0 && (
         <div className="md-remote-notice" role="status">
           Remote images and media are not loaded. Loading them tells their servers you opened this note.{" "}
-          <button type="button" onClick={() => setAllowRemote(true)}>Load remote images for this note</button>
+          <button type="button" onClick={() => setRemoteConsent({ source, allowed: true })}>Load remote images for this note</button>
         </div>
       )}
       <div

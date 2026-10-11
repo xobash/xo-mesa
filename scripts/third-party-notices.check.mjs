@@ -67,3 +67,22 @@ test('browser Docker COPY inputs build with no Rust toolchain or source tree', (
     assert.equal(result.status, 0, result.stderr);
   }
 });
+
+test('production Docker context check rejects widened script, connection and frame policies', () => {
+  const browser = join(directory, 'csp'); mkdirSync(browser);
+  mkdirSync(join(browser, 'src-tauri')); mkdirSync(join(browser, 'scripts'));
+  for (const file of ['.dockerignore', 'Dockerfile', 'nginx.conf', 'src-tauri/tauri.conf.json', 'scripts/docker-context.check.mjs']) copyFileSync(resolve(file), join(browser, file));
+  const config = join(browser, 'nginx.conf'), original = readFileSync(config, 'utf8');
+  for (const [before, after] of [
+    ["script-src 'self'", "script-src 'self' 'unsafe-inline'"],
+    ["connect-src 'self'", "connect-src 'self' https:"],
+    ["frame-src 'self'", "frame-src 'self' https:"],
+  ]) {
+    writeFileSync(config, original.replace(before, after));
+    const result = spawnSync(process.execPath, ['scripts/docker-context.check.mjs'], { cwd: browser, encoding: 'utf8' });
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /Demo CSP differs/);
+  }
+  writeFileSync(config, original);
+  const result = spawnSync(process.execPath, ['scripts/docker-context.check.mjs'], { cwd: browser, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+});

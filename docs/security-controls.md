@@ -132,3 +132,13 @@ The historical text scan reads object-sized batches, so accumulated binary media
 does not exhaust one response buffer. The regression
 `scans history beyond the aggregate buffer limit and still rejects historical private text`
 checks both clean large histories and private text retained beside those binaries.
+
+
+## Renderer and external activity regressions
+
+| ID | Purpose | Origin | Regression / enforcement | Limit |
+| --- | --- | --- | --- | --- |
+| CONTROL-030 | Prevent silent third-party Markdown media requests, including SVG, legacy backgrounds and control-character schemes | Confirmed remote-media audit finding; no production incident asserted | `markdown.ts` parks sanitized URL carriers; `markdown.test.ts` tag/attribute/scheme matrix and `MarkdownView.test.tsx` consent restoration execute in frontend CI | HTTPS image CSP remains permissive for consent loading; sanitizer coverage is not universal network isolation |
+| CONTROL-031 | Keep the browser demo's scripts, connections and frame sources aligned with the desktop policy | Confirmed demo CSP audit finding | `docker-context.check.mjs` compares directive/source sets on every build; `third-party-notices.check.mjs` executes widened script/connect/frame rejection cases | Native asset/IPC sources are removed from the demo; packaged engine behavior remains separate |
+| CONTROL-032 | Prevent broken or unpinned external activity calls | Confirmed activity documentation audit finding | `activity-client.mjs` verifies the leaf certificate before HTTP and derives the certificate-scoped HMAC; `activity-api.check.mjs` runs Node and copied Python examples, wrong-pin rejection and HTTP failure cases in CI | External tools hold the shared sync key; successful synthetic TLS tests do not establish packaged Receive-mode acceptance |
+| CONTROL-033 | Deny data and arbitrary blob navigation while preserving verified-byte PDF fallbacks | Navigation audit hypothesis; preventive restriction | `navigation_allowed`, window-scoped `navigation_pdf_preview` grants, native navigation tests and `PdfView.test.tsx` admission/revocation/error regressions | Trusted renderer code registers PDF MIME blobs; the native command does not independently inspect their bytes. Each packaged webview still needs acceptance |

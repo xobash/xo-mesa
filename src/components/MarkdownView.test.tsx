@@ -84,3 +84,36 @@ it('does not request remote images until the reader consents', async () => {
     });
   } finally { act(() => root.unmount()); host.remove(); }
 });
+
+it('counts and restores SVG and background carriers only after consent', async () => {
+  const { host, root } = await mounted('<svg><image href="https://tracker.example/a.png"/><filter><feImage xlink:href="https://tracker.example/b.png"/></filter></svg>\n\n<table background="https://tracker.example/bg.png"><tr><td>x</td></tr></table>\n\n<input type="image" src="https://tracker.example/c.png">');
+  try {
+    await vi.waitFor(() => expect(host.querySelectorAll('[data-remote-href],[data-remote-xlink-href],[data-remote-background],[data-remote-src]')).toHaveLength(4));
+    expect(host.querySelector('image')?.hasAttribute('href')).toBe(false);
+    expect(host.querySelector('table')?.hasAttribute('background')).toBe(false);
+    const button = [...host.querySelectorAll('button')].find(b => /remote images/i.test(b.textContent ?? ''))!;
+    await act(async () => { button.click(); });
+    expect(host.querySelector('image')?.getAttribute('href')).toBe('https://tracker.example/a.png');
+    expect(host.querySelector('feImage')?.getAttribute('xlink:href')).toBe('https://tracker.example/b.png');
+    expect(host.querySelector('table')?.getAttribute('background')).toBe('https://tracker.example/bg.png');
+    expect(host.querySelector('input')?.getAttribute('src')).toBe('https://tracker.example/c.png');
+    expect(host.querySelector('.md-remote-notice')).toBeNull();
+  } finally { act(() => root.unmount()); host.remove(); }
+});
+
+it('does not carry media consent to another source in a reused viewer', async () => {
+  const first = '<img src="https://tracker.example/first.png">';
+  const { host, root } = await mounted(first);
+  try {
+    await vi.waitFor(() => expect(host.querySelector('[data-remote-src]')).not.toBeNull());
+    await act(async () => host.querySelector<HTMLButtonElement>('.md-remote-notice button')!.click());
+    expect(host.querySelector('img')?.getAttribute('src')).toContain('first.png');
+    for (const source of ['<img src="https://tracker.example/second.png">', first]) {
+      await act(async () => root.render(<MarkdownView source={source} />));
+      act(() => WorkerStub.latest!.reply());
+      await act(async () => { await vi.waitFor(() => expect(host.querySelector('img')?.getAttribute('data-remote-src')).toContain(source === first ? 'first.png' : 'second.png')); });
+      expect(host.querySelector('img')?.hasAttribute('src')).toBe(false);
+      expect(host.querySelector('.md-remote-notice')).not.toBeNull();
+    }
+  } finally { act(() => root.unmount()); host.remove(); }
+});

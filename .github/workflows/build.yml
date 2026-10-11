@@ -33,6 +33,7 @@ jobs:
       - run: npm run test:release
       - run: npm run test:bootstrap
       - run: npm run test:index
+      - run: npm run test:activity-api
       - run: npm run test:markdown
       - run: npm run test:notices
       - run: npm run build

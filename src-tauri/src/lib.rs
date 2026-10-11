@@ -67,7 +67,8 @@ fn quit_after_save(app: tauri::AppHandle, state: tauri::State<'_, QuitGuard>) {
 fn navigation_allowed(url: &tauri::Url) -> bool {
     match url.scheme() {
         // `asset` serves approved vault files to PDF/media frames.
-        "tauri" | "asset" | "about" | "blob" | "data" => true,
+        "tauri" | "asset" => true,
+        "about" => url.as_str() == "about:blank" || url.as_str() == "about:srcdoc",
         "http" | "https" => {
             let host = url.host_str();
             matches!(host, Some("tauri.localhost" | "asset.localhost"))
@@ -77,9 +78,83 @@ fn navigation_allowed(url: &tauri::Url) -> bool {
     }
 }
 
+fn pdf_blob_grants(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>
+{
+    static GRANTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    > = std::sync::OnceLock::new();
+    GRANTS.get_or_init(Default::default)
+}
+
+fn valid_pdf_blob(url: &str) -> bool {
+    let Some(inner) = url
+        .strip_prefix("blob:")
+        .and_then(|inner| inner.parse::<tauri::Url>().ok())
+    else {
+        return false;
+    };
+    let origin = inner.origin().ascii_serialization();
+    let app_origin = matches!(
+        origin.as_str(),
+        "http://tauri.localhost" | "https://tauri.localhost"
+    ) || (inner.scheme() == "tauri" && inner.host_str() == Some("localhost"))
+        || (cfg!(debug_assertions)
+            && matches!(
+                origin.as_str(),
+                "http://localhost:1420" | "http://127.0.0.1:1420"
+            ));
+    app_origin
+        && inner.username().is_empty()
+        && inner.password().is_none()
+        && inner.query().is_none()
+        && inner.fragment().is_none()
+        && inner.path().trim_start_matches('/').len() == 36
+}
+
+fn grant_pdf_blob(label: &str, url: String, allow: bool) -> Result<(), String> {
+    if !(label == "main" || label.starts_with("doc-") || label.starts_with("panel-"))
+        || !valid_pdf_blob(&url)
+    {
+        return Err("Only Mesa document surfaces may register an app PDF preview".into());
+    }
+    let mut grants = pdf_blob_grants()
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if allow {
+        let entries = grants.entry(label.to_string()).or_default();
+        if entries.len() >= 8 && !entries.contains(&url) {
+            return Err("Too many PDF previews".into());
+        }
+        entries.insert(url);
+    } else if let Some(entries) = grants.get_mut(label) {
+        entries.remove(&url);
+        if entries.is_empty() {
+            grants.remove(label);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn navigation_pdf_preview(window: tauri::Window, url: String, allow: bool) -> Result<(), String> {
+    grant_pdf_blob(window.label(), url, allow)
+}
+
+fn registered_pdf_blob(label: &str, url: &tauri::Url) -> bool {
+    url.scheme() == "blob"
+        && pdf_blob_grants().lock().is_ok_and(|grants| {
+            grants
+                .get(label)
+                .is_some_and(|entries| entries.contains(url.as_str()))
+        })
+}
+
 fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("mesa-navigation-guard")
-        .on_navigation(|_, url| navigation_allowed(url))
+        .on_navigation(|webview, url| {
+            navigation_allowed(url) || registered_pdf_blob(webview.label(), url)
+        })
         .build()
 }
 
@@ -141,6 +216,12 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            std::thread::spawn(|| {
+                activity::sweep_stale_extensions();
+                // A quick crash/restart leaves fresh entries; revisit after their grace period.
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                activity::sweep_stale_extensions();
+            });
             #[cfg(desktop)]
             {
                 use tauri::Emitter;
@@ -172,6 +253,7 @@ pub fn run() {
         .manage(QuitGuard::default())
         .manage(vaultwatch::WatchState::default())
         .invoke_handler(tauri::generate_handler![
+            navigation_pdf_preview,
             sync::sync_start,
             sync::sync_stop,
             sync::sync_status,
@@ -240,6 +322,9 @@ pub fn run() {
             } = &event
             {
                 use tauri::Manager;
+                if let Ok(mut grants) = pdf_blob_grants().lock() {
+                    grants.remove(label);
+                }
                 terminal::revoke_window(&app.state::<terminal::TerminalState>(), label);
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
@@ -276,6 +361,34 @@ mod navigation_tests {
     }
 
     #[test]
+    fn pdf_blob_allowance_is_exact_window_scoped_and_revocable() {
+        let url = "blob:http://tauri.localhost/00000000-0000-0000-0000-000000000000";
+        let parsed = url.parse().unwrap();
+        assert!(!allowed(url));
+        super::grant_pdf_blob("doc-test", url.into(), true).unwrap();
+        assert!(super::registered_pdf_blob("doc-test", &parsed));
+        assert!(!super::registered_pdf_blob("main", &parsed));
+        assert!(!super::registered_pdf_blob(
+            "doc-test",
+            &"blob:http://tauri.localhost/10000000-0000-0000-0000-000000000000"
+                .parse()
+                .unwrap()
+        ));
+        super::grant_pdf_blob("doc-test", url.into(), false).unwrap();
+        assert!(!super::registered_pdf_blob("doc-test", &parsed));
+        for invalid in [
+            "data:application/pdf,x",
+            "blob:https://evil.example/00000000-0000-0000-0000-000000000000",
+            "blob:http://tauri.localhost/short",
+            "blob:http://asset.localhost/00000000-0000-0000-0000-000000000000",
+            "blob:tauri://evil/00000000-0000-0000-0000-000000000000",
+        ] {
+            assert!(super::grant_pdf_blob("doc-test", invalid.into(), true).is_err());
+        }
+        assert!(super::grant_pdf_blob("agent-test", url.into(), true).is_err());
+    }
+
+    #[test]
     fn only_app_origins_may_be_navigated_to() {
         assert!(allowed("tauri://localhost/index.html"));
         assert!(allowed("http://tauri.localhost/index.html"));
@@ -283,6 +396,9 @@ mod navigation_tests {
         assert!(allowed("asset://localhost/vault/a.pdf"));
         assert!(allowed("http://asset.localhost/vault/a.pdf"));
         for url in [
+            "data:text/html,<h1>untrusted</h1>",
+            "blob:tauri://localhost/00000000-0000-0000-0000-000000000000",
+            "about:config",
             "https://evil.example/x",
             "http://evil.example/",
             "http://tauri.localhost.evil.example/",

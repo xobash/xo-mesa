@@ -23,6 +23,7 @@
     "mesa:build": "node scripts/dev.mjs build",
     "mesa:build:windows:offline": "node scripts/dev.mjs build --config src-tauri/tauri.windows.offline.conf.json",
     "tauri": "tauri",
+    "test:activity-api": "node --test scripts/activity-api.check.mjs",
     "test:markdown": "node --test scripts/markdown-behavior.check.mjs",
     "test:index": "node --test scripts/index-search-behavior.check.mjs",
     "test:docker-context": "node scripts/docker-context.check.mjs",

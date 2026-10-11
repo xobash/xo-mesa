@@ -228,3 +228,48 @@ describe("renderMarkdown DoS resistance", () => {
     expect(elapsed).toBeLessThan(500);
   });
 });
+
+describe('remote media privacy boundary', () => {
+  const vectors = [
+    ['SVG image', '<svg><image href="https://tracker.example/a.png"/></svg>', 'href'],
+    ['SVG filter', '<svg><filter><feImage href="https://tracker.example/b.png"/></filter></svg>', 'href'],
+    ['background', '<table background="https://tracker.example/bg.png"><tr><td>x</td></tr></table>', 'background'],
+    ['newline scheme', '<img src="ht\ntps://tracker.example/c.png">', 'src'],
+    ['tab scheme', '<img src="ht\ttps://tracker.example/c.png">', 'src'],
+    ['image input', '<input type="image" src="https://tracker.example/d.png">', 'src'],
+    ['obfuscated srcset', '<img srcset="local.png 1x, ht&#9;tps://tracker.example/2.png 2x">', 'srcset'],
+    ['SVG xlink', '<svg><image xlink:href="https://tracker.example/e.png"/></svg>', 'xlink:href'],
+  ];
+  it.each(vectors)('parks %s through the actual renderer', (_label, source, name) => {
+    const template = document.createElement('template');
+    template.innerHTML = renderMarkdown(source);
+    const parked = template.content.querySelector(`[data-remote-${name.replace(':', '-')}]`);
+    expect(parked).not.toBeNull();
+    expect(parked!.hasAttribute(name)).toBe(false);
+  });
+
+  it('never restores authored data attributes, including script and remote URLs', () => {
+    const html = sanitizeHtml('<img data-remote-src="javascript:alert(1)"><svg><image data-remote-href="https://tracker.example/x"/></svg><table data-remote-background="//tracker.example/bg"></table>');
+    expect(html).not.toContain('data-remote-');
+  });
+
+  it('covers tag, attribute, scheme and control-character combinations with an independent URL oracle', () => {
+    const tags = ['img', 'input', 'source', 'video', 'audio', 'track', 'table', 'td', 'div', 'body', 'image', 'feImage', 'use', 'a', 'link', 'object', 'embed', 'iframe', 'script'];
+    const attrs = ['src', 'poster', 'background', 'data', 'href', 'xlink:href', 'srcset'];
+    const urls = ['https://tracker.example/p', 'http://tracker.example/p', '//tracker.example/p', ' ht\ntps://tracker.example/p', 'ht\ttps://tracker.example/p', '\r\n//tracker.example/p', 'HTTPS://tracker.example/p', 'https:&#9;//tracker.example/p'];
+    for (const tag of tags) for (const attr of attrs) for (const url of urls) {
+      const element = `<${tag} ${attr}="${attr === 'srcset' ? `local.png 1x, ${url} 2x` : url}">content</${tag}>`;
+      const template = document.createElement('template');
+      template.innerHTML = sanitizeHtml(['image', 'feImage', 'use'].includes(tag) ? `<svg>${element}</svg>` : element);
+      for (const node of template.content.querySelectorAll('*')) for (const name of attrs) {
+        if (node.localName === 'a' && name === 'href') continue;
+        const value = node.getAttribute(name);
+        if (value === null) continue;
+        for (const part of name === 'srcset' ? value.split(',').map(v => v.trim().split(/\s+\d/)[0]) : [value]) {
+          const parsed = new URL(part, 'https://local.example/');
+          expect(parsed.hostname, `${tag} ${attr} ${JSON.stringify(url)}`).not.toBe('tracker.example');
+        }
+      }
+    }
+  });
+});

@@ -46,6 +46,7 @@
     "allow-vault-read-bytes",
     "allow-vault-list-recovery",
     "allow-vault-storage-id",
-    "allow-workspace-open-surface"
+    "allow-workspace-open-surface",
+    "allow-navigation-pdf-preview"
   ]
 }

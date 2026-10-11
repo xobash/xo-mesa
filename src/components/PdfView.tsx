@@ -12,7 +12,8 @@ import {
   isTextEntryTarget,
   undoRedoShortcutAction,
 } from "../lib/shortcuts";
-import { urlForPath } from "../lib/vault";
+import { invoke } from "@tauri-apps/api/core";
+import { IN_TAURI, urlForPath } from "../lib/vault";
 import { groupPdfTextRunsByPage } from "../lib/pdfTextRuns";
 import { usePdfEditor } from "./usePdfEditor";
 import { sniffFileType, sanitizePdfBytes } from "../lib/pdfBytes";
@@ -190,6 +191,25 @@ export function PdfView({
     const data = new Uint8Array(bytes).buffer;
     return URL.createObjectURL(new Blob([data], { type: "application/pdf" }));
   }, [bytes, renderError]);
+  const [fallbackAdmission, setFallbackAdmission] = useState<{ url: string; error?: string } | null>(null);
+  useEffect(() => {
+    if (!renderFallbackUrl) return;
+    let alive = true;
+    const approve = IN_TAURI
+      ? invoke("navigation_pdf_preview", { url: renderFallbackUrl, allow: true })
+      : Promise.resolve();
+    void approve.then(() => {
+      if (alive) setFallbackAdmission({ url: renderFallbackUrl });
+    }).catch(reason => {
+      if (alive) setFallbackAdmission({ url: renderFallbackUrl, error: `PDF fallback unavailable: ${String(reason)}` });
+    });
+    return () => {
+      alive = false;
+      void approve.then(() => {
+        if (IN_TAURI) return invoke("navigation_pdf_preview", { url: renderFallbackUrl, allow: false });
+      }).catch(() => { /* Window destruction also revokes grants. */ });
+    };
+  }, [renderFallbackUrl]);
   const invalidPdfType = useMemo(() => {
     if (!bytes) return null;
     try {
@@ -915,11 +935,14 @@ export function PdfView({
               </div>
             </div>
           ) : renderError && bytes ? (
-            <iframe
-              className="media-pdf"
-              src={renderFallbackUrl ?? urlForPath(file.path)}
-              title={file.name}
-            />
+            fallbackAdmission?.url === renderFallbackUrl && !fallbackAdmission.error ? (
+              <iframe className="media-pdf" src={renderFallbackUrl ?? undefined} title={file.name} />
+            ) : (
+              <div className="pdf-error" role={fallbackAdmission?.error ? "alert" : "status"}>
+                {fallbackAdmission?.url === renderFallbackUrl && fallbackAdmission.error
+                  ? fallbackAdmission.error : "Preparing PDF fallback…"}
+              </div>
+            )
           ) : (
             <>
               {showNativeFirstPaint && (
