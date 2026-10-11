@@ -17,7 +17,6 @@
     "test:capabilities": "node --test scripts/capability-coverage.check.mjs",
     "test:release": "node --test scripts/release-gate.check.mjs scripts/public-release-audit.check.mjs",
     "test:bootstrap": "node --test scripts/install-behavior.check.mjs scripts/dev-behavior.check.mjs scripts/launch-cache.check.mjs",
-    "test:perf": "vitest run src/lib/graph.perf.test.ts --mode graph-bench",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "mesa": "node scripts/dev.mjs",
