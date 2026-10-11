@@ -38,6 +38,8 @@ cancelling it first.
 Drag remains the direct-manipulation transfer. Keyboard users focus the
 Research title bar and press `Ctrl/Cmd+Shift+Enter` to tear out or dock back;
 the focused bar displays that hint.
+The floating overlay header retains both paths after docking: drag it to a
+workspace edge and release, or use the same keyboard shortcut to separate it again.
 
 If Deep Research is launched from the Mesa overlay while Pi is cold, Mesa
 boots Pi in the overlay's own **Pi** window instead of opening a separate

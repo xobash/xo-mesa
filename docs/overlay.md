@@ -13,6 +13,9 @@ keys move a window and Shift+Arrow resizes it, with the same viewport limits as
 dragging. Close controls name the exact surface they close. When Pi or Deep
 Research owns the focused transfer bar, `Ctrl/Cmd+Shift+Enter` tears it out or
 docks it back. These shortcuts appear in the focused bar's hint.
+The floating Research header keeps its transfer shortcut after docking. Dragging
+it to a workspace edge and releasing also separates it into a native window;
+an ordinary move or cancelled drag leaves it in the overlay.
 
 Shift+Tab toggles immediately on the first keydown of each physical Tab press,
 from any focused Mesa surface, including editors, search fields, and Pi. The

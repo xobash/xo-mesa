@@ -10,7 +10,7 @@ import {
   type CalEvent,
 } from "../lib/daily";
 import { IN_TAURI, isImageExt, urlForPath } from "../lib/vault";
-import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
+import { detachedWindowPlacement, isWindowTearOffPoint, type DetachedWindowPlacement } from "../lib/windowTearOff";
 import { AgentSurface } from "./AgentPanel";
 import { DeepResearchPanel } from "./DeepResearchPanel";
 import { DeepResearchPhaseChip } from "./DeepResearchPhaseChip";
@@ -297,7 +297,7 @@ function PiOverlayWindow({
 }
 
 /** A draggable, resizable, closable floating window inside the overlay. */
-function FloatingWindow({
+export function FloatingWindow({
   title,
   accessory,
   rec,
@@ -305,6 +305,7 @@ function FloatingWindow({
   onChange,
   onClose,
   onFocus,
+  onTearOff,
   children,
 }: {
   title: string;
@@ -316,10 +317,11 @@ function FloatingWindow({
   onChange: (patch: Partial<WinRec>) => void;
   onClose: () => void;
   onFocus: () => void;
+  onTearOff?: (placement?: DetachedWindowPlacement) => void;
   children: React.ReactNode;
 }) {
   const startDrag = (e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest(".ov-win-close")) return;
+    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     // Prevent the drag from starting a text-selection gesture (the overlay
     // windows live over arbitrary content and Safari/WebKit will otherwise
     // highlight text while moving them).
@@ -335,18 +337,32 @@ function FloatingWindow({
         y: clamp(ev.clientY - oy, 56, window.innerHeight - 96),
       });
     };
-    const up = () => {
+    const finish = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", finish);
       document.body.style.userSelect = prevUserSelect;
+    };
+    const up = (ev: PointerEvent) => {
+      finish();
+      if (onTearOff && isWindowTearOffPoint(ev.clientX, ev.clientY, window.innerWidth, window.innerHeight)) {
+        onTearOff(detachedWindowPlacement({ screenX: ev.screenX, screenY: ev.screenY,
+          grabOffsetX: ox, grabOffsetY: oy, width: rec.w, height: rec.h }));
+      }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", finish);
   };
   const startResize = (e: React.PointerEvent) =>
     startOverlayResize(e, rec, 280, 180, onChange, onFocus);
   const handleTitleBarKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
+    if (onTearOff && isWindowTransferShortcut(event)) {
+      claimKeyboardShortcut(event.nativeEvent);
+      onTearOff();
+      return;
+    }
     const next = keyboardWinPatch(
       rec,
       event.key,
@@ -371,11 +387,11 @@ function FloatingWindow({
         onPointerDown={startDrag}
         onKeyDown={handleTitleBarKeyDown}
         tabIndex={0}
-        aria-label={`${title} window. Arrow keys move; Shift plus Arrow resizes.`}
-        title="Arrow keys move · Shift+Arrow resizes"
+        aria-label={`${title} window. Arrow keys move; Shift plus Arrow resizes.${onTearOff ? " Control or Command plus Shift plus Enter separates." : ""}`}
+        title={`Arrow keys move · Shift+Arrow resizes${onTearOff ? " · Ctrl/Cmd+Shift+Enter separates" : ""}`}
       >
         <span className="ov-win-title">{title}</span>
-        <span className="ov-window-hint" aria-hidden="true">Arrows move · Shift+arrows resize</span>
+        <span className="ov-window-hint" aria-hidden="true">Arrows move · Shift+arrows resize{onTearOff ? " · Ctrl/Cmd+Shift+Enter separates" : ""}</span>
         {accessory}
         <button className="ov-win-close" onClick={onClose} aria-label={`Close ${title}`}>
           ×
@@ -1473,6 +1489,7 @@ export function Overlay() {
             key={id}
             title={WIN_TITLE[id]}
             accessory={id === "research" ? <DeepResearchPhaseChip /> : undefined}
+            onTearOff={id === "research" && IN_TAURI ? (placement) => { void useAppStore.getState().openResearchWindow(placement); } : undefined}
             rec={fitToViewport(wins[id], safeViewportHeight)}
             z={10 + order.indexOf(id)}
             onChange={(p) => patch(id, p)}

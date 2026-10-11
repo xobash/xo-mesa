@@ -182,6 +182,7 @@ src/components/MarkdownView.tsx
 src/components/MediaView.tsx
 src/components/Modal.test.tsx
 src/components/Modal.tsx
+src/components/Overlay.test.tsx
 src/components/Overlay.tsx
 src/components/PdfThumb.test.tsx
 src/components/PdfThumb.tsx
