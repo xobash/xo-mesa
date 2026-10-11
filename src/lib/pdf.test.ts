@@ -118,7 +118,7 @@ describe("pdf editing core", () => {
     expect(bytes.length).toBeGreaterThan(0);
   });
 
-  it("replaces visible text by covering the old run and drawing the new one", async () => {
+  it("removes the old run and draws the replacement", async () => {
     const bytes = await replaceText(await makePdf(1), {
       page: 0,
       x: 20,
@@ -462,12 +462,12 @@ describe("pdf editing core", () => {
   });
 });
 
-it('cover and retype leaves the original extractable during the interim stage', async () => {
+it('replacement removes the original extractable text', async () => {
   const doc = await PDFDocument.create(); const page = doc.addPage([200,300]);
   page.drawText('SECRET-123', {x:20,y:250,size:12,font:await doc.embedFont(StandardFonts.Helvetica)});
   const output = await replaceText(await doc.save(), {page:0,x:20,y:250,width:80,height:12,text:'X'});
   const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const pdf = await getDocument({data:output.slice()}).promise;
-  try { expect((await (await pdf.getPage(1)).getTextContent()).items.map(item => 'str' in item ? item.str : '').join(' ')).toContain('SECRET-123'); }
+  try { expect((await (await pdf.getPage(1)).getTextContent()).items.map(item => 'str' in item ? item.str : '').join(' ')).not.toContain('SECRET-123'); }
   finally { await pdf.destroy(); }
 });

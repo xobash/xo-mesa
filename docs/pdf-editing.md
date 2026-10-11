@@ -8,7 +8,7 @@ paint reliably.
 
 ## Tools
 
-- `Cover and retype text` selects existing rendered text. Click a text run, edit inline, and
+- `Edit text` selects existing rendered text. Click a text run, edit inline, and
   press Enter or blur the field to commit.
 - `T` stamps new text.
 - Highlight draws a translucent rectangle.
@@ -20,17 +20,15 @@ paint reliably.
   focus. `Ctrl/Cmd+Shift+Z` and `Ctrl/Cmd+Y` redo. Inline text fields keep their
   normal browser text undo behavior until the edit is committed.
 
-## Replacing text is a cover, not a removal (interim)
+## Text replacement removes the original glyphs
 
-The Cover and retype text tool draws replacement text over the original. The original remains copyable and extractable. This is not redaction. Mesa discloses this in the toolbar and asks before the first replacement in each file.
+Mesa decodes the selected page's content streams, removes glyphs inside the selected box, and draws replacement text. Removed glyphs become text-positioning adjustments, so following text retains its position. Undo/redo and verified Save use the same byte-history path as other edits. Unreachable original streams are removed from the saved document. Inline ActualText accessibility text is updated for edited spans.
 
-## Text Replacement
+Supported content includes simple Type1/TrueType/MMType1 fonts, Standard-14 metrics, and Type0 Identity-H/Identity-V fonts with their declared widths. Tj, TJ, both quote operators, split page streams, text spacing, scaling and graphics transforms are interpreted. Inline images and other drawing content remain in place.
 
-Arbitrary PDFs do not provide a reliable universal "modify this original glyph
-run" API. Mesa uses a durable visual replacement workflow: it extracts visible
-text positions with pdf.js, paints over the selected glyph bounds, and draws the
-replacement text with pdf-lib. Undo/redo and Save use the same byte-history path
-as all other PDF edits.
+Unsupported font CMaps, Type3 fonts, intersecting Form XObjects, text clipping, inherited accessibility metadata, unsupported compression and malformed streams fail with a visible explanation. The input bytes and unsaved edit history remain unchanged. Mesa never substitutes a rasterized page or a visual text cover.
+
+Replacement text still uses Helvetica and its WinAnsi encoding. Reusing embedded fonts, Unicode replacement text and editing within Form XObjects remain future work. Text replacement is not document-wide redaction: other pages, attachments, metadata, existing copies and undo history can contain the same information.
 
 Mesa now loads the file bytes and renders pages with pdf.js in both viewer mode
 and edit mode. If pdf.js cannot render the current bytes, or if pdf.js

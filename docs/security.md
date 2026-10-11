@@ -229,4 +229,4 @@ remain separate validation work.
 The Unicode percent-escape crash is retained as a synthetic seed and unit test;
 short runs do not establish broad parser or IPC fuzz acceptance.
 
-PDF cover-and-retype preserves the original text in the file. It cannot remove sensitive information or serve as redaction; the tool discloses this and asks before first use.
+PDF text replacement removes selected glyphs and unreachable original content streams, preserves surrounding selectable text, and refuses unsupported structures without output. It is not document-wide redaction: metadata, attachments, other pages, retained source copies and undo history are outside the selected text edit. See [PDF editing](pdf-editing.md).

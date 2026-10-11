@@ -342,6 +342,8 @@ src/lib/pdf.ts
 src/lib/pdfBytes.ts
 src/lib/pdfCanvasBudget.test.ts
 src/lib/pdfCanvasBudget.ts
+src/lib/pdfContentEdit.test.ts
+src/lib/pdfContentEdit.ts
 src/lib/pdfHistory.test.ts
 src/lib/pdfHistory.ts
 src/lib/pdfPageWindow.test.ts

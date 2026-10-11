@@ -136,8 +136,6 @@ export function PdfView({
   const [mountedForPath, setMountedForPath] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingText | null>(null);
   const [pendingValue, setPendingValue] = useState("");
-  const confirmedCover = useRef(false);
-  useEffect(() => { confirmedCover.current = false; }, [file?.path]);
   const [replacePending, setReplacePending] = useState<PendingReplace | null>(null);
   const [replaceValue, setReplaceValue] = useState("");
   const drag = useRef<{ page: number; x0: number; y0: number } | null>(null);
@@ -651,10 +649,6 @@ export function PdfView({
       setReplacePending(null);
       return;
     }
-    if (!confirmedCover.current) {
-      if (!window.confirm("Mesa will cover this text and type new text on top. The original text remains in the file and can be extracted. Continue?")) { setReplacePending(null); return; }
-      confirmedCover.current = true;
-    }
     const { run } = replacePending;
     void apply(
       async (current) => {
@@ -782,7 +776,6 @@ export function PdfView({
       onKeyDown={handleUndoRedoShortcut}
     >
       <div className="pdf-toolbar">
-        {mode === "edit" && tool === "edit" && <p className="pdf-edit-disclosure" role="note">The original text stays in the PDF and can still be copied or extracted. This is not redaction.</p>}
         {mode === "edit" && (
           <>
             <div className="seg">
@@ -795,7 +788,7 @@ export function PdfView({
                     t === "select"
                       ? "Select and scroll"
                       : t === "edit"
-                      ? "Cover and retype text"
+                      ? "Edit existing text"
                       : t === "ink"
                       ? "Draw with pencil"
                       : t === "highlight"
@@ -807,7 +800,7 @@ export function PdfView({
                     t === "select"
                       ? "Select / scroll"
                       : t === "edit"
-                      ? "Cover and retype text"
+                      ? "Edit existing text"
                       : t === "ink"
                       ? "Pencil"
                       : `Add ${t}`
@@ -1068,7 +1061,7 @@ export function PdfView({
                                 width: run.width,
                                 height: run.height,
                               }}
-                              title={`Cover "${run.text.trim()}"`}
+                              title={`Edit "${run.text.trim()}"`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 startReplace(run);

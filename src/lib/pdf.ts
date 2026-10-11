@@ -72,6 +72,7 @@ export interface FormField {
 }
 
 import { sanitizePdfBytes, hasPdfEofMarker } from "./pdfBytes";
+import { removeGlyphsInBox, discardUnreachablePdfObjects } from "./pdfContentEdit";
 
 async function load(bytes: Uint8Array): Promise<PDFDocument> {
   return PDFDocument.load(sanitizePdfBytes(bytes), { ignoreEncryption: true });
@@ -245,26 +246,17 @@ export async function addText(bytes: Uint8Array, s: TextStamp): Promise<Uint8Arr
   return doc.save();
 }
 
-/** Replace text visually with an overlay and new text. This does not remove underlying content or redact it. */
+/** Remove selected content-stream glyphs and draw replacement text; unsupported structures fail before output. */
 export async function replaceText(
   bytes: Uint8Array,
   s: TextReplacement
 ): Promise<Uint8Array> {
-  // Checked before the white-out rectangle is drawn, so a rejected replacement
-  // cannot leave a painted-over box behind if the caller ever reuses the doc.
   await assertTextEncodable(s.text);
   const doc = await loadForEdit(bytes);
+  removeGlyphsInBox(doc, s);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const page = doc.getPage(s.page);
   const pad = Math.max(1.5, (s.size ?? s.height) * 0.12);
-  page.drawRectangle({
-    x: s.x - pad,
-    y: s.y - pad,
-    width: Math.max(1, s.width + pad * 2),
-    height: Math.max(1, s.height + pad * 2),
-    color: toRgb(s.background ?? { r: 1, g: 1, b: 1 }),
-    opacity: 1,
-  });
   page.drawText(s.text, {
     x: s.x,
     y: s.y + Math.max(0, s.height - (s.size ?? s.height)) * 0.35,
@@ -273,6 +265,8 @@ export async function replaceText(
     color: toRgb(s.color),
     maxWidth: Math.max(1, s.width + pad),
   });
+  await doc.flush();
+  discardUnreachablePdfObjects(doc);
   return doc.save();
 }
 

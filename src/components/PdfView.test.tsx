@@ -130,17 +130,17 @@ it('keeps dirty-window reporting and owned undo shortcuts during a render fallba
   expect(onDirtyChange).toHaveBeenLastCalledWith(false);
 });
 
-it('discloses cover text and blocks a declined first replacement', async () => {
+it('commits text replacement through the editor byte queue', async () => {
   mock.renderError = '';
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
   try {
     await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
     await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent?.includes('Edit PDF'))!.click());
-    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Cover and retype text"]')!.click());
-    expect(host.querySelector('[role=note]')?.textContent).toContain('original text stays');
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Edit existing text"]')!.click());
+    expect(host.querySelector('[role=note]')).toBeNull();
     await act(async () => host.querySelector<HTMLButtonElement>('.pdf-text-hit')!.click());
     await act(async () => host.querySelector<HTMLInputElement>('.pdf-replace-input')!.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',bubbles:true})));
-    expect(confirm).toHaveBeenCalledOnce(); expect(mock.apply).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled(); expect(mock.apply).toHaveBeenCalledOnce();
   } finally { await act(async () => root.unmount()); host.remove(); confirm.mockRestore(); }
 });
