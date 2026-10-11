@@ -77,7 +77,9 @@ and `MarkdownView` shows a notice with **Load remote images for this note**; the
 SVG XLink namespace is restored with the URL after consent. The
 choice lasts while that rendered source remains unchanged in the open view.
 A new source requires new consent, including navigation in a reused viewer. This is why the app CSP still lists `https:`
-in `img-src`. This is a sanitizer boundary with regression coverage, not a
+in `img-src`. Sanitizer-produced URL markers remain on approved media so a
+source change can revoke live URLs before paint, even on unchanged reused blocks.
+This is a sanitizer boundary with regression coverage, not a
 second network-denial layer for HTTPS images. Links in a note never navigate
 Mesa's own window: `http(s)` links
 ask before opening in Mesa's read-only reader (it needs a mounted Pi surface),

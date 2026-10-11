@@ -118,3 +118,23 @@ it('does not carry media consent to another source in a reused viewer', async ()
     }
   } finally { act(() => root.unmount()); host.remove(); }
 });
+
+it('revokes consent on unchanged media blocks when another block changes', async () => {
+  const image = '<img src="https://tracker.example/shared.png">';
+  const { host, root } = await mounted(`${image}\n\nFirst paragraph`);
+  try {
+    await vi.waitFor(() => expect(host.querySelector('[data-remote-src]')).not.toBeNull());
+    await act(async () => host.querySelector<HTMLButtonElement>('.md-remote-notice button')!.click());
+    const original = host.querySelector('img')!;
+    expect(original.getAttribute('src')).toContain('shared.png');
+    await act(async () => root.render(<MarkdownView source={`${image}\n\nOther paragraph`} />));
+    expect(original.hasAttribute('src')).toBe(false);
+    act(() => WorkerStub.latest!.reply());
+    await act(async () => vi.waitFor(() => expect(host.textContent).toContain('Other paragraph')));
+    expect(host.querySelector('img')).toBe(original);
+    expect(original.hasAttribute('src')).toBe(false);
+    expect(host.querySelector('.md-remote-notice')).not.toBeNull();
+    await act(async () => host.querySelector<HTMLButtonElement>('.md-remote-notice button')!.click());
+    expect(original.getAttribute('src')).toContain('shared.png');
+  } finally { act(() => root.unmount()); host.remove(); }
+});

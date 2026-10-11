@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { VaultFile } from "../types";
 import { resolveAssetPath } from "../lib/graph";
 import { urlForPath } from "../lib/vault";
@@ -13,19 +13,22 @@ import { markMesaPerf } from "../lib/mesaPerf";
  * `files`/`onWikiClick` default to the global store, but can be supplied so the
  * popout document windows can render against their own vault scan.
  */
-/** Restore media that the sanitizer parked in `data-remote-*` until the reader consents. */
+/** Keep sanitized URL markers so reused blocks can revoke consent before paint. */
 const REMOTE_ATTRIBUTES = ["src", "poster", "background", "data", "href", "xlink:href", "srcset"];
 const REMOTE_SELECTOR = REMOTE_ATTRIBUTES.map(name => `[data-remote-${name.replace(":", "-")}]`).join(",");
-function restoreRemoteMedia(root: Element) {
+function applyRemoteMediaConsent(root: Element, allowed: boolean) {
   const found = [...root.querySelectorAll<Element>(REMOTE_SELECTOR)];
   if (root.matches(REMOTE_SELECTOR)) found.push(root);
   found.forEach((el) => {
     for (const name of REMOTE_ATTRIBUTES) {
       const value = el.getAttribute(`data-remote-${name.replace(":", "-")}`);
       if (value === null) continue;
-      if (name === "xlink:href") el.setAttributeNS("http://www.w3.org/1999/xlink", name, value);
-      else el.setAttribute(name, value);
-      el.removeAttribute(`data-remote-${name.replace(":", "-")}`);
+      if (!allowed) el.removeAttribute(name);
+      else if (name === "xlink:href") {
+        if (el.getAttributeNS("http://www.w3.org/1999/xlink", "href") !== value) {
+          el.setAttributeNS("http://www.w3.org/1999/xlink", name, value);
+        }
+      } else if (el.getAttribute(name) !== value) el.setAttribute(name, value);
     }
   });
 }
@@ -69,9 +72,7 @@ export function MarkdownView({
   const filesRef = useRef(useFiles);
   filesRef.current = useFiles;
   const resolveImages = (nodes: readonly Node[]) => {
-    if (allowRemoteRef.current) {
-      for (const node of nodes) if (node instanceof Element) restoreRemoteMedia(node);
-    }
+    for (const node of nodes) if (node instanceof Element) applyRemoteMediaConsent(node, allowRemoteRef.current);
     const resolve = (img: HTMLImageElement) => {
       const raw = img.getAttribute("data-embed") ?? img.getAttribute("src") ?? "";
       if (!raw || /^(https?:|data:|asset:|blob:|tauri:|file:)/i.test(raw)) return;
@@ -149,11 +150,11 @@ export function MarkdownView({
     resolveImages([...el.childNodes]);
   }, [useFiles]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    if (allowRemote) restoreRemoteMedia(el);
-    setRemoteCount(el.querySelectorAll(REMOTE_SELECTOR).length);
+    applyRemoteMediaConsent(el, allowRemote);
+    setRemoteCount(allowRemote ? 0 : el.querySelectorAll(REMOTE_SELECTOR).length);
   }, [revision, allowRemote]);
 
   useEffect(() => {
