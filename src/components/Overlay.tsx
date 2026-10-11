@@ -497,13 +497,15 @@ function AppleCalendar() {
         role="grid"
         aria-label={`${MONTH_NAMES[month0]} ${year}`}
       >
-        {!mini &&
-          SUN_DOW.map((d) => (
+        {!mini && <div className="cal2-row" role="row">
+          {SUN_DOW.map((d) => (
             <div key={d} className="cal2-dow" role="columnheader">
               {d}
             </div>
           ))}
-        {weeks.flat().map((date) => {
+        </div>}
+        {weeks.map((week) => <div key={week[0]} className="cal2-row" role="row">
+        {week.map((date) => {
           const inMonth = Number(date.slice(5, 7)) - 1 === month0;
           const bs = banners(date);
           const [dateYear, dateMonth, dateDay] = dateParts(date);
@@ -564,6 +566,7 @@ function AppleCalendar() {
             </button>
           );
         })}
+        </div>)}
       </div>
     );
   };

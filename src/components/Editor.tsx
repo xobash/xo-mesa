@@ -67,6 +67,7 @@ function makeState(doc: string, onUserEdit: (text: string, activity: EditorActiv
       syntaxHighlighting(themedHighlight),
       editorLayout,
       EditorView.lineWrapping,
+      EditorView.contentAttributes.of({ "aria-label": "Note editor", "aria-multiline": "true" }),
       editableCompartment.of(EditorView.editable.of(editable)),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;

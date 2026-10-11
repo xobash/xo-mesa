@@ -150,6 +150,7 @@ src-tauri/tauri.windows.conf.json
 src-tauri/tauri.windows.offline.conf.json
 src/App.rerender.test.tsx
 src/App.tsx
+src/a11y.test.tsx
 src/components/AgentPanel.tsx
 src/components/Backlinks.tsx
 src/components/BookmarksList.test.tsx
@@ -435,6 +436,7 @@ src/lib/textRevisionHistory.test.ts
 src/lib/textRevisionHistory.ts
 src/lib/textSaveCoordinator.test.ts
 src/lib/textSaveCoordinator.ts
+src/lib/themeContrast.test.ts
 src/lib/treeWindow.test.ts
 src/lib/treeWindow.ts
 src/lib/vault.test.ts

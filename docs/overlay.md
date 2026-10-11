@@ -128,3 +128,7 @@ nothing of its own.
 The overlay's Pi window renders the same single Pi session as every other Mesa
 surface — never a second process. See [pi-agent.md](pi-agent.md) and
 [deep-research.md](deep-research.md).
+
+Calendar month grids expose weekday headers and dates inside real ARIA rows.
+Arrow keys move by day or week; Home and End move to the row edges. Outside-month
+dates remain readable, and the current date uses a contrasting filled marker.
