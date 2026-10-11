@@ -55,6 +55,7 @@ scripts/asset-metadata.check.mjs
 scripts/asset-metadata.mjs
 scripts/bootstrap-download.sh
 scripts/bundle-boundaries.check.mjs
+scripts/capability-coverage.check.mjs
 scripts/dev-behavior.check.mjs
 scripts/dev.mjs
 scripts/docker-context.check.mjs
@@ -92,6 +93,7 @@ src-tauri/Cargo.toml
 src-tauri/build.rs
 src-tauri/capabilities/default.json
 src-tauri/capabilities/pi.json
+src-tauri/capabilities/research.json
 src-tauri/capabilities/workspace.json
 src-tauri/fuzz/Cargo.lock
 src-tauri/fuzz/Cargo.toml

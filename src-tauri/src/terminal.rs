@@ -124,6 +124,14 @@ impl SessionAccess {
             Err("Terminal session is owned by another window".into())
         }
     }
+    /// Research viewers may snapshot output without owning or driving the session.
+    fn require_reader(&self, label: &str) -> Result<(), String> {
+        if self.labels.contains(label) || label.starts_with("research-") {
+            Ok(())
+        } else {
+            Err("Terminal session is owned by another window".into())
+        }
+    }
     fn prepare(&mut self, caller: &str, target: &str) -> Result<String, String> {
         crate::require_main(caller)?;
         self.require(caller)?;
@@ -1309,7 +1317,7 @@ pub fn terminal_snapshot(
     let session = sessions
         .get(&session_id)
         .ok_or_else(|| "Terminal session not found".to_string())?;
-    session.access.require(window.label())?;
+    session.access.require_reader(window.label())?;
     // Staged-but-uncommitted bytes are deliberately excluded: they will arrive
     // as a live event with `seq > snapshot.seq`, which is exactly what the
     // frontend's replay/dedupe path expects.
@@ -2081,6 +2089,15 @@ mod tests {
 #[cfg(test)]
 mod access_tests {
     use super::*;
+    #[test]
+    fn research_viewers_can_only_read_output() {
+        let mut access = SessionAccess::new("main");
+        assert!(access.require_reader("research-x").is_ok());
+        assert!(access.require("research-x").is_err());
+        assert!(access.attach("research-x", None).is_err());
+        assert!(access.require_reader("doc-x").is_err());
+        assert!(access.require_reader("main").is_ok());
+    }
     #[test]
     fn session_handoff_is_label_bound_single_use_and_expires() {
         let mut access = SessionAccess::new("main");

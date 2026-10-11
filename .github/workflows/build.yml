@@ -30,6 +30,7 @@ jobs:
       - run: npm run audit:assets
       - run: npm run test:toolchains
       - run: npm run test:documents
+      - run: npm run test:capabilities
       - run: npm run test:release
       - run: npm run test:bootstrap
       - run: npm run test:index
