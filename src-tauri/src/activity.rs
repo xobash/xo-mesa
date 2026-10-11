@@ -359,13 +359,15 @@ pub(crate) fn sweep_stale_extensions() {
 }
 
 fn create_extension_dir(dir: &std::path::Path) -> std::io::Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        std::fs::DirBuilder::new().mode(0o700).create(dir)
     }
-    builder.create(dir)
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(dir)
+    }
 }
 
 /// Materialize the bundled Pi extensions; returns
