@@ -228,3 +228,5 @@ maintained bounded targets; native IPC and full document-format campaigns
 remain separate validation work.
 The Unicode percent-escape crash is retained as a synthetic seed and unit test;
 short runs do not establish broad parser or IPC fuzz acceptance.
+
+PDF cover-and-retype preserves the original text in the file. It cannot remove sensitive information or serve as redaction; the tool discloses this and asks before first use.

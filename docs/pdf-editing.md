@@ -8,7 +8,7 @@ paint reliably.
 
 ## Tools
 
-- `Edit text` selects existing rendered text. Click a text run, edit inline, and
+- `Cover and retype text` selects existing rendered text. Click a text run, edit inline, and
   press Enter or blur the field to commit.
 - `T` stamps new text.
 - Highlight draws a translucent rectangle.
@@ -19,6 +19,10 @@ paint reliably.
 - `Ctrl/Cmd+Z` undoes the last committed PDF edit while the PDF editor owns
   focus. `Ctrl/Cmd+Shift+Z` and `Ctrl/Cmd+Y` redo. Inline text fields keep their
   normal browser text undo behavior until the edit is committed.
+
+## Replacing text is a cover, not a removal (interim)
+
+The Cover and retype text tool draws replacement text over the original. The original remains copyable and extractable. This is not redaction. Mesa discloses this in the toolbar and asks before the first replacement in each file.
 
 ## Text Replacement
 

@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { VaultFile } from '../types';
 const mock = vi.hoisted(() => ({
-  invoke: vi.fn(), undo: vi.fn(), redo: vi.fn(), dirty: false,
+  invoke: vi.fn(), apply: vi.fn(), renderError: 'Rendering failed', undo: vi.fn(), redo: vi.fn(), dirty: false,
   bytes: new TextEncoder().encode('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF'),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }));
@@ -13,7 +13,7 @@ vi.mock('../store', () => ({ useAppStore: (fn: (state: unknown) => unknown) => f
 vi.mock('./usePdfEditor', () => ({ usePdfEditor: () => ({
   bytes: mock.bytes,
   pageCount: 1, scale: 1, renderScale: 1, setScale: vi.fn(), dirty: mock.dirty,
-  status: '', renderError: 'Rendering failed', loadFailed: false, fields: [], textRuns: [],
+  status: '', renderError: mock.renderError, apply: mock.apply, loadFailed: false, fields: [], textRuns: [{page:0,text:'Original',left:20,top:20,width:80,height:12,pdfX:20,pdfY:250,pdfWidth:80,pdfHeight:12}],
   firstPagePainted: false, viewports: { current: new Map() }, canvasRefs: { current: new Map() },
   pageSizes: new Map(), bindCanvas: vi.fn(), setOnscreenPages: vi.fn(),
   undo: mock.undo, redo: mock.redo, canUndo: true, canRedo: true,
@@ -22,7 +22,7 @@ import { PdfView } from './PdfView';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => {
   vi.unstubAllGlobals(); mock.invoke.mockReset(); mock.undo.mockReset(); mock.redo.mockReset();
-  mock.dirty = false;
+  mock.dirty = false; mock.renderError = 'Rendering failed'; mock.apply.mockReset();
   mock.bytes = new TextEncoder().encode('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF');
 });
 const file: VaultFile = { path: '/vault/sample.pdf', relPath: 'sample.pdf', name: 'sample', ext: 'pdf', isMarkdown: false };
@@ -128,4 +128,19 @@ it('keeps dirty-window reporting and owned undo shortcuts during a render fallba
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
   } finally { await act(async () => root.unmount()); host.remove(); }
   expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+});
+
+it('discloses cover text and blocks a declined first replacement', async () => {
+  mock.renderError = '';
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
+  try {
+    await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
+    await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent?.includes('Edit PDF'))!.click());
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Cover and retype text"]')!.click());
+    expect(host.querySelector('[role=note]')?.textContent).toContain('original text stays');
+    await act(async () => host.querySelector<HTMLButtonElement>('.pdf-text-hit')!.click());
+    await act(async () => host.querySelector<HTMLInputElement>('.pdf-replace-input')!.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',bubbles:true})));
+    expect(confirm).toHaveBeenCalledOnce(); expect(mock.apply).not.toHaveBeenCalled();
+  } finally { await act(async () => root.unmount()); host.remove(); confirm.mockRestore(); }
 });
