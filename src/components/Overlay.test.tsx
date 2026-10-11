@@ -16,7 +16,10 @@ beforeEach(() => {
   act(() => root.render(<FloatingWindow title="Deep Research" rec={{ open: true, x: 100, y: 100, w: 500, h: 400 }} z={1}
     onChange={change} onClose={close} onFocus={() => {}} onTearOff={transfer}>Research evidence</FloatingWindow>));
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); });
+afterEach(() => {
+  act(() => { window.dispatchEvent(new Event('pointercancel')); });
+  act(() => root.unmount()); host.remove();
+});
 const header = () => host.querySelector<HTMLElement>('.ov-win-bar')!;
 function key(target: HTMLElement, modifiers: KeyboardEventInit) {
   const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...modifiers });
@@ -38,12 +41,21 @@ it('keeps both transfer shortcuts on the docked Research header while preserving
 });
 it('tears out only on edge release and preserves the grabbed screen position', () => {
   pointer(header(), 'pointerdown', { clientX: 160, clientY: 120 });
+  expect(document.activeElement).toBe(header());
   pointer(window, 'pointermove', { clientX: 500, clientY: 150 });
   expect(transfer).not.toHaveBeenCalled();
   expect(change).toHaveBeenLastCalledWith({ x: 440, y: 130 });
   pointer(window, 'pointerup', { clientX: window.innerWidth, clientY: 150, screenX: 1600, screenY: 300 });
   expect(transfer).toHaveBeenCalledWith({ x: 1540, y: 280, width: 500, height: 400 });
   expect(document.body.style.userSelect).toBe('');
+});
+it('lets a pointer-focused header claim the keyboard transfer instead of leaving focus in its former input', () => {
+  const input = document.createElement('textarea'); host.append(input); input.focus();
+  pointer(header(), 'pointerdown', { clientX: 160, clientY: 120 });
+  pointer(window, 'pointerup', { clientX: 160, clientY: 120 });
+  expect(document.activeElement).toBe(header());
+  key(document.activeElement as HTMLElement, { metaKey: true, shiftKey: true });
+  expect(transfer).toHaveBeenCalledOnce();
 });
 it('preserves normal movement and cancels a drag without creating a native window', () => {
   pointer(header(), 'pointerdown', { clientX: 160, clientY: 120 });

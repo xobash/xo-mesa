@@ -320,12 +320,13 @@ export function FloatingWindow({
   onTearOff?: (placement?: DetachedWindowPlacement) => void;
   children: React.ReactNode;
 }) {
-  const startDrag = (e: React.PointerEvent) => {
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
     // Prevent the drag from starting a text-selection gesture (the overlay
     // windows live over arbitrary content and Safari/WebKit will otherwise
     // highlight text while moving them).
     e.preventDefault();
+    e.currentTarget.focus();
     onFocus();
     const ox = e.clientX - rec.x;
     const oy = e.clientY - rec.y;
