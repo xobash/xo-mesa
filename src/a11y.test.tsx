@@ -49,8 +49,9 @@ it('keeps row semantics across year navigation, event actions and keyboard windo
   const date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const openDaily = vi.fn(async () => {});
   const removeEvent = vi.fn(async () => {});
+  const addEvent = vi.fn(async () => {});
   act(() => {
-    useAppStore.setState({ overlayOpen: true, calendarEvents: Array.from({ length: 4 }, (_, i) => ({ date, title: `Event ${i}` })), openDailyNote: openDaily, removeCalendarEvent: removeEvent });
+    useAppStore.setState({ overlayOpen: true, calendarEvents: Array.from({ length: 4 }, (_, i) => ({ date, title: `Event ${i}` })), openDailyNote: openDaily, removeCalendarEvent: removeEvent, addCalendarEvent: addEvent });
     root!.render(<Overlay />);
   });
   const click = (label: string) => {
@@ -82,7 +83,20 @@ it('keeps row semantics across year navigation, event actions and keyboard windo
   const columns = [...host.querySelectorAll<HTMLDivElement>('.cal2-week-col')];
   act(() => columns[0].click());
   expect(columns[0].classList.contains('sel')).toBe(true);
+  click('Year');
+  click('January');
+  expect(host.querySelectorAll('[role="grid"]')).toHaveLength(1);
+  expect(host.querySelector('.cal2-title')?.textContent).toContain('January');
   click('Month'); click('Today');
+  const eventInput = host.querySelector<HTMLInputElement>('.cal2-add input')!;
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(eventInput, 'New calendar event');
+    eventInput.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(host.querySelector<HTMLButtonElement>('.cal2-add button')?.disabled).toBe(false);
+  act(() => eventInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+  expect(addEvent).toHaveBeenCalledWith(date, 'New calendar event');
+  expect(eventInput.value).toBe('');
   const remove = host.querySelector<HTMLButtonElement>('.cal-event-del')!;
   act(() => remove.click());
   expect(removeEvent).toHaveBeenCalledWith(date, 'Event 0');
