@@ -594,7 +594,6 @@ export const useAppStore = create<AppState>((set, get) => {
             added: Number.isFinite(added) ? added : 0,
             removed: Number.isFinite(removed) ? removed : 0,
           });
-          if (op !== "read" && rootRaw) vault.scheduleExternalRefresh(rootRaw);
           // Activity cards need only a bounded excerpt. A full ensureContent
           // here let Pi activity bypass the startup search-cache budget and
           // retain every touched text file for the whole session.

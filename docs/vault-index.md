@@ -128,3 +128,8 @@ the document revision. Initial indexing still visits the full inventory.
 External watcher batches run serially within one vault generation. Queued paths coalesce to the latest event kind before their read starts. An older slow read cannot publish after a newer watcher batch; a vault switch or watcher replacement retires queued work. Unsaved text keeps its original save baseline.
 
 A resolved external create batch reads each textual addition once with bounded concurrency, then commits one sorted catalogue, notes and text snapshot. Failed reads remain name-only files, without an invented editable baseline. Activity snippets reuse successful reads. Only unresolved paths request a fallback scan.
+
+Pi activity for an already catalogued file records activity and requests a bounded
+preview only. Its watcher notification refreshes content; the activity bridge
+does not schedule another full scan. Unknown paths retain registration and
+missing-file discovery.
