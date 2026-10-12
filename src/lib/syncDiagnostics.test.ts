@@ -151,3 +151,24 @@ describe("buildTroubleshootingPackage", () => {
     expect(pkg).toContain("none (trust-on-first-use)");
   });
 });
+
+it("scrubs native collision paths with supplied roots and generic home fallbacks", () => {
+  const parts = ["Users", "example-user", "Vault"];
+  const macRoot = "/" + parts.join("/");
+  const windowsRoot = "C:" + "\\" + parts.join("\\");
+  const linuxRoot = "/" + ["home", "example-user", "Vault"].join("/");
+  for (const vaultRoot of [macRoot, linuxRoot, windowsRoot]) {
+    const separator = vaultRoot.startsWith("C:") ? "\\" : "/";
+    const msg = `destination already exists: ${vaultRoot}${separator}a.md`;
+    const log = [{ ts: 1, level: "error" as const, msg }];
+    const pkg = buildTroubleshootingPackage(input({ log, paths: { vaultRoot } }));
+    expect(pkg).not.toContain("example-user");
+    expect(pkg).toContain(`<vault>${separator}a.md`);
+    expect(buildTroubleshootingPackage(input({ log }))).not.toContain("example-user");
+  }
+  const mixedWindows = windowsRoot.replaceAll("\\", "/").replace("Users", "users").replace("example-user", "EXAMPLE-USER").replace("Vault", "vault");
+  const pkg = buildTroubleshootingPackage(input({ paths: { vaultRoot: windowsRoot, home: "/custom/example-user" },
+    log: [{ ts: 1, level: "error", msg: `${mixedWindows}/a.md /custom/example-user/config` }] }));
+  expect(pkg).toContain("<vault>/a.md ~/config");
+  expect(pkg).toContain("Contains peer names and network addresses.");
+});

@@ -246,6 +246,7 @@ function SyncConsole() {
   const listening = useAppStore((s) => s.syncListening);
   const settings = useAppStore((s) => s.settings);
   const fileCount = useAppStore((s) => s.files.length);
+  const vaultPath = useAppStore((s) => s.vaultPath);
   const clearSyncLog = useAppStore((s) => s.clearSyncLog);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const [copied, setCopied] = useState<"" | "package" | "log">("");
@@ -278,9 +279,14 @@ function SyncConsole() {
         /* keep "dev" */
       }
     }
+    let home: string | undefined;
+    if (IN_TAURI) {
+      try { home = await (await import("@tauri-apps/api/path")).homeDir(); } catch { /* Generic home-path scrubbing remains available. */ }
+    }
     const peer = settings.peers.find((p) => p.id === lastPeerId);
     const pkg = buildTroubleshootingPackage({
       appVersion,
+      paths: { vaultRoot: vaultPath ?? undefined, home },
       userAgent: navigator.userAgent,
       vaultFileCount: fileCount,
       peer: peer

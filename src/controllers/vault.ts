@@ -31,7 +31,7 @@ import {
   type FoundArtifact,
   type VaultWatchEvent
 } from "../lib/vault";
-import { recordTextRevisionAsync } from "../lib/textRevisionHistory";
+import { recordTextRevisionsAsync, type RevisionInput } from "../lib/textRevisionHistory";
 import { fingerprintText, loadIndexedNotes } from "../lib/vaultIndex";
 import { hydrateVaultMetadata } from "../lib/vaultMetadata";
 import type {
@@ -255,6 +255,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     const rootRaw = watcherRoot;
     const seen = new Set<string>();
     // Deduplicate changed paths and publish accumulated results once per batch.
+    const historyItems: RevisionInput[] = [];
+    const cleanChanges: string[] = [];
+    let watcherWarning = false;
     const pendingContent = new Map<string, string>();
     const created = new Map<string, VaultFile>();
     const pendingNotes = new Map<string, NoteMeta>();
@@ -354,6 +357,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             const removedFile = get().fileFor(rel);
             if (removedFile) {
               if (textSaves.isDirty(removedFile.path)) {
+                watcherWarning = true;
                 set({
                   status:
                     `File deleted outside Mesa; unsaved text was kept for ${rel}.`,
@@ -381,6 +385,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             });
             if (!isCurrent()) return;
             if (!read.ok) {
+              watcherWarning = true;
               set({ status: `External change could not be read; keeping cached content for ${rel}.` });
               continue;
             }
@@ -401,16 +406,10 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             // cannot: its verified save will detect the changed baseline and
             // keep the local edit retryable instead of overwriting either side.
             if (!textSaves.isDirty(file.path)) {
-              let preserved = false;
+              cleanChanges.push(rel);
               if (get().contentCache[rel] !== undefined) {
-                preserved = Boolean(await recordTextRevisionAsync(rootRaw, rel, old));
-                if (!isCurrent()) return;
+                historyItems.push({ relPath: rel, content: old, source: "external" });
               }
-              if (textSaves.isDirty(file.path)) {
-                set({ status: `File changed outside Mesa; unsaved text was kept for ${rel}.` });
-                continue;
-              }
-              set({ status: `File changed outside Mesa: ${rel}. ${preserved ? "Previous text kept in document history." : "Previous text history is unavailable."}` });
               const cur = get().notes[rel];
               if (cur) {
                 pendingNotes.set(rel, {
@@ -422,6 +421,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               }
               pendingContent.set(rel, text);
             } else {
+              watcherWarning = true;
               set({ status: `File changed outside Mesa; unsaved text was kept for ${rel}.` });
             }
           } else {
@@ -444,6 +444,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               });
               if (!isCurrent()) return;
               if (!read.ok) {
+                watcherWarning = true;
                 set({ status: `External change could not be read; keeping cached content for ${rel}.` });
                 continue;
               }
@@ -510,6 +511,21 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     } finally {
       // Applies whatever the batch got through even if a later path throws —
       // the per-file commits this replaced had that property too.
+      if (isCurrent() && cleanChanges.length) {
+        const revisions = historyItems.length ? await recordTextRevisionsAsync(rootRaw, historyItems) : [];
+        if (isCurrent()) {
+          const dirty = cleanChanges.filter(rel => {
+            const file = get().fileFor(rel);
+            return file && textSaves.isDirty(file.path);
+          });
+          if (dirty.length) {
+            for (const rel of dirty) set({ status: `File changed outside Mesa; unsaved text was kept for ${rel}.` });
+          } else if (!watcherWarning) {
+            const label = cleanChanges.length === 1 ? "File changed outside Mesa" : `${cleanChanges.length} files changed outside Mesa`;
+            set({ status: `${label}; ${revisions.length === cleanChanges.length && revisions.every(Boolean) ? "Previous text kept in document history." : "Previous text history is unavailable for some files."}` });
+          }
+        }
+      }
       const flushStartedAt = performance.now();
       flush();
       markMesaPerf("watcher-batch", {

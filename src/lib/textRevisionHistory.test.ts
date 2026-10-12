@@ -6,6 +6,7 @@ import {
   migrateTextRevisions,
   recordTextRevision,
   recordTextRevisionAsync,
+  listTextRevisionsAsync,
   migrateRevisionNamespaces,
 } from "./textRevisionHistory";
 
@@ -104,6 +105,15 @@ function historyDatabase(entries: Array<Record<string, unknown>>, rejectWrite = 
         error: new Error("transaction aborted"),
         abort: () => { aborted = true; tx.onabort?.(); },
         objectStore: () => ({
+          delete: (id: unknown) => { staged.delete(id); },
+          index: (name: string) => {
+            expect(name).toBe("by-file");
+            return { getAll: ([root, relPath]: string[]) => {
+              const request = { result: [...records.values()].filter(entry => entry.root === root && entry.relPath === relPath), onsuccess: null as (() => void) | null, onerror: null, error: null };
+              queueMicrotask(() => { request.onsuccess?.(); tx.oncomplete?.(); });
+              return request;
+            } };
+          },
           put: (entry: Record<string, unknown>) => { if (rejectWrite) throw Error("quota"); staged.set(entry.id, entry); },
           getAll: () => {
             const request = { result: [...records.values()], onsuccess: null as (() => void) | null, onerror: null, error: null };
@@ -140,4 +150,22 @@ it("rolls back a rejected history migration and retains the legacy recovery sour
   await expect(migrateRevisionNamespaces(() => "opaque-id")).rejects.toThrow("transaction aborted");
   expect(records.get("stored")).toEqual(original);
   expect(localStorage.getItem("mesa:textRevisionHistory:v1")).toContain("disk baseline");
+});
+
+it("protects other notes when a large note fills the history budget", async () => {
+  for (const database of [false, true]) {
+    clearTextRevisionsForTests();
+    if (database) historyDatabase([]);
+    for (const rel of ["a.md", "b.md", "c.md"]) await recordTextRevisionAsync("/vault", rel, "a".repeat(30_000), 1);
+    await recordTextRevisionAsync("/vault", "big.md", "b".repeat(990_000), 2);
+    await recordTextRevisionAsync("/vault", "big.md", "c".repeat(990_000), 3);
+    for (const rel of ["a.md", "b.md", "c.md"]) expect(await listTextRevisionsAsync("/vault", rel)).toHaveLength(1);
+  }
+});
+it("coalesces autosaves without coalescing an external snapshot", async () => {
+  await recordTextRevisionAsync("/vault", "a.md", "first", 1, { source: "autosave" });
+  await recordTextRevisionAsync("/vault", "a.md", "second", 1001, { source: "autosave" });
+  expect(listTextRevisions("/vault", "a.md").map(entry => entry.content)).toEqual(["first"]);
+  await recordTextRevisionAsync("/vault", "a.md", "external", 2001, { source: "external" });
+  expect(listTextRevisions("/vault", "a.md").map(entry => entry.content)).toEqual(["external", "first"]);
 });

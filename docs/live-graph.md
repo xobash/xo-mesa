@@ -70,13 +70,17 @@ twinkling. Hover focus emphasizes a node's neighborhood without making the rest
 of the graph disappear, so topology remains visible while a hover preview is
 open.
 
-Ambient redraws are an explicit draw reason, not a side effect of the graph
-being marked dirty. When animations are enabled and nodes are visible, the
-settled canvas must continue drawing at the living cadence after pointer
-interaction ends. The OS reduced-motion preference suppresses ambient motion,
-and hidden windows or off-screen canvases pause the frame loop until visible.
-Visible animation retains the 60 fps budget. Otherwise render-only breathing/twinkle appears to freeze even
-though the force layout is correctly settled.
+Ambient redraws are an explicit draw reason. Settled ambient animation uses
+30 fps (20 fps above 4,000 nodes); interaction and activity retain the 60 fps
+budget. The OS reduced-motion preference suppresses ambient motion. Hidden
+windows and off-screen canvases pause the loop until visible.
+
+When animations are off or reduced motion is enabled, the loop sleeps once
+force layout, overlap cleanup, zoom, focus fade, activity and replay settle.
+Pointer input, activity through its card fade, theme/System mode changes,
+loaded thumbnails, settings, resize and Fit wake it.
+`GraphView.test.tsx` covers reduced-motion sleep and pointer wake. Native frame
+and process CPU measurements are separate from this regression coverage.
 
 ## Activity Cards
 
@@ -157,7 +161,7 @@ The markdown body inside live cards is throttled separately from the canvas draw
 loop, so fast typing or agent writes do not force a React re-render every frame.
 
 Large graphs are drawn with viewport culling, batched link strokes, cached label
-ordering, cached activity lookups, and throttled ambient frames. During zoom,
+ordering, cached activity lookups, and bounded ambient frames. During zoom,
 pan, resize, and node drag, Mesa enters a fast draw path that temporarily skips
 labels and thumbnails so interaction stays smooth; full visual detail returns
 after the interaction settles.

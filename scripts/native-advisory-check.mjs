@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 const trackedWarnings = new Set(['RUSTSEC-2024-0429:glib:0.18.5:unsound', 'RUSTSEC-2024-0370:proc-macro-error:1.0.4:unmaintained']);
-export const nativeAdvisoryReview = { reviewedOn: '2026-10-07', reviewBy: '2026-11-06', removal: 'Upgrade the complete Tauri/wry/GTK binding chain and repeat Linux native acceptance before removing these exceptions.' };
+// Registry review: no vulnerabilities; locked Linux Tauri/wry still requires glib 0.18.5.
+export const nativeAdvisoryReview = { reviewedOn: '2026-10-11', reviewBy: '2026-11-10', removal: 'Upgrade the complete Tauri/wry/GTK binding chain and repeat Linux native acceptance before removing these exceptions.' };
 export function validateNativeAudit(report, now = new Date()) {
   if (!report?.vulnerabilities || !report.warnings) throw new Error('Incomplete native audit output.');
   if (report.vulnerabilities.found || report.vulnerabilities.count || report.vulnerabilities.list?.length) throw new Error('Native dependency vulnerability found.');

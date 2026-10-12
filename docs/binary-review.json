@@ -3,12 +3,12 @@
   "assets": [
     {
       "path": "docs/mesa-demo.webp",
-      "bytes": 91127832,
-      "sha256": "28b83d640c4e8c9654b3e6569d4c2cd563405d373b349bbdba9667c9fb1c0df9",
-      "status": "approved",
+      "bytes": 98447844,
+      "sha256": "a537f41f99a7b99dcb658769be95b88b4a2d46d26dc4aa4dae1219620e41327d",
+      "status": "pending",
       "reviewerType": "human",
-      "reviewedOn": "2026-10-11",
-      "evidence": "Project owner supplied and approved the 90-second recording and authorized inline README replacement. The full-resolution animated conversion preserves the supplied cut and transitions, with a brief loop crossfade. Every encoded frame was decoded; source pixels, text, timing and actual browser playback were checked. Source timestamps do not establish native capture."
+      "reviewedOn": null,
+      "evidence": "Project owner selected the replacement source and authorized README publication. The full-resolution animated conversion preserves its cut and internal transitions with a brief loop crossfade. All frames decode and timing, source comparisons, loop pixels and browser playback were checked. Exact derivative human pixel review remains pending."
     },
     {
       "path": "docs/mesa-hero-themes.png",

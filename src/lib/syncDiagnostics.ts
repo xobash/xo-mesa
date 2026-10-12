@@ -32,6 +32,7 @@ export interface DiagnosticsInput {
   log: SyncLogEntry[];
   /** Every secret to scrub from free-form text (sync keys). */
   secrets: string[];
+  paths?: { vaultRoot?: string; home?: string };
   /** Injectable clock for tests. */
   now?: Date;
 }
@@ -70,17 +71,27 @@ function bytesHuman(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }
 
-/**
- * Build the full troubleshooting package (markdown). Safe to paste anywhere:
- * all free-form text is secret-scrubbed and the vault's absolute path is
- * never included.
- */
+function redactPaths(text: string, paths: DiagnosticsInput["paths"]): string {
+  let out = text;
+  for (const [path, label] of [[paths?.vaultRoot, "<vault>"], [paths?.home, "~"]] as const) {
+    if (!path) continue;
+    const normalized = path.replace(/[\\/]+$/, "");
+    if (!normalized) continue;
+    const pattern = normalized.split(/[\\/]/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\\\/]");
+    out = out.replace(new RegExp(pattern + "(?=[\\\\/]|$|[\\s\"'])", /^[a-z]:/i.test(path) || path.startsWith("\\") ? "gi" : "g"), label);
+  }
+  return out.replace(/\/(?:Users|home)\/[^/\\\s]+/g, "~")
+    .replace(/[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+/gi, "~");
+}
+
+/** Build scrubbed diagnostics; peer identities and relative file names remain. */
 export function buildTroubleshootingPackage(input: DiagnosticsInput): string {
   const now = input.now ?? new Date();
   const lines: string[] = [];
-  const push = (s: string) => lines.push(redactSecrets(s, input.secrets));
+  const push = (s: string) => lines.push(redactSecrets(redactPaths(s, input.paths), input.secrets));
 
   push("# Mesa sync troubleshooting package");
+  push("Contains peer names and network addresses. Review file names and errors before sharing.");
   push("");
   push(`- Generated: ${now.toISOString()}`);
   push(`- Mesa version: ${input.appVersion}`);

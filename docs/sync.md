@@ -356,7 +356,11 @@ collected even while the window is closed and are waiting when you open it.
 pasted at an LLM or into a bug report: app version and environment, vault file
 count, peer + trust state, settings, the full sync report (counts, bytes,
 duration, every failed file with its error), and the complete log. Sync keys
-are scrubbed (`[redacted]`) and the vault's absolute path is never included.
+are scrubbed (`[redacted]`); supplied vault roots become `<vault>` and home
+paths become `~`, including generic macOS/Linux/Windows username fallbacks.
+The package warns that peer names, network addresses, relative file names and
+error details remain: review them before sharing. `syncDiagnostics.test.ts`
+covers native collision paths with and without supplied roots.
 **Copy log** copies just the raw lines; **Clear** empties the console.
 When a run is incomplete, the main sync status names the first failed files
 directly. The console also shows a capped failed-file summary with operation and

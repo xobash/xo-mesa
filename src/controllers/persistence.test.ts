@@ -3,9 +3,9 @@ import { expect, it, vi } from 'vitest';
 import { createStore } from 'zustand';
 import { useAppStore } from '../store';
 import { createPersistenceController } from './persistence';
-const io = vi.hoisted(() => ({ write: vi.fn() }));
-vi.mock('../lib/vault', async original => ({ ...await original<object>(), writeNote: io.write }));
-vi.mock('../lib/textRevisionHistory', async original => ({ ...await original<object>(), recordTextRevisionAsync: async () => ({ id: 'test' }) }));
+const io = vi.hoisted(() => ({ write: vi.fn(), history: vi.fn(async () => ({ id: 'test' })), list: vi.fn(), read: vi.fn() }));
+vi.mock('../lib/vault', async original => ({ ...await original<object>(), writeNote: io.write, readNoteResult: io.read }));
+vi.mock('../lib/textRevisionHistory', async original => ({ ...await original<object>(), recordTextRevisionAsync: io.history, listTextRevisionsAsync: io.list }));
 it('retains failed drafts independently and retries their exact disk baselines', async () => {
   const files = ['a', 'b'].map(name => ({ path: `/vault/${name}.md`, relPath: `${name}.md`, name, ext: 'md', isMarkdown: true }));
   const state = createStore(() => ({ ...useAppStore.getInitialState(), vaultPath: '/vault', files, notes: {}, contentCache: {}, fileFor: (rel: string) => files.find(f => f.relPath === rel) }));
@@ -20,4 +20,11 @@ it('retains failed drafts independently and retries their exact disk baselines',
   expect(io.write).toHaveBeenLastCalledWith(files[0], 'draft a', 'disk a');
   expect(controller.textSaves.isDirty(files[0].path)).toBe(false);
   expect(state.getState().textSaveIssues).toEqual({});
+  state.setState({ activePath: 'a.md', content: 'disk before restore', contentCache: { 'a.md': 'disk before restore' } });
+  io.list.mockResolvedValue([{ id: 'older', content: 'restored text' }]);
+  io.read.mockResolvedValue({ ok: true, text: 'disk before restore' });
+  io.write.mockRejectedValueOnce(Error('locked')).mockResolvedValue(undefined);
+  await expect(controller.actions.restoreTextRevision('older')).rejects.toThrow('locked');
+  await controller.actions.retryTextSaveIssue(files[0].path);
+  expect(io.history).toHaveBeenLastCalledWith('/vault', 'a.md', 'disk before restore', expect.any(Number), { source: 'restore' });
 });

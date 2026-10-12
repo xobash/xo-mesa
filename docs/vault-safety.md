@@ -129,8 +129,8 @@ perfectly.
   one tab cannot cancel another tab's debounce. Writes are serialized, a newer
   revision waits for the in-flight revision, and each successful write advances
   the exact expected disk baseline used by the next verified write. A failure
-  stays dirty and retryable. Before a successful text save replaces a prior
-  disk version, Mesa records that prior text in bounded local revision history.
+  stays dirty and retryable. After a verified text save succeeds, Mesa records its prior
+  disk text in bounded local revision history.
   Desktop-capable runtimes use an asynchronous IndexedDB transaction store and
   migrate prior local history on first use. History storage is best-effort and
   runs after verified-save success: unavailable recovery storage cannot report
@@ -138,7 +138,16 @@ perfectly.
   duplicate retry. Revisions are listed newest-first with a deterministic
   tie-breaker, so rapid saves with the same clock timestamp still restore the
   intended local snapshot.
-  (20 versions per file, capped by a shared local character budget). Each
+  History keeps at most 20 versions per file and 1,000,000 characters per
+  revision. It protects the newest eligible revision of the 500 most recently
+  revised files; that floor can exceed the shared 2,000,000-character budget,
+  up to 500,000,000 characters. Older versions fill only the remaining shared
+  budget. Oversized snapshots report history unavailable without affecting the
+  verified save. Autosave snapshots preserve the first baseline in a 60-second
+  window; external and explicit History restores are not coalesced across sources.
+  A failed restore keeps its source tag through an exact-baseline retry.
+  External watcher changes record their prior cached text in one batch before
+  publication. Listing history uses a readonly per-file index lookup. Each
   IndexedDB record, retention decision, and write happens in one read/write
   transaction; it reconciles individual records instead of clearing the store,
   so separate Mesa windows cannot lose acknowledged revisions. IDs are

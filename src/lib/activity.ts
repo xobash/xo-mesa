@@ -120,6 +120,13 @@ function boundedActivityText(value: string | undefined): string | undefined {
     : value;
 }
 
+const activityListeners = new Set<() => void>();
+/** Wake mounted graph surfaces when activity arrives after idle sleep. */
+export function onActivityChange(listener: () => void): () => void {
+  activityListeners.add(listener);
+  return () => { activityListeners.delete(listener); };
+}
+
 /** Register a short activity blip and operation; intensity does not accumulate across a typing burst. */
 export function bumpActivityAmount(
   id: string,
@@ -131,6 +138,7 @@ export function bumpActivityAmount(
 ): void {
   if (!id) return;
   const now = performance.now();
+  decayActivity(now);
   const rec = records.get(id) ?? { intensity: 0, rate: 0, last: now, op };
   const dt = Math.max(1, now - rec.last);
   const inst = Math.min(20, 1000 / dt); // events/sec, capped
@@ -148,6 +156,7 @@ export function bumpActivityAmount(
     rec.removed = Math.max(0, stats.removed ?? 0);
   }
   records.set(id, rec);
+  for (const listener of activityListeners) listener();
   // GraphView normally reclaims faded records every frame, but activity can
   // arrive while that optional surface is closed. Keep the module-level map
   // bounded even during a long Pi session with many unique paths.

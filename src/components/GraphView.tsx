@@ -16,6 +16,7 @@ import { buildGraph, buildNeighbors } from "../lib/graph";
 import {
   decayActivity,
   activeRecords,
+  onActivityChange,
   type ActivityOp,
 } from "../lib/activity";
 import { urlForPath } from "../lib/vault";
@@ -43,7 +44,7 @@ const clamp = (v: number, lo: number, hi: number) =>
 const CARD_W = 360;
 const CARD_H = 300;
 const ACTIVE_FRAME_MS = 1000 / 60;
-const IDLE_FRAME_MS = 1000 / 60;
+const IDLE_FRAME_MS = 1000 / 30;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 // How many of the highest-degree nodes always get a title label (the rest
 // show only on hover/active). degreeSortedRef is pre-sorted by degree desc.
@@ -58,9 +59,6 @@ const OVERLAP_GAP = 8;
 function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): number {
   if (moving || active) return ACTIVE_FRAME_MS;
   if (nodeCount > 4000) return 1000 / 20;
-  if (nodeCount > 2600) return 1000 / 30;
-  if (nodeCount > 1800) return 1000 / 36;
-  if (nodeCount > 1200) return 1000 / 45;
   return IDLE_FRAME_MS;
 }
 
@@ -367,6 +365,7 @@ export function GraphView() {
     sId: string[]; tId: string[];
   }>({ sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] });
   // Dirty flag: when false and sim is settled, we skip the expensive redraw.
+  const resumeRef = useRef<() => void>(() => {});
   const needsRedrawRef = useRef(true);
   const reducedMotionRef = useRef(prefersReducedMotion());
   const canvasVisibleRef = useRef(true);
@@ -422,6 +421,7 @@ export function GraphView() {
     hoverRef.current.since = 0;
     shownIdRef.current = null;
     setHover(null);
+    resumeRef.current();
   };
   const suppressGraphHover = () => {
     graphControlsHoverRef.current = true;
@@ -507,10 +507,12 @@ export function GraphView() {
     }
     layoutSettledRef.current = false;
     needsRedrawRef.current = true;
+    resumeRef.current();
   }
 
   useEffect(() => {
     themeDirtyRef.current = true;
+    resumeRef.current();
   }, [theme]);
 
   // Dismiss the graph-settings popover on any outside click or window blur.
@@ -625,6 +627,10 @@ export function GraphView() {
     let img = cache.get(path);
     if (!img) {
       img = new Image();
+      img.onload = () => {
+        needsRedrawRef.current = true;
+        resumeRef.current();
+      };
       img.src = urlForPath(path);
       cache.set(path, img);
     }
@@ -663,6 +669,7 @@ export function GraphView() {
 
     motionUntilRef.current = now + 1200;
     needsRedrawRef.current = true;
+    resumeRef.current();
   }
 
   function clampNodeVelocities(dragging: GraphNode | null): void {
@@ -798,6 +805,7 @@ export function GraphView() {
     le.tId = new Array(lc);
 
     needsRedrawRef.current = true;
+    resumeRef.current();
 
     let sim = simRef.current;
     if (!sim) {
@@ -899,6 +907,7 @@ export function GraphView() {
       motionUntilRef.current = performance.now() + 2400;
       simRef.current = sim;
       fitPendingRef.current = true;
+      resumeRef.current();
     } else {
       const lf = sim.force("link") as ReturnType<
         typeof forceLink<GraphNode, GraphLink>
@@ -908,6 +917,7 @@ export function GraphView() {
       lf.links(links);
       sim.alpha(topologyChanged ? 0.22 : 0).stop();
       needsRedrawRef.current = true;
+      resumeRef.current();
     }
   // Force settings are retuned by the following effect without rebuilding nodes.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -976,6 +986,7 @@ export function GraphView() {
     sim.alpha(Math.max(sim.alpha(), count > 0 ? 0.12 : 0)).alphaTarget(0).stop();
     layoutSettledRef.current = false;
     needsRedrawRef.current = true;
+    resumeRef.current();
   }, [
     graphNodeSize,
     graphCenterForce,
@@ -986,6 +997,7 @@ export function GraphView() {
 
   useEffect(() => {
     needsRedrawRef.current = true;
+    resumeRef.current();
   }, [graphArrows, graphTextFadeThreshold, graphLinkThickness]);
 
   // ---- size the canvas to its container ----------------------------------
@@ -1031,6 +1043,7 @@ export function GraphView() {
       fitPendingRef.current = true; // re-fit when the pane resizes
       fastDrawUntilRef.current = performance.now() + 700;
       needsRedrawRef.current = true;
+      resumeRef.current();
     };
     const ro = new ResizeObserver(() => {
       // Cheap per-tick: let the current bitmap scale to the new box so the
@@ -1080,6 +1093,7 @@ export function GraphView() {
       motionUntilRef.current = performance.now() + 2400;
       fastDrawUntilRef.current = performance.now() + 280;
       needsRedrawRef.current = true;
+      resumeRef.current();
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
@@ -2082,6 +2096,9 @@ export function GraphView() {
         }
       }
 
+      if (forceNodesRef.current.length === 0) layoutSettledRef.current = true;
+      if (nodesRef.current.length === 0) fitPendingRef.current = false;
+
       // If there are active (flickering) nodes, we must keep redrawing.
       if (activeItems.length > 0) needsRedrawRef.current = true;
       const shouldDraw =
@@ -2099,7 +2116,7 @@ export function GraphView() {
 
       // Hover detection and activity cards are lightweight and can run
       // every frame even when the graph is settled.
-      if (now - lastHoverAtRef.current >= 40) {
+      if (shouldDraw || now - lastHoverAtRef.current >= 40) {
         lastHoverAtRef.current = now;
         updateHover(now);
       }
@@ -2114,9 +2131,11 @@ export function GraphView() {
     let lastFrameErrorAt = 0;
     let hadFrameError = false;
     let alive = true;
+    let running = false;
     const loop = () => {
       raf = 0;
       if (!alive || document.hidden || !canvasVisibleRef.current) return;
+      running = true;
       try {
         frame();
         if (hadFrameError) {
@@ -2133,14 +2152,35 @@ export function GraphView() {
         }
         needsRedrawRef.current = true;
       }
-      raf = requestAnimationFrame(loop);
+      running = false;
+      const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
+      const zooming = Math.abs(targetKRef.current - transformRef.current.k) > 0.0005;
+      const focusTarget = hoverRef.current.id ? 1 : 0;
+      if ((animationsOn && nodesRef.current.length > 0) || needsRedrawRef.current ||
+          (simRef.current?.alpha() ?? 0) > 0.004 || zooming ||
+          dragRef.current.node || dragRef.current.panning || activeRecords(0.02).length ||
+          activityRef.current.some(item => item.visible) ||
+          focusRef.current.k !== focusTarget || (hoverRef.current.id && shownIdRef.current !== hoverRef.current.id) || !layoutSettledRef.current ||
+          replayCameraRef.current || fitPendingRef.current || timelapseRef.current) {
+        raf = requestAnimationFrame(loop);
+      }
     };
     const resume = () => {
-      if (alive && !raf && !document.hidden && canvasVisibleRef.current) {
+      if (alive && !running && !raf && !document.hidden && canvasVisibleRef.current) {
         needsRedrawRef.current = true;
         raf = requestAnimationFrame(loop);
       }
     };
+    resumeRef.current = resume;
+    const themeObserver = new MutationObserver(() => {
+      themeDirtyRef.current = true;
+      resume();
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-mode"] });
+    const stopActivity = onActivityChange(resume);
+    const stopSettings = useAppStore.subscribe((state, previous) => {
+      if (state.settings.animations !== previous.settings.animations || state.activePath !== previous.activePath) resume();
+    });
     const stopMotion = onReducedMotionChange(reduce => {
       reducedMotionRef.current = reduce;
       needsRedrawRef.current = true;
@@ -2156,7 +2196,9 @@ export function GraphView() {
     resume();
     return () => {
       alive = false;
-      stopMotion(); observer?.disconnect();
+      resumeRef.current = () => {};
+      themeObserver.disconnect();
+      stopActivity(); stopSettings(); stopMotion(); observer?.disconnect();
       document.removeEventListener("visibilitychange", resume);
       cancelAnimationFrame(raf);
       if (activityClearTimerRef.current) clearTimeout(activityClearTimerRef.current);
@@ -2171,6 +2213,7 @@ export function GraphView() {
   }
 
   function onPointerDown(e: React.PointerEvent) {
+    resumeRef.current();
     if (e.button !== 0 || dragRef.current.node || dragRef.current.panning) return;
     replayCameraRef.current = false;
     const { x, y } = localPoint(e.clientX, e.clientY);
@@ -2197,6 +2240,7 @@ export function GraphView() {
   }
 
   function onPointerMove(e: React.PointerEvent) {
+    resumeRef.current();
     const { x, y } = localPoint(e.clientX, e.clientY);
     pointerRef.current = { x, y, inside: true };
     const d = dragRef.current;
@@ -2221,6 +2265,7 @@ export function GraphView() {
         fastDrawUntilRef.current = performance.now() + 260;
       }
       needsRedrawRef.current = true;
+      resumeRef.current();
     } else if (d.panning) {
       const t = transformRef.current;
       const dx = x - d.lastX;
@@ -2234,6 +2279,7 @@ export function GraphView() {
       motionUntilRef.current = performance.now() + 2400;
       fastDrawUntilRef.current = performance.now() + 260;
       needsRedrawRef.current = true;
+      resumeRef.current();
     }
   }
 
@@ -2257,6 +2303,7 @@ export function GraphView() {
       motionUntilRef.current = performance.now() + 4600;
       fastDrawUntilRef.current = performance.now() + 220;
       needsRedrawRef.current = true;
+      resumeRef.current();
     } else if (click && !d.moved && d.panning) {
       // Double-click on empty canvas → re-fit the whole graph (Obsidian-style
       // quick reset after wandering off while panning/zooming).
@@ -2264,9 +2311,11 @@ export function GraphView() {
       if (now - lastBgClickRef.current < 350) {
         lastBgClickRef.current = 0;
         fitPendingRef.current = true;
+        resumeRef.current();
         motionUntilRef.current = now + 1200;
         fastDrawUntilRef.current = now + 300;
         needsRedrawRef.current = true;
+        resumeRef.current();
       } else {
         lastBgClickRef.current = now;
       }
@@ -2292,6 +2341,7 @@ export function GraphView() {
     endDrag(false);
   }
   function onPointerLeave() {
+    resumeRef.current();
     pointerRef.current = { ...pointerRef.current, inside: false };
     // Pointer capture keeps a drag alive while the cursor crosses the canvas
     // edge. Do not turn that normal path into an accidental cancellation.
@@ -2353,6 +2403,7 @@ export function GraphView() {
           onClick={() => {
             replayCameraRef.current = false;
             fitPendingRef.current = true;
+            resumeRef.current();
           }}
           title="Fit the graph to the view"
         >
@@ -2385,6 +2436,7 @@ export function GraphView() {
             setTimelapseOn(true);
             motionUntilRef.current = performance.now() + 1800;
             needsRedrawRef.current = true;
+            resumeRef.current();
           }}
           title={timelapseOn ? "Stop timelapse animation" : "Start timelapse animation"}
           aria-label={timelapseOn ? "Stop timelapse animation" : "Start timelapse animation"}

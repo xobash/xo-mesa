@@ -8,13 +8,18 @@ export interface TextRevision {
   content: string;
   /** Serialized order for equal-millisecond saves; assigned inside IndexedDB. */
   order?: number;
+  source?: RevisionSource;
 }
 
 const STORAGE_KEY = "mesa:textRevisionHistory:v1";
 const DATABASE_NAME = "mesa-text-revision-history";
 const DATABASE_VERSION = 1;
 const DATABASE_STORE = "revisions";
+export type RevisionSource = "autosave" | "external" | "restore";
 const MAX_PER_FILE = 20;
+const MAX_REVISION_CHARS = 1_000_000;
+const MAX_FILES = 500;
+const REVISION_COALESCE_MS = 60_000;
 const MAX_TOTAL_CHARS = 2_000_000;
 
 function isTextRevision(entry: unknown): entry is TextRevision {
@@ -76,18 +81,26 @@ function revisionId(now: number): string {
 function trim(entries: TextRevision[]): TextRevision[] {
   const newest = [...entries].sort(compareNewestFirst);
   const perFile = new Map<string, number>();
-  const kept: TextRevision[] = [];
+  const kept = new Set<TextRevision>();
+  const key = (entry: TextRevision) => `${entry.root}\0${entry.relPath}`;
   let chars = 0;
+  // Protect one copy for each of the 500 most recently revised files.
   for (const entry of newest) {
-    const key = `${entry.root}\0${entry.relPath}`;
-    const count = perFile.get(key) ?? 0;
-    if (count >= MAX_PER_FILE) continue;
-    if (kept.length > 0 && chars + entry.content.length > MAX_TOTAL_CHARS) continue;
-    kept.push(entry);
-    perFile.set(key, count + 1);
+    if (perFile.has(key(entry)) || entry.content.length > MAX_REVISION_CHARS) continue;
+    if (perFile.size >= MAX_FILES) break;
+    kept.add(entry);
+    perFile.set(key(entry), 1);
     chars += entry.content.length;
   }
-  return kept.sort(compareNewestFirst);
+  for (const entry of newest) {
+    const count = perFile.get(key(entry));
+    if (kept.has(entry) || count === undefined || count >= MAX_PER_FILE ||
+        entry.content.length > MAX_REVISION_CHARS || chars + entry.content.length > MAX_TOTAL_CHARS) continue;
+    kept.add(entry);
+    perFile.set(key(entry), count + 1);
+    chars += entry.content.length;
+  }
+  return newest.filter(entry => kept.has(entry));
 }
 
 function compareNewestFirst(a: TextRevision, b: TextRevision): number {
@@ -133,7 +146,7 @@ function revisionDatabase(): Promise<IDBDatabase> {
 
 function sameRevision(left: TextRevision, right: TextRevision): boolean {
   return left.id === right.id && left.root === right.root && left.relPath === right.relPath &&
-    left.savedAt === right.savedAt && left.content === right.content && left.order === right.order;
+    left.savedAt === right.savedAt && left.content === right.content && left.order === right.order && left.source === right.source;
 }
 
 /**
@@ -169,8 +182,9 @@ async function mutateDatabase<T>(
           if (!next) store.delete(existing.id);
           else if (!sameRevision(existing, next)) store.put(next);
         }
+        const storedIds = new Set(stored.map(entry => entry.id));
         for (const entry of desired) {
-          if (!stored.some((existing) => existing.id === entry.id)) store.put(entry);
+          if (!storedIds.has(entry.id)) store.put(entry);
         }
       } catch (error) {
         try { tx.abort(); } catch { /* transaction already ended */ }
@@ -188,38 +202,65 @@ async function mutateDatabase<T>(
   });
 }
 
-export function recordTextRevisionAsync(
-  root: string,
-  relPath: string,
-  content: string,
-  now = Date.now()
-): Promise<TextRevision | null> {
+export interface RevisionInput {
+  relPath: string;
+  content: string;
+  source: RevisionSource;
+}
+
+function addRevision(entries: TextRevision[], root: string, item: RevisionInput, now: number): TextRevision | null {
+  if (!root || !item.relPath || item.content.length > MAX_REVISION_CHARS) return null;
+  const last = entries.filter(entry => entry.root === root && entry.relPath === item.relPath).sort(compareNewestFirst)[0];
+  if (last && (last.source ?? "restore") === item.source && (last.content === item.content ||
+      (item.source === "autosave" && now >= last.savedAt && now - last.savedAt < REVISION_COALESCE_MS))) return last;
+  const revision: TextRevision = { id: revisionId(now), root, ...item, savedAt: now, order: nextOrder(entries) };
+  entries.unshift(revision);
+  return revision;
+}
+
+/** One retention transaction for a complete external-change batch. */
+export function recordTextRevisionsAsync(root: string, items: RevisionInput[], now = Date.now()): Promise<(TextRevision | null)[]> {
   root = vaultStorageId(root);
-  if (!root || !relPath) return Promise.resolve(null);
-  if (typeof indexedDB === "undefined") return Promise.resolve(recordTextRevision(root, relPath, content, now));
-  return mutateDatabase((entries) => {
-    const last = entries
-      .filter((entry) => entry.root === root && entry.relPath === relPath)
-      .sort(compareNewestFirst)[0];
-    if (last?.content === content) return { value: last, entries };
-    const revision: TextRevision = { id: revisionId(now), root, relPath, savedAt: now, content, order: nextOrder(entries) };
-    return { value: revision, entries: [revision, ...entries] };
-  }).catch(() => null);
+  if (!items.length) return Promise.resolve([]);
+  const mutation = (entries: TextRevision[]) => {
+    const updated = [...entries];
+    const results = items.map(item => addRevision(updated, root, item, now));
+    const retained = trim(updated);
+    const ids = new Set(retained.map(entry => entry.id));
+    return { value: results.map(entry => entry && ids.has(entry.id) ? entry : null), entries: retained };
+  };
+  if (typeof indexedDB === "undefined") {
+    const result = mutation(readAll());
+    return Promise.resolve(writeAll(result.entries) ? result.value : items.map(() => null));
+  }
+  return mutateDatabase(mutation).catch(() => items.map(() => null));
+}
+
+export async function recordTextRevisionAsync(
+  root: string, relPath: string, content: string, now = Date.now(),
+  options: { source: RevisionSource } = { source: "restore" }
+): Promise<TextRevision | null> {
+  return (await recordTextRevisionsAsync(root, [{ relPath, content, source: options.source }], now))[0];
 }
 
 export async function listTextRevisionsAsync(root: string, relPath: string): Promise<TextRevision[]> {
   root = vaultStorageId(root);
   if (typeof indexedDB === "undefined") return listTextRevisions(root, relPath);
   try {
-    return await mutateDatabase((entries) => ({
-      value: entries
-      .filter((entry) => entry.root === root && entry.relPath === relPath)
-      .sort(compareNewestFirst),
-      entries,
-    }));
-  } catch {
-    return [];
-  }
+    const db = await revisionDatabase();
+    try {
+      return await new Promise<TextRevision[]>((resolve, reject) => {
+        const tx = db.transaction(DATABASE_STORE, "readonly");
+        const request = tx.objectStore(DATABASE_STORE).index("by-file").getAll([root, relPath]);
+        let entries: TextRevision[] = [];
+        request.onsuccess = () => { entries = (request.result as unknown[]).filter(isTextRevision).sort(compareNewestFirst); };
+        request.onerror = () => reject(request.error);
+        tx.oncomplete = () => resolve(entries);
+        tx.onabort = () => reject(tx.error);
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally { db.close(); }
+  } catch { return []; }
 }
 
 export async function migrateTextRevisionsAsync(root: string, fromRelPath: string, toRelPath: string): Promise<boolean> {
@@ -265,17 +306,8 @@ export function recordTextRevision(
   root = vaultStorageId(root);
   if (!root || !relPath) return null;
   const entries = readAll();
-  const last = entries.filter((entry) => entry.root === root && entry.relPath === relPath).sort(compareNewestFirst)[0];
-  if (last?.content === content) return last;
-  const revision: TextRevision = {
-    id: revisionId(now),
-    root,
-    relPath,
-    savedAt: now,
-    content,
-    order: nextOrder(entries),
-  };
-  return writeAll(trim([revision, ...entries])) ? revision : null;
+  const revision = addRevision(entries, root, { relPath, content, source: "restore" }, now);
+  return revision && writeAll(trim(entries)) ? revision : null;
 }
 
 export function listTextRevisions(root: string, relPath: string): TextRevision[] {

@@ -6,6 +6,7 @@ import type { Simulation, ForceLink, ForceManyBody } from "d3-force";
 import type { GraphNode, GraphLink, VaultFile } from "../types";
 import { useAppStore } from "../store";
 import { buildNotes } from "../lib/graph";
+import { bumpActivityAmount } from "../lib/activity";
 import { GraphView, resolveOverlaps } from "./GraphView";
 
 const captured = vi.hoisted(() => ({ sim: null as unknown }));
@@ -302,4 +303,27 @@ it('updates reduced motion while mounted and removes the subscription',()=>{
   act(()=>notify({matches:true} as MediaQueryListEvent));f.tick();f.clear.mockClear();
   for(let i=0;i<60;i++){vi.advanceTimersByTime(20);f.tick();}expect(f.clear).not.toHaveBeenCalled();
   act(()=>root.unmount());expect(remove).toHaveBeenCalledWith('change',notify);
+});
+
+it('sleeps after reduced-motion settling and wakes on pointer input', async () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+  const f = frameHarness();
+  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true } }));
+  for (let i = 0; i < 20; i++) { vi.advanceTimersByTime(20); f.tick(); }
+  f.raf.mockClear();
+  for (let i = 0; i < 60; i++) { vi.advanceTimersByTime(20); f.tick(); }
+  expect(f.raf).not.toHaveBeenCalled();
+  pointer('pointermove', 10, 10);
+  expect(f.raf).toHaveBeenCalledOnce();
+  for (let i = 0; i < 20; i++) { vi.advanceTimersByTime(20); f.tick(); }
+  f.raf.mockClear();
+  act(() => bumpActivityAmount('Newest.md', 1));
+  expect(f.raf).toHaveBeenCalledOnce();
+  for (let i = 0; i < 250; i++) { vi.advanceTimersByTime(20); f.tick(); }
+  f.raf.mockClear();
+  for (let i = 0; i < 20; i++) { vi.advanceTimersByTime(20); f.tick(); }
+  expect(f.raf).not.toHaveBeenCalled();
+  await act(async () => { document.documentElement.dataset.mode = 'light'; await Promise.resolve(); });
+  expect(f.raf).toHaveBeenCalledOnce();
+  delete document.documentElement.dataset.mode;
 });

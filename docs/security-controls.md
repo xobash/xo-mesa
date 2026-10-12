@@ -118,10 +118,12 @@ CONTROL-028 (AUDIT; enforced): exact-hash human pixel review for every binary
 in the candidate public allowlist. `asset-metadata.check.mjs` rejects missing,
 stale and non-human review records; `release-candidate.yml` checks the requested
 commit with `--review docs/binary-review.json`. Pending records block admission.
-The checker verifies records, not the truth of human observations.
+The checker verifies records, not the truth of human observations. Ordinary
+source CI checks binary metadata without `--review`; display in the README
+does not establish the separate human pixel-review record required for release.
 
 CONTROL-029 (AUDIT; enforced): the two exact native advisory exceptions are
-reviewed 2026-10-07 and expire after 2026-11-06. The expiry regression in
+reviewed 2026-10-11 and expire after 2026-11-10 (UTC). The expiry regression in
 `release-gate.check.mjs` rejects the same warnings after that date. Removal
 requires a compatible complete Linux binding-chain upgrade and Linux acceptance;
 the exception does not fix the upstream advisories.

@@ -40,6 +40,8 @@ interface Dependencies extends Port {
 export function createPersistenceController({ get, set, getGeneration, refreshMissingExternalFiles }: Dependencies) {
   const { reportingFailure, recordTextSaveIssue, clearTextSaveIssues, setTextSaveIssueBusy } = createSaveIssueHelpers({ get, set });
 
+  const restores = new WeakMap<VaultFile, symbol>();
+
   // Unsaved editor text belongs to a filesystem path, not to whichever tab is
   // active when a shared timer fires. The coordinator keeps one dirty record
   // per absolute path, serializes writes, and carries the exact disk baseline
@@ -59,11 +61,14 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         throw new Error(`Refusing to save non-text file ${target.relPath}.`);
       }
       const historyRoot = get().vaultPath ?? "";
+      const restore = restores.get(target);
+      const source = restore ? "restore" : "autosave";
       await writeNote(file, pending, expectedContent);
+      if (restores.get(target) === restore) restores.delete(target);
       if (pending !== expectedContent) {
         // History failures must not invalidate a verified save or queue a duplicate.
         queueMicrotask(() => {
-          void recordTextRevisionAsync(historyRoot, target.relPath, expectedContent).then((revision) => {
+          void recordTextRevisionAsync(historyRoot, target.relPath, expectedContent, Date.now(), { source }).then((revision) => {
             if (!revision) set({ status: `Saved ${target.relPath}, but revision history is unavailable.` });
           });
         });
@@ -183,6 +188,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         // The synchronous state commit follows immediately after discard, so
         // no event can observe an unpaused dirty entry with stale local text.
         saveHold.discard();
+        restores.delete(file);
         saveHold = undefined;
         set((state) => {
           const nextIssues = { ...state.textSaveIssues };
@@ -238,6 +244,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
       if (!current()) throw new Error("The document changed during recovery.");
       if (!read.ok) throw new Error("Could not read the document; no revision was restored.");
       const disk = read.text;
+      restores.set(file, Symbol());
       textSaves.markDirty(file.path, file, revision.content, disk);
       set({
         contentCache: forkContentCache(get().contentCache, { [active]: revision.content }),

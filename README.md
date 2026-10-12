@@ -63,13 +63,13 @@ need system permission. Later starts reuse an unchanged build.
 ### Windows — PowerShell
 
 ```powershell
-git clone https://github.com/xobash/xo-mesa.git; if ($LASTEXITCODE -eq 0) { Set-Location xo-mesa; .\run.cmd }
+git clone --filter=blob:none https://github.com/xobash/xo-mesa.git; if ($LASTEXITCODE -eq 0) { Set-Location xo-mesa; .\run.cmd }
 ```
 
 ### macOS / Linux — Terminal
 
 ```bash
-git clone https://github.com/xobash/xo-mesa.git && cd xo-mesa && bash ./run.sh
+git clone --filter=blob:none https://github.com/xobash/xo-mesa.git && cd xo-mesa && bash ./run.sh
 ```
 
 Already cloned? From the repository folder, run `.\run.cmd` in Windows
@@ -83,7 +83,7 @@ release, which is still pending.
 
 ## Demo
 
-![Mesa workspace demo](https://raw.githubusercontent.com/xobash/xo-mesa/main/docs/mesa-demo.webp)
+![Mesa workspace demo](docs/mesa-demo.webp)
 
 ## Configuration and usage
 
