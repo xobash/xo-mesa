@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import axe from 'axe-core';
 import { Overlay } from './components/Overlay';
 import { Editor } from './components/Editor';
@@ -13,11 +13,16 @@ vi.mock('./components/DeepResearchPanel', () => ({ DeepResearchPanel: () => null
 const initial = useAppStore.getState();
 const host = document.createElement('div');
 let root: ReturnType<typeof createRoot> | undefined;
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(2026, 6, 8, 12));
+});
 afterEach(() => {
   act(() => root?.unmount());
   host.remove();
   useAppStore.setState(initial, true);
   localStorage.clear();
+  vi.useRealTimers();
 });
 it('names the editor and retains calendar rows and keyboard date navigation', async () => {
   document.body.append(host);
@@ -41,7 +46,11 @@ it('names the editor and retains calendar rows and keyboard date navigation', as
   const results = await axe.run(host, { runOnly: ['aria-required-children', 'aria-required-parent', 'aria-input-field-name', 'link-in-text-block'] });
   expect(results.violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) }))).toEqual([]);
 });
-it('keeps row semantics across year navigation, event actions and keyboard window movement', async () => {
+it.each([
+  ['an ordinary day', new Date(2026, 6, 8, 12), '+1 more'],
+  ['a public holiday', new Date(2026, 9, 12, 12), '+2 more'],
+] as const)('keeps row semantics across year navigation, event actions and keyboard window movement on %s', async (_day, now, expectedMore) => {
+  vi.setSystemTime(now);
   document.body.append(host);
   root = createRoot(host);
   localStorage.setItem('mesa:overlayToured', 'true');
@@ -60,7 +69,7 @@ it('keeps row semantics across year navigation, event actions and keyboard windo
     act(() => button!.click());
   };
   if (!host.querySelector('.cal2')) click('Calendar window');
-  expect(host.querySelector('.cal2-more')?.textContent).toBe('+1 more');
+  expect(host.querySelector('.cal2-more')?.textContent).toBe(expectedMore);
   for (const view of ['Day', 'Week', 'Month', 'Year']) {
     click(view);
     const before = host.querySelector('.cal2-title')!.textContent;
