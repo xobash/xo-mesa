@@ -83,10 +83,7 @@ release, which is still pending.
 
 ## Demo
 
-Explore a sample vault across System, Darkroom and Midnight: animate the graph,
-preview search results, open an image, and use Calendar and Pi in the overlay.
-
-![67-second Mesa workspace demo](https://raw.githubusercontent.com/xobash/xo-mesa/main/docs/mesa-demo.webp)
+![Mesa workspace demo](https://raw.githubusercontent.com/xobash/xo-mesa/main/docs/mesa-demo.webp)
 
 ## Configuration and usage
 
