@@ -171,6 +171,12 @@ lockfiles, including nested installs. `npm audit` and
 `scripts/native-advisory-check.mjs` check current advisory registries at release
 time. A passed version check does not cover new advisories.
 
+The locked Quinn protocol dependency is 0.11.18 or newer, outside the
+peer-triggered panic ranges in RUSTSEC-2026-0338, RUSTSEC-2026-0340 and
+RUSTSEC-2026-0343. The supply-chain regression pins that floor; the registry
+audit remains the check for newly reported advisories. See the
+[upstream advisory](https://rustsec.org/advisories/RUSTSEC-2026-0343.html).
+
 The native audit admits only these documented warning/version pairs:
 
 | Advisory | Dependency path | Mesa usage | Acceptance and removal path |

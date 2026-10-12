@@ -1,8 +1,8 @@
 Mesa third-party notices
 Generated from installed, locked dependencies. Mesa's own MIT license is separate.
 package-lock-sha256: 201baa3cdd3d3fd41f7ec8c3f01fc21102499bbd5c810891d1083df94c75a278
-Cargo-lock-sha256: e62438feee8d1de71a1c45ce720951aea60de539b6d4c49905d3cee3de21f45c
-native-notices-sha256: 21174247b986aab7db6db79840585a5ea5a76813c7aa995a15fd0cb3f18ad98b
+Cargo-lock-sha256: 5266be548d655cbb8b80429d5d5b381b1c64b7abdeb8f98f08a00c26388461e9
+native-notices-sha256: e75b8eaad10134c6903a4e3f3d6ed3680f80cd58538b34ce85ee0ae12413de44
 
 Frontend runtime dependencies (package-lock.json)
 
@@ -50789,7 +50789,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ========================================================================
-quinn-proto@0.11.17
+quinn-proto@0.11.18
 License: MIT OR Apache-2.0
 Desktop targets: x86_64-apple-darwin, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu
 
