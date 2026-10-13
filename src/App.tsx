@@ -1,5 +1,7 @@
+import { Modal } from "./components/Modal";
+import { confirmAction } from "./lib/confirmAction";
 import { loadRecentVaults, resolveRecentVault } from "./lib/persistedUi";
-import { installCloseGuard } from "./lib/closeGuard";
+import { flushBeforeClose, installCloseGuard, type BlockedClose } from "./lib/closeGuard";
 const QUIT_REQUESTED_EVENT = "mesa://quit-requested";
 import {
   Fragment,
@@ -1103,6 +1105,32 @@ function Welcome({
 }
 
 export default function App() {
+  const [blockedClose, setBlockedClose] = useState<{ reason: unknown; resolve: (choice: "keep" | "discard") => void } | null>(null);
+  const blockedCloseRef = useRef<Promise<"keep" | "discard"> | null>(null);
+  const [copying, setCopying] = useState(false);
+  const onBlocked = useCallback<BlockedClose>((reason) => {
+    if (blockedCloseRef.current) return blockedCloseRef.current;
+    const result = new Promise<"keep" | "discard">(resolve => setBlockedClose({ reason, resolve }));
+    blockedCloseRef.current = result;
+    void result.finally(() => { blockedCloseRef.current = null; });
+    return result;
+  }, []);
+  const finishBlockedClose = (choice: "keep" | "discard") => { blockedClose?.resolve(choice); setBlockedClose(null); };
+  useEffect(() => () => { blockedClose?.resolve("keep"); }, [blockedClose]);
+  const savePendingCopies = async () => {
+    setCopying(true);
+    try {
+      const root = getStore().vaultPath;
+      if (!root) throw new Error("No vault is open.");
+      const snapshots = getStore().pendingTextSaves();
+      for (const snapshot of snapshots) {
+        const saved = await invoke<boolean>("text_save_copy", { root, name: `${snapshot.target.name}-unsaved.${snapshot.target.ext}`, content: snapshot.content });
+        if (!saved) return;
+      }
+      useAppStore.setState({ status: "Recovery copies saved. Vault edits remain pending; keep editing or close without saving." });
+    } catch (reason) { useAppStore.setState({ status: `Could not save recovery copies: ${String(reason)}` }); }
+    finally { setCopying(false); }
+  };
   // A single capture-phase observer covers every current and future surface,
   // including detached controls. It changes only local admission of optional
   // work; it never records input or sends it anywhere.
@@ -1334,13 +1362,14 @@ export default function App() {
         getCurrentWindow(),
         () => getStore().flushSave(),
         () => getStore().textSaveState.pending > 0,
-        (status) => useAppStore.setState({ status })
+        (status) => useAppStore.setState({ status }),
+        onBlocked
       );
     }).catch((error) => {
       if (!disposed) useAppStore.setState({ status: `Close safety failed to start: ${String(error)}` });
     });
     return () => { disposed = true; stop?.(); };
-  }, [docMode, panelMode, agentMode, researchMode]);
+  }, [docMode, panelMode, agentMode, researchMode, onBlocked]);
 
   // macOS Quit requests bypass a window's close handler. Hold the app alive
   // until the same verified text flush succeeds, including failed-save cases.
@@ -1354,14 +1383,17 @@ export default function App() {
       flushingQuit = true;
       useAppStore.setState({ status: "Saving text before Quit…" });
       try {
-        await getStore().flushSave();
+        await flushBeforeClose(() => getStore().flushSave());
+        if (disposed) return;
         if (getStore().textSaveState.pending > 0) {
           throw new Error("text changes still need attention");
         }
         useAppStore.setState({ status: "Text saved. Closing Mesa…" });
         await invoke("quit_after_save");
       } catch (reason) {
+        if (disposed) return;
         useAppStore.setState({ status: `Quit stopped: ${String(reason)}` });
+        if (await onBlocked(reason) === "discard" && !disposed) await invoke("quit_after_save");
       } finally {
         flushingQuit = false;
       }
@@ -1378,7 +1410,7 @@ export default function App() {
       stop?.();
       void invoke("quit_guard_disarm");
     };
-  }, [docMode, panelMode, agentMode, researchMode]);
+  }, [docMode, panelMode, agentMode, researchMode, onBlocked]);
 
   // Auto-open: demo vault in the browser, last-used vault in the desktop app.
   useEffect(() => {
@@ -1904,6 +1936,14 @@ export default function App() {
 
   return (
     <div ref={appRootRef} className="app" tabIndex={-1}>
+      {blockedClose && <Modal title="Unsaved text" onClose={() => { if (!copying) finishBlockedClose("keep"); }}>
+        <h2>Text could not be saved</h2>
+        <p>{String(blockedClose.reason)}</p>
+        <p>Your text is still open. Save copies outside this vault before closing.</p>
+        <button className="btn" disabled={copying} onClick={() => finishBlockedClose("keep")}>Keep editing</button>
+        <button className="btn" disabled={copying} onClick={() => { void savePendingCopies(); }}>Save copies…</button>
+        <button className="btn" disabled={copying} onClick={() => { void confirmAction("Close without saving pending text? Any write already in progress may still finish.", { okLabel: "Close without saving", cancelLabel: "Keep editing" }).then(confirmed => { if (confirmed) finishBlockedClose("discard"); }); }}>Close without saving</button>
+      </Modal>}
       <TopBar />
       {graphFull ? (
         <div className="full-graph">

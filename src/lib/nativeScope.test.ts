@@ -32,7 +32,7 @@ describe("native filesystem and remote-browser scopes", () => {
 describe("main workspace authority", () => {
   const grants = (label: string) => capabilities.filter(c => c.windows?.some(p => matchesWindow(p, label))).flatMap(c => c.permissions ?? []).filter(p => typeof p === "string");
   it("keeps destructive file, credential and sync operations out of document/panel windows", () => {
-    for (const permission of ["allow-vault-move-to-recovery", "allow-vault-restore-recovery", "allow-sync-run", "allow-sync-start", "allow-sync-secrets-read", "allow-vault-apply-research"]) {
+    for (const permission of ["allow-vault-move-to-recovery", "allow-vault-restore-recovery", "allow-sync-run", "allow-sync-start", "allow-sync-secrets-read", "allow-vault-apply-research", "allow-text-save-copy"]) {
       expect(grants("main")).toContain(permission);
       for (const label of ["doc-1", "panel-graph", "panel-preview"]) expect(grants(label)).not.toContain(permission);
     }
@@ -73,7 +73,7 @@ it("does not let secondary windows mint privileged window labels or bridge autho
 it("resolves every capability command and confines destructive lifecycle grants to main", () => {
   const build = manifest;
   const handlers = registered.split("generate_handler![")[1].split("]")[0];
-  const mainOnly = /^(vault_(?:move_to_recovery|restore_recovery|purge_recovery|recover_artifact|apply_research|revoke|recents|recent_resolve)|sync_|activity_|deep_research_respond|quit_|terminal_prepare_handoff)/;
+  const mainOnly = /^(vault_(?:move_to_recovery|restore_recovery|purge_recovery|recover_artifact|apply_research|revoke|recents|recent_resolve)|sync_|activity_|deep_research_respond|quit_|text_save_copy|terminal_prepare_handoff)/;
   for (const capability of capabilities) for (const permission of capability.permissions ?? []) {
     const identifier = typeof permission === "string" ? permission : permission.identifier;
     if (!identifier.startsWith("allow-")) continue;

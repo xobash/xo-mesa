@@ -311,3 +311,16 @@ describe('save visibility and long sessions', () => {
     expect(saves.pendingCount()).toBe(0); expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+it('exposes current immutable text snapshots without discarding failed saves', async () => {
+  vi.useFakeTimers();
+  const saves = coordinator(async () => { throw new Error('offline'); });
+  saves.markDirty('/vault/a.md', 'a.md', 'draft', 'disk');
+  await expect(saves.flushAll()).rejects.toThrow('offline');
+  const snapshot = saves.pendingSnapshots();
+  expect(snapshot).toEqual([{ key: '/vault/a.md', target: 'a.md', content: 'draft', failed: true }]);
+  saves.markDirty('/vault/a.md', 'a.md', 'newer', 'disk');
+  expect(snapshot[0].content).toBe('draft');
+  expect(saves.pendingSnapshots()[0].content).toBe('newer');
+  expect(saves.isDirty('/vault/a.md')).toBe(true);
+});

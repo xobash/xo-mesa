@@ -50,6 +50,7 @@ fn main() {
             "vault_authorize_artifacts",
             "vault_flush_file",
             "vault_write_atomic",
+            "text_save_copy",
             "vault_create_directory",
             "vault_move_to_recovery",
             "vault_restore_recovery",

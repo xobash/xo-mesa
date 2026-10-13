@@ -295,6 +295,69 @@ fn write_atomic_at_commit(
     Ok(())
 }
 
+fn export_copy(path: &Path, root: &Path, data: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("copy has no parent")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    if parent.starts_with(&root) {
+        return Err("Choose a destination outside the current vault.".into());
+    }
+    let name = path.file_name().ok_or("copy has no filename")?;
+    let target = parent.join(name);
+    write_staged(&target, data)?;
+    if file_hash(&target).map_err(|e| e.to_string())?
+        != (Sha256::digest(data).into(), data.len() as u64)
+    {
+        return Err(
+            "Recovery copy failed verification; keep editing and choose another path.".into(),
+        );
+    }
+    sync_parent(&target).map_err(|e| e.to_string())
+}
+
+/// Only a native user-selected, new file outside the vault may receive recovery text.
+#[tauri::command]
+pub async fn text_save_copy(
+    app: AppHandle,
+    window: tauri::Window,
+    root: String,
+    name: String,
+    content: String,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if window.label() != "main" {
+        return Err("recovery copies belong to the main workspace".into());
+    }
+    if content.len() > 64 * 1024 * 1024 {
+        return Err("recovery copy exceeds 64 MiB".into());
+    }
+    let root = crate::vaultscope::require_approved(&app, &root)?;
+    let name = Path::new(&name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("note-copy.txt")
+        .to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_title("Save unsaved text copy (choose a new file outside the vault)")
+            .set_file_name(name)
+            .blocking_save_file()
+        else {
+            return Ok(false);
+        };
+        let path = path.into_path().map_err(|e| e.to_string())?;
+        export_copy(&path, &root, content.as_bytes())?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 const PATH_HEADER: &str = "x-mesa-path";
 const EXPECTED_HEADER: &str = "x-mesa-expected";
 
@@ -405,6 +468,25 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn recovery_copy_requires_new_file_outside_vault_and_verifies_text() {
+        let dir = test_folder("export");
+        let root = dir.join("vault");
+        fs::create_dir(&root).unwrap();
+        assert!(export_copy(&root.join("copy.md"), &root, b"draft").is_err());
+        let target = dir.join("copy.md");
+        export_copy(&target, &root, b"draft").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"draft");
+        assert!(export_copy(&target, &root, b"other").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"draft");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, dir.join("alias")).unwrap();
+            assert!(export_copy(&dir.join("alias/copy.md"), &root, b"draft").is_err());
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -400,6 +400,7 @@ export interface AppState {
   openTarget: (target: string) => Promise<void>;
   setContentFromEditor: (text: string, activity?: { snippet: string; lines: { added: number; removed: number }; tasksUnchanged?: boolean }) => void;
   flushSave: () => Promise<void>;
+  pendingTextSaves: () => ReadonlyArray<Readonly<{ key: string; target: VaultFile; content: string; failed: boolean }>>;
   retryTextSaveIssue: (key: string) => Promise<void>;
   useDiskTextForSaveIssue: (key: string) => Promise<void>;
   listActiveTextRevisions: () => Promise<TextRevision[]>;

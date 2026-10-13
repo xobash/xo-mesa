@@ -73,6 +73,10 @@ export class TextSaveCoordinator<TTarget> {
 
   constructor(private readonly options: TextSaveCoordinatorOptions<TTarget>) {}
 
+  pendingSnapshots(): ReadonlyArray<Readonly<{ key: string; target: TTarget; content: string; failed: boolean }>> {
+    return [...this.entries].map(([key, entry]) => ({ key, target: entry.target, content: entry.content, failed: entry.failed }));
+  }
+
   markDirty(
     key: string,
     target: TTarget,

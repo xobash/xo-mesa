@@ -3,26 +3,45 @@ export interface CloseWindow {
   onCloseRequested(callback: (event: CloseRequest) => Promise<void>): Promise<() => void>;
   close(): Promise<void>;
 }
-/** A verified flush grants one close request, and only while no new edits exist. */
-export function installCloseGuard(window: CloseWindow, flush: () => Promise<void>, pending: () => boolean, error: (message: string) => void): () => void {
-  let disposed = false, flushing = false, authorized = false;
+export type BlockedClose = (reason: unknown) => Promise<"keep" | "discard">;
+
+/** Timeout ends the close attempt, not the underlying verified write. */
+export async function flushBeforeClose(flush: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([flush(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Saving has taken more than 15 seconds.")), 15_000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+/** A verified flush grants one close request, unless the user explicitly abandons edits. */
+export function installCloseGuard(window: CloseWindow, flush: () => Promise<void>, pending: () => boolean, error: (message: string) => void, onBlocked?: BlockedClose): () => void {
+  let disposed = false, flushing = false, authorized = false, forced = false;
   let unlisten: (() => void) | undefined;
   void window.onCloseRequested(async event => {
     if (disposed) return;
+    if (forced) { forced = false; return; }
     if (authorized && !pending()) { authorized = false; return; }
     authorized = false;
     event.preventDefault();
     if (flushing) return;
     flushing = true;
     try {
-      await flush();
+      try { await flushBeforeClose(flush); }
+      catch (reason) {
+        if (disposed) return;
+        error(`Close stopped: ${String(reason)}`);
+        if (!onBlocked || await onBlocked(reason) !== "discard" || disposed) return;
+        forced = true;
+      }
       if (disposed) return;
-      // Release admission before close(), which may synchronously emit the next request.
       flushing = false;
-      authorized = true;
+      authorized = !forced;
       await window.close();
     } catch (reason) {
       authorized = false;
+      forced = false;
       if (!disposed) error(`Close stopped: ${String(reason)}`);
     } finally { flushing = false; }
   }).then(stop => { if (disposed) stop(); else unlisten = stop; })

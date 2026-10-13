@@ -161,9 +161,13 @@ perfectly.
   History action opens and focuses this current-document section directly.
 - Blur, hide, and close flush every dirty path and do no work when the window is
   clean. Vault switch and rename wait for the relevant saves. The main native
-  window prevents close until all dirty writes succeed; a failed write leaves
-  the window and editor open. App-level Quit requests use the same verified
-  text flush before Mesa exits; a failed save cancels Quit. `flushableNoteText`
+  window prevents close until all dirty writes succeed. A failed flush, or one
+  taking more than 15 seconds, opens the same recovery dialog for Close and Quit.
+  Keep editing is the default. Save copies opens a native picker for each pending
+  text snapshot, writing a new verified file outside the current vault without
+  discarding edits. An existing destination is refused. Close without saving
+  requires confirmation and explicitly permits exit. A timed-out write is not
+  cancelled and may still finish; a late completion cannot close the window. `flushableNoteText`
   still refuses a non-text file.
 - `ensureContent` never pulls a non-text file through the text pipeline.
   `readNote` decodes bytes as UTF-8, so caching that for a PDF would hand every
@@ -320,7 +324,7 @@ of transient import or scan messages. These indicators describe the text-save
 queue; PDF editing retains its own save state. Failed text writes remain available
 under save recovery. The native main-window close guard waits for verified text
 writes and rechecks for edits that arrive before the final close request.
-The app-level Quit guard also keeps the main window open after a failed save.
+The app-level Quit guard uses the same recovery choices after a failed or timed-out save.
 
 Vault selection ignores stale folder checks. An interrupted scan keeps the old
 workspace, clears the loading state and restores its watcher. A retryable notice

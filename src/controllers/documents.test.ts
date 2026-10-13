@@ -41,7 +41,7 @@ it('opens lossy UTF-8 read-only through lazy reads, cached selection and deliber
   expect(state.getState().content).toBe(text);
   expect(state.getState().activeContentState).toBe('invalid-encoding');
   expect(state.getState().status).toContain('read-only');
-  controller.actions.setContentFromEditor('changed'); expect(saves.pendingCount()).toBe(0);
+  controller.actions.setContentFromEditor('changed'); expect(saves.pendingSnapshots()).toHaveLength(0);
   await controller.actions.selectFile('a.md'); expect(state.getState().activeContentState).toBe('invalid-encoding');
   await controller.actions.loadActiveContent(); expect(state.getState().activeContentState).toBe('invalid-encoding');
   io.valid.mockResolvedValue(true);

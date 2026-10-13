@@ -117,7 +117,8 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
     }
   };
 
-  const actions: Pick<AppState, 'flushSave' | 'retryTextSaveIssue' | 'useDiskTextForSaveIssue' | 'listActiveTextRevisions' | 'restoreTextRevision' | 'purgeTextRevision' | 'restoreRecoveryEntry'> = {
+  const actions: Pick<AppState, 'pendingTextSaves' | 'flushSave' | 'retryTextSaveIssue' | 'useDiskTextForSaveIssue' | 'listActiveTextRevisions' | 'restoreTextRevision' | 'purgeTextRevision' | 'restoreRecoveryEntry'> = {
+    pendingTextSaves: () => textSaves.pendingSnapshots(),
     flushSave: () => {
       return textSaves.flushAll();
     },

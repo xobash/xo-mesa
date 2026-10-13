@@ -323,6 +323,7 @@ pub fn run() {
             vaultscope::vault_authorize_artifacts,
             vaultscope::vault_flush_file,
             vaultwrite::vault_write_atomic,
+            vaultwrite::text_save_copy,
             vaultops::vault_create_directory,
             vaultops::vault_move_to_recovery,
             vaultops::vault_restore_recovery,

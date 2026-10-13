@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { installCloseGuard, type CloseRequest } from './closeGuard';
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => resolve = r); return { promise, resolve }; };
-function setup(flush = vi.fn(async () => {})) {
+function setup(flush = vi.fn(async () => {}), onBlocked?: (reason: unknown) => Promise<"keep" | "discard">) {
   let callback!: (event: CloseRequest) => Promise<void>;
   let dirty = true;
   const stop = vi.fn(), error = vi.fn();
   const window = { onCloseRequested: vi.fn(async (cb: typeof callback) => { callback = cb; return stop; }), close: vi.fn(async () => {}) };
-  const dispose = installCloseGuard(window, flush, () => dirty, error);
+  const dispose = installCloseGuard(window, flush, () => dirty, error, onBlocked);
   return { window, flush, error, stop, dispose, request: () => { const event = { preventDefault: vi.fn() }; return { event, done: callback(event) }; }, clean: () => { dirty = false; } };
 }
 describe('native close guard behavior', () => {
@@ -57,4 +57,30 @@ describe('native close guard behavior', () => {
     await onClose(permitted);
     expect(permitted.preventDefault).not.toHaveBeenCalled();
   });
+});
+
+it('allows the next close after explicit discard following failure', async () => {
+  const blocked = vi.fn(async () => "discard" as const);
+  const s = setup(vi.fn(async () => { throw new Error('unsaveable'); }), blocked);
+  await s.request().done;
+  expect(blocked).toHaveBeenCalledOnce();
+  expect(s.window.close).toHaveBeenCalledOnce();
+  const final = s.request(); await final.done;
+  expect(final.event.preventDefault).not.toHaveBeenCalled();
+  s.dispose();
+});
+it('offers recovery after 15 seconds and cannot close from a late flush', async () => {
+  vi.useFakeTimers();
+  try {
+    const save = deferred(), blocked = vi.fn(async () => "keep" as const);
+    const s = setup(vi.fn(() => save.promise), blocked);
+    const first = s.request();
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(blocked).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1); await first.done;
+    expect(blocked).toHaveBeenCalledOnce();
+    save.resolve(); await Promise.resolve();
+    expect(s.window.close).not.toHaveBeenCalled();
+    s.dispose();
+  } finally { vi.useRealTimers(); }
 });
