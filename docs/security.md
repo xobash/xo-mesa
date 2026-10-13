@@ -6,7 +6,7 @@ can contact websites. Mesa has no telemetry integration or hosted account servic
 
 ## Model version and scope
 
-**TM-4 · 2026-10-07.** Covers native permissions, vault writes/recovery, sync,
+**TM-5 · 2026-10-12.** Covers native permissions, vault writes/recovery, sync,
 saved-content rendering, Pi/browser integration and release admission. Change
 this version when those boundaries change; bind test results to a source revision.
 
@@ -23,7 +23,7 @@ independent security assessment.
 
 | Evidence | Status |
 | --- | --- |
-| Versioned model | TM-4; no external review recorded |
+| Versioned model | TM-5; no external review recorded |
 | Automated rejection/recovery coverage | Markdown/HTML, archive bounds, sync proof/pin/path checks, native URL/reader isolation and sync parser, write interruption and stale-baseline tests |
 | Penetration testing | No independent report recorded |
 | Coverage-guided fuzzing, including native IPC | Bounded sync parser fuzz smoke only; broad campaigns and native IPC fuzzing are not established |
@@ -50,7 +50,7 @@ it. Publication controls have individual origins in the [control register](secur
 | Vault access and writes: unauthorized roots, stale overwrite, truncation or lost recovery | `src-tauri/src/vaultscope.rs`, `vaultwrite.rs`, `vaultops.rs`, `vaulttransaction.rs`; `src/lib/verifiedWrite.ts` | Native module tests; `src/lib/nativeScope.test.ts`, `verifiedWrite.test.ts`, `writeRecovery.test.ts`, `vaultRecovery.test.ts` | Approved-folder saves check expected bytes, retain recovery and preserve Unix access metadata; new stages/files are private. External processes are not locked out; Windows power-loss durability remains unverified. |
 | Sync: wrong peer, escaping path, corrupt bytes or destructive stale journal | `src-tauri/src/sync.rs`, `sync_core.rs`; `src/lib/syncWorkflow.ts` | Native proof/pin/path/transfer tests; `src/lib/syncWorkflow.test.ts`, `syncConflicts.test.ts` | Direct sync checks key proof, TLS pin and file bytes. Windows parent handles block ancestor replacement during operations; physical Windows and multi-device acceptance remain pending. |
 | Research: unsupported proposals or overwriting an unreviewed baseline | `src/lib/deepResearch.ts`, `src/controllers/research.ts`, `src/lib/deepResearchRun.ts`; `src-tauri/src/vaulttransaction.rs` | `src/lib/deepResearch.test.ts`, `deepResearchRun.test.ts`; native transaction tests | Mesa's apply path requires review and expected bytes. Accepted-source archives are automatic; Pi shell actions remain outside this transaction. Observed text changes retain the last known clean revision and preserve dirty edits. |
-| Browser: a second DNS path bypasses public-address checks | `src-tauri/src/browse.rs`; `src/lib/browserReader.ts` | Native URL/final-resolver tests; `browserReader.test.ts`, `BrowserHarness.test.tsx`, `browserExtension.test.ts` | Only the native broker connects to remote sites. Website scripts, subresources, remote webviews and page snapshot ingestion are removed. Packaged CSP acceptance remains pending. |
+| Browser: a second DNS path bypasses public-address checks | `src-tauri/src/browse.rs`; `src/lib/browserReader.ts` | Native URL/final-resolver tests; `browserReader.test.ts`, `BrowserHarness.test.tsx`, `browserExtension.test.ts` | Only the native broker connects to remote sites. Website scripts, remote webviews and page snapshot ingestion are removed; image/font/CSS subresources use the cookie-less bounded native broker. Packaged CSP acceptance remains pending. |
 
 ## Markdown rendering
 
@@ -236,3 +236,28 @@ The Unicode percent-escape crash is retained as a synthetic seed and unit test;
 short runs do not establish broad parser or IPC fuzz acceptance.
 
 PDF text replacement removes selected glyphs and unreachable original content streams, preserves surrounding selectable text, and refuses unsupported structures without output. It is not document-wide redaction: metadata, attachments, other pages, retained source copies and undo history are outside the selected text edit. See [PDF editing](pdf-editing.md).
+
+## Static resource broker and confirmations
+
+The `mesa-web` scheme serves image/font bytes only to an opaque frame. It is
+never an allowed top-level navigation and supplies no page or script content.
+`browse_fetch_stylesheet` returns bounded CSS text for sanitized inline styles;
+it neither changes Pi's current source nor emits research navigation. Both
+paths recheck public literal addresses, all final DNS answers and every
+redirect, disable proxies and use a separate client without a cookie jar.
+MIME types, per-resource sizes, per-view requests/bytes, token ownership and
+expiry are enforced natively. Responses use `nosniff`, no-store, CORS for opaque
+font requests and a restrictive sandbox CSP, including for SVG. The app CSP
+adds the scheme only to image and font sources; script, connection and frame
+sources retain their prior restrictions. Browser-demo CSP excludes this native
+scheme. See [reader limits](pi-agent.md#browser-reader) and
+[saved HTML consent](saved-html.md).
+
+`confirmAction` awaits the dialog plugin's message-based confirmation and
+returns false on rejection or unavailable dialogs. Lint rejects synchronous
+window confirm/prompt/alert calls in production source. Destructive callers
+recheck their vault/session or draft after the wait. Recovery uses an in-app
+exact-phrase DELETE/EMPTY dialog with Cancel and Escape. This prevents a Promise
+from being treated as consent and supplies a text-input workflow on WKWebView.
+Regression tests cover cancellation, rejection, delayed answers and partial
+purge failure. Physical Windows/Linux acceptance remains separate.

@@ -1,16 +1,17 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { resolveNavTarget } from "../lib/agent";
 import { IN_TAURI, writeVaultTextFile } from "../lib/vault";
 import { archiveWebPage } from "../lib/webArchive";
-import { buildReaderHtml } from "../lib/browserReader";
+import { buildReaderDocument, buildReaderHtml } from "../lib/browserReader";
 
 interface BrowsePage {
   finalUrl: string;
   status: number;
   contentType: string;
-  frameBlocked: boolean;
+  subresourceToken?: string;
   body: string | null;
   truncated?: boolean;
 }
@@ -19,6 +20,8 @@ export function BrowserHarness({ externalNav, onClose }: {
   externalNav?: { url: string; seq: number } | null;
   onClose?: () => void;
 }) {
+  const textOnly = useAppStore(s => s.settings.browserTextOnly);
+  const setSetting = useAppStore(s => s.setSetting);
   const vaultPath = useAppStore(s => s.vaultPath);
   const registerVaultFile = useAppStore(s => s.registerVaultFile);
   const openFile = useAppStore(s => s.openFile);
@@ -49,8 +52,14 @@ export function BrowserHarness({ externalNav, onClose }: {
     setLoading(true);
     try {
       const result = await fetchPage(target);
-      if (current !== generation.current) return;
-      if (!result.body) throw new Error("This response has no readable text.");
+      if (current !== generation.current) {
+        if (result.subresourceToken) void invoke("browse_resource_session", { token: result.subresourceToken }).catch(() => {});
+        return;
+      }
+      if (!result.body) {
+        if (result.subresourceToken) void invoke("browse_resource_session", { token: result.subresourceToken }).catch(() => {});
+        throw new Error("This response has no readable text.");
+      }
       const document = buildReaderHtml(result.body, result.finalUrl);
       setPage(result); setHtml(document); setUrl(result.finalUrl);
       if (result.truncated) setError("Page preview was cut off at 4 MB.");
@@ -76,6 +85,22 @@ export function BrowserHarness({ externalNav, onClose }: {
   }
 
   useEffect(() => () => { generation.current++; }, []);
+  useEffect(() => {
+    if (!page?.body || !page.subresourceToken) return;
+    let alive = true;
+    setHtml(buildReaderHtml(page.body, page.finalUrl));
+    if (!textOnly) {
+      const token = page.subresourceToken;
+      void buildReaderDocument(page.body, page.finalUrl, { token, proxyBase: convertFileSrc("", "mesa-web"),
+        fetchStylesheet: url => invoke<{ css: string; finalUrl: string }>("browse_fetch_stylesheet", { token, url }) })
+        .then(document => { if (alive) setHtml(document); }).catch(reason => { if (alive) setError(String(reason)); });
+    }
+    return () => { alive = false; };
+  }, [page, textOnly]);
+  useEffect(() => {
+    const token = page?.subresourceToken;
+    return () => { if (token) void invoke("browse_resource_session", { token }).catch(() => {}); };
+  }, [page]);
   useEffect(() => {
     if (!externalNav || externalNav.seq === latestExternal.current) return;
     latestExternal.current = externalNav.seq;
@@ -127,13 +152,15 @@ export function BrowserHarness({ externalNav, onClose }: {
       <input className="text-input browser-url-input" aria-label="Search or page URL" placeholder={url || "Search the web or enter a URL"} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") navigate(input); }} />
       <button className="browser-nav-btn" aria-label="Read page" title="Read page" onClick={() => navigate(input)}>→</button>
       <button className="browser-nav-btn" aria-label="Archive page to vault" title="Archive page to vault" disabled={!page} onClick={() => void archive()}>↓</button>
+      <button className="browser-nav-btn" aria-pressed={textOnly} onClick={() => setSetting("browserTextOnly", !textOnly)}>Text only</button>
+      <button className="browser-nav-btn" disabled={!url || !IN_TAURI} onClick={() => void openUrl(url).catch(reason => setError(String(reason)))}>Open in system browser</button>
       {onClose && <button className="browser-nav-btn" aria-label="Close browser" title="Close browser" onClick={onClose}>×</button>}
     </div>
     <div className="agent-browser-frame-slot">
       {html ? <iframe ref={iframe} className="agent-browser-frame" srcDoc={html} sandbox="allow-scripts" referrerPolicy="no-referrer" title="Pi browser reader" />
         : <div className="agent-browser-placeholder"><span>{loading ? "Reading page…" : "Search or enter a URL. Pages are read without running website scripts."}</span></div>}
     </div>
-    <div className="agent-browser-status"><span>Read-only page · website scripts and remote resources blocked</span></div>
+    <div className="agent-browser-status"><span>{textOnly ? "Read-only page · text only · website scripts blocked" : "Read-only page · website scripts blocked · styles and images via Mesa"}{page && page.status >= 400 ? ` · HTTP ${page.status}` : ""}</span></div>
     {error && <div className="agent-browser-status" role="alert">{error}</div>}
     {archiveStatus && <div className="agent-browser-status" role="status">{archiveStatus}</div>}
   </section>;

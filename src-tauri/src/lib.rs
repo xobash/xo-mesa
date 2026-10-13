@@ -173,6 +173,17 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
+        .register_asynchronous_uri_scheme_protocol("mesa-web", |context, request, responder| {
+            let owner = context.webview_label().to_string();
+            tauri::async_runtime::spawn(async move {
+                responder.respond(browse::serve_subresource(&owner, request).await);
+            });
+        })
         .menu(|app| {
             let menu = tauri::menu::Menu::default(app)?;
             #[cfg(target_os = "macos")]
@@ -272,6 +283,9 @@ pub fn run() {
             activity::deep_research_respond,
             activity::activity_stop,
             browse::browse_fetch,
+            browse::browse_resource_session,
+            browse::browse_open_saved_html,
+            browse::browse_fetch_stylesheet,
             diagnostics::diagnostics_process_tree,
             terminal::terminal_start,
             terminal::terminal_attach,
@@ -326,6 +340,7 @@ pub fn run() {
                     grants.remove(label);
                 }
                 terminal::revoke_window(&app.state::<terminal::TerminalState>(), label);
+                browse::revoke_resource_window(label);
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 use tauri::{Emitter, Manager};
@@ -405,6 +420,9 @@ mod navigation_tests {
             "file:///etc/passwd",
             "javascript:alert(1)",
             "ftp://example.com/",
+            "mesa-web://localhost/token?u=https://example.com/image.png",
+            "http://mesa-web.localhost/token",
+            "https://mesa-web.localhost/token",
         ] {
             assert!(!allowed(url), "{url}");
         }

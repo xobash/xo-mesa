@@ -1,3 +1,4 @@
+import { confirmAction } from "../lib/confirmAction";
 import {
   parseEvents
 } from "../lib/daily";
@@ -149,6 +150,8 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
       const issue = get().textSaveIssues[key];
       if (!issue || issue.busy) return;
       setTextSaveIssueBusy(key, "disk");
+      const root = get().vaultPath;
+      const generation = getGeneration();
       let saveHold: TextSaveHold<VaultFile> | undefined;
       try {
         // Pause before reading so edits made during the read are included in
@@ -162,12 +165,16 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         const diskText = IN_TAURI
           ? await readTextFileStrict(file.path)
           : await readNote(file);
+        if (get().vaultPath !== root || getGeneration() !== generation) { saveHold.release(); saveHold = undefined; return; }
         const confirmed =
-          typeof window !== "undefined" &&
-          window.confirm(
+          await confirmAction(
             `Use the disk copy of "${file.relPath}"?\n\n` +
-            "This replaces Mesa's unsaved changes and cannot be undone."
+            "This replaces Mesa's unsaved changes and cannot be undone.",
+            { okLabel: "Use disk copy", cancelLabel: "Keep my changes" }
           );
+        if (get().vaultPath !== root || getGeneration() !== generation) {
+          saveHold.release(); saveHold = undefined; return;
+        }
         if (!confirmed) {
           saveHold.release();
           saveHold = undefined;
@@ -177,7 +184,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         }
 
         const current = get().files.find((candidate) => candidate.path === key);
-        if (!current || current.relPath !== file.relPath) {
+        if (get().vaultPath !== root || getGeneration() !== generation || !current || current.relPath !== file.relPath) {
           throw new Error(`The text file changed while it was being reloaded.`);
         }
         const currentMeta = get().notes[file.relPath];
@@ -210,6 +217,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         });
       } catch (error) {
         saveHold?.release();
+        if (get().vaultPath !== root || getGeneration() !== generation) return;
         recordTextSaveIssue(
           key,
           issue.relPath,

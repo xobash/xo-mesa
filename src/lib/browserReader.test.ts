@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { buildReaderHtml, READER_BRIDGE, READER_SCRIPT_HASH } from './browserReader';
+import { buildReaderDocument, buildReaderHtml, prepareReaderResources, READER_BRIDGE, READER_SCRIPT_HASH } from './browserReader';
 import config from '../../src-tauri/tauri.conf.json';
 
 describe('brokered browser document', () => {
@@ -38,4 +38,46 @@ describe('brokered browser document', () => {
     expect(doc.querySelectorAll('a[href]')).toHaveLength(1);
     expect(result).toContain("base-uri 'none'");
   });
+});
+
+it('proxies lazy images, imported CSS and fonts while retaining script isolation', async () => {
+  const urls: string[] = [];
+  const result = await buildReaderDocument('<base href="https://example.com/articles/"><link rel="stylesheet" href="../main.css"><img data-src="img/a.png"><script>bad()</script>', 'https://example.com/start', {
+    token: 'test', proxyBase: 'mesa-web://localhost/', fetchStylesheet: async url => {
+      urls.push(url);
+      return url.endsWith('main.css') ? '@import "fonts.css";p{background:url(bg.png)}' : '@font-face{font-family:x;src:url(font.woff2)}';
+    }
+  });
+  expect(urls).toEqual(['https://example.com/main.css', 'https://example.com/fonts.css']);
+  expect(result).toContain('mesa-web://localhost/test?u=https%3A%2F%2Fexample.com%2Farticles%2Fimg%2Fa.png');
+  expect(result).toContain('font.woff2');
+  expect(result).not.toContain('bad()');
+  expect(result).not.toContain('<link');
+  expect(result).toContain("connect-src 'none'");
+  expect(result).toContain("font-src data: mesa-web:");
+});
+
+it('resolves CSS assets against the final stylesheet URL after redirects', async () => {
+  const result = await buildReaderDocument('<link rel="stylesheet" href="/redirect.css">', 'https://example.com/', {
+    token: 'test', proxyBase: 'mesa-web://localhost/', fetchStylesheet: async () => ({ css: 'p{background:url(image.png)}', finalUrl: 'https://example.org/assets/style.css' })
+  });
+  expect(result).toContain('https%3A%2F%2Fexample.org%2Fassets%2Fimage.png');
+});
+
+it('saved online preparation preserves local media while dropping remote audio/video', async () => {
+  const html = await prepareReaderResources('<video src="asset://localhost/vault/movie.mp4" poster="asset://localhost/vault/poster.png"></video><audio src="https://example.com/audio.mp3"></audio>', 'https://example.com/', {
+    token: 'test', proxyBase: 'mesa-web://localhost/', allowLocal: true, fetchStylesheet: async () => ''
+  });
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  expect(doc.querySelector('video')?.getAttribute('src')).toBe('asset://localhost/vault/movie.mp4');
+  expect(doc.querySelector('video')?.getAttribute('poster')).toBe('asset://localhost/vault/poster.png');
+  expect(doc.querySelector('audio')?.hasAttribute('src')).toBe(false);
+});
+
+it('retains brokered CSS containing SVG data URLs', async () => {
+  const html = await buildReaderDocument('<link rel="stylesheet" href="/style.css">', 'https://example.com/', {
+    token: 'test', proxyBase: 'mesa-web://localhost/', fetchStylesheet: async () => `body{color:teal}.icon{background:url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>')}`
+  });
+  expect(html).toContain('body{color:teal}');
+  expect(html).toContain('%3Csvg');
 });

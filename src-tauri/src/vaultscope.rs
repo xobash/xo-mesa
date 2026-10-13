@@ -562,6 +562,10 @@ pub(crate) fn approved_path(app: &AppHandle, raw: &str) -> Result<(PathBuf, Stri
     Err("path is outside approved vault folders".into())
 }
 
+pub(crate) fn require_approved_file(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
+    require_approved_file_from(&approved_roots_path(app)?, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

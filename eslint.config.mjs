@@ -13,8 +13,14 @@ export default tseslint.config(
       "react-hooks/exhaustive-deps": "error",
       "no-console": ["error", { allow: ["warn", "error"] }],
       "no-control-regex": "error",
+      "no-restricted-properties": ["error",
+        { object: "window", property: "confirm", message: "Use confirmAction()" },
+        { object: "window", property: "prompt", message: "Use an in-app Modal" },
+        { object: "window", property: "alert", message: "Use in-app status or the dialog plugin" }],
+      "no-restricted-globals": ["error", "confirm", "prompt", "alert"],
     },
   },
+  { files: ["src/**/*.test.{ts,tsx}"], rules: { "no-restricted-properties": "off", "no-restricted-globals": "off" } },
   {
     files: ["scripts/**/*.mjs"],
     languageOptions: { globals: Object.fromEntries([

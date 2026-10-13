@@ -6,6 +6,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hoverDelayMs: 450,
   hardwareAccel: true,
   animations: true,
+  browserTextOnly: false,
   enableTabs: false,
   syncPort: 8787,
   syncEnabled: false,

@@ -322,9 +322,22 @@ are capped at 4 MiB and report truncation.
 
 The viewer sanitizes fetched HTML and renders it in an opaque sandbox. Only
 Mesa's fixed navigation bridge runs, authorized by its exact script hash.
-Website scripts, remote subresources, forms, nested frames and live remote
-webviews are unavailable. This removes the second DNS resolution path that
-could bypass the broker. JavaScript-only and signed-in pages may not be readable.
+Website scripts, forms, nested frames and live remote webviews are unavailable.
+Styles, images and fonts load through a cookie-less native subresource broker;
+there is no webview DNS path to remote hosts. The text document appears first,
+then one styled document replaces it after preparation (at most three seconds
+of stylesheet waiting). Relative URLs, authored base URLs and lazy images are
+resolved before sanitization. CSS imports are limited to three nested levels
+and thirty stylesheets. A page view has at most 400 requests and 48 MiB of
+resource bytes, with 6 MiB per image/font and 2 MiB per stylesheet. Resource
+tokens belong to one window, expire after ten minutes, and are revoked on
+navigation, viewer close or window destruction; at most eight are retained.
+The persisted **Text only** toggle skips brokered assets. HTTP error statuses
+remain visible. **Open in system browser** opens the current HTTP(S) URL in
+the user's normal browser outside Mesa, including normal scripts/sign-in.
+Subresource requests can reveal reading activity to the page's CDNs; the page
+host already sees the page request. These assets never receive the user's or
+Pi's page cookies. JavaScript-only and signed-in pages may not be readable.
 The browser demo displays the controls but needs the desktop broker to fetch.
 
 Search and address entry, Back, Forward, Reload and Archive remain available.

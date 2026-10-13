@@ -1,3 +1,4 @@
+import { confirmAction } from "../lib/confirmAction";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useAppStore, THEMES } from "../store";
 import {
@@ -784,6 +785,8 @@ function Whiteboard() {
 }
 
 export function WhiteboardDocument() {
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const draft = useOverlayDraft("whiteboard", "Whiteboard/Board.mesa-board.json", WHITEBOARD_KEY);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const active = useRef<{ color: string; points: Array<[number, number]> } | null>(null);
@@ -855,8 +858,13 @@ export function WhiteboardDocument() {
   const finishStroke = useRef(up);
   finishStroke.current = up;
   useEffect(() => () => finishStroke.current(), []);
-  const clear = () => {
-    if (parseError || !window.confirm("Clear this whiteboard draft? The saved vault document remains available until you save again.")) return;
+  const clear = async () => {
+    if (parseError) return;
+    const before = boardRef.current;
+    const root = useAppStore.getState().vaultPath;
+    const generation = useAppStore.getState().getVaultGeneration();
+    if (!(await confirmAction("Clear this whiteboard draft? The saved vault document remains available until you save again.", { okLabel: "Clear draft" }))) return;
+    if (!mounted.current || active.current || boardRef.current !== before || useAppStore.getState().vaultPath !== root || useAppStore.getState().getVaultGeneration() !== generation) return;
     active.current = null; ++paintGeneration.current;
     draft.edit(JSON.stringify({ version: 1, strokes: [] }));
   };

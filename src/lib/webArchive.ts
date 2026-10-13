@@ -49,20 +49,9 @@ function savedFromMarker(url: string): string {
   return `<!-- saved from url=(${String(commentUrl.length).padStart(4, "0")})${commentUrl} -->`;
 }
 
-/**
- * Make fetched HTML reopen against its original web location. The saved-from
- * marker is consumed by Mesa's browser/demo renderer; the base element gives
- * the desktop asset-protocol iframe the same relative-URL behavior.
- */
+/** Archive markers distinguish web-relative assets from a browser's local saved assets. */
 export function prepareArchivedHtml(rawHtml: string, sourceUrl: string): string {
-  const marker = savedFromMarker(sourceUrl);
-  if (!rawHtml.trim()) return marker;
-  if (/<base(?:\s|>)/i.test(rawHtml)) return `${marker}\n${rawHtml}`;
-  const base = `<base href="${escapeHtml(sourceUrl)}">`;
-  if (/<head(?:\s[^>]*)?>/i.test(rawHtml)) {
-    return `${marker}\n${rawHtml.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${base}`)}`;
-  }
-  return `${marker}\n${base}\n${rawHtml}`;
+  return `${savedFromMarker(sourceUrl)}\n<!-- mesa-archive -->\n${rawHtml}`;
 }
 
 function archiveLinkRecord(sourceUrl: string, error: unknown): string {

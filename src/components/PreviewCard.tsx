@@ -184,8 +184,10 @@ function PreviewCardImpl({
       return;
     }
     const stripped = stripSavedHtmlPreviewCode(rawContent);
-    const fallback = rewriteSavedHtml(stripped, noteFile.path, urlForPath);
-    setHtmlPreview({ rel, html: savedHtmlFrameDocument(fallback) });
+    if (rawContent.length <= 256 * 1024) {
+      const fallback = rewriteSavedHtml(stripped, noteFile.path, urlForPath);
+      setHtmlPreview({ rel, html: savedHtmlFrameDocument(fallback) });
+    } else setHtmlPreview(null);
     if (!rawContent) return;
     void hydrateSavedHtml(
       stripped,
@@ -195,7 +197,7 @@ function PreviewCardImpl({
       { scripts: false, previewCodeStripped: true }
     ).then((html) => {
       if (alive) setHtmlPreview({ rel, html: savedHtmlFrameDocument(html) });
-    });
+    }).catch(() => { if (alive) setHtmlPreview({ rel, html: "Safe HTML preview is unavailable." }); });
     return () => {
       alive = false;
     };

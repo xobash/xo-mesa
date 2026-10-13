@@ -11,7 +11,7 @@ import {
 const baseSettings: Settings = {
   hoverDelayMs: 450,
   hardwareAccel: true,
-  animations: true,
+  animations: true, browserTextOnly: false,
   enableTabs: false,
   syncBindAddress: "127.0.0.1", syncPort: 8787,
   syncEnabled: true,

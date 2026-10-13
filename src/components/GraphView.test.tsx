@@ -47,6 +47,7 @@ function pointer(type: string, x: number, y: number, button = 0) {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
@@ -326,4 +327,39 @@ it('sleeps after reduced-motion settling and wakes on pointer input', async () =
   await act(async () => { document.documentElement.dataset.mode = 'light'; await Promise.resolve(); });
   expect(f.raf).toHaveBeenCalledOnce();
   delete document.documentElement.dataset.mode;
+});
+
+it('reduces quiet ambient redraws and restores cadence on focus and input without reheating', () => {
+  const f = frameHarness();
+  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true } }));
+  const drawFor = (ms: number) => { f.clear.mockClear(); for (let i = 0; i < ms / 20; i++) { vi.advanceTimersByTime(20); f.tick(); } return f.clear.mock.calls.length; };
+  drawFor(10000);
+  act(() => window.dispatchEvent(new Event('focus')));
+  const focused = drawFor(1000);
+  vi.mocked(document.hasFocus).mockReturnValue(false);
+  const unfocused = drawFor(1000);
+  expect(unfocused).toBeLessThan(focused * 0.6);
+  expect(simulation().alpha()).toBe(0);
+  vi.mocked(document.hasFocus).mockReturnValue(true);
+  act(() => window.dispatchEvent(new Event('focus')));
+  expect(drawFor(1000)).toBeGreaterThan(unfocused);
+  vi.advanceTimersByTime(16000);
+  const idle = drawFor(1000);
+  act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })));
+  expect(drawFor(1000)).toBeGreaterThan(idle);
+  expect(simulation().alpha()).toBe(0);
+});
+
+it('quiet graphs defer the frame callback and cancel the wait on focus', () => {
+  const f = frameHarness();
+  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true } }));
+  for (let i = 0; i < 500; i++) { vi.advanceTimersByTime(20); f.tick(); }
+  vi.mocked(document.hasFocus).mockReturnValue(false);
+  f.raf.mockClear(); f.tick();
+  expect(f.raf).not.toHaveBeenCalled();
+  act(() => window.dispatchEvent(new Event('focus')));
+  expect(f.raf).toHaveBeenCalledOnce();
+  f.raf.mockClear();
+  act(() => root.unmount()); vi.advanceTimersByTime(200);
+  expect(f.raf).not.toHaveBeenCalled();
 });

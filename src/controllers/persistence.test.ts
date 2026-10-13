@@ -2,9 +2,11 @@
 import { expect, it, vi } from 'vitest';
 import { createStore } from 'zustand';
 import { useAppStore } from '../store';
+import { confirmAction } from '../lib/confirmAction';
 import { createPersistenceController } from './persistence';
+vi.mock('../lib/confirmAction', () => ({ confirmAction: vi.fn(async () => false) }));
 const io = vi.hoisted(() => ({ write: vi.fn(), history: vi.fn(async () => ({ id: 'test' })), list: vi.fn(), read: vi.fn() }));
-vi.mock('../lib/vault', async original => ({ ...await original<object>(), writeNote: io.write, readNoteResult: io.read }));
+vi.mock('../lib/vault', async original => ({ ...await original<object>(), writeNote: io.write, readNoteResult: io.read, readNote: async () => "disk text" }));
 vi.mock('../lib/textRevisionHistory', async original => ({ ...await original<object>(), recordTextRevisionAsync: io.history, listTextRevisionsAsync: io.list }));
 it('retains failed drafts independently and retries their exact disk baselines', async () => {
   const files = ['a', 'b'].map(name => ({ path: `/vault/${name}.md`, relPath: `${name}.md`, name, ext: 'md', isMarkdown: true }));
@@ -16,6 +18,9 @@ it('retains failed drafts independently and retries their exact disk baselines',
   expect(controller.textSaves.isDirty(files[0].path)).toBe(true);
   expect(controller.textSaves.isDirty(files[1].path)).toBe(false);
   expect(Object.keys(state.getState().textSaveIssues)).toEqual([files[0].path]);
+  await controller.actions.useDiskTextForSaveIssue(files[0].path);
+  expect(controller.textSaves.isDirty(files[0].path)).toBe(true);
+  expect(state.getState().status).toContain('Kept local changes');
   await controller.actions.retryTextSaveIssue(files[0].path);
   expect(io.write).toHaveBeenLastCalledWith(files[0], 'draft a', 'disk a');
   expect(controller.textSaves.isDirty(files[0].path)).toBe(false);
@@ -27,4 +32,24 @@ it('retains failed drafts independently and retries their exact disk baselines',
   await expect(controller.actions.restoreTextRevision('older')).rejects.toThrow('locked');
   await controller.actions.retryTextSaveIssue(files[0].path);
   expect(io.history).toHaveBeenLastCalledWith('/vault', 'a.md', 'disk before restore', expect.any(Number), { source: 'restore' });
+});
+
+it('retains a held draft and does not publish a delayed confirmation into a new vault', async () => {
+  const file = { path: '/vault/a.md', relPath: 'a.md', name: 'a', ext: 'md', isMarkdown: true };
+  const state = createStore(() => ({ ...useAppStore.getInitialState(), vaultPath: '/vault', files: [file], content: 'local text', fileFor: () => file }));
+  let generation = 0;
+  const controller = createPersistenceController({ get: state.getState, set: state.setState, getGeneration: () => generation, refreshMissingExternalFiles: async () => {} });
+  io.write.mockRejectedValueOnce(Error('locked'));
+  await controller.saveTextMutation(file, 'local text', 'disk text');
+  vi.mocked(confirmAction).mockClear();
+  let answer: (value: boolean) => void = () => {};
+  vi.mocked(confirmAction).mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
+  const pending = controller.actions.useDiskTextForSaveIssue(file.path);
+  await vi.waitFor(() => expect(state.getState().textSaveIssues[file.path].busy).toBe('disk'));
+  await vi.waitFor(() => expect(confirmAction).toHaveBeenCalled());
+  generation++; state.setState({ vaultPath: '/other', status: 'New vault' });
+  answer(true); await pending;
+  expect(controller.textSaves.isDirty(file.path)).toBe(true);
+  expect(state.getState().content).toBe('local text');
+  expect(state.getState().status).toBe('New vault');
 });

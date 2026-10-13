@@ -7,7 +7,7 @@ import {
 } from "./webArchive";
 
 describe("web archive", () => {
-  it("records the final URL and adds a base so fetched HTML reopens correctly", async () => {
+  it("records the final URL and archive marker so fetched HTML reopens correctly", async () => {
     let writtenHtml = "";
     const result = await archiveWebPage(
       "https://example.com/start",
@@ -32,7 +32,8 @@ describe("web archive", () => {
     expect(writtenHtml).toContain(
       "<!-- saved from url=(0034)https://example.com/articles/final -->"
     );
-    expect(writtenHtml).toContain('<base href="https://example.com/articles/final">');
+    expect(writtenHtml).toContain("<!-- mesa-archive -->");
+    expect(writtenHtml).not.toContain("<base");
   });
 
   it("preserves an existing base element", () => {

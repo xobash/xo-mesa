@@ -1,3 +1,4 @@
+import { confirmAction } from "../lib/confirmAction";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { VaultFile } from "../types";
 import { resolveAssetPath } from "../lib/graph";
@@ -34,8 +35,8 @@ function applyRemoteMediaConsent(root: Element, allowed: boolean) {
 }
 
 /** Default for http(s) links: Mesa's read-only reader, never the app webview itself. */
-function openExternalInReader(url: string) {
-  if (!window.confirm(`Open ${url} in Mesa's reader? This contacts that website.`)) return;
+async function openExternalInReader(url: string) {
+  if (!(await confirmAction(`Open ${url} in Mesa's reader? This contacts that website.`, { okLabel: "Read page" }))) return;
   useAppStore.setState((s) => ({ piBrowse: { url, seq: (s.piBrowse?.seq ?? 0) + 1 } }));
 }
 

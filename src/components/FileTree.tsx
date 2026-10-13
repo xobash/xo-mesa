@@ -1,3 +1,4 @@
+import { confirmAction } from "../lib/confirmAction";
 import { isGeneratedNavigationFile } from "../lib/navigationFilters";
 import {
   memo,
@@ -793,9 +794,12 @@ export const FileTree = memo(function FileTree() {
                   ? `Move folder "${title}" and everything inside it to Mesa recovery storage?`
                   : `Move "${title}" to Mesa recovery storage?`;
               setMenu(null);
-              if (window.confirm(detail)) {
-                void deleteEntry(menu.rel);
-              }
+              const rel = menu.rel;
+              const root = getStore().vaultPath;
+              const generation = getStore().getVaultGeneration();
+              void confirmAction(detail, { okLabel: "Move to recovery" }).then(ok => {
+                if (ok && getStore().vaultPath === root && getStore().getVaultGeneration() === generation) void deleteEntry(rel);
+              });
             }}
           >
             Move to recovery

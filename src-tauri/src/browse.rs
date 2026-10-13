@@ -118,6 +118,8 @@ pub struct BrowsePage {
     pub frame_blocked: bool,
     pub body: Option<String>,
     pub truncated: bool,
+    #[serde(rename = "subresourceToken", skip_serializing_if = "Option::is_none")]
+    pub subresource_token: Option<String>,
 }
 
 fn current_page() -> &'static Mutex<Option<(BrowsePage, std::time::Instant)>> {
@@ -142,8 +144,23 @@ fn decode_page_body(bytes: &[u8], content_type: &str) -> String {
             .eq_ignore_ascii_case("charset")
             .then(|| value.trim().trim_matches('"'))
     });
+    let meta = if charset.is_none() {
+        meta_charset(bytes)
+    } else {
+        None
+    };
     let encoding = charset
+        .or(meta.as_deref())
         .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+        .map(|encoding| {
+            if charset.is_none()
+                && (encoding == encoding_rs::UTF_16LE || encoding == encoding_rs::UTF_16BE)
+            {
+                encoding_rs::UTF_8
+            } else {
+                encoding
+            }
+        })
         .unwrap_or(encoding_rs::UTF_8);
     encoding.decode(bytes).0.into_owned()
 }
@@ -212,7 +229,8 @@ pub async fn browse_fetch(
 ) -> Result<BrowsePage, String> {
     crate::require_agent_surface(window.label())?;
     use tauri::Emitter;
-    let page = fetch_inner(url, false).await?;
+    let mut page = fetch_inner(url, false).await?;
+    page.subresource_token = Some(create_resource_token(window.label())?);
     let _ = app.emit(
         "mesa://browse-observed",
         serde_json::json!({ "url": page.final_url }),
@@ -287,12 +305,371 @@ async fn fetch_inner(url: String, agent: bool) -> Result<BrowsePage, String> {
         frame_blocked: blocked,
         body,
         truncated,
+        subresource_token: None,
     };
     *current_page()
         .lock()
         .map_err(|_| "browser source state unavailable")? =
         Some((page.clone(), std::time::Instant::now()));
     Ok(page)
+}
+
+fn meta_charset(bytes: &[u8]) -> Option<String> {
+    let ascii: String = bytes
+        .iter()
+        .take(1024)
+        .map(|b| if b.is_ascii() { *b as char } else { ' ' })
+        .collect();
+    let mut rest = ascii.as_str();
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start + 1..];
+        if rest.starts_with("!--") {
+            let end = rest.find("-->")?;
+            rest = &rest[end + 3..];
+            continue;
+        }
+        let end = rest.find('>')?;
+        let tag = &rest[..end];
+        rest = &rest[end + 1..];
+        let mut chars = tag.char_indices().peekable();
+        let name: String = chars
+            .by_ref()
+            .take_while(|(_, c)| !c.is_ascii_whitespace())
+            .map(|(_, c)| c)
+            .collect();
+        if !name.eq_ignore_ascii_case("meta") {
+            continue;
+        }
+        let mut attrs = std::collections::HashMap::new();
+        while chars.peek().is_some() {
+            while chars
+                .peek()
+                .is_some_and(|(_, c)| c.is_ascii_whitespace() || *c == '/')
+            {
+                chars.next();
+            }
+            let mut key = String::new();
+            while chars
+                .peek()
+                .is_some_and(|(_, c)| !c.is_ascii_whitespace() && *c != '=')
+            {
+                key.push(chars.next().unwrap().1);
+            }
+            while chars.peek().is_some_and(|(_, c)| c.is_ascii_whitespace()) {
+                chars.next();
+            }
+            if chars.peek().is_none_or(|(_, c)| *c != '=') {
+                continue;
+            }
+            chars.next();
+            while chars.peek().is_some_and(|(_, c)| c.is_ascii_whitespace()) {
+                chars.next();
+            }
+            let quote = chars
+                .peek()
+                .and_then(|(_, c)| (*c == '\'' || *c == '"').then_some(*c));
+            if quote.is_some() {
+                chars.next();
+            }
+            let mut value = String::new();
+            for (_, c) in chars.by_ref() {
+                if quote.map_or(c.is_ascii_whitespace(), |q| c == q) {
+                    break;
+                }
+                value.push(c);
+            }
+            attrs.entry(key.to_ascii_lowercase()).or_insert(value);
+        }
+        if let Some(label) = attrs.get("charset") {
+            if encoding_rs::Encoding::for_label(label.as_bytes()).is_some() {
+                return Some(label.clone());
+            }
+        }
+        if attrs
+            .get("http-equiv")
+            .is_some_and(|s| s.eq_ignore_ascii_case("content-type"))
+        {
+            if let Some(content) = attrs.get("content") {
+                let lower = content.to_ascii_lowercase();
+                if let Some((_, label)) = lower.split_once("charset=") {
+                    let label = label
+                        .trim()
+                        .trim_matches(['\'', '"'])
+                        .split([';', ' '])
+                        .next()
+                        .unwrap_or("");
+                    if encoding_rs::Encoding::for_label(label.as_bytes()).is_some() {
+                        return Some(label.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+const RESOURCE_LIMIT: usize = 6 * 1024 * 1024;
+const VIEW_LIMIT: usize = 48 * 1024 * 1024;
+struct ResourceBudget {
+    owner: String,
+    requests: u32,
+    bytes: usize,
+    created: std::time::Instant,
+}
+fn resource_tokens() -> &'static Mutex<std::collections::HashMap<String, ResourceBudget>> {
+    static TOKENS: OnceLock<Mutex<std::collections::HashMap<String, ResourceBudget>>> =
+        OnceLock::new();
+    TOKENS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+fn create_resource_token(owner: &str) -> Result<String, String> {
+    let token = crate::activity::make_token()?;
+    let mut tokens = resource_tokens()
+        .lock()
+        .map_err(|_| "resources unavailable")?;
+    if tokens.len() >= 8 {
+        if let Some(oldest) = tokens
+            .iter()
+            .min_by_key(|(_, b)| b.created)
+            .map(|(key, _)| key.clone())
+        {
+            tokens.remove(&oldest);
+        }
+    }
+    tokens.insert(
+        token.clone(),
+        ResourceBudget {
+            owner: owner.into(),
+            requests: 0,
+            bytes: 0,
+            created: std::time::Instant::now(),
+        },
+    );
+    Ok(token)
+}
+fn charge_resource(owner: &str, token: &str, bytes: usize, request: bool) -> Result<(), String> {
+    let mut tokens = resource_tokens()
+        .lock()
+        .map_err(|_| "resources unavailable")?;
+    let budget = tokens.get_mut(token).ok_or("resources expired")?;
+    if budget.owner != owner
+        || budget.created.elapsed() > std::time::Duration::from_secs(600)
+        || (request && budget.requests >= 400)
+        || bytes > VIEW_LIMIT.saturating_sub(budget.bytes)
+    {
+        return Err("resource budget exceeded".into());
+    }
+    if request {
+        budget.requests += 1;
+    }
+    budget.bytes += bytes;
+    Ok(())
+}
+fn resource_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; MesaBrowser/0.1)")
+        .no_proxy()
+        .referer(false)
+        .dns_resolver(Arc::new(PublicResolver))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 || public_url(attempt.url()).is_err() {
+                attempt.error("blocked redirect")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .timeout(std::time::Duration::from_secs(15))
+}
+fn resource_client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            resource_client_builder()
+                .build()
+                .map_err(|_| "resource client unavailable".into())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+fn allowed_resource_type(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "image/avif"
+            | "image/svg+xml"
+            | "image/x-icon"
+            | "image/vnd.microsoft.icon"
+            | "font/woff"
+            | "font/woff2"
+            | "font/ttf"
+            | "font/otf"
+            | "font/sfnt"
+            | "application/font-woff"
+            | "application/x-font-ttf"
+            | "application/vnd.ms-fontobject"
+    )
+}
+async fn fetch_resource(
+    owner: &str,
+    token: &str,
+    url: &str,
+    css: bool,
+) -> Result<(Vec<u8>, String, String), String> {
+    charge_resource(owner, token, 0, true)?;
+    check_public_url(url)?;
+    let response = resource_client()?
+        .get(url)
+        .header(
+            "Accept",
+            if css {
+                "text/css"
+            } else {
+                "image/*,font/*;q=0.9"
+            },
+        )
+        .send()
+        .await
+        .map_err(|_| "resource failed")?;
+    read_resource_response(owner, token, response, css).await
+}
+async fn read_resource_response(
+    owner: &str,
+    token: &str,
+    mut response: reqwest::Response,
+    css: bool,
+) -> Result<(Vec<u8>, String, String), String> {
+    let final_url = response.url().to_string();
+    if !response.status().is_success() {
+        return Err("resource failed".into());
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if if css {
+        mime != "text/css" && !(mime.is_empty() && response.url().path().ends_with(".css"))
+    } else {
+        !allowed_resource_type(&mime)
+    } {
+        return Err("resource type blocked".into());
+    }
+    let limit = if css { 2 * 1024 * 1024 } else { RESOURCE_LIMIT };
+    if response.content_length().is_some_and(|n| n > limit as u64) {
+        return Err("resource too large".into());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| "resource failed")? {
+        charge_resource(owner, token, chunk.len(), false)?;
+        if chunk.len() > limit - body.len() {
+            return Err("resource too large".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, content_type, final_url))
+}
+#[tauri::command]
+pub fn browse_resource_session(
+    window: tauri::Window,
+    token: Option<String>,
+) -> Result<Option<String>, String> {
+    let owner = window.label();
+    if owner != "main"
+        && !owner.starts_with("agent-")
+        && !owner.starts_with("doc-")
+        && !owner.starts_with("panel-")
+    {
+        return Err("surface denied".into());
+    }
+    if let Some(token) = token {
+        let mut tokens = resource_tokens()
+            .lock()
+            .map_err(|_| "resources unavailable")?;
+        if tokens.get(&token).is_some_and(|b| b.owner == owner) {
+            tokens.remove(&token);
+        }
+        Ok(None)
+    } else {
+        create_resource_token(owner).map(Some)
+    }
+}
+#[derive(Serialize)]
+pub struct BrowseStylesheet {
+    css: String,
+    #[serde(rename = "finalUrl")]
+    final_url: String,
+}
+#[tauri::command]
+pub async fn browse_fetch_stylesheet(
+    window: tauri::Window,
+    token: String,
+    url: String,
+) -> Result<BrowseStylesheet, String> {
+    let (body, content_type, final_url) =
+        fetch_resource(window.label(), &token, &url, true).await?;
+    Ok(BrowseStylesheet {
+        css: decode_page_body(&body, &content_type),
+        final_url,
+    })
+}
+pub async fn serve_subresource(
+    owner: &str,
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let mut response = tauri::http::Response::builder()
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cross-Origin-Resource-Policy", "cross-origin")
+        .header("Cache-Control", "no-store")
+        .header(
+            "Content-Security-Policy",
+            "default-src 'none'; sandbox; style-src 'unsafe-inline'",
+        );
+    if request.method() != tauri::http::Method::GET {
+        return response.status(405).body(Vec::new()).unwrap();
+    }
+    let token = request.uri().path().trim_start_matches('/');
+    let url = url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+        .find(|(k, _)| k == "u")
+        .map(|(_, v)| v.into_owned());
+    if let Some(url) = url {
+        if let Ok((body, mime, _)) = fetch_resource(owner, token, &url, false).await {
+            response = response.header("Content-Type", mime);
+            return response.status(200).body(body).unwrap();
+        }
+    }
+    response.status(403).body(Vec::new()).unwrap()
+}
+
+#[tauri::command(async)]
+pub fn browse_open_saved_html(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let checked = crate::vaultscope::require_approved_file(&app, &path)?;
+    if !checked
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("html") || s.eq_ignore_ascii_case("htm"))
+    {
+        return Err("only saved HTML can be opened".into());
+    }
+    app.opener()
+        .open_path(checked.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|_| "Could not open system browser".into())
+}
+
+pub(crate) fn revoke_resource_window(owner: &str) {
+    if let Ok(mut tokens) = resource_tokens().lock() {
+        tokens.retain(|_, budget| budget.owner != owner);
+    }
 }
 
 #[cfg(test)]
@@ -398,6 +775,150 @@ mod tests {
             "café"
         );
         assert_eq!(decode_page_body("café".as_bytes(), "text/html"), "café");
+    }
+
+    #[test]
+    fn charset_prescan_obeys_headers_comments_and_scan_limit() {
+        assert_eq!(
+            decode_page_body(b"<meta charset='windows-1252'>caf\xe9", "text/html"),
+            "<meta charset='windows-1252'>café"
+        );
+        let (bytes, _, _) = encoding_rs::SHIFT_JIS.encode(
+            "<meta http-equiv='content-type' content='text/html; charset=Shift_JIS'>日本語",
+        );
+        assert!(decode_page_body(&bytes, "text/html").ends_with("日本語"));
+        assert!(meta_charset(b"<!-- <meta charset=shift_jis> -->").is_none());
+        assert!(
+            meta_charset(format!("{}<meta charset=shift_jis>", " ".repeat(1024)).as_bytes())
+                .is_none()
+        );
+        assert!(decode_page_body(
+            "<meta charset=windows-1252>café".as_bytes(),
+            "text/html; charset=utf-8"
+        )
+        .ends_with("café"));
+    }
+    #[tokio::test]
+    async fn resources_enforce_response_types_and_complete_byte_limits() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let base = format!("http://resource.example.com:{}/", address.port());
+        let worker = std::thread::spawn(move || {
+            for (mime, bytes) in [
+                ("text/css", b"p{color:teal}".to_vec()),
+                ("text/html", b"<script>bad()</script>".to_vec()),
+                ("image/png", vec![0; RESOURCE_LIMIT + 1]),
+            ] {
+                let request = server.recv().unwrap();
+                let mut redirect = tiny_http::Response::empty(302);
+                redirect
+                    .add_header(tiny_http::Header::from_bytes("Location", "/style.css").unwrap());
+                redirect.add_header(
+                    tiny_http::Header::from_bytes("Set-Cookie", "redirect_cookie=private").unwrap(),
+                );
+                request.respond(redirect).unwrap();
+                let request = server.recv().unwrap();
+                assert_eq!(request.url(), "/style.css");
+                let mut response = tiny_http::Response::from_data(bytes);
+                response.add_header(tiny_http::Header::from_bytes("Content-Type", mime).unwrap());
+                response.add_header(
+                    tiny_http::Header::from_bytes("Set-Cookie", "should_not_persist=yes").unwrap(),
+                );
+                assert!(!request
+                    .headers()
+                    .iter()
+                    .any(|h| h.field.equiv("Cookie") || h.field.equiv("Referer")));
+                let _ = request.respond(response);
+            }
+        });
+        let token = create_resource_token("resource-response-test").unwrap();
+        // Override only the fixture hostname on the real production client builder.
+        let client = resource_client_builder()
+            .resolve("resource.example.com", address)
+            .build()
+            .unwrap();
+        let response = client.get(&base).send().await.unwrap();
+        assert_eq!(
+            read_resource_response("resource-response-test", &token, response, true)
+                .await
+                .unwrap()
+                .0,
+            b"p{color:teal}"
+        );
+        let response = client.get(&base).send().await.unwrap();
+        assert!(
+            read_resource_response("resource-response-test", &token, response, false)
+                .await
+                .is_err()
+        );
+        let response = client.get(&base).send().await.unwrap();
+        assert!(
+            read_resource_response("resource-response-test", &token, response, false)
+                .await
+                .is_err()
+        );
+        worker.join().unwrap();
+        revoke_resource_window("resource-response-test");
+    }
+
+    #[test]
+    fn resources_reject_invalid_tokens_owners_expiry_and_budget() {
+        assert!(charge_resource("resource-budget-test", "unknown", 0, true).is_err());
+        let token = create_resource_token("resource-budget-test").unwrap();
+        assert!(charge_resource("doc-test", &token, 0, true).is_err());
+        assert!(charge_resource("resource-budget-test", &token, VIEW_LIMIT + 1, false).is_err());
+        for _ in 0..400 {
+            charge_resource("resource-budget-test", &token, 0, true).unwrap();
+        }
+        assert!(charge_resource("resource-budget-test", &token, 0, true).is_err());
+        resource_tokens()
+            .lock()
+            .unwrap()
+            .get_mut(&token)
+            .unwrap()
+            .created = std::time::Instant::now() - std::time::Duration::from_secs(601);
+        assert!(charge_resource("resource-budget-test", &token, 0, false).is_err());
+        revoke_resource_window("resource-budget-test");
+        assert!(charge_resource("resource-budget-test", &token, 0, false).is_err());
+    }
+    #[tokio::test]
+    async fn resources_reject_private_addresses_and_non_get() {
+        let token = create_resource_token("main").unwrap();
+        assert!(
+            fetch_resource("main", &token, "http://localhost/x.png", false)
+                .await
+                .is_err()
+        );
+        assert!(
+            fetch_resource("main", &token, "http://127.0.0.1/x.css", true)
+                .await
+                .is_err()
+        );
+        let response = serve_subresource(
+            "main",
+            tauri::http::Request::builder()
+                .uri("mesa-web://localhost/unknown?u=https%3A%2F%2Fexample.com")
+                .body(Vec::new())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), 403);
+        assert!(response.body().is_empty());
+        let response = serve_subresource(
+            "main",
+            tauri::http::Request::builder()
+                .method("POST")
+                .uri("mesa-web://localhost/unknown")
+                .body(Vec::new())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), 405);
+        assert!(!allowed_resource_type("text/html"));
+        assert!(!allowed_resource_type("application/javascript"));
+        assert!(allowed_resource_type("font/woff2"));
+        assert!(allowed_resource_type("image/svg+xml"));
+        resource_tokens().lock().unwrap().remove(&token);
     }
 
     #[tokio::test]

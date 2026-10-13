@@ -47,6 +47,20 @@
     "allow-vault-list-recovery",
     "allow-vault-storage-id",
     "allow-workspace-open-surface",
-    "allow-navigation-pdf-preview"
+    "allow-navigation-pdf-preview",
+    "allow-browse-resource-session",
+    "allow-browse-fetch-stylesheet",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://*"
+        },
+        {
+          "url": "http://*"
+        }
+      ]
+    },
+    "allow-browse-open-saved-html"
   ]
 }

@@ -74,6 +74,7 @@ export interface Settings {
   hardwareAccel: boolean;
   /** Master switch for UI transitions/animations. */
   animations: boolean;
+  browserTextOnly: boolean;
   /** Multiple open documents with a tab strip. Off by default. */
   enableTabs: boolean;
   /** Port the embedded LAN/Tailscale sync server listens on. */

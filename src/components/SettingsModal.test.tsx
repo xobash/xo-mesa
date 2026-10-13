@@ -27,27 +27,38 @@ beforeEach(async () => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); });
 async function click(label: string) { await act(async () => Array.from(host.querySelectorAll('button')).find(b => b.textContent === label)!.click()); }
 it('requires the exact typed phrase before permanently deleting one item', async () => {
-  const prompt = vi.spyOn(window, 'prompt').mockReturnValue('delete');
   await click('Permanently delete'); expect(mocks.purge).not.toHaveBeenCalled();
-  prompt.mockReturnValue('DELETE'); await click('Permanently delete');
+  await typePhrase('delete'); await click('Confirm permanent deletion'); expect(mocks.purge).not.toHaveBeenCalled();
+  await typePhrase('DELETE'); await click('Confirm permanent deletion');
   expect(mocks.purge).toHaveBeenCalledExactlyOnceWith('/vault', mocks.entries[0]);
   expect(host.textContent).toContain('Permanently deleted 1 item.');
   expect(host.querySelectorAll('.recovery-row')).toHaveLength(1);
 });
 it('stops a bulk purge on failure and retains the failed item for recovery', async () => {
-  vi.spyOn(window, 'prompt').mockReturnValue('EMPTY');
   mocks.purge.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('disk denied'));
-  await click('Empty recovery storage');
+  await click('Empty recovery storage'); await typePhrase('EMPTY'); await click('Confirm permanent deletion');
   expect(mocks.purge).toHaveBeenCalledTimes(2);
   expect(host.textContent).toContain('Deleted 1 items; removal stopped: Error: disk denied');
   expect(host.querySelector('.recovery-row')?.textContent).toContain('second.md');
 });
 it('does not continue a bulk purge after the vault session changes', async () => {
-  vi.spyOn(window, 'prompt').mockReturnValue('EMPTY');
   mocks.purge.mockImplementationOnce(async () => {
     mocks.generation++;
     await act(async () => root.render(<SettingsModal />));
   });
-  await click('Empty recovery storage');
+  await click('Empty recovery storage'); await typePhrase('EMPTY'); await click('Confirm permanent deletion');
   expect(mocks.purge).toHaveBeenCalledTimes(1);
+});
+
+async function typePhrase(value: string) {
+  const input = host.querySelector<HTMLInputElement>('input[aria-label^="Type "]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+it('Cancel retains recovery entries', async () => {
+  await click('Permanently delete'); await typePhrase('DELETE'); await click('Cancel');
+  expect(mocks.purge).not.toHaveBeenCalled();
+  expect(host.querySelectorAll('.recovery-row')).toHaveLength(2);
 });

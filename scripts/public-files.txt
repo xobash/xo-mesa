@@ -253,6 +253,7 @@ src/lib/codeWindow.test.ts
 src/lib/codeWindow.ts
 src/lib/concurrency.test.ts
 src/lib/concurrency.ts
+src/lib/confirmAction.ts
 src/lib/daily.test.ts
 src/lib/daily.ts
 src/lib/deepResearch.test.ts

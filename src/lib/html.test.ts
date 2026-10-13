@@ -77,7 +77,7 @@ describe("saved webpage HTML rewriting", () => {
       asset
     );
 
-    expect(html).toContain('<base href="asset://localhost/vault/web/">');
+    expect(html).not.toContain("<base");
     expect(html).toContain('href="asset://localhost/vault/web/A_files/main.css"');
     expect(html).toContain("src='asset://localhost/vault/web/A_files/hero.png'");
     expect(html).toContain(
@@ -256,4 +256,50 @@ describe("saved webpage HTML rewriting", () => {
 it("preview code stripping is not a sanitizer or network policy", () => {
   const html = '<form action="https://example.com"><input></form><img src="https://example.com/image.png">';
   expect(stripSavedHtmlPreviewCode(html)).toBe(html);
+});
+
+it('rewrites inline CSS and archive-relative images without injecting a base', async () => {
+  const html = await hydrateSavedHtml('<style>p{background:url(img/a.png)}</style><p style="background:url(img/b.png)">Hi</p>', '/vault/page.html', asset, async () => '', { scripts: false });
+  expect(html).toContain('asset://localhost/vault/img/a.png');
+  expect(html).toContain('asset://localhost/vault/img/b.png');
+  const archived = rewriteSavedHtml('<!-- saved from url=(0030)https://example.com/articles/a --><!-- mesa-archive --><img src="img/a.png">', '/vault/page.html', asset);
+  expect(archived).toContain('src="https://example.com/articles/img/a.png"');
+});
+it('inlines bounded local fonts only for the full viewer', async () => {
+  const source = '<style>@font-face{font-family:x;src:url(fonts/a.woff2)}p{font-family:x}</style>';
+  const reads: string[] = [];
+  const html = await hydrateSavedHtml(source, '/vault/page.html', asset, async () => '', { scripts: false, fonts: { readBytes: async path => { reads.push(path); return new Uint8Array([1,2,3]); } } });
+  expect(reads).toEqual(['/vault/fonts/a.woff2']);
+  expect(html).toContain('data:font/woff2;base64,AQID');
+  const preview = await hydrateSavedHtml(source, '/vault/page.html', asset, async () => '', { scripts: false });
+  expect(preview).not.toContain('@font-face');
+  const oversized = await hydrateSavedHtml(source, '/vault/page.html', asset, async () => '', { scripts: false, fonts: { readBytes: async () => new Uint8Array(2 * 1024 * 1024 + 1) } });
+  expect(oversized).not.toContain('@font-face');
+});
+
+it('font rules in nested CSS may read sibling fonts inside the document folder only', async () => {
+  const paths: string[] = [];
+  const html = await hydrateSavedHtml('<link rel="stylesheet" href="files/css/a.css">', '/vault/page.html', asset,
+    async () => '@font-face{font-family:x;src:url(../fonts/a.woff2)}@font-face{font-family:y;src:url(../../../private.woff2)}',
+    { scripts: false, fonts: { readBytes: async path => { paths.push(path); return new Uint8Array([1]); } } });
+  expect(paths).toEqual(['/vault/files/fonts/a.woff2']);
+  expect(html).toContain('data:font/woff2');
+  expect(html).not.toContain('font-family:y');
+});
+
+it('preserves quoted CSS URLs in single-quoted style attributes', async () => {
+  const html = await hydrateSavedHtml("<div style='background:url(&#39;image.png&#39;)'></div>", '/vault/page.html', asset, async () => '', { scripts: false });
+  expect(html).toContain("style='background:url(&#39;asset://localhost/vault/image.png&#39;)'");
+});
+
+it('retains a supported icon-font fallback when old EOT or remote alternatives are present', async () => {
+  const reads: string[] = [];
+  const html = await hydrateSavedHtml('<style>@font-face{font-family:icons;src:url(icons.eot);src:url(icons.eot?#iefix) format("embedded-opentype"),url(icons.woff2) format("woff2"),url(https://example.com/icons.ttf) format("truetype")}</style>', '/vault/page.html', asset, async () => '', {
+    scripts: false, fonts: { readBytes: async path => { reads.push(path); return new Uint8Array([1,2,3]); } }
+  });
+  expect(reads).toEqual(['/vault/icons.woff2']);
+  expect(html).toContain('font-family:icons');
+  expect(html).toContain('data:font/woff2;base64,AQID');
+  expect(html).not.toContain('icons.eot');
+  expect(html).not.toContain('https://example.com');
 });

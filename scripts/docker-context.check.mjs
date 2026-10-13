@@ -55,7 +55,7 @@ const directives = policy => new Map(policy.split(";").map(d => {
   return [name, sources];
 }));
 const nativePolicy = directives(nativeCsp), demoPolicy = directives(demoCsp);
-const nativeOnly = new Set(["asset:", "tauri:", "ipc:", "http://asset.localhost", "https://asset.localhost", "http://ipc.localhost", "https://ipc.localhost"]);
+const nativeOnly = new Set(["mesa-web:", "http://mesa-web.localhost", "https://mesa-web.localhost", "asset:", "tauri:", "ipc:", "http://asset.localhost", "https://asset.localhost", "http://ipc.localhost", "https://ipc.localhost"]);
 if (nativePolicy.size !== demoPolicy.size) throw new Error("Demo CSP directives differ from native policy");
 for (const [name, sources] of nativePolicy) {
   const expectedSources = sources.filter(source => !nativeOnly.has(source)).sort();

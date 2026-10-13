@@ -56,6 +56,8 @@ export function SettingsModal() {
   const restoreRecoveryEntry = useAppStore((s) => s.restoreRecoveryEntry);
   const [recoveryEntries, setRecoveryEntries] = useState<RecoveryEntry[] | null>(null);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [purgeRequest, setPurgeRequest] = useState<{ entries: RecoveryEntry[]; phrase: "DELETE" | "EMPTY"; label: string; context: string } | null>(null);
+  const [typed, setTyped] = useState("");
   const [recoveryMessage, setRecoveryMessage] = useState("");
   const [recoveryLimit, setRecoveryLimit] = useState(RECOVERY_PAGE_SIZE);
   const [recoveryQuery, setRecoveryQuery] = useState("");
@@ -146,7 +148,14 @@ export function SettingsModal() {
     if (!vaultPath || recoveryBusy || !entries.length) return;
     const confirmation = entries.length === 1 ? entries[0].originalRelPath : `${entries.length} recovery items`;
     const phrase = entries.length === 1 ? "DELETE" : "EMPTY";
-    if (window.prompt(`Permanently delete ${confirmation}? This cannot be undone. Backups may retain copies; secure erasure on SSDs cannot be guaranteed. Type ${phrase} to confirm.`) !== phrase) return;
+    setTyped("");
+    setPurgeRequest({ entries: [...entries], phrase, label: confirmation, context });
+  };
+
+  const runPurge = async () => {
+    if (!purgeRequest || typed !== purgeRequest.phrase || recoveryBusy || !vaultPath || contextRef.current !== purgeRequest.context) return;
+    const entries = purgeRequest.entries;
+    setPurgeRequest(null);
     if (contextRef.current !== context) return;
     setRecoveryBusy(true); setRecoveryMessage("");
     let deleted = 0;
@@ -459,6 +468,17 @@ export function SettingsModal() {
           </div>
         </div>}
       </div>
+      {purgeRequest && purgeRequest.context === context && <Modal title="Permanently delete recovery files" onClose={() => setPurgeRequest(null)}>
+        <div className="modal-head">Permanently delete {purgeRequest.label}?</div>
+        <div className="modal-body">
+          <p>This cannot be undone. Backups may retain copies; secure erasure on SSDs cannot be guaranteed.</p>
+          <label>Type {purgeRequest.phrase} to confirm
+            <input className="text-input" aria-label={`Type ${purgeRequest.phrase} to confirm`} value={typed} onChange={e => setTyped(e.target.value)} />
+          </label>
+          <button className="btn" disabled={typed !== purgeRequest.phrase || recoveryBusy} onClick={() => void runPurge()}>Confirm permanent deletion</button>
+          <button className="btn ghost" onClick={() => setPurgeRequest(null)}>Cancel</button>
+        </div>
+      </Modal>}
     </Modal>
   );
 }

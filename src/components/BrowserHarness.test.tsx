@@ -2,7 +2,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-const mock = vi.hoisted(() => ({ invoke: vi.fn(), state: { vaultPath: '/vault', openVault: vi.fn(), registerVaultFile: vi.fn(), openFile: vi.fn() } }));
+const mock = vi.hoisted(() => ({ invoke: vi.fn(), state: { settings: { browserTextOnly: false }, setSetting: vi.fn(), vaultPath: '/vault', openVault: vi.fn(), registerVaultFile: vi.fn(), openFile: vi.fn() } }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }));
 vi.mock('../lib/vault', () => ({ IN_TAURI: true, writeVaultTextFile: vi.fn() }));
 vi.mock('../store', () => ({ useAppStore: Object.assign((fn: (s: unknown) => unknown) => fn(mock.state), { getState: () => mock.state }) }));
@@ -95,4 +95,11 @@ it('registers and opens an archive without reopening the vault', async () => {
   expect(rel).toMatch(/\.html$/);
   expect(mock.state.openFile).toHaveBeenCalledWith(rel);
   expect(mock.state.registerVaultFile.mock.invocationCallOrder[0]).toBeLessThan(mock.state.openFile.mock.invocationCallOrder[0]);
+});
+
+it('revokes resource tokens for responses that cannot become a readable view', async () => {
+  await mount(); mock.invoke.mockResolvedValueOnce({ ...page('https://example.com/', ''), subresourceToken: 'unused-view' }).mockResolvedValue(undefined);
+  await navigate('https://example.com/');
+  expect(mock.invoke).toHaveBeenCalledWith('browse_resource_session', { token: 'unused-view' });
+  expect(host.querySelector('iframe')).toBeNull();
 });

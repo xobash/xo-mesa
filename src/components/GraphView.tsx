@@ -56,8 +56,9 @@ const LABEL_TOP_N = 10;
 // motion. Constant (not zoom-dependent) so layout is stable under zoom.
 const OVERLAP_GAP = 8;
 
-function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): number {
+function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean, quiet: boolean): number {
   if (moving || active) return ACTIVE_FRAME_MS;
+  if (quiet) return 1000 / 10;
   if (nodeCount > 4000) return 1000 / 20;
   return IDLE_FRAME_MS;
 }
@@ -1987,6 +1988,7 @@ export function GraphView() {
       }
     };
 
+    let lastInputAt = performance.now();
     const frame = () => {
       const now = performance.now();
       const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
@@ -2062,7 +2064,7 @@ export function GraphView() {
         now < motionUntilRef.current ||
         (sim ? sim.alpha() > 0.004 : false) ||
         zooming;
-      const frameMs = ambientFrameMs(nodesRef.current.length, moving, activeItems.length > 0);
+      const frameMs = ambientFrameMs(nodesRef.current.length, moving, activeItems.length > 0, !document.hasFocus() || now - lastInputAt >= 15_000);
       const dueLivingFrame =
         animationsOn &&
         nodesRef.current.length > 0 &&
@@ -2132,6 +2134,7 @@ export function GraphView() {
     let hadFrameError = false;
     let alive = true;
     let running = false;
+    let quietTimer: number | undefined;
     const loop = () => {
       raf = 0;
       if (!alive || document.hidden || !canvasVisibleRef.current) return;
@@ -2156,16 +2159,23 @@ export function GraphView() {
       const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
       const zooming = Math.abs(targetKRef.current - transformRef.current.k) > 0.0005;
       const focusTarget = hoverRef.current.id ? 1 : 0;
-      if ((animationsOn && nodesRef.current.length > 0) || needsRedrawRef.current ||
-          (simRef.current?.alpha() ?? 0) > 0.004 || zooming ||
-          dragRef.current.node || dragRef.current.panning || activeRecords(0.02).length ||
-          activityRef.current.some(item => item.visible) ||
-          focusRef.current.k !== focusTarget || (hoverRef.current.id && shownIdRef.current !== hoverRef.current.id) || !layoutSettledRef.current ||
-          replayCameraRef.current || fitPendingRef.current || timelapseRef.current) {
-        raf = requestAnimationFrame(loop);
+      const urgent = needsRedrawRef.current ||
+        (simRef.current?.alpha() ?? 0) > 0.004 || zooming ||
+        dragRef.current.node || dragRef.current.panning || activeRecords(0.02).length ||
+        activityRef.current.some(item => item.visible) ||
+        focusRef.current.k !== focusTarget || (hoverRef.current.id && shownIdRef.current !== hoverRef.current.id) || !layoutSettledRef.current ||
+        replayCameraRef.current || fitPendingRef.current || timelapseRef.current;
+      if ((animationsOn && nodesRef.current.length > 0) || urgent) {
+        if (!urgent && (!document.hasFocus() || performance.now() - lastInputAt >= 15_000)) {
+          quietTimer = window.setTimeout(() => {
+            quietTimer = undefined;
+            if (alive && !document.hidden && canvasVisibleRef.current) raf = requestAnimationFrame(loop);
+          }, 1000 / 10);
+        } else raf = requestAnimationFrame(loop);
       }
     };
     const resume = () => {
+      if (quietTimer !== undefined) { window.clearTimeout(quietTimer); quietTimer = undefined; }
       if (alive && !running && !raf && !document.hidden && canvasVisibleRef.current) {
         needsRedrawRef.current = true;
         raf = requestAnimationFrame(loop);
@@ -2192,6 +2202,12 @@ export function GraphView() {
       resume();
     });
     if (wrapRef.current) observer?.observe(wrapRef.current);
+    const input = () => { lastInputAt = performance.now(); resume(); };
+    window.addEventListener("focus", input);
+    window.addEventListener("pointermove", input, { passive: true });
+    window.addEventListener("pointerdown", input, { passive: true });
+    window.addEventListener("keydown", input);
+    window.addEventListener("wheel", input, { passive: true });
     document.addEventListener("visibilitychange", resume);
     resume();
     return () => {
@@ -2200,7 +2216,13 @@ export function GraphView() {
       themeObserver.disconnect();
       stopActivity(); stopSettings(); stopMotion(); observer?.disconnect();
       document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("focus", input);
+      window.removeEventListener("pointermove", input);
+      window.removeEventListener("pointerdown", input);
+      window.removeEventListener("keydown", input);
+      window.removeEventListener("wheel", input);
       cancelAnimationFrame(raf);
+      if (quietTimer !== undefined) window.clearTimeout(quietTimer);
       if (activityClearTimerRef.current) clearTimeout(activityClearTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- The animation loop owns a single mount lifetime.
