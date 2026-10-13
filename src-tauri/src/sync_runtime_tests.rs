@@ -167,6 +167,83 @@ fn identity_bundle_rejects_mismatched_legacy_pair() {
 
 #[cfg(windows)]
 #[test]
+fn private_directory_acl_does_not_require_audit_privilege() {
+    let dir = identity_test_dir("unprivileged-vault-state");
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AclProbe {
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool CreateRestrictedToken(IntPtr token, uint flags, uint sidCount, IntPtr sids, uint privilegeCount, IntPtr privileges, uint restrictedCount, IntPtr restricted, out IntPtr result);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool ImpersonateLoggedOnUser(IntPtr token);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    public static extern bool RevertToSelf();
+    [DllImport("advapi32.dll", SetLastError=true)]
+    static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr info, uint size, out uint needed);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")]
+    public static extern bool CloseHandle(IntPtr handle);
+    public static IntPtr Begin() {
+        IntPtr original, restricted;
+        if (!OpenProcessToken(GetCurrentProcess(), 0xA, out original)) throw new Exception("Open token failed");
+        try {
+            // DISABLE_MAX_PRIVILEGE retains only SeChangeNotifyPrivilege.
+            if (!CreateRestrictedToken(original, 1, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted)) throw new Exception("Restrict token failed");
+        } finally { CloseHandle(original); }
+        uint needed;
+        GetTokenInformation(restricted, 3, IntPtr.Zero, 0, out needed);
+        IntPtr info = Marshal.AllocHGlobal((int)needed);
+        try {
+            if (!GetTokenInformation(restricted, 3, info, needed, out needed) || Marshal.ReadInt32(info) > 1) throw new Exception("Privileges were not removed");
+            if (!ImpersonateLoggedOnUser(restricted)) throw new Exception("Impersonation failed");
+        } catch { CloseHandle(restricted); throw; }
+        finally { Marshal.FreeHGlobal(info); }
+        return restricted;
+    }
+}
+'@
+$token = [AclProbe]::Begin()
+try {
+    & ([scriptblock]::Create($env:MESA_TEST_DIRECTORY_ACL_SCRIPT))
+    & ([scriptblock]::Create($env:MESA_TEST_DIRECTORY_ACL_SCRIPT))
+    $acl = Get-Acl -LiteralPath $env:MESA_IDENTITY_DIRECTORY
+    $rules = @($acl.Access)
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    if ($rules.Count -ne 1 -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl' -or $rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Private access not applied' }
+} finally {
+    if (-not [AclProbe]::RevertToSelf()) { throw 'Revert failed' }
+    [AclProbe]::CloseHandle($token) | Out-Null
+}
+"#;
+    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    let result = std::process::Command::new(
+        std::path::Path::new(&system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+    )
+    .env_remove("PSModulePath")
+    .env("MESA_IDENTITY_DIRECTORY", &dir)
+    .env(
+        "MESA_TEST_DIRECTORY_ACL_SCRIPT",
+        super::identity::PRIVATE_DIRECTORY_ACL_SCRIPT,
+    )
+    .args(["-NoProfile", "-NonInteractive", "-Command", script])
+    .output()
+    .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(
+        result.status.success(),
+        "Unprivileged ACL repair failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn identity_acl_repairs_explicit_broad_key_access() {
     let dir = std::env::temp_dir().join(format!("mesa-identity-acl-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

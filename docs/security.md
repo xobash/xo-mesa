@@ -218,8 +218,11 @@ provenance and artifact-bound native records. The [control register](security-co
 names enforcement and regressions; a record hash cannot authenticate an observation.
 
 Sync TLS identity directories/keys use 0700/0600 on Unix. Windows applies a
-current-user ACL. Existing permissions are repaired and checked; identity symlinks
-are rejected, and a failed check stops loading. The shared sync key uses the OS
+current-user ACL through a write limited to changed owner/access sections;
+audit rules are left unchanged. This also protects native vault-state storage
+without requiring audit privileges. Existing permissions are repaired and
+checked; identity symlinks are rejected, and a failed check stops loading.
+The shared sync key uses the OS
 credential store. Windows ACL behavior still needs native acceptance.
 
 Native overwrites retain displaced bytes and check them against the reviewed

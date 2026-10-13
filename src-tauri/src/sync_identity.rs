@@ -43,6 +43,11 @@ fn system_tool(relative: &str) -> std::process::Command {
     command
 }
 
+// Persist only the owner/access sections we changed. Set-Acl also attempts
+// audit sections, which need SeSecurityPrivilege in a normal user session.
+#[cfg(windows)]
+pub(super) const PRIVATE_DIRECTORY_ACL_SCRIPT: &str = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); [System.IO.Directory]::SetAccessControl($p,$acl); $actual=Get-Acl -LiteralPath $p; if(-not $actual.AreAccessRulesProtected){throw 'Unprotected identity ACL'}; foreach($r in $actual.Access){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){throw 'Unexpected identity access'}}"#;
+
 /// Establish private identity storage before reading or creating any key.
 pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
     protect_private_directory(dir, &["cert.pem", "key.pem", "identity.json"])
@@ -107,7 +112,7 @@ pub(crate) fn protect_private_directory(
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         // Use the process identity SID, never a renderer-provided account name.
         // The path travels as data through an environment variable, not code.
-        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $p -AclObject $acl; $actual=Get-Acl -LiteralPath $p; if(-not $actual.AreAccessRulesProtected){throw 'Unprotected identity ACL'}; foreach($r in $actual.Access){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){throw 'Unexpected identity access'}}"#;
+        let script = PRIVATE_DIRECTORY_ACL_SCRIPT;
         let status = system_tool("WindowsPowerShell\\v1.0\\powershell.exe")
             // A PowerShell 7 parent passes incompatible module paths through
             // native child processes. Let Windows PowerShell use its own modules.
