@@ -1,14 +1,48 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 
-pub(crate) static WRITE_LOCK: Mutex<()> = Mutex::new(());
+// Destructive operations exclude every ordinary save; unrelated saves may overlap.
+pub(crate) static WRITE_LOCK: RwLock<()> = RwLock::new(());
+static SAVE_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn with_save_lock<T>(target: &Path, run: impl FnOnce() -> T) -> T {
+    with_save_gate(&WRITE_LOCK, target, run)
+}
+
+fn with_save_gate<T>(gate: &RwLock<()>, target: &Path, run: impl FnOnce() -> T) -> T {
+    let identity = target.canonicalize().unwrap_or_else(|_| {
+        target
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .and_then(|parent| target.file_name().map(|name| parent.join(name)))
+            .unwrap_or_else(|| target.to_path_buf())
+    });
+    #[cfg(any(target_os = "macos", windows))]
+    let identity = PathBuf::from(identity.to_string_lossy().to_lowercase());
+    let lock = {
+        let mut locks = SAVE_LOCKS.lock().unwrap_or_else(|p| p.into_inner());
+        locks.retain(|_, value| value.strong_count() > 0);
+        if let Some(lock) = locks.get(&identity).and_then(Weak::upgrade) {
+            lock
+        } else {
+            let lock = Arc::new(Mutex::new(()));
+            locks.insert(identity, Arc::downgrade(&lock));
+            lock
+        }
+    };
+    let _file = lock.lock().unwrap_or_else(|p| p.into_inner());
+    let _gate = gate.read().unwrap_or_else(|p| p.into_inner());
+    run()
+}
 static ARTIFACT_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Deserialize)]
@@ -426,7 +460,7 @@ fn parse_write_request(
 }
 
 /// One native transaction for approved-vault writes. Heavy IO runs outside the
-/// webview thread and only one Mesa save can compare and publish at a time.
+/// webview thread. One target serializes; unrelated saves may overlap.
 #[tauri::command]
 pub async fn vault_write_atomic(
     app: AppHandle,
@@ -437,12 +471,15 @@ pub async fn vault_write_atomic(
         return Err("verified saves require an expected hash or missing target".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let target = super::vaultscope::require_approved_write_target(&app, &path)?;
-        crate::vaulttransaction::require_recovered_target(&target)?;
-        write_atomic(&target, &data, &expected)
+        with_save_lock(&target, || {
+            let current = super::vaultscope::require_approved_write_target(&app, &path)?;
+            if current != target {
+                return Err("Vault target moved while waiting to save.".into());
+            }
+            crate::vaulttransaction::require_recovered_target(&target)?;
+            write_atomic(&target, &data, &expected)
+        })
     })
     .await
     .map_err(|error| format!("vault write worker failed: {error}"))?
@@ -500,21 +537,64 @@ mod tests {
     }
 
     #[test]
-    fn recovery_copy_requires_new_file_outside_vault_and_verifies_text() {
-        let dir = test_folder("export");
-        let root = dir.join("vault");
-        fs::create_dir(&root).unwrap();
-        assert!(export_copy(&root.join("copy.md"), &root, b"draft").is_err());
-        let target = dir.join("copy.md");
-        export_copy(&target, &root, b"draft").unwrap();
-        assert_eq!(fs::read(&target).unwrap(), b"draft");
-        assert!(export_copy(&target, &root, b"other").is_err());
-        assert_eq!(fs::read(&target).unwrap(), b"draft");
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&root, dir.join("alias")).unwrap();
-            assert!(export_copy(&dir.join("alias/copy.md"), &root, b"draft").is_err());
-        }
+    fn different_save_targets_overlap_but_destructive_operations_wait() {
+        let dir = test_folder("parallel-save");
+        let gate = Arc::new(RwLock::new(()));
+        let first_gate = gate.clone();
+        let a = dir.join("a.md");
+        let b = dir.join("b.md");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            with_save_gate(&first_gate, &a, || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx.recv().unwrap();
+        assert!(gate.try_write().is_err());
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let other_gate = gate.clone();
+        let other = std::thread::spawn(move || {
+            with_save_gate(&other_gate, &b, || done_tx.send(()).unwrap())
+        });
+        let done = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        other.join().unwrap();
+        assert!(done.is_ok());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn same_save_target_serializes_including_case_aliases() {
+        let dir = test_folder("serial-save");
+        let target = dir.join("a.md");
+        fs::write(&target, b"old").unwrap();
+        let first = target.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            with_save_lock(&first, || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx.recv().unwrap();
+        #[cfg(any(target_os = "macos", windows))]
+        let target = target.with_file_name("A.md");
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let second =
+            std::thread::spawn(move || with_save_lock(&target, || done_tx.send(()).unwrap()));
+        assert!(done_rx
+            .recv_timeout(std::time::Duration::from_millis(50))
+            .is_err());
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        second.join().unwrap();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -539,6 +619,25 @@ mod tests {
         for code in [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP] {
             assert!(replacement_error(io::Error::from_raw_os_error(code))
                 .contains("unsupported-filesystem:"));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn recovery_copy_requires_new_file_outside_vault_and_verifies_text() {
+        let dir = test_folder("export");
+        let root = dir.join("vault");
+        fs::create_dir(&root).unwrap();
+        assert!(export_copy(&root.join("copy.md"), &root, b"draft").is_err());
+        let target = dir.join("copy.md");
+        export_copy(&target, &root, b"draft").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"draft");
+        assert!(export_copy(&target, &root, b"other").is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"draft");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&root, dir.join("alias")).unwrap();
+            assert!(export_copy(&dir.join("alias/copy.md"), &root, b"draft").is_err());
         }
         fs::remove_dir_all(dir).unwrap();
     }

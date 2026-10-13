@@ -418,3 +418,12 @@ editable. Pure CRLF documents retain their line endings through editor changes,
 saves and tab history; mixed endings retain the existing LF normalization.
 Regression coverage is in the existing native-write, document-controller and
 editor undo suites. Native save/close acceptance remains a separate check.
+
+Native ordinary saves serialize per canonical target, so a large binary save does
+not hold a global exclusive lock against an unrelated note. Rename, deletion,
+recovery and reviewed multi-file applies retain exclusive admission against all
+ordinary saves. Existing hash checks, displaced-byte rescue and read-back remain
+unchanged. `vaultwrite.rs` tests cover same-target serialization, independent
+save overlap, and exclusion by the destructive-operation gate. Tauri's borrowed
+request body still requires an owned worker copy; this change does not claim a
+reduction in large-save memory or disk work.

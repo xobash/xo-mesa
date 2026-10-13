@@ -302,7 +302,7 @@ fn recover_unlocked(root: &Path) -> Result<(), String> {
     }
 }
 pub fn recover(root: &Path) -> Result<(), String> {
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = WRITE_LOCK.write().unwrap_or_else(|p| p.into_inner());
     recover_unlocked(root).map_err(|e| format!("Research recovery is pending: {e}"))
 }
 fn apply(
@@ -411,7 +411,7 @@ pub async fn vault_apply_research(
     tauri::async_runtime::spawn_blocking(move || {
         let _run = run;
         let _access = access;
-        let _guard = WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = WRITE_LOCK.write().unwrap_or_else(|p| p.into_inner());
         apply(&root, changes, None)
     })
     .await

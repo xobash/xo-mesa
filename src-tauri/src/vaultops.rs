@@ -97,7 +97,7 @@ pub async fn vault_move_to_recovery(
     tauri::async_runtime::spawn_blocking(move || {
         let _access = access;
         let _lock = vaultwrite::WRITE_LOCK
-            .lock()
+            .write()
             .unwrap_or_else(|e| e.into_inner());
         let stamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -125,7 +125,7 @@ pub async fn vault_restore_recovery(
     tauri::async_runtime::spawn_blocking(move || {
         let _access = access;
         let _lock = vaultwrite::WRITE_LOCK
-            .lock()
+            .write()
             .unwrap_or_else(|e| e.into_inner());
         move_entry(&root, &trash_rel_path, &target_rel_path)
     })
@@ -257,7 +257,7 @@ pub async fn vault_recover_artifact(
     tauri::async_runtime::spawn_blocking(move || {
         let _access = access;
         let _lock = vaultwrite::WRITE_LOCK
-            .lock()
+            .write()
             .unwrap_or_else(|e| e.into_inner());
         recover_artifact(&root, &rel, restore)
     })

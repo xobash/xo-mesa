@@ -135,6 +135,9 @@ pub async fn vault_rename_no_replace(
     let access = crate::vaulttransaction::access(&root).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let _access = access;
+        let _guard = crate::vaultwrite::WRITE_LOCK
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
         rename_no_replace(&root, &from_rel, &to_rel, case_only)
     })
     .await
@@ -291,7 +294,7 @@ pub async fn vault_purge_recovery(
     tauri::async_runtime::spawn_blocking(move || {
         let root = crate::vaultscope::require_approved(&app, &root)?;
         let _guard = crate::vaultwrite::WRITE_LOCK
-            .lock()
+            .write()
             .unwrap_or_else(|e| e.into_inner());
         purge_recovery(&root, &trash_rel_path)
     })
