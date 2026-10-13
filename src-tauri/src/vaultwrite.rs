@@ -219,6 +219,36 @@ fn write_atomic_at_commit(
     expected: &ExpectedCurrent,
     at_commit: impl FnOnce(),
 ) -> Result<(), String> {
+    write_atomic_with_replace(target, data, expected, at_commit, replace_preserving)
+}
+
+fn replacement_error(error: io::Error) -> String {
+    #[cfg(target_os = "linux")]
+    let unsupported = matches!(
+        error.raw_os_error(),
+        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+    );
+    #[cfg(target_os = "macos")]
+    let unsupported = matches!(
+        error.raw_os_error(),
+        Some(libc::ENOTSUP | libc::EINVAL | libc::ENOSYS)
+    );
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let unsupported = error.kind() == io::ErrorKind::Unsupported;
+    if unsupported || error.kind() == io::ErrorKind::Unsupported {
+        "unsupported-filesystem: This folder's filesystem does not support Mesa's atomic replace, so edits to existing files cannot be saved here. Your edits are still open; save copies outside the vault or move the vault to a filesystem that supports atomic replacement.".into()
+    } else {
+        format!("cannot publish vault file: {error}")
+    }
+}
+
+fn write_atomic_with_replace(
+    target: &Path,
+    data: &[u8],
+    expected: &ExpectedCurrent,
+    at_commit: impl FnOnce(),
+    replace: impl FnOnce(&Path, &Path, &Path) -> io::Result<()>,
+) -> Result<(), String> {
     if data.len() > 1024 * 1024 * 1024 {
         return Err("vault file exceeds the 1 GiB save limit".into());
     }
@@ -257,8 +287,7 @@ fn write_atomic_at_commit(
         }
         at_commit();
         if let Some(original) = before_commit {
-            replace_preserving(&temporary, target, &displaced)
-                .map_err(|e| format!("cannot publish vault file: {e}"))?;
+            replace(&temporary, target, &displaced).map_err(replacement_error)?;
             sync_parent(target).map_err(|e| e.to_string())?;
             // A writer can change the destination after the last comparison.
             // Compare the version retained by the OS at the instant of commit.
@@ -485,6 +514,31 @@ mod tests {
         {
             std::os::unix::fs::symlink(&root, dir.join("alias")).unwrap();
             assert!(export_copy(&dir.join("alias/copy.md"), &root, b"draft").is_err());
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unsupported_replacement_leaves_original_and_clear_error() {
+        let dir = test_folder("unsupported");
+        let target = dir.join("note.md");
+        fs::write(&target, b"old").unwrap();
+        let error = write_atomic_with_replace(
+            &target,
+            b"new",
+            &ExpectedCurrent::Any,
+            || {},
+            |_, _, _| Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported")),
+        )
+        .unwrap_err();
+        // All platforms recognize typed unsupported errors as well as native codes.
+        assert!(error.contains("atomic replace"));
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        for code in [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP] {
+            assert!(replacement_error(io::Error::from_raw_os_error(code))
+                .contains("unsupported-filesystem:"));
         }
         fs::remove_dir_all(dir).unwrap();
     }

@@ -298,6 +298,14 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
 - **Identifier** `dev.xo.mesa` is fixed; it determines the per-OS app-data dir,
   so keep it stable across releases.
 
+- **Filesystem editing support** — existing-file saves require atomic exchange
+  on Linux, atomic swap on macOS, or ReplaceFile with retained displaced bytes
+  on Windows. Some removable and network volumes do not support these operations.
+  Opening/indexing a NAS vault does not establish editing support. Unsupported
+  replacements keep the original untouched and offer a clear save error; save
+  copies outside the vault or move it to a compatible filesystem. Mesa keeps
+  atomic replacement required and does not use a two-rename fallback.
+
 - **NAS vault opening** — mounted NAS folders use local-looking filesystem APIs,
   but directory enumeration and metadata reads still pay network latency. Mesa
   keeps local-vault behavior unchanged, while UNC roots and macOS `/Volumes/`

@@ -354,7 +354,11 @@ ReplaceFile with a backup destination. The actual displaced bytes are retained
 under a rescue artifact name and compared after commit. If an external edit
 arrives in the final comparison window, the save reports a conflict, retains
 that edit in the named rescue, and keeps Mesa's authored version at the target.
-Review both before retrying. Unsupported replacement primitives fail visibly;
+Review both before retrying. Unsupported replacement primitives report an
+`unsupported-filesystem` error, preserve the target, and explain how to save
+copies outside the vault or move to a compatible filesystem. Some exFAT, SMB,
+and NFS volumes lack the required primitive; availability depends on the OS
+and filesystem implementation. Unsupported replacement primitives fail visibly;
 there is no in-place or destructive rename fallback. A later writer may still
 change either version through an existing file handle; Mesa does not claim to
 lock other editors. Crash recovery preserves rescue copies beside live targets.
