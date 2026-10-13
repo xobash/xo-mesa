@@ -19,6 +19,8 @@ fn main() {
             "activity_set_context",
             "deep_research_respond",
             "activity_stop",
+            "html_run_session",
+            "html_run_revoke",
             "browse_fetch",
             "browse_resource_session",
             "browse_open_saved_html",

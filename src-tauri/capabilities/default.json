@@ -61,6 +61,8 @@
         }
       ]
     },
+    "allow-html-run-session",
+    "allow-html-run-revoke",
     "allow-browse-open-saved-html"
   ]
 }

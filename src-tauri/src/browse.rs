@@ -520,6 +520,23 @@ fn allowed_resource_type(mime: &str) -> bool {
             | "application/vnd.ms-fontobject"
     )
 }
+fn sniff_resource_type(body: &[u8]) -> Option<&'static str> {
+    match body {
+        [b'w', b'O', b'F', b'F', ..] => Some("font/woff"),
+        [b'w', b'O', b'F', b'2', ..] => Some("font/woff2"),
+        [0, 1, 0, 0, ..] | [b't', b'r', b'u', b'e', ..] => Some("font/ttf"),
+        [b'O', b'T', b'T', b'O', ..] => Some("font/otf"),
+        [0x89, b'P', b'N', b'G', 13, 10, 26, 10, ..] => Some("image/png"),
+        [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+        [b'G', b'I', b'F', b'8', b'7' | b'9', b'a', ..] => Some("image/gif"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+        [_, _, _, _, b'f', b't', b'y', b'p', b'a', b'v', b'i', b'f', ..] => Some("image/avif"),
+        [0, 0, 1, 0, ..] => Some("image/x-icon"),
+        [b'B', b'M', ..] => Some("image/bmp"),
+        _ => None,
+    }
+}
+
 async fn fetch_resource(
     owner: &str,
     token: &str,
@@ -565,11 +582,11 @@ async fn read_resource_response(
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    if if css {
-        mime != "text/css" && !(mime.is_empty() && response.url().path().ends_with(".css"))
-    } else {
-        !allowed_resource_type(&mime)
-    } {
+    if css
+        && mime != "text/css"
+        && !((mime.is_empty() || mime == "text/plain")
+            && response.url().path().to_ascii_lowercase().ends_with(".css"))
+    {
         return Err("resource type blocked".into());
     }
     let limit = if css { 2 * 1024 * 1024 } else { RESOURCE_LIMIT };
@@ -584,7 +601,16 @@ async fn read_resource_response(
         }
         body.extend_from_slice(&chunk);
     }
-    Ok((body, content_type, final_url))
+    let served_type = if css {
+        "text/css".to_string()
+    } else if allowed_resource_type(&mime) {
+        content_type
+    } else {
+        sniff_resource_type(&body)
+            .ok_or("resource type blocked")?
+            .to_string()
+    };
+    Ok((body, served_type, final_url))
 }
 #[tauri::command]
 pub fn browse_resource_session(
@@ -814,9 +840,13 @@ mod tests {
         let base = format!("http://resource.example.com:{}/", address.port());
         let worker = std::thread::spawn(move || {
             for (mime, bytes) in [
-                ("text/css", b"p{color:teal}".to_vec()),
-                ("text/html", b"<script>bad()</script>".to_vec()),
+                ("text/plain", b"p{color:teal}".to_vec()),
+                (
+                    "application/octet-stream",
+                    b"<script>bad()</script>".to_vec(),
+                ),
                 ("image/png", vec![0; RESOURCE_LIMIT + 1]),
+                ("application/octet-stream", b"wOF2fixture".to_vec()),
             ] {
                 let request = server.recv().unwrap();
                 let mut redirect = tiny_http::Response::empty(302);
@@ -866,6 +896,12 @@ mod tests {
                 .await
                 .is_err()
         );
+        let response = client.get(&base).send().await.unwrap();
+        let resource = read_resource_response("resource-response-test", &token, response, false)
+            .await
+            .unwrap();
+        assert_eq!(resource.1, "font/woff2");
+        assert_eq!(resource.0, b"wOF2fixture");
         worker.join().unwrap();
         revoke_resource_window("resource-response-test");
     }

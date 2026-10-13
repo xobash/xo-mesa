@@ -1,28 +1,35 @@
-import { CSS_URL_RE } from "./html";
+import { CSS_URL_RE, unwrapScriptFallbacks } from "./html";
 import DOMPurify from "dompurify";
 
 /** The sole executable content in the reader is this Mesa-owned link bridge. */
 export const READER_BRIDGE = `<script>
 (function () {
   function go(url) { parent.postMessage({ __mesaBrowse: { url: String(url) } }, "*"); }
+  function jump(id) {
+    var t = document.getElementById(id) || document.getElementsByName(id)[0];
+    if (t && t.scrollIntoView) t.scrollIntoView();
+  }
   document.addEventListener("click", function (e) {
     var el = e.target;
     var a = el && el.closest ? el.closest("a[href]") : null;
-    if (!a || !a.href) return;
+    if (!a) return;
     e.preventDefault();
-    go(a.href);
+    var raw = a.getAttribute("href") || "";
+    if (raw.charAt(0) === "#") { try { jump(decodeURIComponent(raw.slice(1))); } catch (_) {} return; }
+    if (a.href) go(a.href);
   }, true);
-
+  var start = document.documentElement.getAttribute("data-mesa-fragment");
+  if (start) addEventListener("load", function () { try { jump(decodeURIComponent(start)); } catch (_) {} });
 })();
 </${"script"}>`;
 
-export const READER_SCRIPT_HASH = "sha256-8D3rAzMxEvvKvt3xJzilB4qHb/nQ0BCYDIrJyGKgM5g=";
+export const READER_SCRIPT_HASH = "sha256-gG7q72k24KbGKHD4BRn9xaUok2022yKslwchcGrrnvA=";
 
-export function buildReaderHtml(rawHtml: string, baseUrl: string): string {
+export function buildReaderHtml(rawHtml: string, baseUrl: string, fragment = new URL(baseUrl).hash.slice(1)): string {
   if (!DOMPurify.isSupported) throw new Error("Safe page rendering is unavailable.");
   const url = new URL(baseUrl);
   if (!/^https?:$/.test(url.protocol)) throw new Error("Unsupported page URL.");
-  const markup = DOMPurify.sanitize(rawHtml, {
+  const markup = DOMPurify.sanitize(unwrapScriptFallbacks(rawHtml), {
     WHOLE_DOCUMENT: true,
     ADD_TAGS: ["style"],
     ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|mesa-web):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
@@ -34,11 +41,27 @@ export function buildReaderHtml(rawHtml: string, baseUrl: string): string {
   for (const link of document.querySelectorAll("a[href]")) {
     try {
       const target = new URL(link.getAttribute("href")!, url);
-      if (/^https?:$/.test(target.protocol)) link.setAttribute("href", target.href);
+      if (/^https?:$/.test(target.protocol)) {
+        const page = new URL(url); page.hash = "";
+        const owner = new URL(target); owner.hash = "";
+        link.setAttribute("href", target.hash && owner.href === page.href ? target.hash : target.href);
+      }
       else link.removeAttribute("href");
     } catch { link.removeAttribute("href"); }
   }
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"></head><body>${document.documentElement.innerHTML}${READER_BRIDGE}</body></html>`;
+  const meta = document.createElement("meta");
+  meta.setAttribute("http-equiv", "Content-Security-Policy");
+  meta.setAttribute("content", policy);
+  const referrer = document.createElement("meta");
+  referrer.setAttribute("name", "referrer");
+  referrer.setAttribute("content", "no-referrer");
+  document.head.prepend(meta, referrer);
+  document.documentElement.removeAttribute("data-mesa-fragment");
+  if (fragment) document.documentElement.setAttribute("data-mesa-fragment", fragment);
+  const bridge = document.createElement("script");
+  bridge.textContent = READER_BRIDGE.slice("<script>".length, -"</script>".length);
+  document.body.append(bridge);
+  return `<!doctype html>${document.documentElement.outerHTML}`;
 }
 
 export interface ReaderStylesheet { css: string; finalUrl: string }
@@ -48,13 +71,14 @@ export interface ReaderResources {
   fetchStylesheet: (url: string) => Promise<string | ReaderStylesheet>;
   deadline?: number;
   allowLocal?: boolean;
+  onStats?: (stats: { requested: number; failed: number; timedOut: number }) => void;
 }
 export const RESOURCE_SOURCES = "mesa-web: http://mesa-web.localhost https://mesa-web.localhost";
 
 /** Resolve static assets through the native broker; never send page URLs to the webview. */
 export async function prepareReaderResources(rawHtml: string, baseUrl: string, options: ReaderResources): Promise<string> {
-  const deadline = options.deadline ?? Date.now() + 3000;
-  const document = new DOMParser().parseFromString(rawHtml, "text/html");
+  const deadline = options.deadline ?? Date.now() + 6000;
+  const document = new DOMParser().parseFromString(unwrapScriptFallbacks(rawHtml), "text/html");
   let base = baseUrl;
   try { base = new URL(document.querySelector("base[href]")?.getAttribute("href") ?? baseUrl, baseUrl).href; } catch { /* use response URL */ }
   const absolute = (raw: string, owner: string) => {
@@ -68,19 +92,23 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
   };
   const rewriteCss = (css: string, owner: string) => css.replace(CSS_URL_RE, (_m, dq, sq, bare) => `url("${proxy(dq ?? sq ?? bare ?? "", owner).replace(/"/g, "%22")}")`);
   let sheets = 0;
+  const stats = { requested: 0, failed: 0, timedOut: 0 };
   const cssCache = new Map<string, Promise<string | ReaderStylesheet>>();
   const importRe = /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?([^;]*);/gi;
   async function stylesheet(url: string, depth: number, ancestors: Set<string>): Promise<string> {
-    if (depth > 3 || ancestors.has(url) || Date.now() >= deadline || sheets >= 30) return "";
+    if (depth > 3 || ancestors.has(url) || sheets >= 30) return "";
+    if (Date.now() >= deadline) { stats.requested++; stats.timedOut++; return ""; }
     sheets++;
+    stats.requested++;
     try {
       let pending = cssCache.get(url);
       if (!pending) { pending = options.fetchStylesheet(url); cssCache.set(url, pending); }
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const result = await Promise.race([pending, new Promise<string>(resolve => { timer = setTimeout(() => resolve(""), Math.max(0, deadline - Date.now())); })]).finally(() => clearTimeout(timer));
+      const result = await Promise.race([pending, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now())); })]).finally(() => clearTimeout(timer));
+      if (result === null) { stats.timedOut++; return ""; }
       const css = typeof result === "string" ? result : result.css;
       const owner = typeof result === "string" ? url : result.finalUrl;
-      if (css.length > 2 * 1024 * 1024) return "";
+      if (css.length > 2 * 1024 * 1024) { stats.failed++; return ""; }
       let out = "", at = 0;
       for (const match of css.matchAll(importRe)) {
         out += rewriteCss(css.slice(at, match.index), owner);
@@ -92,7 +120,7 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
         at = match.index! + match[0].length;
       }
       return out + rewriteCss(css.slice(at), owner);
-    } catch { return ""; }
+    } catch { stats.failed++; return ""; }
   }
   for (const style of document.querySelectorAll("style")) {
     // Inline imports also use the broker. A synthetic stylesheet starts with the page base.
@@ -108,19 +136,16 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
     }
     style.textContent = out + rewriteCss(css.slice(at), base);
   }
-  await Promise.all(Array.from(document.querySelectorAll('link[rel~="stylesheet"][href]')).slice(0, 30).map(async link => {
+  const linked = new Set<string>();
+  await Promise.all(Array.from(document.querySelectorAll('link[rel~="stylesheet"][href],link[rel~="preload"][as="style"][href]')).map(async link => {
     const target = absolute(link.getAttribute("href")!, base);
+    if (!target || linked.has(target) || linked.size >= 30) { link.remove(); return; }
+    linked.add(target);
     const style = document.createElement("style");
     style.textContent = target ? await stylesheet(target, 0, new Set()) : "";
-    if (link.hasAttribute("media")) style.setAttribute("media", link.getAttribute("media")!);
+    if (link.hasAttribute("media") && !/media/i.test(link.getAttribute("onload") ?? "")) style.setAttribute("media", link.getAttribute("media")!);
     link.replaceWith(style);
   }));
-  for (const node of document.querySelectorAll("img,source")) {
-    const lazy = node.getAttribute("data-src") ?? node.getAttribute("data-lazy-src") ?? node.getAttribute("data-original");
-    const src = node.getAttribute("src");
-    if (lazy && (!src || (/^data:/i.test(src) && src.length < 2048))) node.setAttribute("src", lazy);
-    if (node.hasAttribute("data-srcset") && !node.hasAttribute("srcset")) node.setAttribute("srcset", node.getAttribute("data-srcset")!);
-  }
   for (const node of document.querySelectorAll("[src],[poster],[srcset],[style]")) {
     for (const attr of ["src", "poster"]) {
       if (!node.hasAttribute(attr)) continue;
@@ -145,10 +170,11 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
     const target = absolute(link.getAttribute("href")!, base);
     if (target) link.setAttribute("href", target); else link.removeAttribute("href");
   }
+  options.onStats?.({ ...stats });
   return document.documentElement.outerHTML;
 }
-export async function buildReaderDocument(rawHtml: string, baseUrl: string, options?: ReaderResources): Promise<string> {
-  if (!options) return buildReaderHtml(rawHtml, baseUrl);
+export async function buildReaderDocument(rawHtml: string, baseUrl: string, options?: ReaderResources, fragment = new URL(baseUrl).hash.slice(1)): Promise<string> {
+  if (!options) return buildReaderHtml(rawHtml, baseUrl, fragment);
   const prepared = await prepareReaderResources(rawHtml, baseUrl, options);
-  return buildReaderHtml(prepared, baseUrl).replace("img-src data:;", `img-src data: ${RESOURCE_SOURCES}; font-src data: ${RESOURCE_SOURCES}; media-src 'none';`);
+  return buildReaderHtml(prepared, baseUrl, fragment).replace("img-src data:;", `img-src data: ${RESOURCE_SOURCES}; font-src data: ${RESOURCE_SOURCES}; media-src 'none';`);
 }

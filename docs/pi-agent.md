@@ -315,6 +315,16 @@ this path outside the blast radius of npm supply-chain attacks.
 
 ## Browser reader
 
+Bare domains navigate over HTTPS; phrases still search. Same-page fragments
+scroll within the reader without another fetch, including an address-bar
+fragment on initial load. Root theme/language/direction attributes, `noscript`
+fallbacks, lazy images and asynchronous CSS patterns survive static reading.
+Non-HTML text is shown literally; small JSON responses are indented.
+A status notice reports failed or timed-out stylesheets and offers reload.
+Mislabeled raster/font responses can use bounded magic-byte recognition; HTML
+and untyped SVG are not admitted as subresources. CSS `text/plain` is accepted
+only from a final `.css` URL. The reader user agent remains unchanged.
+
 The Pi wing reads public HTTP(S) pages through Mesa's native network broker.
 The broker validates literal addresses, checks every resolved address at the
 final connection, disables system proxies and rechecks redirects. Responses
@@ -325,7 +335,7 @@ Mesa's fixed navigation bridge runs, authorized by its exact script hash.
 Website scripts, forms, nested frames and live remote webviews are unavailable.
 Styles, images and fonts load through a cookie-less native subresource broker;
 there is no webview DNS path to remote hosts. The text document appears first,
-then one styled document replaces it after preparation (at most three seconds
+then one styled document replaces it after preparation (at most six seconds
 of stylesheet waiting). Relative URLs, authored base URLs and lazy images are
 resolved before sanitization. CSS imports are limited to three nested levels
 and thirty stylesheets. A page view has at most 400 requests and 48 MiB of

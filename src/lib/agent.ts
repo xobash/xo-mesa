@@ -208,12 +208,12 @@ export function webSearchUrl(query: string): string {
 }
 
 /** Address-bar semantics shared by the harness UI and the Pi mirror path:
- * full http(s) URLs navigate directly, anything else becomes a web search.
+ * HTTP(S) URLs and bare domains navigate directly; other input becomes a search.
  * Empty input resolves to "" (the start page). */
 export function resolveNavTarget(raw: string): string {
   const value = raw.trim();
   if (!value) return "";
-  return /^https?:\/\//i.test(value) ? value : webSearchUrl(value);
+  return /^https?:\/\//i.test(value) ? value : /^(?:[a-z0-9-]+\.)+[a-z]{2,63}(?::\d{1,5})?(?:[/?#]\S*)?$/i.test(value) ? `https://${value}` : webSearchUrl(value);
 }
 
 export function archiveRelPath(url: string, now = new Date()): string {

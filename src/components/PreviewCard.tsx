@@ -1,12 +1,14 @@
 import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { readTextFile } from "@tauri-apps/plugin-fs";
 import { useAppStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
-import { fileKind, isTextExt, urlForPath } from "../lib/vault";
+import { IN_TAURI, fileKind, isTextExt, urlForPath } from "../lib/vault";
 import { rtfToText } from "../lib/rtf";
 import { statusLine } from "../lib/faces";
 import { compareNames } from "../lib/sort";
 import {
+  MAX_SAVED_HTML_ASSET_CHARS,
   hydrateSavedHtml,
   rewriteSavedHtml,
   stripSavedHtmlPreviewCode,
@@ -14,6 +16,12 @@ import {
 } from "../lib/html";
 import type { ActivityOp } from "../lib/activity";
 import type { PreviewTarget, VaultFile } from "../types";
+
+async function readSavedStylesheet(path: string): Promise<string> {
+  if (!IN_TAURI) return readTextFile(path);
+  const bytes = await invoke<number[]>("vault_read_bytes", { path, maxBytes: MAX_SAVED_HTML_ASSET_CHARS, requireComplete: true });
+  return new TextDecoder().decode(Uint8Array.from(bytes));
+}
 
 const LazyPdfThumb = lazy(() =>
   import("./PdfThumb").then((module) => ({ default: module.PdfThumb }))
@@ -93,6 +101,7 @@ function PreviewCardImpl({
   };
 }) {
   const ensurePeek = useAppStore((s) => s.ensurePeek);
+  const vaultRoot = useAppStore(s => s.vaultPath);
   const ensureContent = useAppStore((s) => s.ensureContent);
   const notes = useAppStore((s) => s.notes);
   const needsFiles = target.kind === "folder";
@@ -193,15 +202,15 @@ function PreviewCardImpl({
       stripped,
       noteFile.path,
       urlForPath,
-      readTextFile,
-      { scripts: false, previewCodeStripped: true }
+      readSavedStylesheet,
+      { vaultRoot: vaultRoot ?? undefined, scripts: false, previewCodeStripped: true }
     ).then((html) => {
       if (alive) setHtmlPreview({ rel, html: savedHtmlFrameDocument(html) });
     }).catch(() => { if (alive) setHtmlPreview({ rel, html: "Safe HTML preview is unavailable." }); });
     return () => {
       alive = false;
     };
-  }, [noteFile, rawContent]);
+  }, [noteFile, rawContent, vaultRoot]);
 
   // Folder contents: the immediate children (sub-folders first, then files).
   const folderItems = useMemo<ListItem[]>(() => {

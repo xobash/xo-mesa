@@ -1,13 +1,35 @@
 import DOMPurify from "dompurify";
 
+/** Expand script-free fallbacks before sanitization; promoted URLs still pass the frame policy. */
+export function unwrapScriptFallbacks(html: string): string {
+  if (!/<noscript\b|data-(?:lazy-)?src|data-original/i.test(html)) return html;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const ns of Array.from(doc.querySelectorAll("noscript"))) {
+    const img = ns.querySelector("img[src]");
+    const prev = ns.previousElementSibling;
+    if (img && prev?.tagName === "IMG" &&
+        [prev.getAttribute("data-src"), prev.getAttribute("data-lazy-src"), prev.getAttribute("src")].includes(img.getAttribute("src"))) prev.remove();
+    ns.replaceWith(...Array.from(ns.childNodes));
+  }
+  for (const node of doc.querySelectorAll("img,source")) {
+    const lazy = node.getAttribute("data-src") ?? node.getAttribute("data-lazy-src") ?? node.getAttribute("data-original");
+    const src = node.getAttribute("src");
+    if (lazy && (!src || (/^data:/i.test(src) && src.length < 2048))) node.setAttribute("src", lazy);
+    if (node.hasAttribute("data-srcset") && !node.hasAttribute("srcset")) node.setAttribute("srcset", node.getAttribute("data-srcset")!);
+  }
+  // Preserve capture comments used to resolve archived relative URLs.
+  const comments = Array.from(doc.childNodes).filter(node => node.nodeType === 8).map(node => `<!--${node.textContent}-->`).join("");
+  return `<!doctype html>${comments}${doc.documentElement.outerHTML}`;
+}
+
 export type AssetUrlConverter = (path: string) => string;
 export type TextAssetReader = (path: string) => Promise<string>;
 
 const SAVED_FROM_RE = /<!--\s*saved from url=\(\d+\)([^>]+?)\s*-->/i;
 const ATTR_RE =
-  /(\s)(src|href|poster|action)=("([^"]*)"|'([^']*)')/gi;
-const SRCSET_RE = /(\s)srcset=("([^"]*)"|'([^']*)')/gi;
-const STYLE_LINK_RE = /<link\b(?=[^>]*\brel=(?:"[^"]*\bstylesheet\b[^"]*"|'[^']*\bstylesheet\b[^']*'|[^\s>]*stylesheet[^\s>]*))[^>]*>/gi;
+  /(\s)(src|href|poster|action)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+const SRCSET_RE = /(\s)srcset\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+const STYLE_LINK_RE = /<link\b[^>]*>/gi;
 const SCRIPT_TAG_RE = /<script\b[^>]*\bsrc=("([^"]*)"|'([^']*)')[^>]*>\s*<\/script>/gi;
 const ALL_SCRIPT_TAG_RE = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
 const EVENT_HANDLER_ATTR_RE =
@@ -66,7 +88,7 @@ function escapeScriptText(value: string): string {
 }
 
 function getAttr(tag: string, attr: string): string | null {
-  const re = new RegExp(`\\b${attr}=("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
+  const re = new RegExp(`\\b${attr}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
   const match = tag.match(re);
   if (!match) return null;
   return decodeUrlAttr(match[2] ?? match[3] ?? match[4] ?? "");
@@ -135,21 +157,23 @@ export function localSavedHtmlAssetPath(
   return joinRelative(dirname(ownerPath), raw);
 }
 
-/** Largest local stylesheet or script a saved page may pull in. */
+/** Total local stylesheet budget per saved document, also enforced before native reads. */
 export const MAX_SAVED_HTML_ASSET_CHARS = 4 * 1024 * 1024;
 
 /**
- * Resolve a stylesheet or script link for inlining. The path must stay inside
- * the saved document's own folder, so a hostile page cannot make Mesa read
- * other vault notes into itself, and the file must have the expected type.
+ * Resolve typed local assets. CSS/fonts may traverse inside the approved vault;
+ * the native bounded reader enforces that scope. Legacy script inlining stays folder-local.
  */
 export function savedHtmlInlineAssetPath(
   rawValue: string,
   documentPath: string,
-  kind: "style" | "script" | "font"
+  kind: "style" | "script" | "font",
+  vaultRoot?: string
 ): string | null {
   const resolved = localSavedHtmlAssetPath(rawValue, documentPath);
   if (!resolved) return null;
+  const scope = (kind === "script" ? dirname(documentPath) : vaultRoot ?? dirname(documentPath)).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!resolved.startsWith(scope + "/")) return null;
   const raw = decodeUrlAttr(rawValue.trim())
     .replace(/\\/g, "/")
     .replace(/[?#].*$/, "");
@@ -158,7 +182,7 @@ export function savedHtmlInlineAssetPath(
     if (!part || part === ".") continue;
     if (part === "..") {
       depth -= 1;
-      if (depth < 0) return null;
+      if (depth < 0 && kind === "script") return null;
     } else depth += 1;
   }
   const allowed = kind === "style" ? /\.css$/i : kind === "font" ? /\.(woff2?|ttf|otf)$/i : /\.m?js$/i;
@@ -207,10 +231,11 @@ export function rewriteSavedHtml(
         prefix: string,
         quoted: string,
         doubleValue?: string,
-        singleValue?: string
+        singleValue?: string,
+        bareValue?: string
       ) => {
-      const value = doubleValue ?? singleValue ?? "";
-      const quote = quoted[0];
+      const value = doubleValue ?? singleValue ?? bareValue ?? "";
+      const quote = quoted.startsWith("'") ? "'" : '"';
       return `${prefix}srcset=${quote}${escapeAttr(
         rewriteSrcset(value, filePath, toAssetUrl, originalUrl, archive)
       )}${quote}`;
@@ -224,10 +249,11 @@ export function rewriteSavedHtml(
         attr: string,
         quoted: string,
         doubleValue?: string,
-        singleValue?: string
+        singleValue?: string,
+        bareValue?: string
       ) => {
-        const quote = quoted[0];
-        const value = doubleValue ?? singleValue ?? "";
+        const quote = quoted.startsWith("'") ? "'" : '"';
+        const value = doubleValue ?? singleValue ?? bareValue ?? "";
         return `${prefix}${attr}=${quote}${escapeAttr(
           rewrite(value)
         )}${quote}`;
@@ -270,8 +296,9 @@ export async function hydrateSavedHtml(
   filePath: string,
   toAssetUrl: AssetUrlConverter,
   readTextAsset: TextAssetReader,
-  options: { scripts?: boolean; previewCodeStripped?: boolean; fonts?: { readBytes: (path: string) => Promise<Uint8Array> } } = {}
+  options: { vaultRoot?: string; scripts?: boolean; previewCodeStripped?: boolean; fonts?: { readBytes: (path: string) => Promise<Uint8Array> } } = {}
 ): Promise<string> {
+  html = unwrapScriptFallbacks(html);
   const originalUrl = archiveBaseUrl(html);
   const scripts = options.scripts !== false;
   // Markup-only previews skip script reads. Reuse stripped fallback input and strip again after CSS inlining.
@@ -307,9 +334,7 @@ export async function hydrateSavedHtml(
         if (!match) { if (/^\s*local\(/i.test(source)) { retained.push(source); kept = true; } continue; }
         const raw = match[1] ?? match[2] ?? match[3] ?? "";
         if (/^data:font\//i.test(raw)) { retained.push(source); kept = true; continue; }
-        const resolved = localSavedHtmlAssetPath(raw, owner);
-        const folder = dirname(filePath) + "/";
-        const path = resolved?.startsWith(folder) ? savedHtmlInlineAssetPath(resolved.slice(folder.length), filePath, "font") : null;
+        const path = savedHtmlInlineAssetPath(raw, owner, "font", options.vaultRoot ?? dirname(filePath));
         if (!path) continue;
         const data = await readFont(path);
         if (!data) { failedRead = true; continue; }
@@ -320,16 +345,57 @@ export async function hydrateSavedHtml(
     return kept && !failedRead ? hydrated : "";
   });
 
+  let cssChars = 0;
+  let cssQueue = Promise.resolve();
+  const readCss = (path: string): Promise<string | null> => {
+    let result: string | null = null;
+    const pending = cssQueue.then(async () => {
+      if (cssChars >= MAX_SAVED_HTML_ASSET_CHARS) return;
+      try {
+        const css = await readTextAsset(path);
+        if (cssChars + css.length > MAX_SAVED_HTML_ASSET_CHARS) return;
+        cssChars += css.length; result = css;
+      } catch { /* omit unavailable stylesheets */ }
+    });
+    cssQueue = pending;
+    return pending.then(() => result);
+  };
+  const imports = /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?([^;]*);/gi;
+  const prepareCss = async (css: string, owner: string, depth: number, ancestors: Set<string>): Promise<string> => {
+    const expanded = await replaceAsync(css, imports, async (statement, dq, sq, bare, qualifiers) => {
+      const raw = dq ?? sq ?? bare ?? "";
+      // Web imports remain for the consent-controlled native reader broker.
+      if (/^(?:https?:|\/\/)/i.test(raw)) return statement;
+      const path = savedHtmlInlineAssetPath(raw, owner, "style", options.vaultRoot ?? dirname(filePath));
+      if (!path || depth >= 3 || ancestors.has(path)) return "";
+      const imported = await readCss(path);
+      if (imported === null) return "";
+      const prepared = await prepareCss(imported, path, depth + 1, new Set([...ancestors, path]));
+      const condition = qualifiers.trim();
+      return !condition ? prepared : /[{};]|^(?:layer|supports)\b/i.test(condition) ? "" : `@media ${condition}{${prepared}}`;
+    });
+    return rewriteCssAssetUrls(options.fonts ? await fonts(expanded, owner) : expanded, owner, toAssetUrl, originalUrl);
+  };
+  // Prepare authored styles before replacing links, so inlined sheets keep their own URL base.
+  out = await replaceAsync(out, /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, async (_m, open, css, close) => {
+    const prepared = archive && originalUrl ? rewriteArchiveCss(css, originalUrl) : await prepareCss(css, filePath, 0, new Set());
+    return `${open}${escapeStyleText(prepared)}${close}`;
+  });
+
   out = await replaceAsync(out, STYLE_LINK_RE, async (tag) => {
+    const rel = (getAttr(tag, "rel") ?? "").toLowerCase().split(/\s+/);
+    if (!rel.includes("stylesheet") && !(rel.includes("preload") && getAttr(tag, "as")?.toLowerCase() === "style")) return tag;
     const href = getAttr(tag, "href");
     if (!href) return tag;
-    const cssPath = savedHtmlInlineAssetPath(href, filePath, "style");
+    const cssPath = savedHtmlInlineAssetPath(href, filePath, "style", options.vaultRoot);
     if (!cssPath) return tag;
     try {
-      const css = await readTextAsset(cssPath);
-      if (css.length > MAX_SAVED_HTML_ASSET_CHARS) return tag;
-      const rewritten = rewriteCssAssetUrls(options.fonts ? await fonts(css, cssPath) : css, cssPath, toAssetUrl, originalUrl);
-      return `<style data-mesa-href="${escapeAttr(href)}">${escapeStyleText(
+      const css = await readCss(cssPath);
+      if (css === null) return tag;
+      const rewritten = await prepareCss(css, cssPath, 0, new Set([cssPath]));
+      const media = getAttr(tag, "media");
+      const mediaAttr = media && !/media/i.test(getAttr(tag, "onload") ?? "") ? ` media="${escapeAttr(media)}"` : "";
+      return `<style data-mesa-href="${escapeAttr(href)}"${mediaAttr}>${escapeStyleText(
         rewritten
       )}</style>`;
     } catch {
@@ -361,11 +427,6 @@ export async function hydrateSavedHtml(
     );
   }
 
-  out = await replaceAsync(out, /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, async (_m, open, css, close) => {
-    const prepared = options.fonts ? await fonts(css, filePath) : css;
-    const rewritten = archive && originalUrl ? rewriteArchiveCss(prepared, originalUrl) : rewriteCssAssetUrls(prepared, filePath, toAssetUrl, originalUrl);
-    return `${open}${escapeStyleText(rewritten)}${close}`;
-  });
   out = out.replace(/(\sstyle\s*=\s*)("([^"]*)"|'([^']*)')/gi, (_m, prefix, quoted, dq, sq) => {
     const css = decodeUrlAttr(dq ?? sq ?? "");
     const rewritten = archive && originalUrl ? rewriteArchiveCss(css, originalUrl) : rewriteCssAssetUrls(css, filePath, toAssetUrl, originalUrl);
@@ -407,8 +468,8 @@ async function replaceAsync(
 /** A dedicated frame policy is applied before any saved markup is parsed. */
 export function savedHtmlFrameDocument(html: string, active = false): string {
   const policy = active
-    ? "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' asset: http://asset.localhost https://asset.localhost; img-src data: blob: mesa-web: http://mesa-web.localhost https://mesa-web.localhost asset: http://asset.localhost https://asset.localhost; font-src data: mesa-web: http://mesa-web.localhost https://mesa-web.localhost asset: http://asset.localhost https://asset.localhost; connect-src 'none'; media-src data: blob: asset: http://asset.localhost https://asset.localhost; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"
-    : "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' asset: http://asset.localhost https://asset.localhost; img-src data: blob: asset: http://asset.localhost https://asset.localhost; font-src data: asset: http://asset.localhost https://asset.localhost; media-src data: blob: asset: http://asset.localhost https://asset.localhost; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
+    ? "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: blob: mesa-web: http://mesa-web.localhost https://mesa-web.localhost asset: http://asset.localhost https://asset.localhost; font-src data: mesa-web: http://mesa-web.localhost https://mesa-web.localhost asset: http://asset.localhost https://asset.localhost; connect-src 'none'; media-src data: blob: asset: http://asset.localhost https://asset.localhost; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"
+    : "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data: blob: asset: http://asset.localhost https://asset.localhost; font-src data: asset: http://asset.localhost https://asset.localhost; media-src data: blob: asset: http://asset.localhost https://asset.localhost; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
   let markup = html;
   {
     const purifier = savedPurifier();
@@ -422,7 +483,13 @@ export function savedHtmlFrameDocument(html: string, active = false): string {
       ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|asset|mesa-web):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
     });
   }
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="referrer" content="no-referrer"></head><body>${markup}</body></html>`;
+  const doc = new DOMParser().parseFromString(markup, "text/html");
+  const meta = doc.createElement("meta");
+  meta.setAttribute("http-equiv", "Content-Security-Policy"); meta.setAttribute("content", policy);
+  const referrer = doc.createElement("meta");
+  referrer.setAttribute("name", "referrer"); referrer.setAttribute("content", "no-referrer");
+  doc.head.prepend(meta, referrer);
+  return `<!doctype html>${doc.documentElement.outerHTML}`;
 }
 
 function resolveArchiveUrl(raw: string, base: string): string {

@@ -6,11 +6,14 @@ const mocks = vi.hoisted(() => ({
   text: '<html><head><style>body{color:teal}</style></head><body><script>fetch("https://example.com/beacon")</script><img src="https://example.com/pixel"><p>Hello</p></body></html>',
   file: { path: '/vault/page.html', relPath: 'page.html', name: 'page', ext: 'html', isMarkdown: false, mtime: 1 },
   generation: 1,
+  native: false,
+  invoke: vi.fn(async (command: string) => command === "html_run_session" ? "test-token/page.html" : []),
   ensureContent: vi.fn(),
 }));
 vi.mock('../store', () => ({ useAppStore: (select: (state: unknown) => unknown) => select({ fileFor: () => mocks.file, vaultPath: '/vault', contentCache: { 'page.html': mocks.text }, getVaultGeneration: () => mocks.generation, ensureContent: mocks.ensureContent }) }));
 vi.mock('../lib/confirmAction', () => ({ confirmAction: vi.fn() }));
-vi.mock('../lib/vault', () => ({ IN_TAURI: false, urlForPath: (path: string) => `asset://localhost${path}` }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, convertFileSrc: (_path: string, protocol: string) => `${protocol}://localhost/` }));
+vi.mock('../lib/vault', () => ({ get IN_TAURI() { return mocks.native; }, urlForPath: (path: string) => `asset://localhost${path}` }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readTextFile: vi.fn(async () => mocks.text), stat: async () => ({ size: mocks.text.length }) }));
 import { confirmAction } from '../lib/confirmAction';
 import { readTextFile } from '@tauri-apps/plugin-fs';
@@ -89,4 +92,52 @@ it('waits for large-document hydration and sanitizes once across rerenders', asy
     expect(host.querySelector('iframe')).toBe(frame);
     expect(sanitize).toHaveBeenCalledTimes(1);
   } finally { mocks.text = previous; }
+});
+
+it('requires version-bound script/network consent and revokes stale and replaced sessions', async () => {
+  mocks.native = true; mocks.invoke.mockClear();
+  mocks.ensureContent.mockImplementation(async () => mocks.text);
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host); containers.push({ host, root });
+  const click = async (label: string) => act(async () => Array.from(host.querySelectorAll('button')).find(b => b.textContent === label)!.click());
+  try {
+    await act(async () => root.render(<HtmlView rel="page.html" />));
+    vi.mocked(confirmAction).mockResolvedValue(false);
+    await click('Run scripts'); expect(mocks.invoke).not.toHaveBeenCalledWith('html_run_session', expect.anything());
+    vi.mocked(confirmAction).mockResolvedValue(true);
+    await click('Run scripts');
+    expect(mocks.invoke).toHaveBeenCalledWith('html_run_session', { path: mocks.file.path, online: false, expectedText: mocks.text });
+    expect(host.querySelector('iframe')?.getAttribute('src')).toBe('mesa-html://localhost/test-token/page.html');
+    expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(host.querySelector('iframe')?.hasAttribute('srcdoc')).toBe(false);
+    expect(host.querySelector('iframe')?.getAttribute('allow')).toBe('');
+    await click('Enable script network');
+    expect(mocks.invoke).toHaveBeenCalledWith('html_run_revoke', { token: 'test-token' });
+    expect(mocks.invoke).toHaveBeenCalledWith('html_run_session', { path: mocks.file.path, online: true, expectedText: mocks.text });
+    expect(host.textContent).toContain('Scripts running · online');
+    const originalFile = mocks.file;
+    const sessionsBefore = mocks.invoke.mock.calls.filter(c => c[0] === 'html_run_session').length;
+    mocks.file = { ...originalFile, path: '/vault/other.html', relPath: 'other.html' };
+    await act(async () => root.render(<HtmlView rel="page.html" />));
+    mocks.file = originalFile;
+    await act(async () => root.render(<HtmlView rel="page.html" />));
+    expect(host.textContent).toContain('Offline · scripts blocked');
+    expect(mocks.invoke.mock.calls.filter(c => c[0] === 'html_run_session')).toHaveLength(sessionsBefore);
+    mocks.generation++;
+    await act(async () => root.render(<HtmlView rel="page.html" />));
+    expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('');
+    expect(host.textContent).toContain('Offline · scripts blocked');
+    let answer: (value: boolean) => void = () => {};
+    vi.mocked(confirmAction).mockImplementationOnce(() => new Promise(resolve => { answer = resolve; }));
+    await click('Run scripts'); mocks.generation++;
+    await act(async () => root.render(<HtmlView rel="page.html" />));
+    const before = mocks.invoke.mock.calls.filter(c => c[0] === 'html_run_session').length;
+    await act(async () => answer(true));
+    expect(mocks.invoke.mock.calls.filter(c => c[0] === 'html_run_session')).toHaveLength(before);
+    mocks.invoke.mockImplementationOnce(async () => { throw new Error('Script isolation unavailable'); });
+    vi.mocked(confirmAction).mockResolvedValue(true);
+    await click('Run scripts');
+    expect(host.textContent).toContain('Script isolation unavailable');
+    expect(host.textContent).toContain('Offline · scripts blocked');
+    expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('');
+  } finally { mocks.native = false; }
 });

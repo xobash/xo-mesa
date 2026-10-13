@@ -4,6 +4,7 @@ mod activity;
 mod bearer;
 mod browse;
 mod diagnostics;
+mod htmlrun;
 mod recents;
 mod secrets;
 mod surfaces;
@@ -153,7 +154,9 @@ fn registered_pdf_blob(label: &str, url: &tauri::Url) -> bool {
 fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("mesa-navigation-guard")
         .on_navigation(|webview, url| {
-            navigation_allowed(url) || registered_pdf_blob(webview.label(), url)
+            navigation_allowed(url)
+                || registered_pdf_blob(webview.label(), url)
+                || htmlrun::navigation_allowed(webview.label(), url)
         })
         .build()
 }
@@ -182,6 +185,13 @@ pub fn run() {
             let owner = context.webview_label().to_string();
             tauri::async_runtime::spawn(async move {
                 responder.respond(browse::serve_subresource(&owner, request).await);
+            });
+        })
+        .register_asynchronous_uri_scheme_protocol("mesa-html", |context, request, responder| {
+            let owner = context.webview_label().to_string();
+            let app = context.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(htmlrun::serve(&app, &owner, request))
             });
         })
         .menu(|app| {
@@ -282,6 +292,8 @@ pub fn run() {
             activity::activity_set_context,
             activity::deep_research_respond,
             activity::activity_stop,
+            htmlrun::html_run_session,
+            htmlrun::html_run_revoke,
             browse::browse_fetch,
             browse::browse_resource_session,
             browse::browse_open_saved_html,
@@ -341,6 +353,7 @@ pub fn run() {
                 }
                 terminal::revoke_window(&app.state::<terminal::TerminalState>(), label);
                 browse::revoke_resource_window(label);
+                htmlrun::revoke_window(label);
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 use tauri::{Emitter, Manager};
@@ -405,6 +418,16 @@ mod navigation_tests {
 
     #[test]
     fn only_app_origins_may_be_navigated_to() {
+        for url in [
+            "mesa-html://localhost/unknown/page.html",
+            "http://mesa-html.localhost/unknown/page.html",
+            "mesa-html://evil.example/unknown/page.html",
+        ] {
+            assert!(!super::htmlrun::navigation_allowed(
+                "main",
+                &url.parse().unwrap()
+            ));
+        }
         assert!(allowed("tauri://localhost/index.html"));
         assert!(allowed("http://tauri.localhost/index.html"));
         assert!(allowed("about:blank"));

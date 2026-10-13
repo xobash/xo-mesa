@@ -14,6 +14,22 @@ interface BrowsePage {
   subresourceToken?: string;
   body: string | null;
   truncated?: boolean;
+  fragment?: string;
+}
+
+function isHtmlPage(page: BrowsePage): boolean {
+  const mime = page.contentType.split(";")[0].trim().toLowerCase();
+  return mime === "text/html" || mime === "application/xhtml+xml" || (!mime && /^\s*(?:<!doctype\b|<html\b)/i.test(page.body ?? ""));
+}
+function readerMarkup(page: BrowsePage): string {
+  const body = page.body ?? "";
+  if (isHtmlPage(page)) return body;
+  let pretty = body;
+  if (/json/i.test(page.contentType) && body.length < 1024 * 1024) {
+    try { pretty = JSON.stringify(JSON.parse(body), null, 2); } catch { /* display original text */ }
+  }
+  const escaped = pretty.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return `<pre style="white-space:pre-wrap;overflow-wrap:anywhere;font:13px ui-monospace,monospace">${escaped}</pre>`;
 }
 
 export function BrowserHarness({ externalNav, onClose }: {
@@ -31,6 +47,7 @@ export function BrowserHarness({ externalNav, onClose }: {
   const [html, setHtml] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [styleFailures, setStyleFailures] = useState(0);
   const [archiveStatus, setArchiveStatus] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [position, setPosition] = useState(-1);
@@ -47,7 +64,7 @@ export function BrowserHarness({ externalNav, onClose }: {
 
   async function load(target: string) {
     const current = ++generation.current;
-    setUrl(target); setPage(null); setHtml(""); setError(""); setArchiveStatus("");
+    setUrl(target); setPage(null); setHtml(""); setError(""); setArchiveStatus(""); setStyleFailures(0);
     if (!target) { setLoading(false); return; }
     setLoading(true);
     try {
@@ -60,8 +77,10 @@ export function BrowserHarness({ externalNav, onClose }: {
         if (result.subresourceToken) void invoke("browse_resource_session", { token: result.subresourceToken }).catch(() => {});
         throw new Error("This response has no readable text.");
       }
-      const document = buildReaderHtml(result.body, result.finalUrl);
-      setPage(result); setHtml(document); setUrl(result.finalUrl);
+      result.fragment = new URL(target).hash.slice(1);
+      const document = buildReaderHtml(readerMarkup(result), result.finalUrl, result.fragment);
+      const visibleUrl = new URL(result.finalUrl); visibleUrl.hash = result.fragment;
+      setPage(result); setHtml(document); setUrl(visibleUrl.href);
       if (result.truncated) setError("Page preview was cut off at 4 MB.");
     } catch (reason) {
       if (current === generation.current) setError(String(reason));
@@ -88,11 +107,13 @@ export function BrowserHarness({ externalNav, onClose }: {
   useEffect(() => {
     if (!page?.body || !page.subresourceToken) return;
     let alive = true;
-    setHtml(buildReaderHtml(page.body, page.finalUrl));
-    if (!textOnly) {
+    setStyleFailures(0);
+    setHtml(buildReaderHtml(readerMarkup(page), page.finalUrl, page.fragment));
+    if (!textOnly && isHtmlPage(page)) {
       const token = page.subresourceToken;
       void buildReaderDocument(page.body, page.finalUrl, { token, proxyBase: convertFileSrc("", "mesa-web"),
-        fetchStylesheet: url => invoke<{ css: string; finalUrl: string }>("browse_fetch_stylesheet", { token, url }) })
+        fetchStylesheet: url => invoke<{ css: string; finalUrl: string }>("browse_fetch_stylesheet", { token, url }),
+        onStats: stats => { if (alive) setStyleFailures(stats.failed + stats.timedOut); } }, page.fragment)
         .then(document => { if (alive) setHtml(document); }).catch(reason => { if (alive) setError(String(reason)); });
     }
     return () => { alive = false; };
@@ -161,6 +182,7 @@ export function BrowserHarness({ externalNav, onClose }: {
         : <div className="agent-browser-placeholder"><span>{loading ? "Reading page…" : "Search or enter a URL. Pages are read without running website scripts."}</span></div>}
     </div>
     <div className="agent-browser-status"><span>{textOnly ? "Read-only page · text only · website scripts blocked" : "Read-only page · website scripts blocked · styles and images via Mesa"}{page && page.status >= 400 ? ` · HTTP ${page.status}` : ""}</span></div>
+    {styleFailures > 0 && <div className="agent-browser-status" role="status">Some styles did not load ({styleFailures}) · Reload to retry</div>}
     {error && <div className="agent-browser-status" role="alert">{error}</div>}
     {archiveStatus && <div className="agent-browser-status" role="status">{archiveStatus}</div>}
   </section>;

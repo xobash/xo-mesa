@@ -120,6 +120,7 @@ src-tauri/src/bearer.rs
 src-tauri/src/browse.rs
 src-tauri/src/diagnostics.rs
 src-tauri/src/file_metadata.rs
+src-tauri/src/htmlrun.rs
 src-tauri/src/lib.rs
 src-tauri/src/main.rs
 src-tauri/src/recents.rs

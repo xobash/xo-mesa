@@ -31,6 +31,7 @@ describe("saved webpage HTML rewriting", () => {
         "https://example.com/articles/page"
       )
     ).toBe("asset://localhost/vault/web/Page_files/app.css");
+    expect(rewriteSavedHtml('<img src=unquoted.png srcset=small.png><video poster=poster.jpg>', '/vault/web/Page.html', asset)).toBe('<img src="asset://localhost/vault/web/unquoted.png" srcset="asset://localhost/vault/web/small.png"><video poster="asset://localhost/vault/web/poster.jpg">');
   });
 
   it("strips inline and external scripts for markup-only previews", () => {
@@ -117,6 +118,9 @@ describe("saved webpage HTML rewriting", () => {
       "/vault/web/saved/b.js"
     );
 
+    expect(savedHtmlInlineAssetPath("../../Private/journal.css", doc, "style", "/vault")).toBe("/vault/Private/journal.css");
+    expect(savedHtmlInlineAssetPath("../../../../outside.css", doc, "style", "/vault")).toBeNull();
+    expect(savedHtmlInlineAssetPath("../fonts/a.woff2", doc, "font", "/vault")).toBe("/vault/web/fonts/a.woff2");
     const reads: string[] = [];
     const html = await hydrateSavedHtml(
       [

@@ -6,7 +6,7 @@ can contact websites. Mesa has no telemetry integration or hosted account servic
 
 ## Model version and scope
 
-**TM-5 · 2026-10-12.** Covers native permissions, vault writes/recovery, sync,
+**TM-6 · 2026-10-12.** Covers native permissions, vault writes/recovery, sync,
 saved-content rendering, Pi/browser integration and release admission. Change
 this version when those boundaries change; bind test results to a source revision.
 
@@ -23,7 +23,7 @@ independent security assessment.
 
 | Evidence | Status |
 | --- | --- |
-| Versioned model | TM-5; no external review recorded |
+| Versioned model | TM-6; no external review recorded |
 | Automated rejection/recovery coverage | Markdown/HTML, archive bounds, sync proof/pin/path checks, native URL/reader isolation and sync parser, write interruption and stale-baseline tests |
 | Penetration testing | No independent report recorded |
 | Coverage-guided fuzzing, including native IPC | Bounded sync parser fuzz smoke only; broad campaigns and native IPC fuzzing are not established |
@@ -46,7 +46,7 @@ it. Publication controls have individual origins in the [control register](secur
 | Native acceptance: CI or a different artifact presented as desktop evidence | `scripts/native-acceptance-check.mjs`, `release-acceptance.mjs` | `scripts/release-gate.check.mjs` rejects missing, stale, failed or private records | Platform support depends on real installation and interaction records. The checker validates submitted records, not the truth of observations. |
 | Bootstrap: unverified code execution or loss of existing source work | `install.sh`, `install.ps1`, `run.sh`, `run.cmd`, `scripts/launch-cache.mjs` | `scripts/install-behavior.check.mjs`, `launch-cache.check.mjs`, `windows-installer-behavior.check.ps1` | Versioned setup verifies bytes/tags and preserves local work; native setup remains a separate acceptance requirement. |
 | Dependency floors: return to a known vulnerable version | Lockfiles; `scripts/native-advisory-check.mjs`; CI advisory gates | `src/lib/supplyChainContract.test.ts`; advisory cases in `scripts/release-gate.check.mjs` | Builds reject known covered regressions; new advisories require current registry checks. |
-| Untrusted markup: executable content in Mesa's privileged document | `src/lib/markdown.ts`, `markdownDom.ts`, `html.ts`; Tauri CSP | `src/lib/markdown.test.ts`, `markdownNode.test.ts`, `htmlFrame.test.ts`, `src/components/HtmlView.test.tsx` | Notes render sanitized; saved HTML is offline by default. Scripts stay blocked; online resources need per-version consent. Packaged webview checks remain incomplete. |
+| Untrusted markup: executable content in Mesa's privileged document | `src/lib/markdown.ts`, `markdownDom.ts`, `html.ts`; Tauri CSP | `src/lib/markdown.test.ts`, `markdownNode.test.ts`, `htmlFrame.test.ts`, `src/components/HtmlView.test.tsx` | Notes render sanitized; saved HTML is offline by default. Sanitized views block scripts; separate local Run scripts and network consent are per-version. Packaged webview checks remain incomplete. |
 | Vault access and writes: unauthorized roots, stale overwrite, truncation or lost recovery | `src-tauri/src/vaultscope.rs`, `vaultwrite.rs`, `vaultops.rs`, `vaulttransaction.rs`; `src/lib/verifiedWrite.ts` | Native module tests; `src/lib/nativeScope.test.ts`, `verifiedWrite.test.ts`, `writeRecovery.test.ts`, `vaultRecovery.test.ts` | Approved-folder saves check expected bytes, retain recovery and preserve Unix access metadata; new stages/files are private. External processes are not locked out; Windows power-loss durability remains unverified. |
 | Sync: wrong peer, escaping path, corrupt bytes or destructive stale journal | `src-tauri/src/sync.rs`, `sync_core.rs`; `src/lib/syncWorkflow.ts` | Native proof/pin/path/transfer tests; `src/lib/syncWorkflow.test.ts`, `syncConflicts.test.ts` | Direct sync checks key proof, TLS pin and file bytes. Windows parent handles block ancestor replacement during operations; physical Windows and multi-device acceptance remain pending. |
 | Research: unsupported proposals or overwriting an unreviewed baseline | `src/lib/deepResearch.ts`, `src/controllers/research.ts`, `src/lib/deepResearchRun.ts`; `src-tauri/src/vaulttransaction.rs` | `src/lib/deepResearch.test.ts`, `deepResearchRun.test.ts`; native transaction tests | Mesa's apply path requires review and expected bytes. Accepted-source archives are automatic; Pi shell actions remain outside this transaction. Observed text changes retain the last known clean revision and preserve dirty edits. |
@@ -85,7 +85,8 @@ Mesa's own window: `http(s)` links
 ask before opening in Mesa's read-only reader (it needs a mounted Pi surface),
 vault-relative links open the note, and every other scheme is ignored. A native
 navigation guard (`navigation_allowed` in `src-tauri/src/lib.rs`) also refuses
-data and unregistered blob navigation as well as non-app origins. PDF
+data and unregistered blob navigation as well as non-app origins. Local executable frames additionally require a
+valid window-owned `mesa-html` session route; their sandbox denies top navigation. PDF
 fallbacks register exact app-origin blobs for their own window and revoke them
 on replacement, unmount or destruction. Wry does not expose frame identity on
 every platform. The guard is unit-tested; its behavior in a packaged webview is not yet accepted on each platform.
@@ -101,7 +102,9 @@ IPC, scoped assets, viewer data/blob URLs and workers; it denies plugins, hostil
 base URLs and framing of Mesa. Inline styles support React. Arbitrary inline scripts are blocked. The privileged renderer's connection policy
 permits local IPC and asset endpoints only; arbitrary HTTPS connections are blocked. The read-only browser navigation bridge
 is allowed by its exact SHA-256 hash; the test recomputes that hash from the
-executed script. Saved markup never enables scripts.
+executed script. Saved markup enables scripts only through separate, exact-version
+Run scripts consent and the token-scoped opaque local frame. The privileged
+app script policy is not relaxed. See [saved HTML](saved-html.md).
 
 The demo nginx policy has the same directive/source sets with native IPC and
 asset sources removed. The production build checks this parity; demo scripts
@@ -110,7 +113,14 @@ cannot run arbitrary inline code or connect/frame arbitrary HTTPS origins.
 Saved HTML has an additional policy placed before its markup. Offline mode blocks
 scripts, remote resources, network connections, forms and navigation. Online-resource mode requires per-document/version consent and retains an
 empty sandbox, opaque origin and no referrer. Sanitization, script blocking and
-frame navigation restrictions apply in both modes. Main, detached and preview viewers share the boundary.
+frame navigation restrictions apply in both modes. Main, detached and preview viewers share this sanitized boundary.
+The separate Run scripts mode serves original files under a folder-scoped,
+window-owned expiring token with its own CSP. Offline scripts have no remote
+network permission; online script mode explicitly permits direct HTTPS
+requests, including webview DNS and possible private HTTPS targets. It can
+exfiltrate accessible folder content. Windows refuses this mode because its
+pinned initialization path injects Tauri scripts into subframes. macOS/Linux
+frame isolation remains subject to native checks.
 See [saved HTML](saved-html.md). Packaged webview checks remain incomplete.
 
 ## Window authority and page observations
@@ -139,7 +149,8 @@ is unsupported because proxy DNS could bypass public-address validation.
 | --- | --- |
 | Trusted workspace/editor | Main renderer controls sync credentials and reviewed apply; approved-vault saves enforce expected bytes and verification. |
 | Read-only document renderer | Sanitized markup; saved-HTML scripts and navigation blocked. Optional online resources cannot grant IPC or origin access. |
-| Web reader | Native public-only fetch, opaque frame, only fixed hash-pinned link bridge; every link returns to the native broker. |
+| Web reader | Native public-only fetch, opaque frame, fixed hash-pinned link bridge; same-document anchors scroll locally and other links return to the broker. |
+| Local executable HTML | Explicit version-bound consent; opaque frame, document-folder token, 32 MiB response cap and ten-minute idle expiry. Separate online consent allows direct HTTPS and possible folder-data disclosure. Windows unavailable pending absent-IPC isolation. |
 | Trusted external Pi process | Separate native consent and visible label. Normal OS permissions remain; it is not an isolated AI sandbox. |
 | Vault/sync broker | Approved roots, recovery coordination, protocol admission, file verification and bounded transfers. Windows holds ancestor guards. |
 | Credential broker | Main-only reference broker. Stored keys stay native; read/write replies return credential references. Native sync resolves them; explicit user entry and legacy migration pass through JS transiently. |
@@ -148,6 +159,9 @@ is unsupported because proxy DNS could bypass public-address validation.
 
 - **Online HTML resources:** approved resource URLs can reveal document data
   to websites. Scripts remain blocked; keep untrusted documents offline.
+- **Executable HTML:** consent authorizes untrusted code to read supported folder files.
+  Online mode bypasses broker DNS checks and may disclose those files. Windows
+  isolation is unavailable; packaged macOS/Linux evidence is required.
 - **Browser compatibility:** script-only pages and browser sign-in are unavailable.
   Packaged validation of the fixed bridge and opaque-frame isolation remains pending.
 - **Pi:** native consent is required, but tool hooks do not sandbox shell commands

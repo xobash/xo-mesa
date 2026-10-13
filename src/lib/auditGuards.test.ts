@@ -47,8 +47,12 @@ function assertOpaqueFrames(path: string, source: string) {
       const attrs = node.attributes.properties;
       expect(attrs.some(ts.isJsxSpreadAttribute), path).toBe(false);
       const sandbox = attrs.find((attr) => ts.isJsxAttribute(attr) && attr.name.getText(tree) === "sandbox");
-      expect(sandbox && ts.isJsxAttribute(sandbox) && sandbox.initializer && ts.isStringLiteral(sandbox.initializer) && sandbox.initializer.text === "", path).toBe(true);
-      expect(attrs.some(attr => ts.isJsxAttribute(attr) && attr.name.getText(tree) === "srcDoc"), path).toBe(true);
+      const scriptFrame = path === "../components/HtmlView.tsx" && attrs.some(attr => ts.isJsxAttribute(attr) && attr.name.getText(tree) === "src" && attr.initializer?.getText(tree) === "{runUrl}");
+      expect(sandbox && ts.isJsxAttribute(sandbox) && sandbox.initializer && ts.isStringLiteral(sandbox.initializer) && sandbox.initializer.text === (scriptFrame ? "allow-scripts" : ""), path).toBe(true);
+      expect(attrs.some(attr => ts.isJsxAttribute(attr) && attr.name.getText(tree) === (scriptFrame ? "src" : "srcDoc")), path).toBe(true);
+      if (scriptFrame) {
+        expect(attrs.some(attr => ts.isJsxAttribute(attr) && attr.name.getText(tree) === "allow" && attr.initializer?.getText(tree) === '""'), path).toBe(true);
+      }
     }
     ts.forEachChild(node, visit);
   }

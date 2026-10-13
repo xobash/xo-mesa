@@ -126,7 +126,7 @@ describe("Pi agent browser helpers", () => {
     ).toBe("Web Archives/2026-06-25T12-34-56-example-com-article.html");
   });
 
-  it("resolves address-bar input: URLs direct, everything else a search", () => {
+  it("resolves address-bar input: URLs and bare domains direct, other text a search", () => {
     expect(resolveNavTarget("https://example.com/a?b=1")).toBe(
       "https://example.com/a?b=1"
     );
@@ -134,6 +134,8 @@ describe("Pi agent browser helpers", () => {
     expect(resolveNavTarget("mesa notes")).toBe(
       "https://duckduckgo.com/html/?q=mesa%20notes"
     );
+    expect(resolveNavTarget("example.com")).toBe("https://example.com");
+    expect(resolveNavTarget("en.wikipedia.org/wiki/Mesa")).toBe("https://en.wikipedia.org/wiki/Mesa");
     expect(resolveNavTarget("   ")).toBe("");
   });
 });
