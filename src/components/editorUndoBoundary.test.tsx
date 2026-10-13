@@ -203,3 +203,13 @@ it("isolates identical note paths and text across vaults", () => {
   switchToNote("a.md", "second vault update");
   expect(view.state.doc.toString()).toBe("second vault update");
 });
+
+it("preserves CRLF edits and undo when returning to the tab", () => {
+  const view = mountWithNote("crlf.md", "a\r\nb\r\n");
+  act(() => view.dispatch({ changes: { from: 1, insert: "x" } }));
+  expect(useAppStore.getState().content).toBe("ax\r\nb\r\n");
+  switchToNote("other.md", "other");
+  switchToNote("crlf.md", "ax\r\nb\r\n");
+  act(() => undoAsUser(viewOf()));
+  expect(useAppStore.getState().content).toBe("a\r\nb\r\n");
+});

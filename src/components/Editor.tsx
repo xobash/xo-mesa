@@ -62,6 +62,8 @@ function makeState(doc: string, onUserEdit: (text: string, activity: EditorActiv
   return EditorState.create({
     doc,
     extensions: [
+      ...(doc.includes("\r\n") && !/\r(?!\n)/.test(doc) && !doc.replace(/\r\n/g, "").includes("\n")
+        ? [EditorState.lineSeparator.of("\r\n")] : []),
       basicSetup,
       markdown(),
       syntaxHighlighting(themedHighlight),
@@ -71,7 +73,7 @@ function makeState(doc: string, onUserEdit: (text: string, activity: EditorActiv
       editableCompartment.of(EditorView.editable.of(editable)),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
-        onUserEdit(u.state.doc.toString(), activityFromUpdate(u));
+        onUserEdit(u.state.sliceDoc(), activityFromUpdate(u));
       }),
     ],
   });
@@ -88,7 +90,7 @@ export function Editor() {
   // The exact string we last pushed into the store from a user edit. When the
   // store echoes it back through the `content` subscription, we can skip the
   // doc-swap effect entirely — before this, EVERY keystroke serialized the
-  // whole document a second time (view.state.doc.toString()) just to discover
+  // whole document a second time (view.state.sliceDoc()) just to discover
   // nothing changed, which made typing in large notes feel sluggish.
   const lastEditorTextRef = useRef<string | null>(null);
   const [mode, setMode] = useState<"source" | "live">("source");
@@ -151,7 +153,7 @@ export function Editor() {
     const initial = sessionsRef.current.get(initialKey);
     const view = new EditorView({
       parent: hostRef.current,
-      state: initial?.state.doc.toString() === getStore().content ? initial.state : makeState(getStore().content, onUserEditRef.current),
+      state: initial?.state.sliceDoc() === getStore().content ? initial.state : makeState(getStore().content, onUserEditRef.current),
     });
     if (initial) view.scrollDOM.scrollTop = initial.scrollTop;
     viewRef.current = view;
@@ -174,14 +176,14 @@ export function Editor() {
     // (Identity check: the store holds the exact string we handed it.)
     if (!pathChanged && content === lastEditorTextRef.current) return;
     const next = content;
-    const cur = view.state.doc.toString();
+    const cur = view.state.sliceDoc();
     if (pathChanged) {
       const oldKey = docKeyRef.current;
       docKeyRef.current = key;
       if (previousPath) rememberSession(oldKey, view.state, view.scrollDOM.scrollTop);
       const cached = sessionsRef.current.get(key);
       lastEditorTextRef.current = null;
-      if (cached && cached.state.doc.toString() === next) {
+      if (cached && cached.state.sliceDoc() === next) {
         view.setState(cached.state);
         view.scrollDOM.scrollTop = cached.scrollTop;
       } else {
