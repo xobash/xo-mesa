@@ -101,21 +101,25 @@ try {
   $nodeProbe = @'
 $ErrorActionPreference = 'Stop'
 if ($env:MESA_TEST_NODE_FAIL -eq '1') { exit 23 }
+Import-Module Microsoft.PowerShell.Utility -Force
 if ((Get-FileHash 'payload.txt' -Algorithm SHA256).Hash -ne $env:MESA_TEST_NODE_HASH) { throw 'Hash mismatch' }
 Expand-Archive 'payload.zip' -DestinationPath 'expanded' -Force
 if ((Get-Content 'expanded/payload.txt' -Raw).Trim() -ne 'archive payload') { throw 'Extraction failed' }
 '@
   Set-Content (Join-Path $nodeFixture 'scripts/windows-node.ps1') $nodeProbe
   $nodeRunner = Join-Path $nodeFixture 'probe.cmd'
-  $nodeBody = "@echo off`r`ncall :install_pinned_node`r`nset `"MESA_TEST_NODE_STATUS=%errorlevel%`"`r`nif not `"%PSModulePath%`"==`"%MESA_TEST_MODULE_PATH%`" exit /b 99`r`nexit /b %MESA_TEST_NODE_STATUS%`r`n" + $runScript.Substring($nodeAt + 1, $nodeEnd - $nodeAt - 1)
+  $nodeBody = "@echo off`r`nset `"PSModulePath=%MESA_TEST_MODULE_PATH%`"`r`ncall :install_pinned_node`r`nset `"MESA_TEST_NODE_STATUS=%errorlevel%`"`r`nif not `"%PSModulePath%`"==`"%MESA_TEST_MODULE_PATH%`" exit /b 99`r`nexit /b %MESA_TEST_NODE_STATUS%`r`n" + $runScript.Substring($nodeAt + 1, $nodeEnd - $nodeAt - 1)
   Set-Content $nodeRunner $nodeBody
-  $moduleFolder = Join-Path $temporary 'empty modules'
-  New-Item -ItemType Directory $moduleFolder | Out-Null
+  $moduleFolder = Join-Path $temporary 'incompatible modules'
+  $utility = Join-Path $moduleFolder 'Microsoft.PowerShell.Utility'
+  New-Item -ItemType Directory $utility | Out-Null
+  Set-Content (Join-Path $utility 'Microsoft.PowerShell.Utility.psd1') "@{RootModule='Microsoft.PowerShell.Utility.psm1';ModuleVersion='99.0.0';GUID='4416d4f0-cc57-4c56-9314-69d20465b81e';FunctionsToExport=@('Get-FileHash')}"
+  Set-Content (Join-Path $utility 'Microsoft.PowerShell.Utility.psm1') "throw 'This fixture represents a module incompatible with Windows PowerShell.'"
   $env:PSModulePath = $moduleFolder
   $env:MESA_TEST_MODULE_PATH = $moduleFolder
   $env:MESA_TEST_NODE_HASH = $expectedHash
   Set-Location $nodeFixture
-  & cmd.exe /d /c 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-node.ps1' *> $null
+  & cmd.exe /d /c 'set "PSModulePath=%MESA_TEST_MODULE_PATH%"&& powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-node.ps1' *> $null
   Assert-True ($LASTEXITCODE -ne 0) 'broken inherited module path did not reproduce the failure'
   & cmd.exe /d /c "`"$nodeRunner`"" | Out-Null
   Assert-True ($LASTEXITCODE -eq 0) 'isolated launch could not hash/extract or changed the caller module path'
