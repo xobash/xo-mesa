@@ -11,6 +11,7 @@ $priorPath = $env:Path
 $priorProgramFiles = $env:ProgramFiles
 $priorProgramFilesX86 = ${env:ProgramFiles(x86)}
 $priorLocalAppData = $env:LOCALAPPDATA
+$priorModulePath = $env:PSModulePath
 
 function Assert-True([bool]$condition, [string]$message) {
   if (-not $condition) { throw $message }
@@ -85,6 +86,44 @@ try {
   }
 
   $runScript = Get-Content -Raw (Join-Path $project 'run.cmd')
+  # Exercise the actual launch subroutine with a module path that excludes
+  # Windows PowerShell's built-ins, as an intermediate cmd process can inherit.
+  $nodeAt = $runScript.IndexOf("`n:install_pinned_node")
+  $nodeEnd = $runScript.IndexOf("`n:ensure_scoop", $nodeAt + 1)
+  Assert-True ($nodeAt -ge 0 -and $nodeEnd -gt $nodeAt) 'pinned Node launch subroutine is missing'
+  Assert-True ($runScript -match 'call :install_pinned_node') 'pinned Node launch bypasses module isolation'
+  $nodeFixture = Join-Path $temporary 'node probe'
+  New-Item -ItemType Directory -Force (Join-Path $nodeFixture 'scripts') | Out-Null
+  $payload = Join-Path $nodeFixture 'payload.txt'
+  Set-Content $payload 'archive payload'
+  $expectedHash = (Get-FileHash $payload -Algorithm SHA256).Hash
+  Compress-Archive $payload (Join-Path $nodeFixture 'payload.zip')
+  $nodeProbe = @'
+$ErrorActionPreference = 'Stop'
+if ($env:MESA_TEST_NODE_FAIL -eq '1') { exit 23 }
+if ((Get-FileHash 'payload.txt' -Algorithm SHA256).Hash -ne $env:MESA_TEST_NODE_HASH) { throw 'Hash mismatch' }
+Expand-Archive 'payload.zip' -DestinationPath 'expanded' -Force
+if ((Get-Content 'expanded/payload.txt' -Raw).Trim() -ne 'archive payload') { throw 'Extraction failed' }
+'@
+  Set-Content (Join-Path $nodeFixture 'scripts/windows-node.ps1') $nodeProbe
+  $nodeRunner = Join-Path $nodeFixture 'probe.cmd'
+  $nodeBody = "@echo off`r`ncall :install_pinned_node`r`nset `"MESA_TEST_NODE_STATUS=%errorlevel%`"`r`nif not `"%PSModulePath%`"==`"%MESA_TEST_MODULE_PATH%`" exit /b 99`r`nexit /b %MESA_TEST_NODE_STATUS%`r`n" + $runScript.Substring($nodeAt + 1, $nodeEnd - $nodeAt - 1)
+  Set-Content $nodeRunner $nodeBody
+  $moduleFolder = Join-Path $temporary 'empty modules'
+  New-Item -ItemType Directory $moduleFolder | Out-Null
+  $env:PSModulePath = $moduleFolder
+  $env:MESA_TEST_MODULE_PATH = $moduleFolder
+  $env:MESA_TEST_NODE_HASH = $expectedHash
+  Set-Location $nodeFixture
+  & cmd.exe /d /c 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-node.ps1' *> $null
+  Assert-True ($LASTEXITCODE -ne 0) 'broken inherited module path did not reproduce the failure'
+  & cmd.exe /d /c "`"$nodeRunner`"" | Out-Null
+  Assert-True ($LASTEXITCODE -eq 0) 'isolated launch could not hash/extract or changed the caller module path'
+  $env:MESA_TEST_NODE_FAIL = '1'
+  & cmd.exe /d /c "`"$nodeRunner`"" | Out-Null
+  Assert-True ($LASTEXITCODE -eq 23) 'isolated launch lost the prerequisite failure status'
+  $env:PSModulePath = $priorModulePath
+  Set-Location $temporary
   $probeAt = $runScript.IndexOf("`n:has_webview2")
   Assert-True ($probeAt -ge 0) 'WebView2 probe is missing'
   $probe = Join-Path $temporary 'webview-probe.cmd'
@@ -112,6 +151,8 @@ try {
   $env:ProgramFiles = $priorProgramFiles
   ${env:ProgramFiles(x86)} = $priorProgramFilesX86
   $env:LOCALAPPDATA = $priorLocalAppData
+  $env:PSModulePath = $priorModulePath
+  Remove-Item Env:\MESA_TEST_MODULE_PATH, Env:\MESA_TEST_NODE_HASH, Env:\MESA_TEST_NODE_FAIL -ErrorAction SilentlyContinue
   Remove-Item Function:\git -ErrorAction SilentlyContinue
   Remove-Variable -Name mesaGitCalls, mesaHasChanges, mesaMergeFails, mesaSignatureFails, mesaAhead -Scope Global -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue

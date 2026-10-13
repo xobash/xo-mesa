@@ -60,7 +60,7 @@ Use sample files or a backup. Install Git first; the setup wrapper handles
 supported missing build tools. First builds can take several minutes and may
 need system permission. Later starts reuse an unchanged build.
 
-### Windows — PowerShell
+### Windows — PowerShell 5.1 or 7
 
 ```powershell
 git clone --filter=blob:none https://github.com/xobash/xo-mesa.git; if ($LASTEXITCODE -eq 0) { Set-Location xo-mesa; .\run.cmd }
@@ -72,8 +72,8 @@ git clone --filter=blob:none https://github.com/xobash/xo-mesa.git; if ($LASTEXI
 git clone --filter=blob:none https://github.com/xobash/xo-mesa.git && cd xo-mesa && bash ./run.sh
 ```
 
-Already cloned? From the repository folder, run `.\run.cmd` in Windows
-PowerShell or `bash ./run.sh` on macOS/Linux. Local source edits are included in
+Already cloned? From the repository folder, run `.\run.cmd` in PowerShell
+5.1 or 7, or `bash ./run.sh` on macOS/Linux. Local source edits are included in
 the build.
 
 For OS requirements and troubleshooting, see [platform setup](docs/cross-platform.md).

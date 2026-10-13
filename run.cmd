@@ -40,7 +40,7 @@ if errorlevel 1 (
 )
 for /f "delims=" %%V in ('node -v') do set "MESA_NODE_ACTUAL=%%V"
 if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-node.ps1
+  call :install_pinned_node
   if errorlevel 1 exit /b 1
   set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-x64;%PATH%"
   if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-arm64;%PATH%"
@@ -297,6 +297,14 @@ if errorlevel 1 exit /b 1
 where link >nul 2>nul
 if errorlevel 1 exit /b 1
 exit /b 0
+
+:install_pinned_node
+REM PowerShell 7 passes incompatible module paths through cmd.exe.
+REM Let Windows PowerShell rebuild its own paths without changing the caller.
+setlocal
+set "PSModulePath="
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-node.ps1
+endlocal & exit /b %errorlevel%
 
 :ensure_scoop
 where scoop >nul 2>nul
