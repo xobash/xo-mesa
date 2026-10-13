@@ -19,8 +19,8 @@ import type { PreviewTarget, VaultFile } from "../types";
 
 async function readSavedStylesheet(path: string): Promise<string> {
   if (!IN_TAURI) return readTextFile(path);
-  const bytes = await invoke<number[]>("vault_read_bytes", { path, maxBytes: MAX_SAVED_HTML_ASSET_CHARS, requireComplete: true });
-  return new TextDecoder().decode(Uint8Array.from(bytes));
+  const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes: MAX_SAVED_HTML_ASSET_CHARS, requireComplete: true });
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 const LazyPdfThumb = lazy(() =>

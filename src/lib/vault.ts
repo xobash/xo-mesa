@@ -541,8 +541,8 @@ export async function readReviewText(file: VaultFile, maxBytes = 1024 * 1024): P
     return text;
   }
   if (IN_TAURI) {
-    const bytes = await invoke<number[]>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: true });
-    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+    const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: true });
+    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
   }
   return readBoundedText(await openFsFile(file.path, { read: true }), maxBytes);
 }
@@ -551,7 +551,7 @@ export async function readReviewText(file: VaultFile, maxBytes = 1024 * 1024): P
 export async function isValidUtf8Text(file: VaultFile, text: string): Promise<boolean> {
   if (!text.includes("\uFFFD") || isDemo(file.path)) return true;
   const bytes = IN_TAURI
-    ? Uint8Array.from(await invoke<number[]>("vault_read_bytes", { path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: true }))
+    ? new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: true }))
     : await readFile(file.path);
   try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); return true; }
   catch { return false; }
@@ -732,7 +732,7 @@ export function decodePeekBytes(bytes: Uint8Array): string {
 export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<string> {
   if (isDemo(file.path)) return demoRead(file.relPath);
   try {
-    if (IN_TAURI) return decodePeekBytes(Uint8Array.from(await invoke<number[]>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: false })));
+    if (IN_TAURI) return decodePeekBytes(new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: false })));
     const fh = await openFsFile(file.path, { read: true });
     try {
       const buf = new Uint8Array(maxBytes);
@@ -770,7 +770,7 @@ export async function writeNote(
   const encoder = new TextEncoder();
   let prefix = "";
   if (IN_TAURI && expectedCurrentContent !== undefined) {
-    const head = Uint8Array.from(await invoke<number[]>("vault_read_bytes", {
+    const head = new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", {
       path: file.path, maxBytes: 3, requireComplete: false,
     }));
     if (head.length === 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) prefix = "\uFEFF";

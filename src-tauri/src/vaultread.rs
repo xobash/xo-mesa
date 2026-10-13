@@ -200,7 +200,7 @@ pub async fn vault_read_bytes(
     path: String,
     max_bytes: usize,
     require_complete: bool,
-) -> Result<Vec<u8>, String> {
+) -> Result<tauri::ipc::Response, String> {
     if max_bytes > 8 * 1024 * 1024 {
         return Err("invalid bounded read limit".into());
     }
@@ -229,7 +229,7 @@ pub async fn vault_read_bytes(
                 "File exceeds the inline review limit. Open each copy to review it.".into(),
             );
         }
-        Ok(bytes)
+        Ok(tauri::ipc::Response::new(bytes))
     })
     .await
     .map_err(|e| e.to_string())?

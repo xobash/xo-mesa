@@ -47,7 +47,7 @@ it("preserves the BOM in saved bytes and the exact expected disk hash", async ()
     const { writeNote, isValidUtf8Text } = await import("./vault");
     const disk = new TextEncoder().encode("\uFEFF# Original\n");
     invoke.mockReset();
-    invoke.mockImplementation(async (command: string) => command === "vault_read_bytes" ? Array.from(disk.slice(0, 3)) : undefined);
+    invoke.mockImplementation(async (command: string) => command === "vault_read_bytes" ? disk.slice(0, 3).buffer : undefined);
     await writeNote({ path: "/vault/bom.md", relPath: "bom.md", name: "bom", ext: "md", isMarkdown: true }, "# Edited\n", "# Original\n");
     const [, candidate, options] = invoke.mock.calls.find(call => call[0] === "vault_write_atomic") as unknown as [string, Uint8Array, { headers: Record<string, string> }];
     expect(candidate).toEqual(new TextEncoder().encode("\uFEFF# Edited\n"));
@@ -55,9 +55,9 @@ it("preserves the BOM in saved bytes and the exact expected disk hash", async ()
     expect(expected.size).toBe(disk.length);
     expect(expected.sha256).toBe(Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", disk)), b => b.toString(16).padStart(2, "0")).join(""));
     const file = { path: "/vault/latin1.txt", relPath: "latin1.txt", name: "latin1", ext: "txt", isMarkdown: false };
-    invoke.mockResolvedValue([0x63, 0x61, 0x66, 0xe9]);
+    invoke.mockResolvedValue(new Uint8Array([0x63, 0x61, 0x66, 0xe9]).buffer);
     expect(await isValidUtf8Text(file, "caf\uFFFD")).toBe(false);
-    invoke.mockResolvedValue(Array.from(new TextEncoder().encode("caf\uFFFD")));
+    invoke.mockResolvedValue(new TextEncoder().encode("caf\uFFFD").buffer);
     expect(await isValidUtf8Text(file, "caf\uFFFD")).toBe(true);
   } finally { vi.unstubAllGlobals(); vi.resetModules(); }
 });

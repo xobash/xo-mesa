@@ -11,8 +11,8 @@ import { MAX_SAVED_HTML_ASSET_CHARS, hydrateSavedHtml, savedFromUrl, savedHtmlFr
 
 async function readSavedStylesheet(path: string): Promise<string> {
   if (!IN_TAURI) return readTextFile(path);
-  const bytes = await invoke<number[]>("vault_read_bytes", { path, maxBytes: MAX_SAVED_HTML_ASSET_CHARS, requireComplete: true });
-  return new TextDecoder().decode(Uint8Array.from(bytes));
+  const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes: MAX_SAVED_HTML_ASSET_CHARS, requireComplete: true });
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 type HtmlVersion = { identity: string; text: string };
@@ -50,8 +50,8 @@ export function HtmlView({ rel, file: providedFile }: { rel: string; file?: Vaul
       if (size !== undefined && size > MAX_TEXT_CACHE_FILE_BYTES) throw new Error(`This HTML file is too large to render (${(size / 1024 / 1024).toFixed(1)} MB). Open in system browser.`);
       if (!providedFile) return ensureContent(rel);
       if (IN_TAURI) {
-        const bytes = await invoke<number[]>("vault_read_bytes", { path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: true });
-        return new TextDecoder().decode(Uint8Array.from(bytes));
+        const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: true });
+        return new TextDecoder().decode(new Uint8Array(bytes));
       }
       return readTextFile(file.path);
     };
@@ -68,7 +68,7 @@ export function HtmlView({ rel, file: providedFile }: { rel: string; file?: Vaul
     let token: string | undefined;
     const render = async () => {
       let html = await hydrateSavedHtml(text, file.path, urlForPath, readSavedStylesheet, { vaultRoot: root ?? undefined, scripts: false,
-        fonts: { readBytes: async path => Uint8Array.from(await invoke<number[]>("vault_read_bytes", { path, maxBytes: 2 * 1024 * 1024, requireComplete: true })) } });
+        fonts: { readBytes: async path => new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes: 2 * 1024 * 1024, requireComplete: true })) } });
       if (!alive) return;
       if (active && IN_TAURI) {
         token = await invoke<string>("browse_resource_session", { token: null });
