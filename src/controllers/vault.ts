@@ -18,6 +18,7 @@ import {
   extOf,
   isIndexableVaultRelPath,
   isTextualVaultFile,
+  isValidUtf8Text,
   needsCachedTextRefresh,
   normalizeVaultRelPath,
   pickVault,
@@ -259,6 +260,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     const cleanChanges: string[] = [];
     let watcherWarning = false;
     const pendingContent = new Map<string, string>();
+    const pendingEditable = new Map<string, boolean>();
     const created = new Map<string, VaultFile>();
     const pendingNotes = new Map<string, NoteMeta>();
     let filesDirty = false;
@@ -292,7 +294,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     };
     const flush = () => {
       if (!isCurrent()) return;
-      if (!pendingContent.size && !pendingNotes.size && !filesDirty) return;
+      if (!pendingContent.size && !pendingEditable.size && !pendingNotes.size && !filesDirty) return;
       const next: Partial<AppState> = {};
       if (pendingContent.size) {
         // Read at flush time, so creates and deletes that committed during the
@@ -311,6 +313,15 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           if (rel === CALENDAR_FILE) next.calendarEvents = parseEvents(text);
         }
         if (changed) next.contentCache = cache;
+      }
+      const active = get().activePath;
+      if (active && pendingEditable.has(active)) {
+        const file = get().fileFor(active);
+        if (file && !textSaves.isDirty(file.path)) {
+          const valid = pendingEditable.get(active);
+          next.activeContentState = valid ? "ready" : "invalid-encoding";
+          if (!valid) next.status = `${active} is not valid UTF-8; opened read-only to avoid corrupting it.`;
+        }
       }
       if (pendingNotes.size) {
         const notes = { ...get().notes };
@@ -390,6 +401,16 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               continue;
             }
             const text = read.text;
+            let valid: boolean;
+            try { valid = await isValidUtf8Text(file, text); }
+            catch (error) {
+              if (!isCurrent()) return;
+              watcherWarning = true;
+              set({ status: `External change could not be validated; keeping cached content for ${rel}: ${String(error)}` });
+              continue;
+            }
+            if (!isCurrent()) return;
+            pendingEditable.set(rel, valid);
             const old = get().contentCache[rel] ?? "";
             if (text === old) continue; // unchanged, or our own in-app save
             // brighter flicker for bigger edits

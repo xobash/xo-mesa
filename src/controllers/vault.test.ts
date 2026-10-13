@@ -5,8 +5,8 @@ import { useAppStore, type AppState } from '../store';
 import { TextSaveCoordinator } from '../lib/textSaveCoordinator';
 import type { VaultFile } from '../types';
 import { createVaultController, mergeWatchEvents } from './vault';
-const io = vi.hoisted(() => ({ watch: vi.fn(), read: vi.fn(), scan: vi.fn(async () => []) }));
-vi.mock('../lib/vault', async original => ({ ...await original<object>(), authorizeVaultRoot: async () => { }, assertVaultRootAvailable: async () => { }, scanVault: io.scan, recoverWriteArtifacts: async () => ({ restored: [], removed: [] }), watchVault: io.watch, readNoteResult: io.read, readNote: async () => (await io.read()).text }));
+const io = vi.hoisted(() => ({ watch: vi.fn(), valid: vi.fn(async () => true), read: vi.fn(), scan: vi.fn(async () => []) }));
+vi.mock('../lib/vault', async original => ({ ...await original<object>(), authorizeVaultRoot: async () => { }, assertVaultRootAvailable: async () => { }, scanVault: io.scan, recoverWriteArtifacts: async () => ({ restored: [], removed: [] }), watchVault: io.watch, readNoteResult: io.read, isValidUtf8Text: io.valid, readNote: async () => (await io.read()).text }));
 vi.mock('../lib/vaultIndex', async original => ({ ...await original<object>(), loadIndexedNotes: async () => ({ notes: {}, cache: {}, read: 0, reused: 0, skipped: [], failed: [] }) }));
 it('releases a watcher that finishes registration after controller disposal', async () => {
   let resolve!: (stop: () => void) => void;
@@ -98,4 +98,19 @@ it('ingests 200 external creates with one read each and one sorted catalogue com
   expect(f.state.getState().files.map(file => file.relPath)).toEqual([...existing.map(file => file.relPath), ...additions].sort((a,b) => a.localeCompare(b)));
   await new Promise(resolve => setTimeout(resolve, 220)); expect(io.scan).not.toHaveBeenCalled();
   stop(); f.controller.dispose();
+});
+
+it('keeps externally replaced invalid text read-only even when decoded text is unchanged', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const a = file('a.md');
+  f.state.setState({ files: [a], activePath: 'a.md', content: 'caf\uFFFD', contentCache: { 'a.md': 'caf\uFFFD' }, fileFor: () => a });
+  io.read.mockReset().mockResolvedValue({ ok: true, text: 'caf\uFFFD' });
+  io.valid.mockResolvedValue(false);
+  f.change([{ kind: 'modify', paths: ['/v/a.md'] }]);
+  await vi.waitFor(() => expect(f.state.getState().activeContentState).toBe('invalid-encoding'));
+  expect(f.state.getState().content).toBe('caf\uFFFD');
+  io.valid.mockResolvedValue(true);
+  f.change([{ kind: 'modify', paths: ['/v/a.md'] }]);
+  await vi.waitFor(() => expect(f.state.getState().activeContentState).toBe('ready'));
+  f.controller.dispose();
 });

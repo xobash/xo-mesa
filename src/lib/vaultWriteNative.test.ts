@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 
-const invoke = vi.hoisted(() => vi.fn(async () => undefined));
+const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
   invoke,
@@ -38,4 +38,26 @@ it("encodes non-ASCII paths as ASCII header values and never nests bytes in a JS
   expect(body).toBe(big);
   for (const value of Object.values(options.headers)) expect(value).toMatch(/^[\x20-\x7e]+$/);
   expect(new TextDecoder().decode(Uint8Array.from(options.headers["x-mesa-path"].match(/../g)!.map((h) => parseInt(h, 16))))).toBe("/vault/näme.md");
+});
+
+it("preserves the BOM in saved bytes and the exact expected disk hash", async () => {
+  vi.resetModules();
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+  try {
+    const { writeNote, isValidUtf8Text } = await import("./vault");
+    const disk = new TextEncoder().encode("\uFEFF# Original\n");
+    invoke.mockReset();
+    invoke.mockImplementation(async (command: string) => command === "vault_read_bytes" ? Array.from(disk.slice(0, 3)) : undefined);
+    await writeNote({ path: "/vault/bom.md", relPath: "bom.md", name: "bom", ext: "md", isMarkdown: true }, "# Edited\n", "# Original\n");
+    const [, candidate, options] = invoke.mock.calls.find(call => call[0] === "vault_write_atomic") as unknown as [string, Uint8Array, { headers: Record<string, string> }];
+    expect(candidate).toEqual(new TextEncoder().encode("\uFEFF# Edited\n"));
+    const expected = JSON.parse(options.headers["x-mesa-expected"]);
+    expect(expected.size).toBe(disk.length);
+    expect(expected.sha256).toBe(Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", disk)), b => b.toString(16).padStart(2, "0")).join(""));
+    const file = { path: "/vault/latin1.txt", relPath: "latin1.txt", name: "latin1", ext: "txt", isMarkdown: false };
+    invoke.mockResolvedValue([0x63, 0x61, 0x66, 0xe9]);
+    expect(await isValidUtf8Text(file, "caf\uFFFD")).toBe(false);
+    invoke.mockResolvedValue(Array.from(new TextEncoder().encode("caf\uFFFD")));
+    expect(await isValidUtf8Text(file, "caf\uFFFD")).toBe(true);
+  } finally { vi.unstubAllGlobals(); vi.resetModules(); }
 });

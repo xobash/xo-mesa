@@ -5,8 +5,8 @@ import { useAppStore } from '../store';
 import { confirmAction } from '../lib/confirmAction';
 import { createPersistenceController } from './persistence';
 vi.mock('../lib/confirmAction', () => ({ confirmAction: vi.fn(async () => false) }));
-const io = vi.hoisted(() => ({ write: vi.fn(), history: vi.fn(async () => ({ id: 'test' })), list: vi.fn(), read: vi.fn() }));
-vi.mock('../lib/vault', async original => ({ ...await original<object>(), writeNote: io.write, readNoteResult: io.read, readNote: async () => "disk text" }));
+const io = vi.hoisted(() => ({ write: vi.fn(), history: vi.fn(async () => ({ id: 'test' })), list: vi.fn(), read: vi.fn(), valid: vi.fn(async () => true), disk: vi.fn(async () => "disk text") }));
+vi.mock('../lib/vault', async original => ({ ...await original<object>(), writeNote: io.write, readNoteResult: io.read, readNote: io.disk, isValidUtf8Text: io.valid }));
 vi.mock('../lib/textRevisionHistory', async original => ({ ...await original<object>(), recordTextRevisionAsync: io.history, listTextRevisionsAsync: io.list }));
 it('retains failed drafts independently and retries their exact disk baselines', async () => {
   const files = ['a', 'b'].map(name => ({ path: `/vault/${name}.md`, relPath: `${name}.md`, name, ext: 'md', isMarkdown: true }));
@@ -52,4 +52,18 @@ it('retains a held draft and does not publish a delayed confirmation into a new 
   expect(controller.textSaves.isDirty(file.path)).toBe(true);
   expect(state.getState().content).toBe('local text');
   expect(state.getState().status).toBe('New vault');
+});
+
+it('confirmed disk-copy recovery retains invalid UTF-8 as read-only', async () => {
+  const file = { path: '/vault/a.md', relPath: 'a.md', name: 'a', ext: 'md', isMarkdown: true };
+  const state = createStore(() => ({ ...useAppStore.getInitialState(), vaultPath: '/vault', files: [file], activePath: 'a.md', content: 'draft', fileFor: () => file }));
+  const controller = createPersistenceController({ get: state.getState, set: state.setState, getGeneration: () => 1, refreshMissingExternalFiles: async () => {} });
+  io.write.mockRejectedValueOnce(Error('changed')); await controller.saveTextMutation(file, 'draft', 'original');
+  io.disk.mockResolvedValue('caf\uFFFD'); io.valid.mockResolvedValue(false);
+  vi.mocked(confirmAction).mockResolvedValueOnce(true);
+  await controller.actions.useDiskTextForSaveIssue(file.path);
+  expect(state.getState().content).toBe('caf\uFFFD');
+  expect(state.getState().activeContentState).toBe('invalid-encoding');
+  expect(controller.textSaves.isDirty(file.path)).toBe(false);
+  io.valid.mockResolvedValue(true);
 });

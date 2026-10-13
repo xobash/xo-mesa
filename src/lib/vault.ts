@@ -547,6 +547,16 @@ export async function readReviewText(file: VaultFile, maxBytes = 1024 * 1024): P
   return readBoundedText(await openFsFile(file.path, { read: true }), maxBytes);
 }
 
+/** A replacement character may be authored UTF-8 or a lossy decode. Check the original bytes. */
+export async function isValidUtf8Text(file: VaultFile, text: string): Promise<boolean> {
+  if (!text.includes("\uFFFD") || isDemo(file.path)) return true;
+  const bytes = IN_TAURI
+    ? Uint8Array.from(await invoke<number[]>("vault_read_bytes", { path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: true }))
+    : await readFile(file.path);
+  try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); return true; }
+  catch { return false; }
+}
+
 export async function readNote(file: VaultFile): Promise<string> {
   return (await readNoteResult(file)).text;
 }
@@ -757,12 +767,17 @@ export async function writeNote(
     demoWrite(file.relPath, content);
     return;
   }
-  const bytes = new TextEncoder().encode(content);
-  await persistVerifiedBytes(file.path, bytes, VAULT_FS, {
-    expectedCurrentBytes:
-      expectedCurrentContent === undefined
-        ? undefined
-        : new TextEncoder().encode(expectedCurrentContent),
+  const encoder = new TextEncoder();
+  let prefix = "";
+  if (IN_TAURI && expectedCurrentContent !== undefined) {
+    const head = Uint8Array.from(await invoke<number[]>("vault_read_bytes", {
+      path: file.path, maxBytes: 3, requireComplete: false,
+    }));
+    if (head.length === 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) prefix = "\uFEFF";
+  }
+  const encode = (text: string) => encoder.encode(prefix && !text.startsWith(prefix) ? prefix + text : text);
+  await persistVerifiedBytes(file.path, encode(content), VAULT_FS, {
+    expectedCurrentBytes: expectedCurrentContent === undefined ? undefined : encode(expectedCurrentContent),
   });
 }
 

@@ -15,6 +15,7 @@ import {
   IN_TAURI,
   createNote,
   isTextualVaultFile,
+  isValidUtf8Text,
   peekNote,
   readNoteResult,
   resolveTextVaultLink
@@ -41,6 +42,13 @@ interface Dependencies extends Port {
   getGeneration: () => number; textSaves: TextSaveCoordinator<VaultFile>; commitSettings: (settings: Settings) => void; reportingFailure: (label: string, run: () => Promise<void>) => Promise<void>;
 }
 export function createDocumentController({ get, set, getGeneration, textSaves, commitSettings, reportingFailure }: Dependencies) {
+  const contentState = async (file: VaultFile, text: string) => {
+    const valid = await isValidUtf8Text(file, text);
+    return valid ? { activeContentState: "ready" as const } : {
+      activeContentState: "invalid-encoding" as const,
+      status: `${file.relPath} is not valid UTF-8; opened read-only to avoid corrupting it.`,
+    };
+  };
   const pendingContentReads = new Map<string, Promise<string>>();
   // Lazy non-markdown content is evictable. Keep the recency metadata beside
   // the store, not in React state, and clear it on every vault generation so
@@ -111,13 +119,23 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       });
       set({
         activePath: relPath, content: cached ?? "", openTabs: tabs,
-        activeContentState: textual && cached === undefined ? "loading" : "ready"
+        activeContentState: textual ? "loading" : "ready"
       });
       if (!textual || cached !== undefined) {
         markMesaPerf("file-open-ready", { textual, cached: cached !== undefined });
       }
+      if (textual && cached !== undefined) {
+        try {
+          const state = await contentState(file, cached);
+          if (get().activePath === relPath && get().vaultPath === openRoot && getGeneration() === openGeneration) set(state);
+        } catch (error) {
+          if (get().activePath === relPath && get().vaultPath === openRoot && getGeneration() === openGeneration)
+            set({ activeContentState: "failed", status: `Could not validate ${relPath}: ${String(error)}` });
+        }
+      }
       if (textual && cached === undefined) {
         let text: string;
+        let state: Awaited<ReturnType<typeof contentState>>;
         try {
           // The catalog size can be stale if another app changed the file.
           // Check the live size before an automatic read on desktop.
@@ -128,6 +146,7 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
             return;
           }
           text = await get().ensureContent(relPath);
+          state = await contentState(file, text);
         } catch (error) {
           if (get().activePath === relPath && get().vaultPath === openRoot && getGeneration() === openGeneration)
             set({ activeContentState: "failed", status: `Could not read ${relPath}: ${String(error)}` });
@@ -140,7 +159,7 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
           get().vaultPath === openRoot &&
           getGeneration() === openGeneration
         ) {
-          set({ content: get().contentCache[relPath] ?? text, activeContentState: "ready" });
+          set({ content: get().contentCache[relPath] ?? text, ...state });
           markMesaPerf("file-open-ready", { textual: true, cached: false });
         }
       }
@@ -154,8 +173,11 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       set({ activeContentState: "loading" });
       try {
         const text = await get().ensureContent(relPath);
+        const file = get().fileFor(relPath);
+        if (!file) return;
+        const state = await contentState(file, text);
         if (get().vaultPath === root && getGeneration() === generation && get().activePath === relPath)
-          set({ content: get().contentCache[relPath] ?? text, activeContentState: "ready" });
+          set({ content: get().contentCache[relPath] ?? text, ...state });
       } catch (error) {
         if (get().vaultPath === root && getGeneration() === generation && get().activePath === relPath)
           set({ activeContentState: "failed", status: `Could not read ${relPath}: ${String(error)}` });

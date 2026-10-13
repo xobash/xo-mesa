@@ -396,3 +396,15 @@ written. These controls do not lock out existing external handles or guarantee
 Windows directory-metadata power-loss durability. Native regression tests cover
 macOS modes, ACL/xattr retention and inherited-ACL removal; Linux ACL/xattr
 execution requires Linux.
+
+## Text encoding and line endings
+
+Existing UTF-8 byte-order marks are retained in both save candidates and exact
+expected-byte hashes. A failed BOM read stops the save without touching the
+file. Text containing a replacement character is checked against the original
+bytes with strict UTF-8 decoding before editing is enabled, including cached
+and deliberately loaded documents, external refreshes and confirmed disk-copy
+recovery. Invalid UTF-8 opens read-only with a clear
+status; Mesa does not transcode it. Authored UTF-8 replacement characters remain
+editable.
+Regression coverage is in the existing native-write, document-controller suites. Native save/close acceptance remains a separate check.

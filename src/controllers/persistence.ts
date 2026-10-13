@@ -13,6 +13,7 @@ import {
   IN_TAURI,
   flushableNoteText,
   isTextualVaultFile,
+  isValidUtf8Text,
   readNote,
   readNoteResult,
   restoreRecoveryEntry,
@@ -165,6 +166,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         const diskText = IN_TAURI
           ? await readTextFileStrict(file.path)
           : await readNote(file);
+        const valid = await isValidUtf8Text(file, diskText);
         if (get().vaultPath !== root || getGeneration() !== generation) { saveHold.release(); saveHold = undefined; return; }
         const confirmed =
           await confirmAction(
@@ -203,6 +205,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
           return {
             content:
               state.activePath === file.relPath ? diskText : state.content,
+            ...(state.activePath === file.relPath ? { activeContentState: valid ? "ready" as const : "invalid-encoding" as const } : {}),
             contentCache: forkContentCache(state.contentCache, { [file.relPath]: diskText }),
             notes: nextMeta
               ? { ...state.notes, [file.relPath]: nextMeta }
@@ -212,7 +215,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
                 ? parseEvents(diskText)
                 : state.calendarEvents,
             textSaveIssues: nextIssues,
-            status: `Loaded disk copy for ${file.relPath}.`,
+            status: valid ? `Loaded disk copy for ${file.relPath}.` : `${file.relPath} is not valid UTF-8; opened read-only to avoid corrupting it.`,
           };
         });
       } catch (error) {

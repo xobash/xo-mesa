@@ -243,9 +243,10 @@ export function Editor() {
           </button>
         </div>
       </div>
+      {activePath && activeContentState === "invalid-encoding" && <p role="status">This file is not valid UTF-8; opened read-only to avoid corrupting it.</p>}
       <div className={"editor-workspace " + mode + (outlineOpen ? " with-outline" : "")}>
         <div className="editor-host" ref={hostRef} />
-        {activePath && activeContentState !== "ready" && (
+        {activePath && activeContentState !== "ready" && activeContentState !== "invalid-encoding" && (
           <div className="editor-load-state" role="status">
             <p>{activeContentState === "loading" ? "Loading document…" :
               activeContentState === "size-limit" ? "This file exceeds the 8 MiB automatic text limit." :

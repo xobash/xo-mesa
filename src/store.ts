@@ -213,7 +213,7 @@ export interface AppState {
   openTabs: string[];
   activePath: string | null;
   content: string;
-  activeContentState: "ready" | "loading" | "failed" | "size-limit";
+  activeContentState: "ready" | "loading" | "failed" | "size-limit" | "invalid-encoding";
   graphFull: boolean;
   loading: boolean;
   status: string;
