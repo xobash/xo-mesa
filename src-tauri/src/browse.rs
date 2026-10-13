@@ -447,12 +447,21 @@ fn create_resource_token(owner: &str) -> Result<String, String> {
     Ok(token)
 }
 fn charge_resource(owner: &str, token: &str, bytes: usize, request: bool) -> Result<(), String> {
+    charge_resource_at(owner, token, bytes, request, std::time::Instant::now())
+}
+fn charge_resource_at(
+    owner: &str,
+    token: &str,
+    bytes: usize,
+    request: bool,
+    now: std::time::Instant,
+) -> Result<(), String> {
     let mut tokens = resource_tokens()
         .lock()
         .map_err(|_| "resources unavailable")?;
     let budget = tokens.get_mut(token).ok_or("resources expired")?;
     if budget.owner != owner
-        || budget.created.elapsed() > std::time::Duration::from_secs(600)
+        || now.saturating_duration_since(budget.created) > std::time::Duration::from_secs(600)
         || (request && budget.requests >= 400)
         || bytes > VIEW_LIMIT.saturating_sub(budget.bytes)
     {
@@ -871,13 +880,16 @@ mod tests {
             charge_resource("resource-budget-test", &token, 0, true).unwrap();
         }
         assert!(charge_resource("resource-budget-test", &token, 0, true).is_err());
-        resource_tokens()
+        let created = resource_tokens()
             .lock()
             .unwrap()
-            .get_mut(&token)
+            .get(&token)
             .unwrap()
-            .created = std::time::Instant::now() - std::time::Duration::from_secs(601);
-        assert!(charge_resource("resource-budget-test", &token, 0, false).is_err());
+            .created;
+        let expires_at = created + std::time::Duration::from_secs(600);
+        assert!(charge_resource_at("resource-budget-test", &token, 0, false, expires_at).is_ok());
+        let expired_at = created + std::time::Duration::from_secs(601);
+        assert!(charge_resource_at("resource-budget-test", &token, 0, false, expired_at).is_err());
         revoke_resource_window("resource-budget-test");
         assert!(charge_resource("resource-budget-test", &token, 0, false).is_err());
     }
