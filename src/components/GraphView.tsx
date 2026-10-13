@@ -56,9 +56,8 @@ const LABEL_TOP_N = 10;
 // motion. Constant (not zoom-dependent) so layout is stable under zoom.
 const OVERLAP_GAP = 8;
 
-function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean, quiet: boolean): number {
+function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): number {
   if (moving || active) return ACTIVE_FRAME_MS;
-  if (quiet) return 1000 / 10;
   if (nodeCount > 4000) return 1000 / 20;
   return IDLE_FRAME_MS;
 }
@@ -2064,7 +2063,7 @@ export function GraphView() {
         now < motionUntilRef.current ||
         (sim ? sim.alpha() > 0.004 : false) ||
         zooming;
-      const frameMs = ambientFrameMs(nodesRef.current.length, moving, activeItems.length > 0, !document.hasFocus() || now - lastInputAt >= 15_000);
+      const frameMs = ambientFrameMs(nodesRef.current.length, moving, activeItems.length > 0);
       const dueLivingFrame =
         animationsOn &&
         nodesRef.current.length > 0 &&
@@ -2134,7 +2133,6 @@ export function GraphView() {
     let hadFrameError = false;
     let alive = true;
     let running = false;
-    let quietTimer: number | undefined;
     const loop = () => {
       raf = 0;
       if (!alive || document.hidden || !canvasVisibleRef.current) return;
@@ -2166,16 +2164,11 @@ export function GraphView() {
         focusRef.current.k !== focusTarget || (hoverRef.current.id && shownIdRef.current !== hoverRef.current.id) || !layoutSettledRef.current ||
         replayCameraRef.current || fitPendingRef.current || timelapseRef.current;
       if ((animationsOn && nodesRef.current.length > 0) || urgent) {
-        if (!urgent && (!document.hasFocus() || performance.now() - lastInputAt >= 15_000)) {
-          quietTimer = window.setTimeout(() => {
-            quietTimer = undefined;
-            if (alive && !document.hidden && canvasVisibleRef.current) raf = requestAnimationFrame(loop);
-          }, 1000 / 10);
-        } else raf = requestAnimationFrame(loop);
+        const quiet = !document.hasFocus() || performance.now() - lastInputAt >= 15_000;
+        if (urgent || !quiet) raf = requestAnimationFrame(loop);
       }
     };
     const resume = () => {
-      if (quietTimer !== undefined) { window.clearTimeout(quietTimer); quietTimer = undefined; }
       if (alive && !running && !raf && !document.hidden && canvasVisibleRef.current) {
         needsRedrawRef.current = true;
         raf = requestAnimationFrame(loop);
@@ -2222,7 +2215,6 @@ export function GraphView() {
       window.removeEventListener("keydown", input);
       window.removeEventListener("wheel", input);
       cancelAnimationFrame(raf);
-      if (quietTimer !== undefined) window.clearTimeout(quietTimer);
       if (activityClearTimerRef.current) clearTimeout(activityClearTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- The animation loop owns a single mount lifetime.

@@ -329,37 +329,24 @@ it('sleeps after reduced-motion settling and wakes on pointer input', async () =
   delete document.documentElement.dataset.mode;
 });
 
-it('reduces quiet ambient redraws and restores cadence on focus and input without reheating', () => {
-  const f = frameHarness();
-  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true } }));
-  const drawFor = (ms: number) => { f.clear.mockClear(); for (let i = 0; i < ms / 20; i++) { vi.advanceTimersByTime(20); f.tick(); } return f.clear.mock.calls.length; };
-  drawFor(10000);
-  act(() => window.dispatchEvent(new Event('focus')));
-  const focused = drawFor(1000);
-  vi.mocked(document.hasFocus).mockReturnValue(false);
-  const unfocused = drawFor(1000);
-  expect(unfocused).toBeLessThan(focused * 0.6);
-  expect(simulation().alpha()).toBe(0);
-  vi.mocked(document.hasFocus).mockReturnValue(true);
-  act(() => window.dispatchEvent(new Event('focus')));
-  expect(drawFor(1000)).toBeGreaterThan(unfocused);
-  vi.advanceTimersByTime(16000);
-  const idle = drawFor(1000);
-  act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' })));
-  expect(drawFor(1000)).toBeGreaterThan(idle);
-  expect(simulation().alpha()).toBe(0);
-});
-
-it('quiet graphs defer the frame callback and cancel the wait on focus', () => {
+it('stops settled ambient frames after 15 seconds and resumes once on input and activity', () => {
   const f = frameHarness();
   act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true } }));
   for (let i = 0; i < 500; i++) { vi.advanceTimersByTime(20); f.tick(); }
-  vi.mocked(document.hasFocus).mockReturnValue(false);
-  f.raf.mockClear(); f.tick();
-  expect(f.raf).not.toHaveBeenCalled();
   act(() => window.dispatchEvent(new Event('focus')));
-  expect(f.raf).toHaveBeenCalledOnce();
+  vi.advanceTimersByTime(15_000); f.tick();
   f.raf.mockClear();
-  act(() => root.unmount()); vi.advanceTimersByTime(200);
+  vi.advanceTimersByTime(1000);
   expect(f.raf).not.toHaveBeenCalled();
+  pointer('pointermove', 10, 10); pointer('pointermove', 10, 10);
+  expect(f.raf).toHaveBeenCalledOnce();
+  f.tick();
+  vi.mocked(document.hasFocus).mockReturnValue(false);
+  f.tick(); f.raf.mockClear();
+  vi.advanceTimersByTime(1000); expect(f.raf).not.toHaveBeenCalled();
+  act(() => bumpActivityAmount('Newest.md', 1));
+  expect(f.raf).toHaveBeenCalledOnce();
+  f.raf.mockClear(); f.tick();
+  expect(f.raf).toHaveBeenCalledOnce();
+  expect(simulation().alpha()).toBe(0);
 });

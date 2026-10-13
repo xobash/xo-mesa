@@ -71,8 +71,8 @@ of the graph disappear, so topology remains visible while a hover preview is
 open.
 
 Ambient redraws are an explicit draw reason. Settled ambient animation uses
-30 fps (20 fps above 4,000 nodes), or 10 fps while unfocused or after 15 seconds
-without pointer/key/wheel input. Focus or input restores the usual cadence;
+30 fps (20 fps above 4,000 nodes). After settling, ambient redraws stop while
+unfocused or after 15 seconds without pointer/key/wheel input. Focus or input restores the usual cadence;
 interaction and activity retain the 60 fps budget. This changes redraw timing,
 never simulation energy. The OS reduced-motion preference suppresses ambient motion. Hidden
 windows and off-screen canvases pause the loop until visible.
@@ -81,7 +81,7 @@ When animations are off or reduced motion is enabled, the loop sleeps once
 force layout, overlap cleanup, zoom, focus fade, activity and replay settle.
 Pointer input, activity through its card fade, theme/System mode changes,
 loaded thumbnails, settings, resize and Fit wake it.
-`GraphView.test.tsx` covers reduced-motion sleep and pointer wake. Native frame
+`GraphView.test.tsx` covers quiet/reduced-motion sleep, pointer wake, and activity while unfocused. Native frame
 and process CPU measurements are separate from this regression coverage.
 
 ## Activity Cards
