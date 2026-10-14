@@ -298,12 +298,15 @@ const TreeRow = memo(function TreeRow({
         onFocus={onFocus}
         // pointer-drag: click opens in the editor; drag onto the center/right
         // pane (or out of the window) to open it there.
-        onPointerDown={(e) =>
+        // Alt/Option-click opens the file beside the current document.
+        onPointerDown={(e) => {
+          const toSide = e.altKey;
           startFileDrag(rel, e, () => {
             previewLeave();
-            onOpen(rel);
-          })
-        }
+            if (toSide) void getStore().openToSide(rel);
+            else onOpen(rel);
+          });
+        }}
         onKeyDown={(e) => {
           if (e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
           e.preventDefault();
@@ -732,6 +735,15 @@ export const FileTree = memo(function FileTree() {
                   Open in new tab
                 </button>
               )}
+              <button
+                className="context-item"
+                onClick={() => {
+                  void getStore().openToSide(menu.rel);
+                  setMenu(null);
+                }}
+              >
+                Open to the side
+              </button>
               <button
                 className="context-item"
                 onClick={() => {

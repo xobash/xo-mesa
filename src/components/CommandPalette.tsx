@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useAppStore, getStore, THEMES } from "../store";
+import { useAppStore, getStore, THEMES, UI_STYLES } from "../store";
 import { localISO } from "../lib/daily";
 import { Modal } from "./Modal";
 
@@ -93,6 +93,15 @@ export function CommandPalette() {
           const s = getStore();
           const order = THEMES.map((t) => t.id);
           s.setTheme(order[(order.indexOf(s.theme) + 1) % order.length]);
+        },
+      },
+      {
+        id: "ui-style",
+        label: "Cycle interface style",
+        run: () => {
+          const s = getStore();
+          const order = UI_STYLES.map((u) => u.id);
+          s.setUiStyle(order[(order.indexOf(s.uiStyle) + 1) % order.length]);
         },
       },
       { id: "vault", label: "Open vault…", run: () => void getStore().openVault() },

@@ -20,6 +20,7 @@ import {
 } from "../lib/piSessionBridge";
 import { MESA_WINDOW_CHROME } from "../lib/windowChrome";
 import { createWorkspaceActions } from "../lib/workspaceActions";
+import { focusDocPane, openInRegion, openToSide, reconcileDocSplit, type DocSplitStep } from "../lib/docSplit";
 
 import type { StoreApi } from "zustand";
 import type { AppState } from "../store";
@@ -62,9 +63,36 @@ interface Dependencies extends Port {
   commitSettings: (settings: Settings) => void;
 }
 export function createWorkspaceController({ get, set, commitSettings }: Dependencies) {
+  // Every workspace change keeps the side-by-side document panes consistent.
+  const reconcileSplit = () => {
+    const step = reconcileDocSplit(get().settings, get().docSplit);
+    if (!step) return;
+    set({ docSplit: step.split });
+    if (step.select) void get().selectFile(step.select);
+  };
+  const commitWorkspace = (settings: Settings) => {
+    commitSettings(settings);
+    reconcileSplit();
+  };
+  const applySplit = async ({ placement, split, select }: DocSplitStep) => {
+    const { centerView, rightStack } = get().settings;
+    if (placement.centerView !== centerView || placement.rightStack.join() !== rightStack.join()) {
+      commitSettings({ ...get().settings, ...placement });
+    }
+    set({ docSplit: split });
+    if (select) await get().selectFile(select);
+  };
 
-  const actions: Pick<AppState, 'openDocWindow' | 'openAgentWindow' | 'openResearchWindow' | 'openPanelWindow'> & ReturnType<typeof createWorkspaceActions> = {
-    ...createWorkspaceActions({ get, set: (patch) => set(patch as Partial<AppState>), commitSettings, setSetting: (key, value) => get().setSetting(key as never, value as never) }),
+  const actions: Pick<AppState, 'openDocWindow' | 'openAgentWindow' | 'openResearchWindow' | 'openPanelWindow' | 'openToSide' | 'openFileInRegion' | 'focusDocPane'> & ReturnType<typeof createWorkspaceActions> = {
+    ...createWorkspaceActions({ get, set: (patch) => set(patch as Partial<AppState>), commitSettings: commitWorkspace, setSetting: (key, value) => get().setSetting(key as never, value as never) }),
+    openToSide: (rel) => applySplit(openToSide(get().settings, get().docSplit, get().activePath, rel)),
+    openFileInRegion: (rel, region) => applySplit(openInRegion(get().settings, get().docSplit, get().activePath, rel, region)),
+    focusDocPane: async (pane) => {
+      const step = focusDocPane(get().docSplit, get().activePath, pane);
+      if (!step) return;
+      set({ docSplit: step.split });
+      await get().selectFile(step.select);
+    },
     openDocWindow: async (relPath) => {
       if (IN_TAURI) {
         try {

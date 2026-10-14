@@ -4,6 +4,7 @@ import { createPersistenceController } from "./controllers/persistence";
 import { createResearchController } from "./controllers/research";
 import { createVaultController } from "./controllers/vault";
 import { createWorkspaceController } from "./controllers/workspace";
+import { NO_DOC_SPLIT, type DocPaneId, type DocSplit } from "./lib/docSplit";
 import {
   bumpActivityAmount,
   changedLineStats,
@@ -77,7 +78,10 @@ import {
   resolveRecentVault,
   type RecentVault,
   initialTheme,
-  type ThemeId
+  type ThemeId,
+  UI_STYLE_KEY,
+  initialUiStyle,
+  type UiStyleId
 } from "./lib/persistedUi";
 import { createSyncEventBridge } from "./lib/syncEventBridge";
 import {
@@ -88,7 +92,7 @@ import {
   type TextSaveHold
 } from "./lib/textSaveCoordinator";
 import type { DetachedWindowPlacement } from "./lib/windowTearOff";
-export type { ThemeId } from "./lib/persistedUi";
+export type { ThemeId, UiStyleId } from "./lib/persistedUi";
 
 const CALENDAR_FILE = "calendar.json";
 let activeImportAbort: AbortController | null = null;
@@ -187,6 +191,14 @@ export const THEMES: { id: ThemeId; label: string; blurb: string; swatch: [strin
   { id: "paper", label: "Paper", blurb: "Warm light, rust accent", swatch: ["#fbf9f5", "#b0522c"] },
 ];
 
+/** Interface styles change shell shape and density only; every theme works with each. */
+export const UI_STYLES: { id: UiStyleId; label: string; blurb: string }[] = [
+  { id: "classic", label: "Classic", blurb: "Original Mesa chrome: compact, mono labels" },
+  { id: "studio", label: "Studio", blurb: "Calm and roomy, rounded surfaces" },
+  { id: "vault", label: "Vault", blurb: "Dense panes and tab headers" },
+  { id: "canvas", label: "Canvas", blurb: "Minimal, borderless, floating panels" },
+];
+
 /** Sidebar sort modes whose order depends on `size`/`mtime`, so vault open has
  *  to wait for the per-file stat pass instead of deferring it. */
 
@@ -221,6 +233,7 @@ export interface AppState {
   textSaveIssues: Record<string, TextSaveIssue>;
   textSaveState: import("./lib/textSaveCoordinator").TextSaveState;
   theme: ThemeId;
+  uiStyle: UiStyleId;
   settings: Settings;
   settingsIssue: string;
   retrySettings: () => void;
@@ -307,6 +320,7 @@ export interface AppState {
   indexingTextFiles: number;
 
   setTheme: (t: ThemeId) => void;
+  setUiStyle: (style: UiStyleId) => void;
   setDragView: (d: PaneDrag | null) => void;
   setDraggingFile: (rel: string | null) => void;
   setDragGhost: (ghost: DragGhost | null) => void;
@@ -387,6 +401,14 @@ export interface AppState {
     fingerprint: string;
   } | null>;
   openDocWindow: (relPath: string) => Promise<void>;
+  /** Side-by-side documents: which document pane is live and what the other shows. */
+  docSplit: DocSplit;
+  /** Open a file beside the current document (split view). */
+  openToSide: (relPath: string) => Promise<void>;
+  /** Open a file dropped on a workspace region in that region. */
+  openFileInRegion: (relPath: string, region: "center" | "right") => Promise<void>;
+  /** Make a document pane the live editor. */
+  focusDocPane: (pane: DocPaneId) => Promise<void>;
   /** Returns true only after the detached window has adopted the live PTY. */
   openAgentWindow: (placement?: DetachedWindowPlacement) => Promise<boolean>;
   /** Open the shared Deep Research view in a separate Mesa native window. */
@@ -677,6 +699,8 @@ export const useAppStore = create<AppState>((set, get) => {
     textSaveIssues: {},
     textSaveState: { pending: 0, saving: 0, failed: 0 },
     theme: initialTheme(),
+    uiStyle: initialUiStyle(),
+    docSplit: NO_DOC_SPLIT,
     settings: bootSettings.settings,
     settingsIssue: bootSettings.issue,
     loadSyncSecrets,
@@ -766,6 +790,15 @@ export const useAppStore = create<AppState>((set, get) => {
         /* ignore */
       }
       set({ theme: t });
+    },
+
+    setUiStyle: (style) => {
+      try {
+        localStorage.setItem(UI_STYLE_KEY, style);
+      } catch {
+        /* ignore */
+      }
+      set({ uiStyle: style });
     },
 
     setSetting: (key, value) => {

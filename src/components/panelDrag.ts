@@ -2,10 +2,12 @@ import { getStore } from "../store";
 import { IN_TAURI } from "../lib/vault";
 import type { PaneView } from "../types";
 import { hitWorkspaceRegion, type DragFrom } from "../lib/panes";
+import { docPanePath, isDocPane } from "../lib/docSplit";
 import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
 
 const VIEW_LABEL: Record<PaneView, string> = {
   doc: "Editor",
+  doc2: "Editor",
   agent: "Pi",
   preview: "Preview",
   graph: "Graph",
@@ -108,10 +110,11 @@ export function startViewDrag(
           width: sourceRect?.width,
           height: sourceRect?.height,
         });
-        if (view === "doc") {
-          const active = getStore().activePath;
-          if (active) void getStore().openDocWindow(active);
-          if (from !== "handle") getStore().removeViewFromWorkspace("doc");
+        if (isDocPane(view)) {
+          const st = getStore();
+          const rel = docPanePath(view, st.docSplit, st.activePath);
+          if (rel) void st.openDocWindow(rel);
+          if (from !== "handle") st.removeViewFromWorkspace(view);
         } else if (view === "agent") {
           void getStore().openAgentWindow(placement);
           if (from !== "handle") getStore().removeViewFromWorkspace("agent");

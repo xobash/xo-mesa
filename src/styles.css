@@ -1715,6 +1715,55 @@ button {
 .editor-host .cm-scroller {
   overflow: auto;
 }
+/* Side-by-side documents: the non-live pane shows its file read-only and
+   becomes the live editor on click (lib/docSplit.ts). */
+.doc-slot-idle {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  cursor: text;
+}
+/* Text in the idle pane reads like the editor it becomes: wrapped, editor
+   type, no code-viewer chrome. Windowed large-file rows keep fixed height. */
+.doc-slot-idle .code-view:not(:has(.code-virtual-scroll)) .code-bar,
+.doc-slot-idle .code-scroll:not(.code-virtual-scroll) > .code-gutter {
+  display: none;
+}
+.doc-slot-idle .code-scroll:not(.code-virtual-scroll) {
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.doc-slot-idle .code-scroll:not(.code-virtual-scroll) > .code-pre {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 16px 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+:root[data-ui="vault"] .doc-slot-idle .code-scroll:not(.code-virtual-scroll) {
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.65;
+}
+:root[data-ui="vault"] .doc-slot-idle .code-scroll:not(.code-virtual-scroll) > .code-pre {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 24px;
+}
+.stack-title.doc-live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
 .editor-wrap > .editor-empty {
   position: absolute;
   inset: 0;
@@ -7729,4 +7778,463 @@ body,
   color: var(--text-strong);
   font: inherit;
   cursor: pointer;
+}
+
+/* ============================================================
+   Interface styles (`data-ui`) — shell shape and density only.
+   `classic` matches no rule here, so it is the original Mesa chrome.
+   Every style reads the active theme's tokens; no style forks a theme.
+   Tree rows keep one uniform height (FileTree measures a real row).
+   ============================================================ */
+
+/* ---- shared by the three modern styles ---- */
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) {
+  --ui-serif: "Iowan Old Style", "Charter", "Source Serif 4", Georgia, serif;
+  --ui-hover: color-mix(in srgb, var(--text) 6%, transparent);
+  --ui-selected: color-mix(in srgb, var(--text) 10%, transparent);
+  --ui-hairline: color-mix(in srgb, var(--border) 70%, transparent);
+}
+/* Sentence-case sans labels instead of tracked mono eyebrows. */
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) :is(.center-head, .stack-head, .modal-head, .sidebar-header, .ov-win-title) {
+  font-family: var(--font);
+  letter-spacing: 0;
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .stack-title {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .sidebar-header {
+  text-transform: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .tree-folder {
+  font-weight: 550;
+  color: var(--text);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .tree-folder .caret {
+  color: var(--text-faint);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) :is(.tree-file:hover, .tree-folder:hover, .sidebar-recovery:hover, .stack-btn:hover) {
+  background: var(--ui-hover);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .tree-file.active {
+  background: var(--ui-selected);
+  color: var(--text-strong);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .editor-toolbar {
+  border-bottom-color: transparent;
+  background: transparent;
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .topbar :is(.btn, .seg) {
+  background: transparent;
+  border-color: transparent;
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .topbar .btn:hover {
+  background: var(--ui-hover);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .topbar .btn.on {
+  background: var(--ui-selected);
+  border-color: transparent;
+  color: var(--text-strong);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .topbar .seg {
+  background: var(--ui-hover);
+  padding: 2px;
+  gap: 2px;
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .topbar .seg-btn {
+  border-radius: calc(var(--control-radius) - 2px);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .topbar .seg-btn.on {
+  background: var(--bg);
+  color: var(--text-strong);
+  box-shadow: 0 1px 2px color-mix(in srgb, black 25%, transparent);
+}
+:root:is([data-ui="studio"], [data-ui="vault"], [data-ui="canvas"]) .statusbar {
+  border-top-color: transparent;
+}
+
+/* ---- Studio: calm, roomy, rounded content cards ---- */
+:root[data-ui="studio"] {
+  --control-radius: 10px;
+  --surface-radius: 16px;
+}
+:root[data-ui="studio"] .app,
+:root[data-ui="studio"] .layout {
+  background: var(--bg-1);
+}
+:root[data-ui="studio"] .topbar {
+  height: 50px;
+  padding: 0 14px;
+  border-bottom-color: transparent;
+}
+:root[data-ui="studio"] .brand {
+  font-family: var(--ui-serif);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+:root[data-ui="studio"] .sidebar {
+  border-right-color: transparent;
+}
+:root[data-ui="studio"] .sidebar-header {
+  min-height: 38px;
+  padding: 0 12px 0 18px;
+}
+:root[data-ui="studio"] .sidebar-recovery {
+  border-radius: 10px;
+}
+:root[data-ui="studio"] :is(.tree-file, .tree-folder) {
+  width: calc(100% - 16px);
+  margin: 0 8px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  font-size: 13.5px;
+}
+:root[data-ui="studio"] :is(.center, .right-stack) {
+  margin: 0 8px 8px 4px;
+  background: var(--bg);
+  border: 1px solid var(--ui-hairline);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px color-mix(in srgb, black 18%, transparent);
+}
+:root[data-ui="studio"] .layout > .right-stack {
+  margin-left: 2px;
+}
+:root[data-ui="studio"] .layout.no-right > .center,
+:root[data-ui="studio"] .layout.dock-left > .center {
+  border: 1px solid var(--ui-hairline);
+}
+:root[data-ui="studio"] .center:has(.center-head.empty) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+:root[data-ui="studio"] :is(.center-head, .stack-head) {
+  height: 38px;
+  padding: 0 10px 0 14px;
+  background: transparent;
+  border-bottom-color: var(--ui-hairline);
+  font-size: 12.5px;
+}
+:root[data-ui="studio"] .region-grip {
+  opacity: 0.35;
+}
+:root[data-ui="studio"] .stack-divider {
+  height: 8px;
+  background: var(--bg-1);
+}
+:root[data-ui="studio"] .tabs-wrap {
+  background: transparent;
+  border-bottom-color: var(--ui-hairline);
+  padding: 4px 6px 0;
+}
+:root[data-ui="studio"] .tab {
+  border-right: none;
+  border-radius: 9px 9px 0 0;
+}
+:root[data-ui="studio"] .tab.active {
+  background: var(--ui-selected);
+  box-shadow: none;
+}
+:root[data-ui="studio"] .cm-editor .cm-gutters {
+  background: transparent;
+}
+:root[data-ui="studio"] .cm-editor .cm-content {
+  padding: 22px 28px 40vh;
+}
+:root[data-ui="studio"] .preview .markdown-body,
+:root[data-ui="studio"] .editor-live-preview .markdown-body {
+  font-size: 15.5px;
+  line-height: 1.72;
+}
+:root[data-ui="studio"] .markdown-body :is(h1, h2, h3) {
+  font-family: var(--ui-serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+:root[data-ui="studio"] .markdown-body h1 {
+  border-bottom: none;
+}
+:root[data-ui="studio"] .statusbar {
+  height: 26px;
+  background: var(--bg-1);
+}
+:root[data-ui="studio"] .modal {
+  border-radius: 18px;
+}
+:root[data-ui="studio"] .modal-head {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ---- Vault: dense panes, tab-style headers, readable line length ---- */
+:root[data-ui="vault"] {
+  --control-radius: 6px;
+  --surface-radius: 10px;
+}
+:root[data-ui="vault"] .topbar {
+  height: 40px;
+  padding: 0 10px;
+  background: var(--bg-2);
+  border-bottom-color: var(--ui-hairline);
+}
+:root[data-ui="vault"] .topbar :is(.btn, .seg-btn) {
+  font-size: 12.5px;
+}
+:root[data-ui="vault"] .topbar .btn {
+  padding: 4px 10px;
+}
+:root[data-ui="vault"] .search-top-btn {
+  width: 30px;
+  height: 30px;
+}
+:root[data-ui="vault"] .sidebar {
+  background: var(--bg-1);
+  border-right-color: var(--ui-hairline);
+}
+:root[data-ui="vault"] .sidebar-header {
+  min-height: 34px;
+  padding: 0 8px 0 14px;
+}
+:root[data-ui="vault"] :is(.tree-file, .tree-folder) {
+  width: calc(100% - 12px);
+  margin: 0 6px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 13px;
+}
+:root[data-ui="vault"] .tree-file.active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-strong);
+}
+/* Pane headers read as a single tab sitting on the tab strip. */
+:root[data-ui="vault"] :is(.center-head, .stack-head) {
+  height: 36px;
+  padding: 0 8px;
+  align-items: flex-end;
+  background: var(--bg-2);
+  border-bottom-color: var(--ui-hairline);
+  font-size: 12.5px;
+}
+:root[data-ui="vault"] :is(.center-head, .stack-head) > .stack-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  margin-right: auto;
+  padding: 0 14px;
+  height: 29px;
+  line-height: 29px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--ui-hairline);
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  margin-bottom: -1px;
+}
+:root[data-ui="vault"] :is(.center-head, .stack-head) > :is(.region-grip, .stack-btn) {
+  align-self: center;
+}
+:root[data-ui="vault"] .center-head.empty > .stack-title {
+  background: transparent;
+  border-color: transparent;
+}
+:root[data-ui="vault"] .stack-divider {
+  height: 4px;
+  background: var(--ui-hairline);
+}
+:root[data-ui="vault"] .tabs-wrap {
+  background: var(--bg-2);
+  border-bottom-color: var(--ui-hairline);
+  padding: 5px 6px 0;
+  height: 36px;
+}
+:root[data-ui="vault"] .tab {
+  border-right: none;
+  border-radius: 7px 7px 0 0;
+}
+:root[data-ui="vault"] .tab.active {
+  background: var(--bg);
+  box-shadow: none;
+}
+:root[data-ui="vault"] .cm-editor .cm-scroller {
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.65;
+}
+:root[data-ui="vault"] .cm-editor .cm-content {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 24px 40vh;
+}
+:root[data-ui="vault"] .cm-editor .cm-gutters {
+  background: transparent;
+}
+/* CodeMirror marks gutter display !important; this style hides line numbers. */
+:root[data-ui="vault"] .cm-editor .cm-lineNumbers {
+  display: none !important;
+}
+:root[data-ui="vault"] .cm-editor .cm-activeLine {
+  background: transparent;
+}
+:root[data-ui="vault"] .preview .markdown-body {
+  font-size: 15.5px;
+}
+:root[data-ui="vault"] .statusbar {
+  height: 22px;
+  justify-content: flex-end;
+  gap: 12px;
+  font-size: 11px;
+  background: var(--bg-1);
+  border-top-color: var(--ui-hairline);
+}
+:root[data-ui="vault"] .modal-head {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ---- Canvas: minimal, borderless, floating side panel ---- */
+:root[data-ui="canvas"] {
+  --control-radius: 999px;
+  --surface-radius: 22px;
+}
+:root[data-ui="canvas"] .app,
+:root[data-ui="canvas"] .layout {
+  background: var(--bg);
+}
+:root[data-ui="canvas"] .topbar {
+  height: 52px;
+  padding: 0 16px;
+  background: var(--bg);
+  border-bottom-color: transparent;
+}
+:root[data-ui="canvas"] .brand {
+  font-size: 16px;
+  font-weight: 650;
+}
+:root[data-ui="canvas"] .topbar .btn {
+  border-radius: 999px;
+}
+:root[data-ui="canvas"] .topbar .seg {
+  border-radius: 999px;
+}
+:root[data-ui="canvas"] .topbar .seg-btn {
+  border-radius: 999px;
+}
+:root[data-ui="canvas"] .sidebar {
+  background: var(--bg-1);
+  border-right-color: transparent;
+}
+:root[data-ui="canvas"] .sidebar-header {
+  min-height: 40px;
+  padding: 0 12px 0 20px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+:root[data-ui="canvas"] .sidebar-recovery {
+  border-radius: 10px;
+}
+:root[data-ui="canvas"] :is(.tree-file, .tree-folder) {
+  width: calc(100% - 20px);
+  margin: 0 10px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+:root[data-ui="canvas"] .center {
+  border-right-color: transparent;
+}
+:root[data-ui="canvas"] .layout.dock-left > .center {
+  border-left-color: transparent;
+}
+:root[data-ui="canvas"] :is(.center-head, .stack-head) {
+  height: 40px;
+  padding: 0 12px 0 16px;
+  background: transparent;
+  border-bottom-color: transparent;
+  font-size: 13px;
+}
+:root[data-ui="canvas"] .center-head .stack-title {
+  text-align: center;
+}
+:root[data-ui="canvas"] .region-grip {
+  opacity: 0;
+}
+:root[data-ui="canvas"] :is(.center-head, .stack-head):hover .region-grip {
+  opacity: 0.45;
+}
+/* The side stack floats as one rounded panel. */
+:root[data-ui="canvas"] .right-stack {
+  margin: 0 12px 12px 6px;
+  background: var(--bg-1);
+  border: 1px solid var(--ui-hairline);
+  border-radius: 22px;
+  box-shadow: 0 8px 30px color-mix(in srgb, black 22%, transparent);
+}
+:root[data-ui="canvas"] .layout.dock-left > .right-stack {
+  margin: 0 6px 12px 12px;
+}
+:root[data-ui="canvas"] .stack-divider {
+  height: 1px;
+  margin: 0 14px;
+  background: var(--ui-hairline);
+}
+:root[data-ui="canvas"] .tabs-wrap {
+  background: transparent;
+  border-bottom-color: transparent;
+  padding: 4px 10px;
+  height: 40px;
+}
+:root[data-ui="canvas"] .tab {
+  border-right: none;
+  border-radius: 999px;
+}
+:root[data-ui="canvas"] .tab.active {
+  background: var(--ui-selected);
+  box-shadow: none;
+}
+:root[data-ui="canvas"] .editor-toolbar .seg {
+  border-radius: 999px;
+}
+:root[data-ui="canvas"] .editor-toolbar .seg-btn {
+  border-radius: 999px;
+}
+:root[data-ui="canvas"] .cm-editor .cm-gutters {
+  background: transparent;
+}
+:root[data-ui="canvas"] .cm-editor .cm-content {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 24px 28px 40vh;
+}
+:root[data-ui="canvas"] .cm-editor .cm-activeLine {
+  background: transparent;
+}
+:root[data-ui="canvas"] .preview .markdown-body {
+  font-size: 15.5px;
+  line-height: 1.72;
+}
+:root[data-ui="canvas"] .markdown-body h1 {
+  border-bottom: none;
+}
+:root[data-ui="canvas"] .statusbar {
+  height: 24px;
+  background: var(--bg);
+  color: var(--text-faint);
+}
+:root[data-ui="canvas"] .modal {
+  border-radius: 22px;
+}
+:root[data-ui="canvas"] :is(.btn.primary, .modal .btn) {
+  border-radius: 999px;
+}
+:root[data-ui="canvas"] .modal-head {
+  font-size: 14.5px;
+  font-weight: 600;
 }

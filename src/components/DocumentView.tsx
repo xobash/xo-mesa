@@ -48,6 +48,7 @@ export function DocumentView() {
   const initial = params.get("doc") ?? "";
   const themeParam = params.get("theme");
   const theme: ThemeId = isThemeId(themeParam) ? themeParam : "void";
+  const uiStyle = useAppStore((s) => s.uiStyle);
 
   const [rel, setRel] = useState(initial);
   const [files, setFiles] = useState<VaultFile[]>([]);
@@ -65,7 +66,7 @@ export function DocumentView() {
     }
   }, []);
 
-  useApplyTheme(theme);
+  useApplyTheme(theme, uiStyle);
 
   useEffect(() => {
     if (!IN_TAURI) return;

@@ -28,6 +28,6 @@ describe("workspace action domain", () => {
     const commitSettings = vi.fn((next) => { state = { ...state, settings: next }; });
     const actions = createWorkspaceActions({ get: () => state, set: vi.fn(), commitSettings, setSetting: vi.fn() });
     actions.applyWorkspacePreset("research");
-    expect(state.settings).toMatchObject({ centerView: "doc", rightStack: ["agent", "preview"], sidebarOpen: true, sidebarAutoHide: false, sidebarWidth: 333, rightWidth: 444 });
+    expect(state.settings).toMatchObject({ centerView: "doc", rightStack: ["agent"], sidebarOpen: true, sidebarAutoHide: false, sidebarWidth: 333, rightWidth: 444 });
   });
 });

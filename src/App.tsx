@@ -20,6 +20,7 @@ import type { AppState, DeepResearchRunState } from "./store";
 import { IN_TAURI, DEMO_ROOT, fileKind, isEditableTextExt, isTextualVaultFile } from "./lib/vault";
 import { MediaView } from "./components/MediaView";
 import { CodeView } from "./components/CodeView";
+import { docPanePath, isDocPane, type DocPaneId } from "./lib/docSplit";
 import { TopBar } from "./components/TopBar";
 import { FileTree } from "./components/FileTree";
 import { TagList } from "./components/TagList";
@@ -38,6 +39,7 @@ import { DropOverlay } from "./components/DropOverlay";
 import { PreviewCard } from "./components/PreviewCard";
 import { startViewDrag } from "./components/panelDrag";
 import { useApplyTheme } from "./components/useApplyTheme";
+import { useTrayStatus } from "./components/useTrayStatus";
 import { SORT_LABELS } from "./lib/sort";
 import {
   adjacentPath,
@@ -276,6 +278,43 @@ function DocPane() {
   );
 }
 
+/** One side of a side-by-side document split. The live pane hosts the single
+ *  editor; the other pane shows its file read-only until clicked. */
+function DocSlot({ pane }: { pane: DocPaneId }) {
+  const live = useAppStore((s) => s.docSplit.active === pane);
+  const other = useAppStore((s) => s.docSplit.other);
+  const file = useAppStore((s) => (other ? s.fileFor(other) : undefined));
+  if (live) return <DocPane />;
+  if (!other || !file) {
+    return <div className="editor-empty">Drag a file here, or use “Open to the side” on a file.</div>;
+  }
+  const activate = () => void getStore().focusDocPane(pane);
+  const kind = fileKind(file.ext);
+  return (
+    <div
+      className="doc-slot-idle"
+      onPointerDownCapture={activate}
+      onFocusCapture={activate}
+      title="Click to edit this document"
+    >
+      {kind === "text" ? <CodeView rel={other} /> : <MediaView rel={other} />}
+    </div>
+  );
+}
+
+/** Pane header text: document panes name their file, other views their kind. */
+function ViewTitle({ view }: { view: WorkspaceView }) {
+  const docTitle = useAppStore((s) => {
+    if (!isDocPane(view)) return null;
+    const rel = docPanePath(view, s.docSplit, s.activePath);
+    if (!rel) return null;
+    return s.notes[rel]?.title ?? rel.split("/").pop() ?? rel;
+  });
+  // In a two-document split, mark which pane is the live editor.
+  const live = useAppStore((s) => isDocPane(view) && s.docSplit.other !== null && s.docSplit.active === view);
+  return <span className={"stack-title" + (live ? " doc-live" : "")}>{docTitle ?? VIEW_LABEL[view]}</span>;
+}
+
 function panelContent(kind: RightPanel) {
   if (kind === "preview") return <Preview />;
   if (kind === "graph") return <GraphView />;
@@ -293,7 +332,7 @@ function viewContent(
       </div>
     );
   }
-  if (kind === "doc") return <DocPane />;
+  if (isDocPane(kind)) return <DocSlot pane={kind} />;
   if (kind === "agent") return <AgentSurface embedded {...agentProps} />;
   return panelContent(kind);
 }
@@ -301,6 +340,7 @@ function viewContent(
 const VIEW_LABEL: Record<WorkspaceView, string> = {
   empty: "Workspace",
   doc: "Editor",
+  doc2: "Editor",
   agent: "Pi",
   preview: "Preview",
   graph: "Graph",
@@ -365,7 +405,7 @@ function RightStack() {
       }
       data-region="right"
     >
-      {stack.length === 0 && (
+      {stack.length === 0 && !drag && !draggingFile && (
         <div className="stack-empty">
           Drag the editor or a panel here, or use the top bar — Preview · Graph · Tasks.
         </div>
@@ -395,7 +435,7 @@ function RightStack() {
                 title="Drag to reorder · drag out to pop into a window"
               >
                 <span className="region-grip" aria-hidden="true">⠿</span>
-                <span className="stack-title">{VIEW_LABEL[p]}</span>
+                <ViewTitle view={p} />
                 <button
                   className="stack-btn"
                   onPointerDown={(e) => e.stopPropagation()}
@@ -463,7 +503,7 @@ function CenterRegion() {
         <span className="region-grip" aria-hidden="true">
           ⠿
         </span>
-        <span className="stack-title">{VIEW_LABEL[centerView]}</span>
+        <ViewTitle view={centerView} />
         {centerView !== "empty" && (
           <button
             className="stack-btn"
@@ -1172,6 +1212,7 @@ export default function App() {
   const graphFull = useAppStore((s) => s.graphFull);
   const openVault = useAppStore((s) => s.openVault);
   const theme = useAppStore((s) => s.theme);
+  const uiStyle = useAppStore((s) => s.uiStyle);
   const animations = useAppStore((s) => s.settings.animations);
   const hardwareAccel = useAppStore((s) => s.settings.hardwareAccel);
   const sidebarOpen = useAppStore((s) => s.settings.sidebarOpen);
@@ -1194,7 +1235,8 @@ export default function App() {
   const vimPrefixRef = useRef<"g" | "window" | null>(null);
   const leftShiftDownRef = useRef(false);
 
-  useApplyTheme(theme);
+  useApplyTheme(theme, uiStyle);
+  useTrayStatus(IN_TAURI && !docMode && !panelMode && !agentMode && !researchMode);
 
   // Detached documents reuse the main renderer's live file catalog. They
   // read only their selected document and never start another vault walk.

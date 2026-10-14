@@ -1,6 +1,6 @@
 import { confirmAction } from "../lib/confirmAction";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { useAppStore, THEMES } from "../store";
+import { useAppStore, THEMES, UI_STYLES } from "../store";
 import {
   localISO,
   monthMatrix,
@@ -941,6 +941,8 @@ function OverlayToggle({
 function OverlaySettings({ onReset }: { onReset: () => void }) {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
+  const uiStyle = useAppStore((s) => s.uiStyle);
+  const setUiStyle = useAppStore((s) => s.setUiStyle);
   const settings = useAppStore((s) => s.settings);
   const setSetting = useAppStore((s) => s.setSetting);
 
@@ -960,6 +962,22 @@ function OverlaySettings({ onReset }: { onReset: () => void }) {
               <span className="theme-swatch" aria-hidden="true" style={{ background: `linear-gradient(135deg, ${t.swatch[0]} 50%, ${t.swatch[1]} 50%)` }} />
               {t.label}
             </button>
+          ))}
+        </div>
+      </section>
+      <section className="ov-settings-section">
+        <div className="setting-name">Interface</div>
+        <div className="seg theme-seg" aria-label="Interface style">
+          {UI_STYLES.map((u) => (
+          <button
+            key={u.id}
+            className={"seg-btn" + (u.id === uiStyle ? " on" : "")}
+            title={u.blurb}
+            aria-pressed={u.id === uiStyle}
+            onClick={() => setUiStyle(u.id)}
+          >
+            {u.label}
+          </button>
           ))}
         </div>
       </section>

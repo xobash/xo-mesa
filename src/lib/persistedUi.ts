@@ -23,6 +23,26 @@ export function isThemeId(value: unknown): value is ThemeId {
   return typeof value === "string" && (THEME_IDS as readonly string[]).includes(value);
 }
 
+/** Interface style: shell shape and density, independent of the color theme.
+ *  `classic` is the original Mesa chrome and changes nothing. */
+export const UI_STYLE_KEY = "mesa:uiStyle";
+export const UI_STYLE_IDS = ["classic", "studio", "vault", "canvas"] as const;
+export type UiStyleId = (typeof UI_STYLE_IDS)[number];
+
+export function isUiStyleId(value: unknown): value is UiStyleId {
+  return typeof value === "string" && (UI_STYLE_IDS as readonly string[]).includes(value);
+}
+
+export function initialUiStyle(): UiStyleId {
+  try {
+    const value = localStorage.getItem(UI_STYLE_KEY);
+    if (isUiStyleId(value)) return value;
+  } catch {
+    // Use the default style.
+  }
+  return "studio";
+}
+
 export interface RecentVault { id: string; label: string }
 export interface RecentVaultState { entries: RecentVault[]; last: string | null }
 

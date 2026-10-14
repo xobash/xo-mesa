@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-fs = { version = "2", features = ["watch"] }
 # Native watcher imports this debouncer for filtered, batched delivery.
 notify-debouncer-full = "0.6"

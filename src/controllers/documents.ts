@@ -97,7 +97,7 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       if (settings.centerView === "empty") {
         commitSettings({
           ...settings,
-          ...openViewInWorkspace(settings.centerView, settings.rightStack, "doc"),
+          ...openViewInWorkspace(settings.centerView, settings.rightStack, get().docSplit.active),
         });
       }
       // text/markdown loads content for the editor; media (image/pdf/video)
@@ -189,15 +189,17 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
     // the "Open in new window" context action.
     openFile: async (relPath) => {
       const settings = get().settings;
+      // The live document pane may be either side of a split view.
+      const pane = get().docSplit.active;
       if (settings.centerView === "empty") {
         commitSettings({
           ...settings,
-          ...openViewInWorkspace(settings.centerView, settings.rightStack, "doc"),
+          ...openViewInWorkspace(settings.centerView, settings.rightStack, pane),
         });
-      } else if (settings.centerView !== "doc") {
+      } else if (settings.centerView !== pane && !settings.rightStack.includes(pane)) {
         commitSettings({
           ...settings,
-          ...placeInCenter(settings.centerView, settings.rightStack, "doc"),
+          ...placeInCenter(settings.centerView, settings.rightStack, pane),
         });
       }
       await get().selectFile(relPath);

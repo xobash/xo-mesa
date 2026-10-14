@@ -138,6 +138,7 @@ src-tauri/src/sync_server.rs
 src-tauri/src/sync_tests.rs
 src-tauri/src/sync_wire.rs
 src-tauri/src/terminal.rs
+src-tauri/src/tray.rs
 src-tauri/src/vaultmove.rs
 src-tauri/src/vaultops.rs
 src-tauri/src/vaultread.rs
@@ -221,6 +222,7 @@ src/components/useOverlayDraft.test.tsx
 src/components/useOverlayDraft.ts
 src/components/usePdfEditor.test.tsx
 src/components/usePdfEditor.ts
+src/components/useTrayStatus.ts
 src/controllers/documents.test.ts
 src/controllers/documents.ts
 src/controllers/persistence.test.ts
@@ -274,6 +276,8 @@ src/lib/deviceName.test.ts
 src/lib/deviceName.ts
 src/lib/discoveryPeers.test.ts
 src/lib/discoveryPeers.ts
+src/lib/docSplit.test.ts
+src/lib/docSplit.ts
 src/lib/documentCodec.test.ts
 src/lib/documentCodec.ts
 src/lib/documentDelta.test.ts
@@ -440,6 +444,8 @@ src/lib/textRevisionHistory.ts
 src/lib/textSaveCoordinator.test.ts
 src/lib/textSaveCoordinator.ts
 src/lib/themeContrast.test.ts
+src/lib/trayStatus.test.ts
+src/lib/trayStatus.ts
 src/lib/treeWindow.test.ts
 src/lib/treeWindow.ts
 src/lib/vault.test.ts

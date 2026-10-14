@@ -19,7 +19,7 @@ export function createWorkspaceActions({ get, set, commitSettings, setSetting }:
     applyWorkspacePreset: (preset: WorkspacePreset) => {
       // Presets arrange existing surfaces only. They do not close documents,
       // alter a user's pane widths, or replace direct manipulation.
-      const rightStack: PaneView[] = preset === "write" ? [] : preset === "read" ? ["preview"] : ["agent", "preview"];
+      const rightStack: PaneView[] = preset === "write" ? [] : preset === "read" ? ["preview"] : ["agent"];
       update({ sidebarOpen: true, sidebarAutoHide: false, centerView: "doc", rightStack });
     },
     toggleGraphFull: () => set({ graphFull: !get().graphFull }),

@@ -65,6 +65,7 @@ fn main() {
             "quit_after_save",
             "vault_watch",
             "vault_unwatch",
+            "tray_update",
         ]),
     ))
     .expect("failed to build Mesa permissions")

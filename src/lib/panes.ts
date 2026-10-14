@@ -1,15 +1,25 @@
 import type { PaneView, RightPanel, WorkspaceView } from "../types";
 
 /**
- * Two-region workspace logic — pure so drag/toggle behavior is unit-tested.
- * The center region and right stack can host the document view or utility
- * panels. A view can exist in exactly one place at a time.
+ * Split-view workspace logic — pure so drag/toggle behavior is unit-tested.
+ * The workspace shows at most two panes: the center and ONE side pane. A view
+ * can exist in exactly one place at a time. Opening or dropping a view onto an
+ * occupied pane replaces that pane; moving a view between the two panes swaps
+ * them. Replaced views close and stay available from the top bar.
  */
 export type DragFrom = "handle" | "stack" | "center";
 
 export interface PaneDrag {
   view: PaneView;
   from: DragFrom;
+}
+
+/** Number of side panes beside the center: split view has exactly one. */
+export const SIDE_PANES = 1;
+
+/** Clamp a side list to the split-view limit. */
+export function splitSide(stack: PaneView[]): PaneView[] {
+  return stack.slice(0, SIDE_PANES);
 }
 
 /** Add `view` if absent, remove it if present (top-bar button behaviour). */
@@ -26,7 +36,6 @@ export function removeView(stack: PaneView[], view: PaneView): PaneView[] {
 
 /**
  * Place `view` at `index` (removing any existing copy first, then clamping).
- * Used for both adding from a handle and reordering within the stack.
  */
 export function placeView(
   stack: PaneView[],
@@ -43,67 +52,52 @@ export interface WorkspacePlacement {
   rightStack: PaneView[];
 }
 
-/** Keep the visible workspace filled: if the center is empty but stacked views
- * exist, promote the first stacked view into the main region. */
+/** Keep the visible workspace filled: if the center is empty but a side view
+ * exists, promote it into the main region. */
 export function fillWorkspace(
   centerView: WorkspaceView,
   rightStack: PaneView[]
 ): WorkspacePlacement {
   if (centerView !== "empty" || rightStack.length === 0) {
-    return { centerView, rightStack };
+    return { centerView, rightStack: splitSide(rightStack) };
   }
   const [nextCenter, ...nextRight] = rightStack;
-  return { centerView: nextCenter, rightStack: nextRight };
+  return { centerView: nextCenter, rightStack: splitSide(nextRight) };
 }
 
-/** Move or swap a view into the center region. */
+/** Move a view into the center: a side view swaps with the center; any other
+ * view replaces the center. */
 export function placeInCenter(
   centerView: WorkspaceView,
   rightStack: PaneView[],
   view: PaneView
 ): WorkspacePlacement {
-  if (view === centerView) return { centerView, rightStack };
-  const oldIndex = rightStack.indexOf(view);
-  const withoutDragged = rightStack.filter((v) => v !== view);
-  const insertAt = oldIndex >= 0 ? Math.min(oldIndex, withoutDragged.length) : 0;
-  const nextRight = centerView === "empty" || withoutDragged.includes(centerView)
-    ? withoutDragged
-    : [
-        ...withoutDragged.slice(0, insertAt),
-        centerView,
-        ...withoutDragged.slice(insertAt),
-      ];
-  return { centerView: view, rightStack: nextRight };
+  if (view === centerView) return { centerView, rightStack: splitSide(rightStack) };
+  if (rightStack.includes(view)) {
+    return { centerView: view, rightStack: centerView === "empty" ? [] : [centerView] };
+  }
+  return { centerView: view, rightStack: splitSide(rightStack) };
 }
 
-/** Move or reorder a view inside the right stack, choosing a replacement center
- * when the view came from the center. */
+/** Move a view into the side pane: the center view swaps with the side view;
+ * any other view replaces the side view. `index` is kept for drop-target
+ * callers; split view has a single side slot. */
 export function placeInRight(
   centerView: WorkspaceView,
   rightStack: PaneView[],
   view: PaneView,
-  index: number
+  _index: number
 ): WorkspacePlacement {
-  if (view !== centerView) {
-    return { centerView, rightStack: placeView(rightStack, view, index) };
-  }
-
-  const candidates = rightStack.filter((v) => v !== view);
-  const replacement = candidates[0] ?? "empty";
-  if (replacement === centerView) return { centerView, rightStack };
-
-  const withoutReplacement = candidates.filter((v) => v !== replacement);
-  return {
-    centerView: replacement,
-    rightStack: placeView(withoutReplacement, view, index),
-  };
+  if (view !== centerView) return { centerView, rightStack: [view] };
+  const replacement = rightStack.find((v) => v !== view) ?? "empty";
+  return { centerView: replacement, rightStack: [view] };
 }
 
 export function closeCenterView(
   centerView: WorkspaceView,
   rightStack: PaneView[]
 ): WorkspacePlacement {
-  if (centerView === "empty") return { centerView, rightStack };
+  if (centerView === "empty") return { centerView, rightStack: splitSide(rightStack) };
   return fillWorkspace("empty", rightStack);
 }
 
@@ -116,8 +110,8 @@ export function removeFromWorkspace(
   return fillWorkspace(centerView, removeView(rightStack, view));
 }
 
-/** Top-bar toggle behavior for workspace panels. The first opened view should
- * claim an empty workspace before stacking anything on the side. */
+/** Top-bar toggle behavior for workspace panels. The first opened view claims
+ * an empty workspace; the next one becomes (or replaces) the side pane. */
 export function toggleWorkspacePanel(
   centerView: WorkspaceView,
   rightStack: PaneView[],
@@ -129,11 +123,11 @@ export function toggleWorkspacePanel(
   if (centerView === panel || rightStack.includes(panel)) {
     return removeFromWorkspace(centerView, rightStack, panel);
   }
-  return { centerView, rightStack: [...rightStack, panel] };
+  return { centerView, rightStack: [panel] };
 }
 
-/** Opening/spawning a view should fill an empty workspace before creating a
- * side split. Explicit drag-to-right still uses `placeInRight`. */
+/** Opening/spawning a view fills an empty workspace first, then the side pane
+ * (replacing its current view). */
 export function openViewInWorkspace(
   centerView: WorkspaceView,
   rightStack: PaneView[],
@@ -143,9 +137,9 @@ export function openViewInWorkspace(
     return { centerView: view, rightStack: [] };
   }
   if (centerView === view || rightStack.includes(view)) {
-    return { centerView, rightStack };
+    return { centerView, rightStack: splitSide(rightStack) };
   }
-  return { centerView, rightStack: [...rightStack, view] };
+  return { centerView, rightStack: [view] };
 }
 
 export interface RectLike {

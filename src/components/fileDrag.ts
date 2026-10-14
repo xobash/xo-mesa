@@ -4,8 +4,8 @@ import { hitWorkspaceRegion } from "../lib/panes";
 /**
  * Pointer-drag a file from the sidebar. A plain click runs `onClick` (open in
  * the editor). A drag drops it where you let go:
- *   • a region showing the editor → open it there
- *   • a region showing a panel    → switch that region to Preview and show it
+ *   • a region showing a document → open it there
+ *   • a region showing a panel    → open it there, beside the current document
  *   • outside the app             → pop it into its own window
  * Pointer-based (not HTML5 drag) so Tauri's native file-drop never triggers.
  */
@@ -79,15 +79,10 @@ export function startFileDrag(
       centerEl?.getBoundingClientRect(),
       rightEl?.getBoundingClientRect()
     );
-    if (region === "right") {
-      const s = getStore();
-      // dropped on the right region -> put the document view there, then show it
-      if (!s.settings.rightStack.includes("doc")) s.moveViewToRight("doc");
-      void s.selectFile(rel);
-    } else if (region === "center") {
-      const s = getStore();
-      if (s.settings.centerView !== "doc") s.moveViewToCenter("doc");
-      void s.selectFile(rel);
+    if (region) {
+      // Dropped on a pane: open it there, beside the current document when
+      // that pane showed something else (split view).
+      void getStore().openFileInRegion(rel, region);
     } else if (outside) {
       void getStore().openDocWindow(rel); // dragged OUT of the app → own window
     } else {

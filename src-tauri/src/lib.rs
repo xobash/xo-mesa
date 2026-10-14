@@ -12,6 +12,7 @@ mod sync;
 mod sync_core;
 mod sync_policy;
 mod terminal;
+mod tray;
 mod vaultmove;
 mod vaultops;
 mod vaultread;
@@ -222,7 +223,13 @@ pub fn run() {
             Ok(menu)
         })
         .on_menu_event(|app, event| {
-            if event.id() != SAFE_QUIT_MENU_ID {
+            // Menu events are global: app menu and tray menu both arrive here.
+            let id = event.id().as_ref();
+            if id.starts_with(tray::MENU_PREFIX) && id != tray::QUIT_ID {
+                tray::handle_menu(app, id);
+                return;
+            }
+            if id != SAFE_QUIT_MENU_ID && id != tray::QUIT_ID {
                 return;
             }
             use tauri::{Emitter, Manager};
@@ -266,12 +273,16 @@ pub fn run() {
                 if let Err(err) = app.global_shortcut().register(shortcut) {
                     eprintln!("Mesa could not register global shortcut {shortcut}: {err}");
                 }
+                if let Err(err) = tray::create(app.handle()) {
+                    eprintln!("Mesa could not create its menu bar item: {err}");
+                }
             }
             Ok(())
         })
         .manage(terminal::TerminalState::default())
         .manage(vaultscope::VaultScopeState::default())
         .manage(QuitGuard::default())
+        .manage(tray::TrayState::default())
         .manage(vaultwatch::WatchState::default())
         .invoke_handler(tauri::generate_handler![
             navigation_pdf_preview,
@@ -337,7 +348,8 @@ pub fn run() {
             quit_guard_disarm,
             quit_after_save,
             vaultwatch::vault_watch,
-            vaultwatch::vault_unwatch
+            vaultwatch::vault_unwatch,
+            tray::tray_update
         ])
         .build(tauri::generate_context!())
         .expect("error while running Mesa")

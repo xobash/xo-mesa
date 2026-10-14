@@ -8,7 +8,7 @@ it('composes placement without losing document state or user pane dimensions', a
   const state = createStore(() => ({ ...initial, activePath: 'draft.md', content: 'unsaved', settings: { ...initial.settings, sidebarWidth: 333, rightWidth: 444 } }));
   const controller = createWorkspaceController({ get: state.getState, set: state.setState, commitSettings: settings => state.setState({ settings }) });
   controller.actions.applyWorkspacePreset('research');
-  expect(state.getState()).toMatchObject({ activePath: 'draft.md', content: 'unsaved', settings: { rightStack: ['agent', 'preview'], sidebarWidth: 333, rightWidth: 444 } });
+  expect(state.getState()).toMatchObject({ activePath: 'draft.md', content: 'unsaved', settings: { rightStack: ['agent'], sidebarWidth: 333, rightWidth: 444 } });
   await controller.actions.openDocWindow('other.md');
   expect(state.getState()).toMatchObject({ popoutDoc: 'other.md', activePath: 'draft.md', content: 'unsaved' });
 });

@@ -199,7 +199,8 @@ export interface GraphLink extends SimulationLinkDatum<GraphNode> {
 
 export type RightPanel = "preview" | "graph" | "tasks";
 
-export type PaneView = "doc" | "agent" | RightPanel;
+/** "doc2" is the second document pane of a side-by-side split (see lib/docSplit.ts). */
+export type PaneView = "doc" | "doc2" | "agent" | RightPanel;
 
 /** A named, reversible arrangement of Mesa's existing workspace surfaces. */
 export type WorkspacePreset = "write" | "read" | "research";

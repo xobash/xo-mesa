@@ -55,24 +55,31 @@ describe("placePanel", () => {
 });
 
 describe("region placement", () => {
-  it("swaps a right-side panel into the center and moves the editor right", () => {
-    expect(placeInCenter("doc", ["preview", "graph"], "graph")).toEqual({
+  it("swaps the side panel into the center and moves the editor to the side", () => {
+    expect(placeInCenter("doc", ["graph"], "graph")).toEqual({
       centerView: "graph",
-      rightStack: ["preview", "doc"],
+      rightStack: ["doc"],
     });
   });
 
-  it("moves the document view back from the right into the center", () => {
-    expect(placeInCenter("graph", ["preview", "doc"], "doc")).toEqual({
+  it("replaces the center with a view from outside the split", () => {
+    expect(placeInCenter("doc", ["preview"], "graph")).toEqual({
+      centerView: "graph",
+      rightStack: ["preview"],
+    });
+  });
+
+  it("moves the document view back from the side into the center", () => {
+    expect(placeInCenter("graph", ["doc"], "doc")).toEqual({
       centerView: "doc",
-      rightStack: ["preview", "graph"],
+      rightStack: ["graph"],
     });
   });
 
-  it("moves the center view into the right stack and promotes the first right view", () => {
-    expect(placeInRight("doc", ["preview", "graph"], "doc", 1)).toEqual({
+  it("swaps the center view with the side view", () => {
+    expect(placeInRight("doc", ["preview"], "doc", 1)).toEqual({
       centerView: "preview",
-      rightStack: ["graph", "doc"],
+      rightStack: ["doc"],
     });
   });
 
@@ -83,11 +90,17 @@ describe("region placement", () => {
     });
   });
 
-  it("reorders a non-center view inside the right stack", () => {
-    expect(placeInRight("doc", ["preview", "graph"], "graph", 0)).toEqual({
+  it("replaces the side view instead of stacking a third pane", () => {
+    expect(placeInRight("doc", ["preview"], "graph", 0)).toEqual({
       centerView: "doc",
-      rightStack: ["graph", "preview"],
+      rightStack: ["graph"],
     });
+  });
+
+  it("never shows more than two panes for legacy multi-pane stacks", () => {
+    expect(placeInCenter("doc", ["preview", "graph", "tasks"], "doc").rightStack).toEqual(["preview"]);
+    expect(openViewInWorkspace("doc", ["preview"], "tasks")).toEqual({ centerView: "doc", rightStack: ["tasks"] });
+    expect(toggleWorkspacePanel("doc", ["preview"], "graph")).toEqual({ centerView: "doc", rightStack: ["graph"] });
   });
 
   it("closes the center editor without promoting another view", () => {
@@ -104,10 +117,10 @@ describe("region placement", () => {
     });
   });
 
-  it("moves a right pane into an empty center without adding an empty pane right", () => {
-    expect(placeInCenter("empty", ["preview", "graph"], "graph")).toEqual({
+  it("moves the side pane into an empty center without adding an empty pane", () => {
+    expect(placeInCenter("empty", ["graph"], "graph")).toEqual({
       centerView: "graph",
-      rightStack: ["preview"],
+      rightStack: [],
     });
   });
 

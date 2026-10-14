@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAppStore, THEMES } from "../store";
+import { useAppStore, THEMES, UI_STYLES } from "../store";
 import {
   listRecoveryEntries,
   purgeRecoveryEntry,
@@ -40,6 +40,8 @@ export function SettingsModal() {
   const settings = useAppStore((s) => s.settings);
   const setSetting = useAppStore((s) => s.setSetting);
   const theme = useAppStore((s) => s.theme);
+  const uiStyle = useAppStore((s) => s.uiStyle);
+  const setUiStyle = useAppStore((s) => s.setUiStyle);
   const setTheme = useAppStore((s) => s.setTheme);
   const applyWorkspacePreset = useAppStore((s) => s.applyWorkspacePreset);
   const vaultPath = useAppStore((s) => s.vaultPath);
@@ -237,6 +239,28 @@ export function SettingsModal() {
                 {t.label}
               </button>
             ))}
+          </div>
+        </div>
+
+        <div className="setting-row theme-setting-row">
+          <div className="setting-meta">
+            <div className="setting-name">Interface</div>
+            <div className="setting-desc">
+              Shape and density of the window. Works with every theme. Classic is the original look.
+            </div>
+          </div>
+          <div className="seg theme-seg" aria-label="Interface style">
+            {UI_STYLES.map((u) => (
+            <button
+              key={u.id}
+              className={"seg-btn" + (u.id === uiStyle ? " on" : "")}
+              title={u.blurb}
+              aria-pressed={u.id === uiStyle}
+              onClick={() => setUiStyle(u.id)}
+            >
+              {u.label}
+            </button>
+          ))}
           </div>
         </div>
 

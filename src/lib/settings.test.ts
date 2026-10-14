@@ -10,6 +10,10 @@ describe('settings upgrade and failure behavior', () => {
     expect(loadSettings(target).settings.retiredSyncPeers).toEqual([fingerprint]);
   });
   it('preserves every valid current setting', () => { expect(normalizeSettings(DEFAULT_SETTINGS)).toEqual(DEFAULT_SETTINGS); });
+  it('loads a saved multi-pane layout as a split view', () => {
+    const settings = normalizeSettings({ centerView: 'doc', rightStack: ['doc', 'agent', 'preview', 'graph'] });
+    expect(settings.rightStack).toEqual(['agent']);
+  });
   it('repairs malformed containers and fields without throwing at startup', () => {
     for (const value of [null, [], 'text', 4, { peers: [null, {}, { id: 2 }], bookmarks: null, rightStack: false, syncDeviceName: 99, sortMode: 'invalid', syncPort: -1 }]) {
       const settings = normalizeSettings(value); expect(Array.isArray(settings.peers)).toBe(true); expect(Array.isArray(settings.bookmarks)).toBe(true); expect(settings.syncPort).toBe(8787); expect(settings.sortMode).toBe('name');

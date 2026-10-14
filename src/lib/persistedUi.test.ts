@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { initialRecents, initialTheme, RECENTS_KEY, THEME_KEY, LAST_VAULT_KEY, loadRecentVaults, THEME_IDS, isThemeId } from "./persistedUi";
+import { initialRecents, initialTheme, RECENTS_KEY, THEME_KEY, LAST_VAULT_KEY, loadRecentVaults, THEME_IDS, isThemeId, UI_STYLE_IDS, UI_STYLE_KEY, initialUiStyle } from "./persistedUi";
 
-import { THEMES } from "../store";
+import { THEMES, UI_STYLES } from "../store";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
@@ -59,5 +59,22 @@ describe("theme validation", () => {
 
   it("keeps picker IDs in the persistence order", () => {
     expect(THEMES.map((theme) => theme.id)).toEqual([...THEME_IDS]);
+  });
+});
+
+describe("interface style validation", () => {
+  beforeEach(() => localStorage.clear());
+  it.each(UI_STYLE_IDS)("round-trips the %s style", (id) => {
+    localStorage.setItem(UI_STYLE_KEY, id);
+    expect(initialUiStyle()).toBe(id);
+  });
+
+  it.each([null, "", "Classic", "obsidian"])("defaults missing or invalid style %s to studio", (value) => {
+    if (value !== null) localStorage.setItem(UI_STYLE_KEY, value);
+    expect(initialUiStyle()).toBe("studio");
+  });
+
+  it("keeps picker IDs in the persistence order", () => {
+    expect(UI_STYLES.map((u) => u.id)).toEqual([...UI_STYLE_IDS]);
   });
 });
