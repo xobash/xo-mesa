@@ -31,7 +31,7 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem
 # Tauri tokio runtime; tokio itself was already in the tree via tauri/reqwest —
 # this enables the features used directly by the listener and sync engine.
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "stream"] }
 encoding_rs = "0.8"
 url = "2"
