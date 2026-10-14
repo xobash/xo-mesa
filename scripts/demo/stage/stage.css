@@ -1,0 +1,34 @@
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; background: #07090f; font-family: Inter, "SF Pro Display", -apple-system, system-ui, sans-serif; }
+#desk { position: absolute; inset: 0;
+  background:
+    radial-gradient(1200px 700px at 12% 8%, rgba(58, 82, 140, .55), transparent 60%),
+    radial-gradient(900px 600px at 92% 92%, rgba(120, 52, 96, .38), transparent 65%),
+    radial-gradient(900px 500px at 70% 0%, rgba(40, 96, 120, .30), transparent 60%),
+    linear-gradient(160deg, #101629 0%, #0a0d18 55%, #120c18 100%); }
+.win { position: absolute; border-radius: 11px; overflow: hidden; background: #0b0c10;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.10), 0 30px 80px rgba(0,0,0,.55), 0 8px 24px rgba(0,0,0,.4); }
+.win.main { left: 100px; top: 52px; width: 1720px; height: 976px; }
+.titlebar { height: 30px; display: flex; align-items: center; justify-content: center; position: relative;
+  background: linear-gradient(#2a2c31, #232529); border-bottom: 1px solid rgba(0,0,0,.6); color: #d6d8de; font-size: 13px; font-weight: 600; letter-spacing: .1px; user-select: none; }
+.lights { position: absolute; left: 12px; top: 9px; display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; background: #ff5f57; box-shadow: inset 0 0 0 .5px rgba(0,0,0,.25); }
+.lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.win.inactive .lights i { background: #4a4c52; } .win.inactive .titlebar { color: #8b8e96; }
+.win iframe { display: block; width: 100%; height: calc(100% - 31px); border: 0; background: #0b0c10; }
+#popouts .win { transition: none; }
+#caption { position: absolute; right: 132px; bottom: 74px; width: 346px; padding: 18px 22px 20px; border-radius: 14px;
+  background: rgba(14, 16, 22, .86); box-shadow: 0 0 0 1px rgba(255,255,255,.08), 0 18px 50px rgba(0,0,0,.5); backdrop-filter: blur(14px);
+  color: #f2f4f8; opacity: 0; transform: translateY(10px); transition: opacity .45s ease, transform .45s ease; pointer-events: none; }
+#caption.show { opacity: 1; transform: none; }
+#caption .num { font: 600 12px ui-monospace, "SF Mono", Menlo, monospace; color: #9aa3b5; letter-spacing: 1px; }
+#caption .head { font-size: 27px; font-weight: 700; margin-top: 6px; letter-spacing: -.3px; }
+#caption .sub { font-size: 15px; color: #c3c8d4; margin-top: 8px; line-height: 1.35; }
+#keys { position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); display: flex; gap: 8px; pointer-events: none; }
+#keys .k { min-width: 22px; padding: 9px 13px; border-radius: 9px; background: rgba(36, 38, 46, .92); color: #f0f2f6; text-align: center;
+  font: 600 15px Inter, -apple-system, system-ui, sans-serif; box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 6px 18px rgba(0,0,0,.45), inset 0 -2px 0 rgba(0,0,0,.35);
+  opacity: 0; transform: translateY(6px) scale(.96); transition: opacity .18s ease, transform .18s ease; }
+#keys .k.show { opacity: 1; transform: none; }
+#cursor { position: absolute; left: 0; top: 0; width: 32px; height: 32px; pointer-events: none; z-index: 50; background-repeat: no-repeat; will-change: transform; }
+#fade { position: absolute; inset: 0; background: #07090f; opacity: 0; pointer-events: none; z-index: 60; transition: opacity .5s ease; }
+.win.popout .titlebar { cursor: default; }
+.win.popout.dock-armed { box-shadow: 0 0 0 2px rgba(141,179,255,.75), 0 30px 80px rgba(0,0,0,.55); }

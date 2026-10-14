@@ -15,6 +15,7 @@ docs/activity-api.md
 docs/binary-review.json
 docs/cross-platform.md
 docs/deep-research.md
+docs/demo-recording.md
 docs/diagnostics.md
 docs/document-architecture.md
 docs/keyboard-navigation.md
@@ -56,6 +57,18 @@ scripts/asset-metadata.mjs
 scripts/bootstrap-download.sh
 scripts/bundle-boundaries.check.mjs
 scripts/capability-coverage.check.mjs
+scripts/demo/encode.mjs
+scripts/demo/fixture.mjs
+scripts/demo/mock.js
+scripts/demo/record.mjs
+scripts/demo/serve.mjs
+scripts/demo/stage/index.html
+scripts/demo/stage/pages.js
+scripts/demo/stage/pi.js
+scripts/demo/stage/research.js
+scripts/demo/stage/stage.css
+scripts/demo/stage/stage.js
+scripts/demo/timeshim.js
 scripts/dev-behavior.check.mjs
 scripts/dev.mjs
 scripts/docker-context.check.mjs
