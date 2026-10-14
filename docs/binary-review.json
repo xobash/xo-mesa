@@ -3,12 +3,12 @@
   "assets": [
     {
       "path": "docs/mesa-demo.webp",
-      "bytes": 98447844,
-      "sha256": "a537f41f99a7b99dcb658769be95b88b4a2d46d26dc4aa4dae1219620e41327d",
+      "bytes": 15954962,
+      "sha256": "234dd48a61fb376b81a7aa91ff35703f2e805e2a719c133a737c5589bf5fa37f",
       "status": "pending",
       "reviewerType": "human",
       "reviewedOn": null,
-      "evidence": "Project owner selected the replacement source and authorized README publication. The full-resolution animated conversion preserves its cut and internal transitions with a brief loop crossfade. All frames decode and timing, source comparisons, loop pixels and browser playback were checked. Exact derivative human pixel review remains pending."
+      "evidence": "Re-recorded with scripts/demo from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles). The project owner watched it and approved README publication on 2026-10-14. All frames decode; timing (107 s at 30 fps), caption beats and the loop crossfade were checked. Exact derivative human pixel review remains pending."
     },
     {
       "path": "docs/mesa-hero-themes.png",
