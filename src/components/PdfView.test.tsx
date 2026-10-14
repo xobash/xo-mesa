@@ -144,3 +144,18 @@ it('commits text replacement through the editor byte queue', async () => {
     expect(confirm).not.toHaveBeenCalled(); expect(mock.apply).toHaveBeenCalledOnce();
   } finally { await act(async () => root.unmount()); host.remove(); confirm.mockRestore(); }
 });
+
+it.each([
+  ['a PDF that starts with its header', '%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF', true],
+  ['a polyglot whose header follows HTML', `<!--${' '.repeat(1100)}-->\n<script>parent</script>%PDF-1.7\n%%EOF`, false],
+])('loads the native first-paint frame from disk only for %s', async (_label, text, expected) => {
+  vi.useFakeTimers();
+  mock.renderError = ''; mock.bytes = new TextEncoder().encode(text);
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
+    await act(async () => { vi.advanceTimersByTime(200); });
+    expect(host.querySelector('[data-testid=pdf-native-first-paint]') !== null).toBe(expected);
+  } finally { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); }
+});

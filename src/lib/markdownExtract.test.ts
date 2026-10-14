@@ -5,13 +5,14 @@ function legacy(source: string) {
   const links: string[] = [];
   let firstImage: string | null = null;
   for (const m of source.matchAll(/!?\[\[([^\]\n]+?)\]\]/g)) {
-    const target = (m[1].split("|")[0] || "").trim();
+    const target = (m[1].split("|")[0] || "").replace(/\\$/, "").trim();
     if (m[0][0] === "!" && /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(target)) {
       firstImage ??= target;
     } else if (target) links.push(target);
   }
-  for (const m of source.matchAll(/(^|[^!])\[[^\]]*\]\(([^)\s]+)\)/g)) {
-    let target = m[2].trim();
+  // CommonMark link: `<destination>` or a bare one, then an optional title and spaces.
+  for (const m of source.matchAll(/(^|[^!])\[[^\]]*\]\((?:<([^>\n]+)>|([^)\s]+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*\)/g)) {
+    let target = (m[2] ?? m[3]).trim();
     if (/^(https?:|mailto:|tel:|data:|#)/i.test(target)) continue;
     target = target.split("#")[0];
     try { target = decodeURIComponent(target); } catch { /* preserve raw target */ }
@@ -24,13 +25,14 @@ function legacy(source: string) {
 describe("metadata delimiter scanning", () => {
   it("preserves legacy results for nested, adjacent, and malformed links", () => {
     const examples = [
+      '[t](Note.md "Title") [a](<My Note.md>) [p](Other.md (paren)) [s](Spaced.md )', "[bad](<Open.md\n>) [x](No.md \"open)",
       "[a](a.md)[b](b.md) [c](c.md)", "![a [b](b.md) [c](c.md)",
       "[[[nested]]] ![[photo.PNG|label]] [[alias|label]]",
       "![](image.png no closing parenthesis", "[a](A%20B.md#section)",
       "[a](https://example.com/a.md) [b](bad%path.md)", "[[]] [[real]]",
     ];
     let seed = 123456789;
-    const tokens = ["[", "]", "!", "(", ")", "a.md", "b.png", "\n", " ", "|", "[[", "](", "%20"];
+    const tokens = ["[", "]", "!", "(", ")", "a.md", "b.png", "\n", " ", "|", "[[", "](", "%20", '"', "<", ">", "\\"];
     // A deterministic 4,000-case corpus covers the delimiter state space while
     // staying well below Vitest's timeout under a loaded CI runner. The former
     // 20,000 cases repeated three extractors per sample and was a 5-6 second
@@ -76,4 +78,10 @@ describe("metadata delimiter scanning", () => {
     expect(extractLinks("[".repeat(20000) + "\n[[valid]]")).toEqual(["valid"]);
     expect(performance.now() - start).toBeLessThan(500);
   });
+});
+
+it("links titled and angle-bracket Markdown destinations into the graph", () => {
+  expect(extractLinks('[t](Note.md "Title") [a](<My Note.md>) [p](Other.md (paren)) [s](Spaced.md )'))
+    .toEqual(["Note.md", "My Note.md", "Other.md", "Spaced.md"]);
+  expect(extractLinks("| [[b/Note\\|alias]] |")).toEqual(["b/Note"]);
 });

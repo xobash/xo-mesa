@@ -326,7 +326,6 @@ pub fn run() {
             vaultmove::vault_rename_no_replace,
             vaultmove::vault_purge_recovery,
             vaultscope::vault_authorize,
-            vaultscope::vault_revoke,
             recents::vault_recents,
             recents::vault_recent_resolve,
             recents::vault_storage_id,

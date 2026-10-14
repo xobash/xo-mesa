@@ -1,8 +1,9 @@
+import { VaultImage } from "./VaultImage";
 import { lazy, Suspense } from "react";
 import { useAppStore } from "../store";
 import { urlForPath, fileKind } from "../lib/vault";
 import { RtfView } from "./RtfView";
-import { HtmlView } from "./HtmlView";
+import { HtmlView } from "./LazyHtmlView";
 
 // PDF editing pulls in heavy libs (pdf.js + pdf-lib) — load them only when a
 // PDF is actually opened so they stay out of the startup bundle.
@@ -23,7 +24,7 @@ export function MediaView({ rel }: { rel: string }) {
   return (
     <div className="media-view">
       {kind === "image" ? (
-        <img className="media-el" src={src} alt={file.name} />
+        <VaultImage className="media-el" src={src} alt={file.name} />
       ) : kind === "video" ? (
         <video className="media-el" src={src} controls />
       ) : kind === "pdf" ? (

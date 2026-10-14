@@ -18,6 +18,7 @@ const renamed = vi.hoisted(() => ({
   writes: [] as Array<{ rel: string; content: string; expected?: string }>,
   fail: null as string | null,
   writeFail: null as string | null,
+  onRename: null as null | (() => void),
 }));
 
 vi.mock("./vault", async (importOriginal) => {
@@ -27,6 +28,7 @@ vi.mock("./vault", async (importOriginal) => {
     renameVaultFile: async (root: string, srcRel: string, destRel: string) => {
       if (renamed.fail) throw new Error(renamed.fail);
       renamed.calls.push({ src: srcRel, dest: destRel });
+      renamed.onRename?.();
       const name = destRel.slice(destRel.lastIndexOf("/") + 1);
       const dot = name.lastIndexOf(".");
       const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
@@ -75,6 +77,7 @@ beforeEach(() => {
   renamed.writes.length = 0;
   renamed.fail = null;
   renamed.writeFail = null;
+  renamed.onRename = null;
   useAppStore.setState(initial, true);
   useAppStore.setState({
     vaultPath: "/vault",
@@ -464,5 +467,48 @@ describe("renameNote type preservation", () => {
     for (const c of renamed.calls) {
       expect(c.dest.startsWith("data/")).toBe(true);
     }
+  });
+
+  it("tells the user when the new name already exists and leaves disk untouched", async () => {
+    useAppStore.setState({ files: [...useAppStore.getState().files, file("refs copy.md")] });
+    await useAppStore.getState().renameNote("refs.md", "refs copy");
+    expect(renamed.calls).toEqual([]);
+    expect(useAppStore.getState().status).toBe("Rename refused: refs copy.md already exists.");
+  });
+
+  it("moves the side-by-side pane and bookmarks to the renamed path", async () => {
+    useAppStore.setState({ docSplit: { active: "doc", other: "data/log.txt" },
+      settings: { ...useAppStore.getState().settings, bookmarks: ["a.md", "data/log.txt"] } });
+    await useAppStore.getState().renameNote("data/log.txt", "events");
+    const s = useAppStore.getState();
+    expect(s.docSplit).toEqual({ active: "doc", other: "data/events.txt" });
+    expect(s.settings.bookmarks).toEqual(["a.md", "data/events.txt"]);
+  });
+
+  it("refuses Markdown names that wikilinks cannot represent", async () => {
+    await useAppStore.getState().renameNote("a.md", "C# basics");
+    expect(renamed.calls).toEqual([]);
+    expect(useAppStore.getState().status).toBe("Note names cannot contain # ^ [ or ] because links use them.");
+  });
+
+  it("keeps text typed into a linking note during the rename and reports the skipped link update", async () => {
+    renamed.onRename = () => useAppStore.setState({
+      contentCache: { ...useAppStore.getState().contentCache, "refs.md": "typed while renaming [[a]]" },
+    });
+    await useAppStore.getState().renameNote("a.md", "alpha");
+    const s = useAppStore.getState();
+    expect(s.contentCache["refs.md"]).toBe("typed while renaming [[a]]");
+    expect(renamed.writes.map((w) => w.rel)).toEqual(["folder/refs.md"]);
+    expect(s.status).toBe("Renamed a.md; links in refs.md were not updated because it was being edited.");
+  });
+
+  it("explains that a linking note's failed pending save stopped the rename", async () => {
+    useAppStore.setState({ activePath: "refs.md", content: useAppStore.getState().contentCache["refs.md"], activeContentState: "ready" });
+    useAppStore.getState().setContentFromEditor("unsaved edit [[a]]");
+    renamed.writeFail = "disk full";
+    await useAppStore.getState().renameNote("a.md", "alpha");
+    expect(renamed.calls).toEqual([]);
+    expect(useAppStore.getState().status).toContain("Rename failed: Error: pending edits in a note that links here could not be saved first");
+    expect(useAppStore.getState().status).toContain("disk full");
   });
 });

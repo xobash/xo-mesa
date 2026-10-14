@@ -1074,6 +1074,8 @@ export const useAppStore = create<AppState>((set, get) => {
     newNote: async () => {
       const root = get().vaultPath;
       if (!root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       await reportingFailure("New note", async () => {
         const existing = new Set(get().files.map((f) => f.relPath.toLowerCase()));
         let rel = "Untitled.md";
@@ -1081,6 +1083,7 @@ export const useAppStore = create<AppState>((set, get) => {
         while (existing.has(rel.toLowerCase())) rel = `Untitled ${n++}.md`;
         const content = `# ${rel.replace(/\.md$/, "")}\n\n`;
         const file = await createNote(root, rel, content);
+        if (!current()) return;
         documents.addNote(file, content);
         await get().selectFile(file.relPath);
       });
@@ -1090,11 +1093,14 @@ export const useAppStore = create<AppState>((set, get) => {
     createChildNote: async (folderPath) => {
       const root = get().vaultPath;
       if (!root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       await reportingFailure("New note", async () => {
         const taken = get().files.map((f) => f.relPath);
         const rel = childRelPath(taken, folderPath, "Untitled", "md");
         const title = rel.slice(rel.lastIndexOf("/") + 1).replace(/\.md$/, "");
         const file = await createNote(root, rel, `# ${title}\n\n`);
+        if (!current()) return;
         documents.addNote(file, `# ${title}\n\n`);
         // Expand the folder (and its ancestors) so the new note is visible, and
         // drop the folder from emptyFolders since it now has a file.
@@ -1200,6 +1206,8 @@ export const useAppStore = create<AppState>((set, get) => {
     createChildFolder: async (folderPath) => {
       const root = get().vaultPath;
       if (!root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       await reportingFailure("New folder", async () => {
         const taken = [
           ...get().files.map((f) => f.relPath),
@@ -1207,6 +1215,7 @@ export const useAppStore = create<AppState>((set, get) => {
         ];
         const rel = childRelPath(taken, folderPath, "New folder");
         await createFolder(root, rel);
+        if (!current()) return;
         const expand = { ...get().collapsedFolders };
         for (const a of [...ancestorFolders(rel), folderPath]) if (a) expand[a] = false;
         set({
@@ -1221,12 +1230,16 @@ export const useAppStore = create<AppState>((set, get) => {
       const root = get().vaultPath;
       const file = get().fileFor(relPath);
       if (!root || !file) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       await reportingFailure("Duplicate", async () => {
         const dest = duplicateRelPath(get().files.map((f) => f.relPath), relPath);
         const newFile = await copyVaultFile(root, relPath, dest);
+        if (!current()) return;
         bumpActivityAmount(newFile.relPath, 1.0, "create");
         if (newFile.isMarkdown) {
           const text = await readNote(newFile);
+          if (!current()) return;
           set({
             files: [...get().files, newFile].sort((a, b) =>
               a.relPath.localeCompare(b.relPath)
@@ -1293,6 +1306,8 @@ export const useAppStore = create<AppState>((set, get) => {
     openDailyNote: async (dateISO) => {
       const root = get().vaultPath;
       if (!root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       const folder = get().settings.dailyFolder.trim().replace(/^\/+|\/+$/g, "");
       const rel = folder ? `${folder}/${dateISO}.md` : `${dateISO}.md`;
       if (get().fileFor(rel)) {
@@ -1304,6 +1319,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const tplRel = tf ? `${tf}/daily.md` : "daily.md";
       if (get().fileFor(tplRel)) {
         const tpl = await get().ensureContent(tplRel);
+        if (!current()) return;
         body = applyTemplate(tpl, {
           date: dateISO,
           time: localTime(),
@@ -1313,8 +1329,9 @@ export const useAppStore = create<AppState>((set, get) => {
       let file: VaultFile | undefined;
       await reportingFailure("Open daily note", async () => {
         file = await createNote(root, rel, body);
+        if (!current()) return;
       });
-      if (!file) return;
+      if (!file || !current()) return;
       documents.addNote(file, body);
       await get().selectFile(rel);
     },
@@ -1324,10 +1341,13 @@ export const useAppStore = create<AppState>((set, get) => {
       const root = get().vaultPath;
       const t = title.trim();
       if (!root || !date || !t) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       await reportingFailure("Add calendar event", async () => {
         const found = get().fileFor(CALENDAR_FILE);
         if (found) {
           const loaded = await get().ensureContent(CALENDAR_FILE);
+          if (!current()) return;
           const file = get().fileFor(CALENDAR_FILE);
           if (!file) throw new Error(`${CALENDAR_FILE} is no longer available.`);
           const prev = get().contentCache[CALENDAR_FILE] ?? loaded;
@@ -1346,6 +1366,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const events = [...get().calendarEvents, { date, title: t }];
         const content = serializeEvents(events);
         const file = await createNote(root, CALENDAR_FILE, content);
+        if (!current()) return;
         set({
           files: [...get().files, file].sort((a, b) =>
             a.relPath.localeCompare(b.relPath)
@@ -1358,11 +1379,15 @@ export const useAppStore = create<AppState>((set, get) => {
       });
     },
     removeCalendarEvent: async (date, title) => {
-      if (!get().vaultPath) return;
+      const root = get().vaultPath;
+      if (!root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       await reportingFailure("Remove calendar event", async () => {
         const found = get().fileFor(CALENDAR_FILE);
         if (!found) return;
         const loaded = await get().ensureContent(CALENDAR_FILE);
+        if (!current()) return;
         const file = get().fileFor(CALENDAR_FILE);
         if (!file) throw new Error(`${CALENDAR_FILE} is no longer available.`);
         const prev = get().contentCache[CALENDAR_FILE] ?? loaded;
@@ -1386,11 +1411,14 @@ export const useAppStore = create<AppState>((set, get) => {
       const root = get().vaultPath;
       const body = text.trim();
       if (!root || !body) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       const rel = (get().settings.tasksFile || "Tasks.md").trim();
       const line = `- [ ] ${body}`;
       const found = get().fileFor(rel);
       if (found) {
         const loaded = await get().ensureContent(rel);
+        if (!current()) return;
         const existing = get().fileFor(rel);
         if (!existing) {
           set({ status: `Add task failed: ${rel} is no longer available.` });
@@ -1418,14 +1446,19 @@ export const useAppStore = create<AppState>((set, get) => {
         await reportingFailure("Add task", async () => {
           const content = `# Tasks\n\n${line}\n`;
           const file = await createNote(root, rel, content);
+          if (!current()) return;
           documents.addNote(file, content);
         });
       }
     },
 
     updateTask: async (relPath, line, patch) => {
-      if (!get().fileFor(relPath)) return;
+      const root = get().vaultPath;
+      if (!root || !get().fileFor(relPath)) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       const loaded = await get().ensureContent(relPath);
+      if (!current()) return;
       const file = get().fileFor(relPath);
       if (!file) {
         set({ status: `Update task failed: ${relPath} is no longer available.` });
@@ -1453,6 +1486,8 @@ export const useAppStore = create<AppState>((set, get) => {
     importDropped: async (paths) => {
       const root = get().vaultPath;
       if (!root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       // Report import failures so the progress message cannot remain visible.
       await reportingFailure("Import", async () => {
         activeImportAbort?.abort();
@@ -1463,9 +1498,9 @@ export const useAppStore = create<AppState>((set, get) => {
         try {
           result = await importDroppedPaths(root, paths, {
             signal: controller.signal,
-            onProgress: ({ completedSources, totalSources, current }) => set({
-              status: `Importing ${completedSources}/${totalSources}: ${current}`,
-            }),
+            onProgress: ({ completedSources, totalSources, current: importing }) => {
+              if (current()) set({ status: `Importing ${completedSources}/${totalSources}: ${importing}` });
+            },
           });
         } finally {
           if (activeImportAbort === controller) {
@@ -1473,6 +1508,7 @@ export const useAppStore = create<AppState>((set, get) => {
             set({ importInProgress: false });
           }
         }
+        if (!current()) return;
         const { created, failures, cancelled } = result;
         if (created.length === 0) {
           if (cancelled) {
@@ -1487,6 +1523,14 @@ export const useAppStore = create<AppState>((set, get) => {
           set({ status: `${Object.keys(get().notes).length} notes` });
           return;
         }
+        const loaded = new Map<string, string>();
+        for (const f of created) {
+          if (f.isMarkdown) {
+            const text = await readNote(f);
+            if (!current()) return;
+            loaded.set(f.relPath, text);
+          }
+        }
         const files = [...get().files];
         const notes = { ...get().notes };
         const contentCache = forkContentCache(get().contentCache);
@@ -1498,7 +1542,7 @@ export const useAppStore = create<AppState>((set, get) => {
           }
           bumpActivityAmount(f.relPath, 1.0, "create");
           if (f.isMarkdown) {
-            const text = await readNote(f);
+            const text = contentCache[f.relPath] ?? loaded.get(f.relPath) ?? "";
             contentCache[f.relPath] = text;
             notes[f.relPath] = {
               relPath: f.relPath,
@@ -1544,7 +1588,7 @@ export const useAppStore = create<AppState>((set, get) => {
         }
         const firstMd = created.find((f) => f.isMarkdown);
         if (firstMd) await get().selectFile(firstMd.relPath);
-        set({ status: finalStatus });
+        if (current()) set({ status: finalStatus });
       });
     },
 
@@ -1557,8 +1601,10 @@ export const useAppStore = create<AppState>((set, get) => {
       const matches = get().files.filter(
         (f) => f.relPath === relPath || f.relPath.startsWith(prefix)
       );
-      if (!root || (!file && matches.length === 0)) return;
-      const isFolder = !file && matches.length > 0;
+      // A folder with no files exists only in emptyFolders.
+      const emptyFolder = get().emptyFolders.some((f) => f === relPath || f.startsWith(prefix));
+      if (!root || (!file && matches.length === 0 && !emptyFolder)) return;
+      const isFolder = !file;
       await reportingFailure("Delete", async () => {
         const keys = matches.map((entry) => entry.path);
         let saveHold: TextSaveHold<VaultFile> | undefined;
@@ -1587,6 +1633,9 @@ export const useAppStore = create<AppState>((set, get) => {
           active = tabs[tabs.length - 1] ?? null;
           content = active ? contentCache[active] ?? "" : "";
         }
+        const docSplit = get().docSplit.other && removed.has(get().docSplit.other!)
+          ? { ...get().docSplit, other: null }
+          : get().docSplit;
         set({
           files,
           notes,
@@ -1594,6 +1643,8 @@ export const useAppStore = create<AppState>((set, get) => {
           openTabs: tabs,
           activePath: active,
           content,
+          docSplit,
+          ...(isFolder ? { emptyFolders: get().emptyFolders.filter((f) => f !== relPath && !f.startsWith(prefix)) } : {}),
           status: `Moved ${isFolder ? "folder" : "file"} ${relPath} to Mesa recovery storage`,
         });
         if (active && contentCache[active] === undefined) void get().selectFile(active);
@@ -1616,9 +1667,21 @@ export const useAppStore = create<AppState>((set, get) => {
           ? newBaseName.slice(0, -(realExt.length + 1))
           : newBaseName;
       const clean = safeBaseName(typed);
-      if (!clean) return;
+      if (!clean) {
+        set({ status: `Rename needs a file name that is valid on every platform.` });
+        return;
+      }
+      // Wikilinks use # ^ [ ] as syntax, so a note named with them cannot be linked.
+      if (file.isMarkdown && /[#^[\]]/.test(clean)) {
+        set({ status: "Note names cannot contain # ^ [ or ] because links use them." });
+        return;
+      }
       const newRel = realExt ? `${dir}${clean}.${realExt}` : `${dir}${clean}`;
-      if (newRel === relPath || get().fileFor(newRel)) return;
+      if (newRel === relPath) return;
+      if (get().fileFor(newRel)) {
+        set({ status: `Rename refused: ${newRel} already exists.` });
+        return;
+      }
       // Inspect all Markdown references for explicit rename repair; rawLinks omits embeds.
       // Verify each source update against concurrent edits.
       const bareNameUnambiguous = get().files.filter(
@@ -1655,7 +1718,11 @@ export const useAppStore = create<AppState>((set, get) => {
       try {
         saveHold = await textSaves.hold([file.path], true);
         if (inboundFiles.length) {
-          linkHold = await textSaves.hold(inboundFiles.map((candidate) => candidate.path), true);
+          try {
+            linkHold = await textSaves.hold(inboundFiles.map((candidate) => candidate.path), true);
+          } catch (error) {
+            throw new Error(`pending edits in a note that links here could not be saved first (${String(error)}). Nothing was renamed.`);
+          }
           for (const inbound of inboundFiles) {
             const before = get().contentCache[inbound.relPath] ?? await readNote(inbound);
             const { text, changed } = rewriteInboundLinks(
@@ -1686,9 +1753,19 @@ export const useAppStore = create<AppState>((set, get) => {
       }
 
       const appliedLinkUpdates: typeof linkUpdates = [];
+      const editedDuringRename: string[] = [];
+      // Text typed while the rename ran is newer than `before`; never replace it.
+      const editedSince = (update: (typeof linkUpdates)[number]) => {
+        const current = get().contentCache[update.file.relPath];
+        return textSaves.isDirty(update.file.path) || (current !== undefined && current !== update.before);
+      };
       let linkUpdateError: string | null = null;
       try {
         for (const update of linkUpdates) {
+          if (editedSince(update)) {
+            editedDuringRename.push(update.file.relPath);
+            continue;
+          }
           await writeNote(update.file, update.after, update.before);
           appliedLinkUpdates.push(update);
         }
@@ -1719,6 +1796,8 @@ export const useAppStore = create<AppState>((set, get) => {
         };
       }
       for (const update of appliedLinkUpdates) {
+        // Edits typed during the write keep their text; their save then reports the changed disk copy.
+        if (editedSince(update)) continue;
         contentCache[update.file.relPath] = update.after;
         notes[update.file.relPath] = {
           relPath: update.file.relPath,
@@ -1735,6 +1814,7 @@ export const useAppStore = create<AppState>((set, get) => {
         .sort((a, b) => a.relPath.localeCompare(b.relPath));
       const openTabs = get().openTabs.map((t) => (t === relPath ? newRel : t));
       const activePath = get().activePath === relPath ? newRel : get().activePath;
+      const docSplit = get().docSplit.other === relPath ? { ...get().docSplit, other: newRel } : get().docSplit;
       const activeContent =
         activePath && contentCache[activePath] !== undefined
           ? contentCache[activePath]
@@ -1745,15 +1825,22 @@ export const useAppStore = create<AppState>((set, get) => {
         contentCache,
         openTabs,
         activePath,
+        docSplit,
         content: activeContent,
         status: historyMigrationFailed
           ? `Renamed ${relPath}, but local revision history could not move.`
           : linkUpdateError
             ? `Renamed ${relPath}, but updating inbound links stopped: ${linkUpdateError}`
-            : appliedLinkUpdates.length
-              ? `Renamed ${relPath} and updated ${appliedLinkUpdates.length} inbound ${appliedLinkUpdates.length === 1 ? "link" : "links"}`
-              : `Renamed ${relPath}`,
+            : editedDuringRename.length
+              ? `Renamed ${relPath}; links in ${editedDuringRename.join(", ")} were not updated because ${editedDuringRename.length === 1 ? "it was" : "they were"} being edited.`
+              : appliedLinkUpdates.length
+                ? `Renamed ${relPath} and updated ${appliedLinkUpdates.length} inbound ${appliedLinkUpdates.length === 1 ? "link" : "links"}`
+                : `Renamed ${relPath}`,
       });
+      const bookmarks = get().settings.bookmarks;
+      if (bookmarks.includes(relPath)) {
+        get().setSetting("bookmarks", bookmarks.map((b) => (b === relPath ? newRel : b)));
+      }
     },
 
     ...persistence.actions,

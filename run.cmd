@@ -184,7 +184,8 @@ REM and the build fails. Stamp the build path; if it no longer matches, clear th
 REM cache once so it recompiles cleanly.
 set "STAMP=src-tauri\.build-cache-path"
 if exist "src-tauri\target" if exist "%STAMP%" call :checkmoved
->"%STAMP%" echo %CD%
+REM Delayed expansion keeps "&" in the folder path from splitting the command.
+>"%STAMP%" echo !CD!
 
 call node scripts\launch-cache.mjs check-deps
 if errorlevel 1 (

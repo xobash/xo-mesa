@@ -106,7 +106,11 @@ desktop (Keychain on macOS, Credential Manager on Windows, Secret Service on
 Linux). Mesa moves keys from older browser settings only after the credential
 store confirms a saved copy. If the store is unavailable, Mesa keeps the old
 copy for recovery and reports the failure; newly entered keys remain in memory
-until they can be saved. Browser demo keys last only for that session. Remove
+until they can be saved. Mesa reads the credential store at launch only when
+sync is enabled or older settings still hold keys to move; otherwise it reads it
+when the Sync or Connect window opens or a sync action starts. On macOS an
+unsigned development build counts as a new app after each rebuild, so Keychain
+can ask again. Browser demo keys last only for that session. Remove
 the shared key from every device when a former peer must lose access.
 
 **Why the whole engine runs natively.** The sync client (`sync_fetch_manifest`,
@@ -209,9 +213,11 @@ on the same day gets a numbered sibling (`… (2).md`, `… (3).md`) instead of
 replacing the first copy.
 
 **Hidden paths.** A peer can read, create, replace, rename or delete only paths the
-vault walk would list: any name starting with `.` and any `node_modules` folder
-are refused on the file routes, in journal operations and in manifest or baseline
-entries (`is_peer_rel` in `sync_core`). A peer therefore cannot reach `.git/`,
+vault walk would list: any name starting with `.`, any `node_modules` folder in
+any letter case, and any Windows 8.3 short-name segment such as `GIT~1` are
+refused on the file routes, in journal operations and in manifest or baseline
+entries (`is_peer_rel` in `sync_core`). A short name could otherwise open an
+ignored folder under another spelling, so files with such names do not sync. A peer therefore cannot reach `.git/`,
 `.obsidian/`, `.env`, `.mesa-trash/` or the journal. The client ignores such
 remote manifest entries and logs a warning. Mesa's own recovery paths never come
 from a peer.

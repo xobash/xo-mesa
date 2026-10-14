@@ -126,6 +126,11 @@ describe("PreviewCard content loading", () => {
     mocks.readTextFile.mockResolvedValue("body{color:rebeccapurple}");
 
     await mountPreview(rel);
+    // The saved-HTML library loads on demand, after the first preview commit.
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(host.querySelector("iframe")?.getAttribute("srcdoc")).toContain("rebeccapurple");
+    });
 
     const frame = host.querySelector<HTMLIFrameElement>("iframe");
     const srcDoc = frame?.getAttribute("srcdoc") ?? "";

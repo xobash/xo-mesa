@@ -14,6 +14,11 @@ describe('settings upgrade and failure behavior', () => {
     const settings = normalizeSettings({ centerView: 'doc', rightStack: ['doc', 'agent', 'preview', 'graph'] });
     expect(settings.rightStack).toEqual(['agent']);
   });
+  it('keeps the document pane when the second document pane was the only one', () => {
+    expect(normalizeSettings({ centerView: 'agent', rightStack: ['doc2'] })).toMatchObject({ centerView: 'agent', rightStack: ['doc'] });
+    expect(normalizeSettings({ centerView: 'doc2', rightStack: ['graph'] })).toMatchObject({ centerView: 'doc', rightStack: ['graph'] });
+    expect(normalizeSettings({ centerView: 'doc', rightStack: ['doc2'] })).toMatchObject({ centerView: 'doc', rightStack: [] });
+  });
   it('repairs malformed containers and fields without throwing at startup', () => {
     for (const value of [null, [], 'text', 4, { peers: [null, {}, { id: 2 }], bookmarks: null, rightStack: false, syncDeviceName: 99, sortMode: 'invalid', syncPort: -1 }]) {
       const settings = normalizeSettings(value); expect(Array.isArray(settings.peers)).toBe(true); expect(Array.isArray(settings.bookmarks)).toBe(true); expect(settings.syncPort).toBe(8787); expect(settings.sortMode).toBe('name');

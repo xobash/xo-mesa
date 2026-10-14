@@ -231,7 +231,22 @@ pub fn ignored_name(name: &str) -> bool {
 /// `.obsidian/`, `.mesa-trash/`, the journal or `node_modules`; Mesa's own
 /// recovery paths use `safe_join` directly and never come from a peer.
 pub fn is_peer_rel(rel: &str) -> bool {
-    safe_join(Path::new("."), rel).is_some() && !rel.split('/').any(ignored_name)
+    safe_join(Path::new("."), rel).is_some()
+        && !rel.split('/').any(|seg| {
+            ignored_name(seg) || seg.eq_ignore_ascii_case("node_modules") || short_name_alias(seg)
+        })
+}
+
+/// A Windows 8.3 short name (`GIT~1`, `OBSIDI~1.JSO`) can open an ignored
+/// directory or file under a different spelling, so peers may not use one.
+fn short_name_alias(seg: &str) -> bool {
+    let (base, ext) = seg.split_once('.').unwrap_or((seg, ""));
+    if base.len() > 8 || ext.len() > 3 || ext.contains('.') {
+        return false;
+    }
+    base.rsplit_once('~').is_some_and(|(_, number)| {
+        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 /// `safe_join_confined` restricted to `is_peer_rel` paths.

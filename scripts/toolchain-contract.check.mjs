@@ -23,4 +23,8 @@ test('development, CI and release use the exact reviewed toolchains', () => {
   assert.match(read('run.sh'), /nvm install "\$MESA_NODE_VERSION"/);
   assert.doesNotMatch(read('run.sh'), /nvm (install|use) --lts/);
   assert.match(read('run.cmd'), /scripts\\windows-node\.ps1/);
+  // Relaunch reuses an installed pinned Node instead of downloading again.
+  assert.match(read('scripts/windows-node.ps1'), /node\.exe'\) --version\) -eq "v\$version"\) \{ exit 0 \}/);
+  assert.match(read('run.sh'), /command -v nvm[^\n]*\n\s*nvm use "\$MESA_NODE_VERSION"/);
+  assert.match(read('run.cmd'), />"%STAMP%" echo !CD!/);
 });

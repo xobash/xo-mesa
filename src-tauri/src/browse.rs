@@ -601,9 +601,8 @@ async fn read_resource_response(
         }
         body.extend_from_slice(&chunk);
     }
-    let served_type = if css {
-        "text/css".to_string()
-    } else if allowed_resource_type(&mime) {
+    let served_type = if css || allowed_resource_type(&mime) {
+        // Preserve the declared charset until stylesheet bytes are decoded.
         content_type
     } else {
         sniff_resource_type(&body)
@@ -847,6 +846,10 @@ mod tests {
                 ),
                 ("image/png", vec![0; RESOURCE_LIMIT + 1]),
                 ("application/octet-stream", b"wOF2fixture".to_vec()),
+                (
+                    "text/css; charset=windows-1252",
+                    b".caf\xe9::before{content:'caf\xe9'}".to_vec(),
+                ),
             ] {
                 let request = server.recv().unwrap();
                 let mut redirect = tiny_http::Response::empty(302);
@@ -902,6 +905,15 @@ mod tests {
             .unwrap();
         assert_eq!(resource.1, "font/woff2");
         assert_eq!(resource.0, b"wOF2fixture");
+        let response = client.get(&base).send().await.unwrap();
+        let (body, content_type, _) =
+            read_resource_response("resource-response-test", &token, response, true)
+                .await
+                .unwrap();
+        assert_eq!(
+            decode_page_body(&body, &content_type),
+            ".café::before{content:'café'}"
+        );
         worker.join().unwrap();
         revoke_resource_window("resource-response-test");
     }

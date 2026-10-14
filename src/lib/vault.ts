@@ -305,16 +305,6 @@ export async function authorizeVaultRoot(root: string): Promise<void> {
   await initializeVaultStorage(root);
 }
 
-/** Forget a vault folder's native approval ("Remove from recents"). Best effort. */
-export async function revokeVaultRoot(root: string): Promise<void> {
-  if (!IN_TAURI || isDemo(root)) return;
-  try {
-    await invoke("vault_revoke", { root });
-  } catch {
-    /* an unavailable record must not block removing the recents entry */
-  }
-}
-
 /** Require a reachable remembered directory; unavailable roots must not become empty vaults. */
 export async function assertVaultRootAvailable(root: string): Promise<void> {
   if (isDemo(root)) return;

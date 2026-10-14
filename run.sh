@@ -70,6 +70,10 @@ export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 MESA_NODE_VERSION="$(cat .node-version)"
+# An nvm that already has the pinned Node needs no download, so relaunch works offline.
+if [ "$(node -v 2>/dev/null || true)" != "v$MESA_NODE_VERSION" ] && command -v nvm >/dev/null 2>&1; then
+  nvm use "$MESA_NODE_VERSION" >/dev/null 2>&1 || true
+fi
 if ! command -v npm >/dev/null 2>&1 || [ "$(node -v 2>/dev/null || true)" != "v$MESA_NODE_VERSION" ]; then
   info "Node.js not found — installing the LTS locally via nvm (user-only)…"
   mkdir -p "$NVM_DIR"

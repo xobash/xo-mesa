@@ -91,6 +91,16 @@
       $preservedStash = $preservedStash.Trim()
     }
 
+    # `stash pop` accepts only a stash@{n} reference, never the commit id, so
+    # apply the exact preserved commit and drop it only while it is still on top.
+    function Restore-PreservedStash {
+      & git @gitLongPaths -C $installDir stash apply $preservedStash | Out-Host
+      if ($LASTEXITCODE -ne 0) { return $false }
+      $top = [string](& git @gitLongPaths -C $installDir rev-parse -q --verify refs/stash)
+      if ($top.Trim() -eq $preservedStash) { & git @gitLongPaths -C $installDir stash drop --quiet | Out-Host }
+      return $true
+    }
+
     try {
       $originUrl = & git @gitLongPaths -C $installDir remote get-url origin
       if ($LASTEXITCODE -ne 0 -or $originUrl -notin @($repoUrl, "git@github.com:xobash/xo-mesa.git")) { throw "Unexpected origin. No code was executed." }
@@ -105,17 +115,16 @@
         throw "Mesa has local commits or old checkout history that cannot fast-forward from GitHub. No source update was applied, and nothing was pushed."
       }
     } catch {
-      if ($preservedStash) {
-        & git @gitLongPaths -C $installDir stash pop $preservedStash
+      if ($preservedStash -and -not (Restore-PreservedStash)) {
+        Write-Warning "Your local Mesa changes are kept in Git's stash ($preservedStash)."
       }
       throw
     }
 
     if ($preservedStash) {
       Write-Host "Restoring local Mesa changes..."
-      & git @gitLongPaths -C $installDir stash pop $preservedStash
-      if ($LASTEXITCODE -ne 0) {
-        throw "Mesa was updated, but restoring local changes needs conflict resolution. Your work remains in the checkout and in Git's stash. Resolve the conflicts before launching Mesa."
+      if (-not (Restore-PreservedStash)) {
+        throw "Mesa was updated, but restoring local changes needs conflict resolution. Your work remains in Git's stash ($preservedStash). Resolve the conflicts before launching Mesa."
       }
     }
   } elseif (Test-Path $installDir) {

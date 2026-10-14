@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, Component, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   openFile: vi.fn(() => Promise.resolve()),
   setPiOverlayOpen: vi.fn(),
   setSearchSeed: vi.fn(),
+  acquireSearch: vi.fn(() => null as null | { accepts: () => boolean; run: () => Promise<never>; cancel: () => void; release: () => void }),
   stallQuery: "beta",
   state: {
     files: [
@@ -23,6 +24,8 @@ const mocks = vi.hoisted(() => ({
     indexingTextFiles: 0,
   },
 }));
+
+vi.mock("../lib/indexSearch", () => ({ acquireSharedIndexSearch: mocks.acquireSearch }));
 
 vi.mock("../store", () => ({
   useAppStore: <T,>(selector: (state: typeof mocks.state & {
@@ -115,15 +118,20 @@ beforeEach(() => {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
+  mocks.acquireSearch.mockReset();
+  mocks.acquireSearch.mockReturnValue(null);
   mocks.openFile.mockClear();
   mocks.setPiOverlayOpen.mockClear();
   mocks.setSearchSeed.mockClear();
   mocks.stallQuery = "beta";
+  HTMLElement.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {
   act(() => root.unmount());
   host.remove();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function setInputValue(input: HTMLInputElement, value: string): void {
@@ -217,6 +225,86 @@ describe("SearchSurface result generations", () => {
     act(() => host.querySelector<HTMLButtonElement>(".saved-search-remove")?.click());
     expect(JSON.parse(localStorage.getItem("mesa:savedSearches:v1") || "[]")).toEqual([]);
     expect(host.querySelector(".saved-search-run")).toBeNull();
+  });
+
+  it("keeps search usable and retries when saving a search exceeds storage quota", () => {
+    class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+      state = { failed: false };
+      static getDerivedStateFromError() { return { failed: true }; }
+      render() { return this.state.failed ? <div>Search crashed</div> : this.props.children; }
+    }
+    act(() => root.render(<Boundary><SearchSurface initialQuery="alpha" showAgentButton={false} /></Boundary>));
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage full", "QuotaExceededError");
+    });
+    const save = host.querySelector<HTMLButtonElement>(".search-save-btn")!;
+    act(() => save.click());
+    expect(host.querySelector("input")).not.toBeNull();
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not save searches");
+    expect(host.querySelector(".saved-search-run")).toBeNull();
+    expect(save.disabled).toBe(false);
+    write.mockRestore();
+    act(() => save.click());
+    expect(host.querySelector(".saved-search-run")?.textContent).toBe("alpha");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("retains a saved search when removal cannot be persisted", () => {
+    localStorage.setItem("mesa:savedSearches:v1", JSON.stringify(["alpha"]));
+    act(() => root.render(<SearchSurface initialQuery="alpha" showAgentButton={false} />));
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage unavailable", "SecurityError");
+    });
+    act(() => host.querySelector<HTMLButtonElement>(".saved-search-remove")?.click());
+    expect(host.querySelector(".saved-search-run")?.textContent).toBe("alpha");
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("Could not save searches");
+    write.mockRestore();
+    act(() => host.querySelector<HTMLButtonElement>(".saved-search-remove")?.click());
+    expect(host.querySelector(".saved-search-run")).toBeNull();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("keeps keyboard-selected results visible in the scrolling list", () => {
+    act(() => root.render(<SearchSurface initialQuery="alpha" showAgentButton={false} />));
+    const rows = host.querySelectorAll<HTMLButtonElement>(".search-item");
+    const reveal = vi.spyOn(rows[1], "scrollIntoView");
+    act(() => host.querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "ArrowDown", bubbles: true, cancelable: true,
+    })));
+    expect(rows[1].classList.contains("sel")).toBe(true);
+    expect(reveal).toHaveBeenCalledWith({ block: "nearest" });
+  });
+
+  it("does not scroll results on pointer hover or query refresh", () => {
+    mocks.stallQuery = "";
+    act(() => root.render(<SearchSurface initialQuery="alpha" showAgentButton={false} />));
+    const reveal = vi.mocked(HTMLElement.prototype.scrollIntoView);
+    reveal.mockClear();
+    const second = host.querySelectorAll<HTMLButtonElement>(".search-item")[1];
+    act(() => second.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(second.classList.contains("sel")).toBe(true);
+    expect(reveal).not.toHaveBeenCalled();
+    act(() => setInputValue(host.querySelector("input")!, "beta"));
+    expect(host.querySelector(".search-item")?.textContent).toContain("Beta");
+    expect(reveal).not.toHaveBeenCalled();
+  });
+
+  it("enters the main-thread fallback once when a stalled worker is cancelled", async () => {
+    vi.useFakeTimers();
+    let rejectSearch: ((error: Error) => void) | undefined;
+    const release = vi.fn();
+    mocks.acquireSearch.mockReturnValue({
+      accepts: () => true,
+      run: () => new Promise<never>((_resolve, reject) => { rejectSearch = reject; }),
+      cancel: () => rejectSearch?.(new Error("Search superseded")),
+      release,
+    });
+    act(() => root.render(<SearchSurface initialQuery="alpha" showAgentButton={false} />));
+    expect(host.textContent).toContain("Searching…");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
+    expect(host.querySelector(".search-item")?.textContent).toContain("Alpha A");
+    expect(host.querySelector(".search-results")?.getAttribute("aria-busy")).toBe("false");
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("offers discoverable filters that preserve the text term", () => {

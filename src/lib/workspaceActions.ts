@@ -14,7 +14,20 @@ export function createWorkspaceActions({ get, set, commitSettings, setSetting }:
     dropViewAt: (index: number) => { const drag = get().dragView; if (!drag) return; update(placeInRight(get().settings.centerView, get().settings.rightStack, drag.view, index)); set({ dragView: null }); },
     closeCenter: () => update(closeCenterView(get().settings.centerView, get().settings.rightStack)),
     moveViewToCenter: (view: PaneView) => update(placeInCenter(get().settings.centerView, get().settings.rightStack, view)),
-    moveViewToRight: (view: PaneView, index?: number) => update(index === undefined ? openViewInWorkspace(get().settings.centerView, get().settings.rightStack, view) : placeInRight(get().settings.centerView, get().settings.rightStack, view, index)),
+    moveViewToRight: (view: PaneView, index?: number) => {
+      const { centerView, rightStack } = get().settings;
+      if (view === "agent" && index === undefined) {
+        // Pi alone already fills the workspace; moving it aside would leave the center empty.
+        const alone = centerView === "empty" || (centerView === "agent" && rightStack.length === 0);
+        const placement = alone
+          ? openViewInWorkspace(centerView, rightStack, view)
+          : placeInRight(centerView, rightStack, view, 0);
+        update({ ...placement, rightStack: alone ? [] : ["agent"] });
+        set({ graphFull: false });
+        return;
+      }
+      update(index === undefined ? openViewInWorkspace(centerView, rightStack, view) : placeInRight(centerView, rightStack, view, index));
+    },
     flipDockSide: () => { const settings = get().settings; if (settings.rightStack.length) setSetting("dockSide", settings.dockSide === "right" ? "left" : "right"); },
     applyWorkspacePreset: (preset: WorkspacePreset) => {
       // Presets arrange existing surfaces only. They do not close documents,

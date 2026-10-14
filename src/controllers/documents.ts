@@ -218,13 +218,14 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       }
       const root = get().vaultPath;
       if (!root) return;
+      const generation = getGeneration();
       const rel = target.toLowerCase().endsWith(".md") ? target : `${target}.md`;
       const content = `# ${target}\n\n`;
       let file: VaultFile | undefined;
       await reportingFailure("Create linked note", async () => {
         file = await createNote(root, rel, content);
       });
-      if (!file) return;
+      if (!file || get().vaultPath !== root || getGeneration() !== generation) return;
       addNote(file, content);
       await get().selectFile(file.relPath);
     },
@@ -370,13 +371,14 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       }
       const tabs = get().openTabs.filter((t) => t !== relPath);
       let active = get().activePath;
+      const closingActive = active === relPath;
       let content = get().content;
-      if (active === relPath) {
+      if (closingActive) {
         active = tabs[tabs.length - 1] ?? null;
         content = active ? get().contentCache[active] ?? "" : "";
       }
       set({ openTabs: tabs, activePath: active, content });
-      if (active && get().contentCache[active] === undefined) {
+      if (active && (closingActive || get().contentCache[active] === undefined)) {
         void get().selectFile(active);
       }
     },

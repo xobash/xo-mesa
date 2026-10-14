@@ -115,7 +115,9 @@ scripts, remote resources, network connections, forms and navigation. Online-res
 empty sandbox, opaque origin and no referrer. Sanitization, script blocking and
 frame navigation restrictions apply in both modes. Main, detached and preview viewers share this sanitized boundary.
 The separate Run scripts mode serves original files under a folder-scoped,
-window-owned expiring token with its own CSP. Offline scripts have no remote
+window-owned expiring token with its own CSP. The token serves the consented
+HTML bytes, and each other file only with the bytes it had when first served in
+that session; a file changed later is refused. Offline scripts have no remote
 network permission; online script mode explicitly permits direct HTTPS
 requests, including webview DNS and possible private HTTPS targets. It can
 exfiltrate accessible folder content. Windows refuses this mode because its

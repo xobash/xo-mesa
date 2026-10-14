@@ -5,14 +5,11 @@ import {
   buildAgentContext,
   contextPrompt,
   isPiBlockedBinaryPath,
-  piActivityLaunch,
   piBinaryWriteBlock,
-  piDeepResearchLaunch,
   PI_BLOCKED_BINARY_EXTENSIONS,
   resolveNavTarget,
   vaultFilePath,
   webSearchUrl,
-  type ActivityInfo,
 } from "./agent";
 import type { Settings } from "../types";
 
@@ -154,79 +151,6 @@ describe("Pi activity reporting", () => {
     for (const tool of ["bash", "grep", "find", "ls", "deploy", ""]) {
       expect(activityOpForTool(tool, true)).toBeNull();
     }
-  });
-
-  it("injects env + extension args only when the activity server is available", () => {
-    const info = {
-      port: 8788,
-      token: "abc123",
-      extensionPath: "/tmp/mesa-pi/mesa-activity.ts",
-      goalExtensionPath: "/tmp/mesa-pi/mesa-goal.ts",
-      contextExtensionPath: "/tmp/mesa-pi/mesa-context.ts",
-      browserExtensionPath: "/tmp/mesa-pi/mesa-browser.ts",
-    };
-    const launch = piActivityLaunch(info);
-    expect(launch.env).toEqual({
-      MESA_ACTIVITY_PORT: "8788",
-      MESA_ACTIVITY_TOKEN: "abc123",
-    });
-    expect(launch.args).toEqual([
-      "--extension",
-      "/tmp/mesa-pi/mesa-activity.ts",
-      "--extension",
-      "/tmp/mesa-pi/mesa-goal.ts",
-      "--extension",
-      "/tmp/mesa-pi/mesa-context.ts",
-      "--extension",
-      "/tmp/mesa-pi/mesa-browser.ts",
-    ]);
-  });
-
-  it("still loads the activity extension alone when the goal extension is missing", () => {
-    const launch = piActivityLaunch({
-      port: 8788,
-      token: "abc123",
-      extensionPath: "/tmp/mesa-pi/mesa-activity.ts",
-    });
-    expect(launch.args).toEqual(["--extension", "/tmp/mesa-pi/mesa-activity.ts"]);
-  });
-
-  it("stays inert when the activity server did not start", () => {
-    expect(piActivityLaunch(null)).toEqual({ env: {}, args: [] });
-    expect(piActivityLaunch(undefined)).toEqual({ env: {}, args: [] });
-    expect(
-      piActivityLaunch({ port: 0, token: "", extensionPath: "", goalExtensionPath: "" })
-    ).toEqual({ env: {}, args: [] });
-  });
-});
-
-describe("piDeepResearchLaunch", () => {
-  const info: ActivityInfo = {
-    port: 8788,
-    token: "abc123",
-    extensionPath: "/tmp/mesa-pi/mesa-activity.ts",
-    deepResearchExtensionPath: "/tmp/mesa-pi/mesa-deep-research.ts",
-  };
-
-  it("adds the deep-research extension + active-run env", () => {
-    const launch = piDeepResearchLaunch(info, "dr-test-1");
-    expect(launch.args).toEqual(["--extension", "/tmp/mesa-pi/mesa-deep-research.ts"]);
-    expect(launch.env).toEqual({
-      MESA_DEEP_RESEARCH: "1",
-      MESA_DEEP_RESEARCH_RUN_ID: "dr-test-1",
-    });
-  });
-
-  it.each(["", " ", "\t\n"])("stays inert without an active run ID (%j)", (runId) => {
-    expect(piDeepResearchLaunch(info, runId)).toEqual({ env: {}, args: [] });
-  });
-
-  it("stays inert without the extension path", () => {
-    expect(piDeepResearchLaunch(null, "x")).toEqual({ env: {}, args: [] });
-    expect(piDeepResearchLaunch({ port: 8788, token: "t", extensionPath: "/a.ts" }, "x")).toEqual({
-      env: {},
-      args: [],
-    });
   });
 });
 

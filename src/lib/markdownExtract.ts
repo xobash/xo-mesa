@@ -63,7 +63,8 @@ function scanWikiRefs(source: string): { links: string[]; references: string[]; 
     next = close + 1;
     if (close === open + 2 || source[close] !== "]" || source[close + 1] !== "]") continue;
     next = close + 2;
-    const target = (source.slice(open + 2, close).split("|")[0] || "").trim();
+    // Tables escape the alias separator as `\|`; the backslash is not part of the target.
+    const target = (source.slice(open + 2, close).split("|")[0] || "").replace(/\\$/, "").trim();
     if (target) references.push(target);
     if (open > 0 && source[open - 1] === "!" && IMAGE_EXT.test(target)) {
       if (firstImage === null) firstImage = target;
@@ -72,6 +73,23 @@ function scanWikiRefs(source: string): { links: string[]; references: string[]; 
     if (target) links.push(target);
   }
   return { links, references, firstImage };
+}
+
+/** Index of the `)` closing a link destination at `at`, after an optional
+ * CommonMark title ("t", 't' or (t)); -1 when the link is not closed there. */
+function linkCloseAfter(source: string, at: number): number {
+  let i = at;
+  while (source[i] === " " || source[i] === "\t") i++;
+  const opener = source[i];
+  if (opener === '"' || opener === "'" || opener === "(") {
+    const closer = opener === "(" ? ")" : opener;
+    const end = source.indexOf(closer, i + 1);
+    const line = source.indexOf("\n", i + 1);
+    if (end < 0 || (line >= 0 && line < end) || i === at) return -1;
+    i = end + 1;
+    while (source[i] === " " || source[i] === "\t") i++;
+  }
+  return source[i] === ")" ? i : -1;
 }
 
 /** Scan each label once, including malformed nested opening brackets.
@@ -93,17 +111,31 @@ function* markdownTargets(source: string, image: boolean): Generator<string> {
       next = close + 1;
       continue;
     }
+    // CommonMark `<destination>` may contain spaces; links also accept a title.
+    if (!image && source[targetStart] === "<") {
+      const gt = source.indexOf(">", targetStart + 1);
+      const line = source.indexOf("\n", targetStart);
+      const end = gt > targetStart + 1 && (line < 0 || gt < line) ? linkCloseAfter(source, gt + 1) : -1;
+      if (end >= 0) {
+        matchEnd = end + 1;
+        next = matchEnd + 1;
+        yield source.slice(targetStart + 1, gt);
+        continue;
+      }
+      // Not a valid `<destination>`: read it as a bare destination, as before.
+    }
     // Target starts only move forward. Reuse the next terminator when many
     // malformed labels point into the same unterminated target run.
     if (targetEnd < targetStart) {
       TARGET_END_RE.lastIndex = targetStart;
       targetEnd = TARGET_END_RE.exec(source)?.index ?? source.length;
     }
-    if (targetEnd === targetStart || (!image && source[targetEnd] !== ")")) {
+    const linkEnd = image || source[targetEnd] === ")" ? targetEnd : linkCloseAfter(source, targetEnd);
+    if (targetEnd === targetStart || linkEnd < 0) {
       next = close + 1;
       continue;
     }
-    matchEnd = image ? targetEnd : targetEnd + 1;
+    matchEnd = image ? targetEnd : linkEnd + 1;
     next = image ? matchEnd : matchEnd + 1;
     yield source.slice(targetStart, targetEnd);
   }

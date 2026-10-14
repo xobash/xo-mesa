@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { IN_TAURI, urlForPath } from "../lib/vault";
 import { groupPdfTextRunsByPage } from "../lib/pdfTextRuns";
 import { usePdfEditor } from "./usePdfEditor";
-import { sniffFileType, sanitizePdfBytes } from "../lib/pdfBytes";
+import { findPdfHeader, sniffFileType, sanitizePdfBytes } from "../lib/pdfBytes";
 import type { InkPoint, RGB } from "../lib/pdf";
 import type { VaultFile } from "../types";
 import type { PdfTextRun } from "./usePdfEditor";
@@ -243,8 +243,11 @@ export function PdfView({
     );
     return () => window.clearTimeout(id);
   }, [file?.path, firstPagePainted, loadFailed, renderError]);
+  // The native frame loads the disk file, typed by its leading bytes. Only a
+  // file that starts with "%PDF-" cannot be served as active HTML.
+  const nativeFirstPaintSafe = !!bytes && findPdfHeader(bytes, 0) === 0;
   const showNativeFirstPaint =
-    !loadFailed && !renderError && !firstPagePainted && warmStartDue;
+    !loadFailed && !renderError && !firstPagePainted && warmStartDue && nativeFirstPaintSafe;
 
   // Mount page 1 in the commit that receives page count. Reset shells by path, not page count.
   if (mountedForPath !== (file?.path ?? null)) {

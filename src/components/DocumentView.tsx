@@ -1,3 +1,4 @@
+import { VaultImage } from "./VaultImage";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { watch } from "@tauri-apps/plugin-fs";
@@ -20,7 +21,7 @@ import { installNativeDragDock } from "../lib/windowDock";
 import { MarkdownView } from "./MarkdownView";
 import { Modal } from "./Modal";
 import { CodeView } from "./CodeView";
-import { HtmlView } from "./HtmlView";
+import { HtmlView } from "./LazyHtmlView";
 import { RtfView } from "./RtfView";
 import { useAppStore, getStore, type ThemeId } from "../store";
 import { isThemeId } from "../lib/persistedUi";
@@ -216,7 +217,7 @@ export function DocumentView() {
       {viewIssue && <div className="doc-window-issue" role="alert">{viewIssue}</div>}
       <div className="doc-window-body">
         {kind === "image" ? (
-          <img className="doc-media" src={src} alt={title} />
+          <VaultImage className="doc-media" src={src} alt={title} />
         ) : kind === "video" ? (
           <video className="doc-media" src={src} controls />
         ) : kind === "pdf" ? (
@@ -282,7 +283,7 @@ export function DocPopoutModal() {
       <div className="doc-window-body">
         {contentIssue && <div className="doc-window-issue" role="alert">{contentIssue}</div>}
         {kind === "image" && file ? (
-          <img className="doc-media" src={urlForPath(file.path)} alt={file.name} />
+          <VaultImage className="doc-media" src={urlForPath(file.path)} alt={file.name} />
         ) : kind === "video" && file ? (
           <video className="doc-media" src={urlForPath(file.path)} controls />
         ) : kind === "pdf" && file ? (

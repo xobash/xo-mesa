@@ -30,6 +30,8 @@ function global:git {
     Write-Output 'ahead'
   } elseif ($call -match '\brev-parse\b') {
     Write-Output 'abc123'
+  } elseif ($call -match 'stash apply' -and $global:mesaApplyFails) {
+    $global:LASTEXITCODE = 1
   } elseif ($call -match '\bmerge\b' -and $global:mesaMergeFails) {
     $global:LASTEXITCODE = 1
   } elseif ($call -match '\bclone\b') {
@@ -49,6 +51,7 @@ try {
   $global:mesaMergeFails = $false
   $global:mesaSignatureFails = $false
   $global:mesaAhead = $false
+  $global:mesaApplyFails = $false
   Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1'))
   Assert-True (Test-Path $launchLog) 'fresh clone did not launch Mesa'
   Assert-True (($global:mesaGitCalls -join "`n") -match '\bclone\b') 'fresh checkout was not cloned'
@@ -62,17 +65,30 @@ try {
   Assert-True ($calls -match 'stash push --include-untracked') 'local changes were not preserved'
   Assert-True ($calls -match 'fetch --no-tags origin refs/tags/v0.1.0:refs/tags/v0.1.0') 'origin was not fetched'
   Assert-True ($calls -match 'merge --ff-only refs/tags/v0.1.0') 'update was not limited to fast-forward'
-  Assert-True ($calls -match 'stash pop abc123') 'local changes were not restored'
+  # Real git rejects `stash pop <commit>`; the exact commit must be applied.
+  Assert-True ($calls -notmatch 'stash pop') 'stash pop cannot take the preserved commit id'
+  Assert-True ($calls -match 'stash apply abc123') 'local changes were not restored'
+  Assert-True ($calls -match 'stash drop') 'restored stash entry was not dropped'
   Assert-True (Test-Path $launchLog) 'successful update did not launch Mesa'
 
   Set-Location $temporary
   Remove-Item $launchLog
   $global:mesaGitCalls = @()
+  $global:mesaApplyFails = $true
+  $failed = $false
+  try { Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1')) } catch { $failed = $true }
+  Assert-True $failed 'conflicting restore was accepted'
+  Assert-True (($global:mesaGitCalls -join "`n") -notmatch 'stash drop') 'conflicting restore dropped the preserved stash'
+  Assert-True (-not (Test-Path $launchLog)) 'conflicting restore launched Mesa'
+  $global:mesaApplyFails = $false
+
+  Set-Location $temporary
+  $global:mesaGitCalls = @()
   $global:mesaMergeFails = $true
   $failed = $false
   try { Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1')) } catch { $failed = $true }
   Assert-True $failed 'failed fast-forward was accepted'
-  Assert-True (($global:mesaGitCalls -join "`n") -match 'stash pop abc123') 'failed update did not restore local changes'
+  Assert-True (($global:mesaGitCalls -join "`n") -match 'stash apply abc123') 'failed update did not restore local changes'
   Assert-True (-not (Test-Path $launchLog)) 'failed update launched Mesa'
 
   $global:mesaMergeFails = $false

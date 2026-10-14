@@ -42,6 +42,7 @@ import type {
 } from "../types";
 
 import { invoke } from "@tauri-apps/api/core";
+import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
 import { stat } from "@tauri-apps/plugin-fs";
 import { forEachConcurrent } from "../lib/concurrency";
 import { markMesaPerf } from "../lib/mesaPerf";
@@ -210,25 +211,46 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     }, 180);
   }
 
-  // Remove a file from all relevant state maps when it's deleted externally.
-  function removeExternalFile(rel: string): void {
-    const files = get().files.filter((f) => f.relPath !== rel);
+  // Automatic watcher reads use the startup index's 8 MiB cap: a large log that
+  // keeps growing must not be re-read in full on every change. Opening a file
+  // still reads it completely.
+  async function readWatchedText(file: VaultFile): Promise<{ ok: boolean; text: string; tooLarge?: boolean }> {
+    if (!IN_TAURI || file.path.startsWith(DEMO_ROOT)) return readNoteResult(file);
+    try {
+      const bytes = new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", {
+        path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: false,
+      }));
+      if (bytes.length >= MAX_TEXT_CACHE_FILE_BYTES) return { ok: false, text: "", tooLarge: true };
+      return { ok: true, text: new TextDecoder().decode(bytes) };
+    } catch {
+      return { ok: false, text: "" };
+    }
+  }
+
+  // Remove externally deleted files from all relevant state maps in one commit.
+  function removeExternalFiles(rels: ReadonlySet<string>): void {
+    if (!rels.size) return;
+    const files = get().files.filter((f) => !rels.has(f.relPath));
     const notes = { ...get().notes };
-    delete notes[rel];
     const contentCache = forkContentCache(get().contentCache);
-    delete contentCache[rel];
-    const openTabs = get().openTabs.filter((t) => t !== rel);
+    for (const rel of rels) {
+      delete notes[rel];
+      delete contentCache[rel];
+    }
+    const openTabs = get().openTabs.filter((t) => !rels.has(t));
     let activePath = get().activePath;
-    const wasActive = activePath === rel;
+    const wasActive = activePath !== null && rels.has(activePath);
     if (wasActive) activePath = null;
+    const { docSplit } = get();
     set({
       files,
+      ...(docSplit.other !== null && rels.has(docSplit.other) ? { docSplit: { ...docSplit, other: null } } : {}),
       notes,
       contentCache,
       openTabs,
       activePath,
       ...(wasActive ? { content: "" } : {}),
-      ...(rel === CALENDAR_FILE ? { calendarEvents: [] } : {}),
+      ...(rels.has(CALENDAR_FILE) ? { calendarEvents: [] } : {}),
     });
   }
 
@@ -292,6 +314,13 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         watcherRescanMs += performance.now() - startedAt;
       }
     };
+    // Consecutive deletes commit together, before the next await or path that
+    // reads the catalogue, so later work always sees them applied.
+    const removals = new Set<string>();
+    const commitRemovals = () => {
+      removeExternalFiles(removals);
+      removals.clear();
+    };
     const flush = () => {
       if (!isCurrent()) return;
       if (!pendingContent.size && !pendingEditable.size && !pendingNotes.size && !filesDirty) return;
@@ -344,11 +373,13 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         for (const p of evt.paths) {
           watcherPaths++;
           if (!isCurrent()) return;
+          if (evt.kind !== "remove") commitRemovals();
           // Cheap form first: a path under the vault root resolves on the
           // root-prefix branch without the list being read at all.
           let rel = normalizeVaultRelPath(p, rootRaw);
           if (!rel) rel = normalizeVaultRelPath(p, rootRaw, knownRels());
           if (!rel) {
+            commitRemovals();
             await rescanOnce();
             if (!isCurrent()) return;
             rel = normalizeVaultRelPath(p, rootRaw, knownRels());
@@ -374,7 +405,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                     `File deleted outside Mesa; unsaved text was kept for ${rel}.`,
                 });
               } else {
-                removeExternalFile(rel);
+                removals.add(rel);
               }
             }
             continue;
@@ -391,10 +422,17 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           if (isTextualVaultFile(file)) {
             watcherReads++;
             const startedAt = performance.now();
-            const read = await readNoteResult(file).finally(() => {
+            const read = await readWatchedText(file).finally(() => {
               watcherReadMs += performance.now() - startedAt;
             });
             if (!isCurrent()) return;
+            if (read.tooLarge) {
+              if (get().openTabs.includes(rel) || get().activePath === rel) {
+                watcherWarning = true;
+                set({ status: `${rel} changed outside Mesa; it is 8 MiB or larger, so reopen it to see the change.` });
+              }
+              continue;
+            }
             if (!read.ok) {
               watcherWarning = true;
               set({ status: `External change could not be read; keeping cached content for ${rel}.` });
@@ -460,10 +498,11 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             ) {
               watcherReads++;
               const startedAt = performance.now();
-              const read = await readNoteResult(file).finally(() => {
+              const read = await readWatchedText(file).finally(() => {
                 watcherReadMs += performance.now() - startedAt;
               });
               if (!isCurrent()) return;
+              if (read.tooLarge) continue;
               if (!read.ok) {
                 watcherWarning = true;
                 set({ status: `External change could not be read; keeping cached content for ${rel}.` });
@@ -489,6 +528,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           }
         }
       }
+      commitRemovals();
       if (created.size) {
         const additions = [...created.values()];
         const texts = new Map<string, string>();
@@ -497,9 +537,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             watcherReads++;
             const startedAt = performance.now();
             try {
-              const result = await readNoteResult(file);
+              const result = await readWatchedText(file);
               if (result.ok) texts.set(file.relPath, result.text);
-              else if (isCurrent()) set({ status: `External create could not be read: ${file.relPath}.` });
+              else if (!result.tooLarge && isCurrent()) set({ status: `External create could not be read: ${file.relPath}.` });
             } catch {
               if (isCurrent()) set({ status: `External create could not be read: ${file.relPath}.` });
             } finally { watcherReadMs += performance.now() - startedAt; }
@@ -530,6 +570,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         }
       }
     } finally {
+      if (isCurrent()) commitRemovals();
       // Applies whatever the batch got through even if a later path throws —
       // the per-file commits this replaced had that property too.
       if (isCurrent() && cleanChanges.length) {
@@ -806,6 +847,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           contentCache: {},
           openTabs: [],
           activePath: null,
+          docSplit: { ...get().docSplit, other: null },
           content: "",
           activeContentState: "ready",
           emptyFolders: [],

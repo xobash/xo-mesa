@@ -42,7 +42,6 @@ fn main() {
             "vault_rename_no_replace",
             "vault_purge_recovery",
             "vault_authorize",
-            "vault_revoke",
             "vault_recents",
             "vault_recent_resolve",
             "vault_storage_id",

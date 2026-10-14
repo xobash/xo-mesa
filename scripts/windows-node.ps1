@@ -8,6 +8,10 @@ $hashes = @{
   arm64 = '00be129a09e8872cd52d3bb8bba12412c5733d2224123a482a2dca4a6fbf2586'
 }
 $folder = Join-Path $env:LOCALAPPDATA 'Mesa/toolchains'
+$name = "node-v$version-win-$arch"
+$destination = Join-Path $folder $name
+# Reuse a verified earlier install, so a relaunch works offline.
+try { if ((& (Join-Path $destination 'node.exe') --version) -eq "v$version") { exit 0 } } catch { }
 New-Item -ItemType Directory -Force $folder | Out-Null
 $stage = Join-Path $folder ([guid]::NewGuid().ToString())
 New-Item -ItemType Directory $stage | Out-Null
@@ -16,8 +20,6 @@ try {
   Invoke-WebRequest "https://nodejs.org/dist/v$version/node-v$version-win-$arch.zip" -OutFile $archive -UseBasicParsing
   if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hashes[$arch]) { throw 'Node archive verification failed.' }
   Expand-Archive $archive -DestinationPath $stage
-  $name = "node-v$version-win-$arch"
-  $destination = Join-Path $folder $name
   if (Test-Path $destination) { Remove-Item $destination -Recurse -Force }
   Move-Item (Join-Path $stage $name) $destination
   & (Join-Path $destination 'node.exe') --version

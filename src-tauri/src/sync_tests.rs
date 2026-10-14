@@ -1887,12 +1887,23 @@ fn peer_path_policy_rejects_hidden_and_ignored_segments() {
         ".env",
         "../escape.md",
         "",
+        "GIT~1/hooks/pre-commit",
+        "OBSIDI~1/plugins/x/main.js",
+        "a/MESA-T~1/old.md",
+        "ENV~12",
+        "Node_Modules/x.js",
     ] {
         assert!(!is_peer_rel(rel), "{rel:?} must be rejected");
         let dir = std::env::temp_dir();
         assert!(peer_join_confined(&dir, rel).is_none(), "{rel:?}");
     }
-    for rel in ["note.md", "a/b/c.md", "name with space.txt"] {
+    for rel in [
+        "note.md",
+        "a/b/c.md",
+        "name with space.txt",
+        "draft~v2.md",
+        "notes~1 copy.md",
+    ] {
         assert!(is_peer_rel(rel), "{rel:?} must be accepted");
     }
 }

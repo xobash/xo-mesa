@@ -1,7 +1,11 @@
 import { stripExt } from "./vault";
 
 const WIKI_LINK_RE = /(!?)\[\[([^\]\n]+?)\]\]/g;
-const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*?)\]\(((?:\\.|[^\\\s()])+(?:\((?:\\.|[^\\\n()])*\)(?:\\.|[^\\\s()])*)*)\)/g;
+// Destination: `<with spaces>` or a bare run with balanced parentheses; optional CommonMark title.
+const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*?)\]\((<[^<>\n]+>|(?:\\.|[^\\\s()])+(?:\((?:\\.|[^\\\n()])*\)(?:\\.|[^\\\s()])*)*)([ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\))[ \t]*)?\)/g;
+/** Percent-encode the characters a bare Markdown destination cannot hold literally. */
+const encodeDestination = (path: string) => path
+  .replace(/%/g, "%25").replace(/#/g, "%23").replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29");
 const REFERENCE_DEFINITION_RE = /^(\s{0,3}\[[^\]\n]+\]:\s*)(<[^>\n]+>|[^\s]+)(.*)$/gm;
 
 /**
@@ -79,18 +83,28 @@ export function rewriteInboundLinks(
     const slashy = rawTarget.replace(/\\/g, "/");
     const hadExt = /\.[^/]+$/.test(slashy.split("#")[0] ?? "");
     const hadDir = slashy.includes("/");
+    // Mesa resolves a path from the vault root before a relative one, and
+    // never resolves `../`; keep the form that actually matched.
+    const lower = slashy.toLowerCase();
+    const vaultPath = lower === oldRel.toLowerCase() ||
+      (renamedIsMarkdown && !hadExt && lower === stripExt(oldRel).toLowerCase());
     const nextRel =
-      hadDir && !slashy.startsWith("/")
-        ? relativeTargetFrom(sourceDir, newRel)
-        : newRel;
+      slashy.startsWith("/") ? `/${newRel}`
+        : hadDir && !vaultPath ? relativeTargetFrom(sourceDir, newRel)
+          : newRel;
     if (hadDir) return hadExt || !renamedIsMarkdown ? nextRel : stripExt(nextRel);
     const base = nextRel.slice(nextRel.lastIndexOf("/") + 1);
+    // A bare name that already belongs to another note would resolve there.
+    const owner = renamedIsMarkdown ? resolveNote(stripExt(base)) : null;
+    if (owner && owner !== oldRel) return hadExt ? newRel : stripExt(newRel);
     return hadExt || !renamedIsMarkdown ? base : stripExt(base);
   };
   let changed = false;
   const text = rewriteMarkdownProse(content, (prose) => prose
     .replace(WIKI_LINK_RE, (match, bang: string, body: string) => {
-      const pipe = body.indexOf("|");
+      // Inside tables the alias separator is written `\|`; keep that escape.
+      let pipe = body.indexOf("|");
+      if (pipe > 0 && body[pipe - 1] === "\\") pipe--;
       const targetAndHeading = pipe >= 0 ? body.slice(0, pipe) : body;
       const alias = pipe >= 0 ? body.slice(pipe) : "";
       const hash = targetAndHeading.indexOf("#");
@@ -103,26 +117,21 @@ export function rewriteInboundLinks(
       // note resolver, so they remain byte-for-byte unchanged.
       return `${bang}[[${replacementTarget(target)}${heading}${alias}]]`;
     })
-    .replace(MARKDOWN_LINK_RE, (match, bang: string, label: string, raw: string) => {
-      if (/^(https?:|mailto:|tel:|data:|#)/i.test(raw)) return match;
-      const rawTarget = raw.replace(/\\([()\\])/g, "$1");
-      let decoded = rawTarget;
-      try {
-        decoded = decodeURIComponent(rawTarget);
-      } catch {
-        /* keep raw */
-      }
-      const hash = decoded.indexOf("#");
-      const target = (hash >= 0 ? decoded.slice(0, hash) : decoded).trim();
-      const heading = hash >= 0 ? decoded.slice(hash) : "";
+    .replace(MARKDOWN_LINK_RE, (match, bang: string, label: string, raw: string, title: string | undefined) => {
+      const angle = raw.startsWith("<");
+      const destination = angle ? raw.slice(1, -1) : raw;
+      if (/^(https?:|mailto:|tel:|data:|#)/i.test(destination)) return match;
+      const rawTarget = destination.replace(/\\([()\\])/g, "$1");
+      // Split the heading before decoding, so an encoded `%23` stays in the name.
+      const hash = rawTarget.indexOf("#");
+      const decode = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
+      const target = decode(hash >= 0 ? rawTarget.slice(0, hash) : rawTarget).trim();
+      const heading = hash >= 0 ? rawTarget.slice(hash) : "";
       if (!target || !resolve(target)) return match;
       changed = true;
-      const nextTarget = replacementTarget(target) + heading;
-      const encoded = nextTarget
-        .replace(/ /g, "%20")
-        .replace(/\(/g, "%28")
-        .replace(/\)/g, "%29");
-      return `${bang}[${label}](${encoded})`;
+      const nextTarget = replacementTarget(target);
+      const dest = angle ? `<${nextTarget}${heading}>` : `${encodeDestination(nextTarget)}${heading}`;
+      return `${bang}[${label}](${dest}${title ?? ""})`;
     })
     // Reference-style uses retain their destination in a separate definition;
     // rewriting that definition repairs every `[label]` / `[text][label]` use

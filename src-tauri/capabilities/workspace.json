@@ -21,7 +21,6 @@
     "allow-text-save-copy",
     "allow-vault-apply-research",
     "allow-vault-purge-recovery",
-    "allow-vault-revoke",
     "allow-vault-move-to-recovery",
     "allow-vault-restore-recovery",
     "allow-vault-recover-artifact",

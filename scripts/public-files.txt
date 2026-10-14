@@ -179,8 +179,10 @@ src/components/GraphView.tsx
 src/components/Guide.tsx
 src/components/HtmlView.test.tsx
 src/components/HtmlView.tsx
+src/components/LazyHtmlView.tsx
 src/components/MarkdownView.test.tsx
 src/components/MarkdownView.tsx
+src/components/MediaView.test.tsx
 src/components/MediaView.tsx
 src/components/Modal.test.tsx
 src/components/Modal.tsx
@@ -208,6 +210,7 @@ src/components/TagList.tsx
 src/components/TasksModal.test.tsx
 src/components/TasksModal.tsx
 src/components/TopBar.tsx
+src/components/VaultImage.tsx
 src/components/editorUndoBoundary.test.tsx
 src/components/fileDrag.ts
 src/components/fileTreeMenu.test.tsx
@@ -231,6 +234,7 @@ src/controllers/research.test.ts
 src/controllers/research.ts
 src/controllers/vault.test.ts
 src/controllers/vault.ts
+src/controllers/vault.watcherLimit.test.ts
 src/controllers/workspace.test.ts
 src/controllers/workspace.ts
 src/controllers/workspaceWindows.test.ts
@@ -256,6 +260,7 @@ src/lib/codeWindow.test.ts
 src/lib/codeWindow.ts
 src/lib/concurrency.test.ts
 src/lib/concurrency.ts
+src/lib/confirmAction.test.ts
 src/lib/confirmAction.ts
 src/lib/daily.test.ts
 src/lib/daily.ts
@@ -379,8 +384,6 @@ src/lib/piExit.ts
 src/lib/piSessionBridge.ts
 src/lib/processResources.test.ts
 src/lib/processResources.ts
-src/lib/recentVaults.test.ts
-src/lib/recentVaults.ts
 src/lib/remoteVault.test.ts
 src/lib/renameNote.test.ts
 src/lib/researchApplyPlan.ts

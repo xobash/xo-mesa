@@ -42,5 +42,12 @@ for (const [selector, tokens] of palettes) {
       expect(contrast(tokens['--accent-text'], tokens[background])).toBeGreaterThanOrEqual(4.5);
     }
     expect(contrast(tokens['--danger-contrast'], tokens['--danger'])).toBeGreaterThanOrEqual(4.5);
+    // Selected palette/search rows show secondary text in --text-dim on --bg-3.
+    expect(contrast(tokens['--text-dim'], tokens['--bg-3']), '--text-dim against --bg-3').toBeGreaterThanOrEqual(4.5);
   });
 }
+
+it('danger hover text uses the AA-checked contrast token instead of raw white', () => {
+  const rule = css.match(/\.context-item\.danger:hover\s*\{([^}]*)\}/)?.[1] ?? '';
+  expect(rule).toContain('color: var(--danger-contrast)');
+});

@@ -87,12 +87,14 @@ export function normalizeSettings(value: unknown): Settings {
   };
   for (const [key, allowed] of Object.entries(enums)) {
     const k = key as keyof Settings;
-    if (!allowed.includes(String(next[k]))) Object.assign(next, { [k]: DEFAULT_SETTINGS[k] });
+    if (!allowed.includes(String(next[k]))) Object.assign(next, { [k]: k === 'centerView' && next[k] === 'doc2' ? 'doc' : DEFAULT_SETTINGS[k] });
   }
   if (Array.isArray(value.bookmarks)) next.bookmarks = value.bookmarks.filter((v): v is string => typeof v === 'string');
   if (Array.isArray(value.retiredSyncPeers)) next.retiredSyncPeers = [...new Set(value.retiredSyncPeers.filter((v): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)))];
   // Split view: keep one side pane, never a duplicate of the center view.
-  if (Array.isArray(value.rightStack)) next.rightStack = [...new Set(value.rightStack.filter((v): v is Settings['rightStack'][number] => ['doc', 'agent', 'preview', 'graph', 'tasks'].includes(v as string) && v !== next.centerView))].slice(0, 1);
+  // The side-by-side file is session state, so a saved second document pane
+  // ("doc2") loads as the document pane unless that pane is already shown.
+  if (Array.isArray(value.rightStack)) next.rightStack = [...new Set(value.rightStack.map((v) => (v === 'doc2' ? 'doc' : v)).filter((v): v is Settings['rightStack'][number] => ['doc', 'agent', 'preview', 'graph', 'tasks'].includes(v as string) && v !== next.centerView))].slice(0, 1);
   const peers = Array.isArray(value.peers) ? value.peers : [];
   next.peers = peers.filter((peer): peer is SyncPeer => record(peer) && typeof peer.id === 'string' && typeof peer.address === 'string' && typeof peer.name === 'string')
     .map(peer => ({ ...peer, favorite: peer.favorite === true, token: typeof peer.token === 'string' ? peer.token : undefined, fingerprint: typeof peer.fingerprint === 'string' ? peer.fingerprint : undefined }));

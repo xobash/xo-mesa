@@ -293,6 +293,11 @@ describe("resolveTarget", () => {
     expect(resolveTarget(notes, "sub/Deep")).toBe("sub/Deep.md");
     expect(resolveTarget(notes, "Nope")).toBeNull();
   });
+
+  it("resolves a leading-slash vault path by path, not by a same-named note elsewhere", () => {
+    const { notes } = makeVault({ "a/Note.md": "x", "b/Note.md": "y" });
+    expect(resolveTarget(notes, "/b/Note.md")).toBe("b/Note.md");
+  });
 });
 
 describe("backlinksFor", () => {

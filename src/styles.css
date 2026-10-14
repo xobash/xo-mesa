@@ -570,7 +570,7 @@
   --border: rgba(216, 222, 233, 0.085);
   --text: #d1d7e1;
   --text-strong: #eceff4;
-  --text-dim: #949daf;
+  --text-dim: #97a0b2;
   --text-faint: #8d94a2;
   --accent: #88c0d0;
   --accent-text: #88c0d0;
@@ -2683,7 +2683,7 @@ body.is-dragging iframe {
 }
 .context-item.danger:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--danger-contrast);
 }
 .context-sep {
   height: 1px;
@@ -4713,6 +4713,17 @@ body,
   max-height: 96%;
   border-radius: var(--radius);
 }
+.vault-image-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: auto;
+  padding: 16px;
+  color: var(--text-dim);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
 .media-pdf {
   flex: 1 1 auto;
   border: none;
@@ -5346,7 +5357,9 @@ body,
   z-index: 20;
   min-width: 208px;
   padding: 6px;
-  background: var(--glass, rgba(10, 10, 14, 0.82));
+  /* Near-opaque: graph nodes behind the popover must not compete with its text. */
+  background: var(--surface-panel);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 12px));
   backdrop-filter: blur(var(--glass-blur, 12px));
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -5554,6 +5567,11 @@ body,
 }
 .search-item.sel {
   background: var(--bg-3);
+}
+/* Faint text is not AA on the --bg-3 selection; selected secondary text uses dim. */
+.palette-item.sel .palette-hint,
+.search-item.sel .search-snippet {
+  color: var(--text-dim);
 }
 .search-snippet mark {
   border-radius: 3px;

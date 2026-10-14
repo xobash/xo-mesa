@@ -34,7 +34,7 @@ Misses are read and encoded in groups of at most 64 documents and approximately
 Cached image targets are resolved against the current file listing, so image
 additions and moves remain visible after indexing.
 
-Automatic reads stop at 8 MiB per file. Native reads distinguish content,
+Automatic reads stop at 8 MiB per file, including reads triggered by external changes. Native reads distinguish content,
 size-limit skips, and failures. Only a successful read of zero bytes becomes an
 empty document. Skipped or failed files remain in the catalog and are matched
 by name only until content loads. Opening a failed file retries the read;

@@ -98,4 +98,18 @@ describe("App shell subscriptions", () => {
     expect(await shellRendersDuring(() => useAppStore.getState().setSetting("sidebarWidth", width + 1))).toBeGreaterThan(0);
     act(() => useAppStore.getState().setSetting("sidebarWidth", width));
   });
+  it("names tab close buttons and keeps focus in the strip after closing one", async () => {
+    const files = useAppStore.getState().files.filter((f) => f.isMarkdown).slice(0, 2).map((f) => f.relPath);
+    expect(files).toHaveLength(2);
+    await act(async () => {
+      useAppStore.getState().setSetting("enableTabs", true);
+      useAppStore.setState({ openTabs: files });
+    });
+    const closes = () => [...host.querySelectorAll<HTMLButtonElement>(".tabs .tab-close")];
+    expect(closes().map((b) => b.getAttribute("aria-label"))).toEqual(files.map((rel) => `Close ${useAppStore.getState().notes[rel]?.title ?? rel}`));
+    closes()[0].focus();
+    await act(async () => closes()[0].click());
+    await vi.waitFor(() => expect(document.activeElement).toBe(closes()[0]));
+    expect(closes()).toHaveLength(1);
+  });
 });

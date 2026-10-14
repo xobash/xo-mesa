@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, SETTINGS_KEY } from './settings';
-import { hydrateSyncSecrets, persistSyncSecrets, type SyncSecretStore } from './syncSecrets';
+import { hydrateSyncSecrets, persistSyncSecrets, syncSecretsNeededAtStartup, type SyncSecretStore } from './syncSecrets';
 function setup(raw: string | null) {
   const values = new Map<string,string>();
   if (raw !== null) values.set(SETTINGS_KEY,raw);
@@ -41,4 +41,11 @@ it('fails closed without scrubbing legacy keys when native read fails',async () 
   const {storage,backend} = setup(JSON.stringify({...DEFAULT_SETTINGS,syncToken:'keep'}));
   backend.read = vi.fn(async () => { throw new Error('unavailable'); });
   await expect(hydrateSyncSecrets(DEFAULT_SETTINGS,backend,storage)).rejects.toThrow('unavailable'); expect(storage.getItem(SETTINGS_KEY)).toContain('keep');
+});
+
+it('reads the credential store at startup only when sync is enabled or legacy keys need migration', () => {
+  expect(syncSecretsNeededAtStartup(DEFAULT_SETTINGS)).toBe(false);
+  expect(syncSecretsNeededAtStartup({ ...DEFAULT_SETTINGS, syncEnabled: true })).toBe(true);
+  expect(syncSecretsNeededAtStartup({ ...DEFAULT_SETTINGS, syncToken: 'legacy' })).toBe(true);
+  expect(syncSecretsNeededAtStartup({ ...DEFAULT_SETTINGS, peers: [{ id: 'p', name: 'Peer', address: 'https://192.0.2.1:8765', token: 'legacy' }] as typeof DEFAULT_SETTINGS.peers })).toBe(true);
 });

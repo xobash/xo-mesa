@@ -1,3 +1,4 @@
+import { syncSecretsNeededAtStartup } from "./lib/syncSecrets";
 import { Modal } from "./components/Modal";
 import { confirmAction } from "./lib/confirmAction";
 import { loadRecentVaults, resolveRecentVault } from "./lib/persistedUi";
@@ -908,9 +909,17 @@ function Tabs() {
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
+                const strip = stripRef.current;
+                const index = openTabs.indexOf(id);
                 closeTab(id);
+                // Keep keyboard focus in the strip instead of dropping it to the page.
+                requestAnimationFrame(() => {
+                  const closes = strip?.querySelectorAll<HTMLButtonElement>(".tab-close");
+                  closes?.[Math.min(index, closes.length - 1)]?.focus();
+                });
               }}
               title="Close"
+              aria-label={`Close ${title(id)}`}
             >
               ×
             </button>
@@ -946,6 +955,7 @@ function Tabs() {
                   className="tab-menu-close"
                   onClick={() => closeTab(id)}
                   title="Close"
+                  aria-label={`Close ${title(id)}`}
                 >
                   ×
                 </button>
@@ -1457,6 +1467,7 @@ export default function App() {
   // Auto-open: demo vault in the browser, last-used vault in the desktop app.
   useEffect(() => {
     if (!IN_TAURI || docMode || panelMode || agentMode || researchMode) return;
+    if (!syncSecretsNeededAtStartup(getStore().settings)) return;
     void getStore().loadSyncSecrets().catch(() => undefined);
   }, [docMode, panelMode, agentMode, researchMode]);
 

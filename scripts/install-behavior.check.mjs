@@ -12,7 +12,7 @@ function fixture(existing = true) {
   const root = mkdtempSync(join(tmpdir(), 'mesa-installer-test-')); folders.push(root);
   const bin = join(root, 'bin'), install = join(root, 'folder with spaces'); mkdirSync(bin); mkdirSync(install);
   if (existing) mkdirSync(join(install, '.git'));
-  writeFileSync(join(bin, 'git'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_LOG"\nif [[ "$*" == *"remote get-url origin"* ]]; then printf "%s\\n" "https://github.com/xobash/xo-mesa.git"; fi\nif [[ "$*" == *"verify-tag"* && "$TEST_SIGNATURE_FAIL" == "1" ]]; then exit 1; fi\nif [[ "$*" == *"rev-parse"* ]]; then if [[ "$*" == *" HEAD" && "$TEST_AHEAD" == "1" ]]; then printf "ahead\\n"; else printf "release\\n"; fi; fi\nexit "${TEST_GIT_EXIT:-0}"\n', { mode: 0o755 });
+  writeFileSync(join(bin, 'git'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_LOG"\nif [[ "$*" == *"remote get-url origin"* ]]; then printf "%s\\n" "https://github.com/xobash/xo-mesa.git"; fi\nif [[ "$*" == *"verify-tag"* && "$TEST_SIGNATURE_FAIL" == "1" ]]; then exit 1; fi\nif [[ "$*" == *"merge --ff-only"* && "$TEST_MERGE_FAIL" == "1" ]]; then exit 1; fi\nif [[ "$*" == *"rev-parse"* ]]; then if [[ "$*" == *" HEAD" && "$TEST_AHEAD" == "1" ]]; then printf "ahead\\n"; else printf "release\\n"; fi; fi\nexit "${TEST_GIT_EXIT:-0}"\n', { mode: 0o755 });
   writeFileSync(join(install, 'run.sh'), '#!/bin/bash\nprintf "launched\\n" >> "$TEST_LOG"\n');
   writeFileSync(join(install, 'user-note.md'), 'keep me');
   return { root, install, run: (code = 0, overrides = {}) => spawnSync('/bin/bash', [resolve('install.sh')], { cwd: root, env: { ...process.env, MESA_DIR: install, PATH: `${bin}:${process.env.PATH}`, TEST_LOG: join(root, 'calls'), TEST_GIT_EXIT: String(code), ...overrides }, encoding: 'utf8' }), log: () => { try { return readFileSync(join(root, 'calls'), 'utf8'); } catch { return ''; } } };
@@ -24,9 +24,12 @@ describe('one-command installer behavior', { skip: process.platform === 'win32' 
     assert.equal(readFileSync(join(f.install, 'user-note.md'), 'utf8'), 'keep me');
   });
   it('does not launch or modify user files after a failed update', () => {
-    const f = fixture(); const result = f.run(1); assert.notEqual(result.status, 0); assert.doesNotMatch(f.log(), /launched/);
-    assert.match(result.stderr + result.stdout, /MESA_DIR to a new empty folder/);
-    assert.equal(readFileSync(join(f.install, 'user-note.md'), 'utf8'), 'keep me');
+    // An unreadable origin stops before fetching; a refused fast-forward stops after it.
+    for (const [code, environment, message] of [[1, {}, /Could not inspect origin/], [0, { TEST_MERGE_FAIL: '1' }, /could not fast-forward this checkout/]]) {
+      const f = fixture(); const result = f.run(code, environment); assert.notEqual(result.status, 0); assert.doesNotMatch(f.log(), /launched/);
+      assert.match(result.stderr + result.stdout, message);
+      assert.equal(readFileSync(join(f.install, 'user-note.md'), 'utf8'), 'keep me');
+    }
   });
   it('never launches an unverified tag or a checkout ahead of that tag', () => {
     for (const environment of [{ TEST_SIGNATURE_FAIL: '1' }, { TEST_AHEAD: '1' }]) {

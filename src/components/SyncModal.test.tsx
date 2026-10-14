@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS } from '../lib/settings';
-const io=vi.hoisted(()=>({start:vi.fn(),stop:vi.fn(),setSetting:vi.fn(),state:{} as Record<string,unknown>}));
+const io=vi.hoisted(()=>({start:vi.fn(),stop:vi.fn(),setSetting:vi.fn(),loadSecrets:vi.fn(async()=>{}),state:{} as Record<string,unknown>}));
 vi.mock('../store',()=>{
   const use=(select:(state:Record<string,unknown>)=>unknown)=>select(io.state);
   use.getState=()=>io.state;use.setState=vi.fn();return {useAppStore:use};
@@ -19,9 +19,9 @@ async function render() { await act(async()=>{root.render(<SyncModal/>);}); }
 afterEach(async()=>{await act(async()=>root?.unmount());host?.remove();vi.clearAllMocks();});
 it('opening Sync or receiving never announces until temporary consent; closing revokes it',async()=>{
   io.state={syncOpen:true,syncListening:false,syncBusy:false,syncStatus:'',vaultName:'Synthetic',syncLog:[],syncProgress:null,syncReport:null,files:[],syncPhase:'idle',
-    settings:{...DEFAULT_SETTINGS,syncEnabled:true,syncToken:'credential:device'},setSetting:io.setSetting,setSyncOpen:vi.fn()};
+    settings:{...DEFAULT_SETTINGS,syncEnabled:true,syncToken:'credential:device'},setSetting:io.setSetting,setSyncOpen:vi.fn(),loadSyncSecrets:io.loadSecrets};
   host=document.createElement('div');document.body.append(host);root=createRoot(host);
-  await render();expect(io.start).not.toHaveBeenCalled();
+  await render();expect(io.start).not.toHaveBeenCalled();expect(io.loadSecrets).toHaveBeenCalledTimes(1);
   io.state.syncListening=true;await render();expect(io.start).not.toHaveBeenCalled();
   io.state.settings={...DEFAULT_SETTINGS,syncEnabled:true,syncDiscovery:true,syncToken:'credential:device'};
   await render();await vi.waitFor(()=>expect(io.start).toHaveBeenCalledTimes(1));

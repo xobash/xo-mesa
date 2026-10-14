@@ -241,4 +241,18 @@ describe("the success paths are unchanged", () => {
     expect(fsCalls.folders).toEqual(["docs/New folder"]);
     expect(useAppStore.getState().emptyFolders).toEqual(["docs/New folder"]);
   });
+
+  it("deletes an empty folder and its empty subfolders", async () => {
+    useAppStore.setState({ emptyFolders: ["Drafts", "Drafts/Old", "Other"] });
+    await useAppStore.getState().deleteEntry("Drafts");
+    expect(fsCalls.removed).toContain("Drafts");
+    expect(useAppStore.getState().emptyFolders).toEqual(["Other"]);
+    expect(useAppStore.getState().status).toBe("Moved folder Drafts to Mesa recovery storage");
+  });
+
+  it("clears the side-by-side pane when its file is deleted", async () => {
+    useAppStore.setState({ docSplit: { active: "doc", other: "docs/Scan.pdf" } });
+    await useAppStore.getState().deleteEntry("docs/Scan.pdf");
+    expect(useAppStore.getState().docSplit.other).toBeNull();
+  });
 });

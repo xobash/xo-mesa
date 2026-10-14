@@ -74,6 +74,7 @@ it('does not request remote images until the reader consents', async () => {
   const { host, root } = await mounted('![x](https://tracker.example/p.gif)\n\n<img src="//cdn.example/a.png">');
   try {
     await vi.waitFor(() => expect(host.querySelectorAll('img[data-remote-src]')).toHaveLength(2));
+    await vi.waitFor(() => expect(host.querySelector('.md-remote-notice button')).not.toBeNull());
     for (const img of host.querySelectorAll('img')) expect(img.getAttribute('src')).toBeNull();
     expect(host.innerHTML).not.toMatch(/\ssrc="(https?:)?\/\//);
     const button = [...host.querySelectorAll('button')].find(b => /remote images/i.test(b.textContent ?? ''))!;
@@ -106,7 +107,7 @@ it('does not carry media consent to another source in a reused viewer', async ()
   const first = '<img src="https://tracker.example/first.png">';
   const { host, root } = await mounted(first);
   try {
-    await vi.waitFor(() => expect(host.querySelector('[data-remote-src]')).not.toBeNull());
+    await vi.waitFor(() => expect(host.querySelector('.md-remote-notice button')).not.toBeNull());
     await act(async () => host.querySelector<HTMLButtonElement>('.md-remote-notice button')!.click());
     expect(host.querySelector('img')?.getAttribute('src')).toContain('first.png');
     for (const source of ['<img src="https://tracker.example/second.png">', first]) {
@@ -123,7 +124,7 @@ it('revokes consent on unchanged media blocks when another block changes', async
   const image = '<img src="https://tracker.example/shared.png">';
   const { host, root } = await mounted(`${image}\n\nFirst paragraph`);
   try {
-    await vi.waitFor(() => expect(host.querySelector('[data-remote-src]')).not.toBeNull());
+    await vi.waitFor(() => expect(host.querySelector('.md-remote-notice button')).not.toBeNull());
     await act(async () => host.querySelector<HTMLButtonElement>('.md-remote-notice button')!.click());
     const original = host.querySelector('img')!;
     expect(original.getAttribute('src')).toContain('shared.png');

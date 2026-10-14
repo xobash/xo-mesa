@@ -80,6 +80,54 @@ describe("file tree context menu", () => {
     expect(document.querySelector(".context-menu")).toBeNull();
   });
 
+  it("opens from the keyboard, moves focus through items and returns focus on Escape", () => {
+    act(() => root.render(<FileTree />));
+    const row = host.querySelector<HTMLElement>('[data-rel="a.md"]')!;
+    row.focus();
+    act(() => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", shiftKey: true, bubbles: true, cancelable: true }));
+    });
+    const menu = document.querySelector<HTMLElement>('[role="menu"]')!;
+    expect(menu).not.toBeNull();
+    const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    expect(items.length).toBeGreaterThan(2);
+    expect(document.activeElement).toBe(items[0]);
+    act(() => { items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); });
+    expect(document.activeElement).toBe(items[1]);
+    act(() => { items[1].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true })); });
+    expect(document.activeElement).toBe(items[items.length - 1]);
+    act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(document.querySelector(".context-menu")).toBeNull();
+    expect(document.activeElement).toBe(row);
+  });
+
+  it("names the inline rename field", () => {
+    openMenu();
+    const rename = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.startsWith("Rename"))!;
+    act(() => rename.click());
+    expect(host.querySelector(".tree-rename")?.getAttribute("aria-label")).toBe("Rename a");
+  });
+
+  it("reports a clipboard failure instead of ignoring the click", async () => {
+    document.execCommand = () => false;
+    openMenu();
+    const copy = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => /copy path/i.test(b.textContent ?? ""))!;
+    await act(async () => copy.click());
+    expect(useAppStore.getState().status).toBe("Could not copy to the clipboard.");
+  });
+
+  it("returns focus to the row when a menu item runs, so dialogs can restore it", async () => {
+    act(() => root.render(<FileTree />));
+    const row = host.querySelector<HTMLElement>('[data-rel="a.md"]')!;
+    row.focus();
+    act(() => { row.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true, cancelable: true })); });
+    const open = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => /recovery storage/i.test(b.textContent ?? "") && !/^Move/.test(b.textContent ?? ""))!;
+    expect(document.activeElement).not.toBe(row);
+    await act(async () => open.click());
+    expect(document.querySelector(".context-menu")).toBeNull();
+    expect(document.activeElement).toBe(row);
+  });
+
   it("ignores other keys", () => {
     openMenu();
     act(() => {

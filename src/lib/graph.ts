@@ -111,7 +111,8 @@ export function makeResolver(
     }
   }
   return (target: string): string | null => {
-    const t = target.trim().replace(/\\/g, "/").toLowerCase().replace(/\.md$/, "");
+    // A leading "/" names a path from the vault root.
+    const t = target.trim().replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase().replace(/\.md$/, "");
     const base = t.split("/").pop() ?? t;
     return byTitle.get(t) ?? byRel.get(t) ?? byTitle.get(base) ?? byRel.get(base) ?? null;
   };

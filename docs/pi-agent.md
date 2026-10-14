@@ -8,6 +8,12 @@ releasing. Focus that bar and press `Ctrl/Cmd+Shift+Enter` for the equivalent
 keyboard transfer. The surface launches the actual `pi` CLI in a PTY, not a custom Mesa
 chat interface.
 
+Docking Pi into the main workspace replaces the full side pane, normally on
+the right, whatever views it currently contains. The document pane and saved
+pane width stay intact; a deliberately flipped dock stays on its chosen side.
+Full-screen Graph exits so the docked Pi is visible. In an empty workspace Pi
+fills the workspace. Explicit drag placement can still stack Pi with other views.
+
 ## Token Boundary
 
 Pi does not call a model in the background. Mesa exposes the current vault
@@ -32,11 +38,13 @@ into the model prompt.
 ## Terminal
 
 Pi is a trusted external process, not a vault sandbox. Before its first launch
-for a vault in each app session, a native dialog explains full OS file access,
+for a vault, a native dialog explains full OS file access,
 command execution, networking and the absence of Mesa save guarantees. Cancel
 creates no process. The Pi toolbar labels the external-process boundary.
-Approvals stay only in native memory until Mesa quits; switching vaults needs
-that vault's own decision. Terminal session IDs contain 128 OS-random bits;
+Mesa saves an approval with the vault's native approval record in its private
+app-data folder on macOS, Windows and Linux, so later launches do not ask
+again. Each vault needs its own decision. Cancel is not saved. Removing the vault
+from the recent list in the vault menu removes the approval. Terminal session IDs contain 128 OS-random bits;
 they are identifiers, not authentication credentials.
 
 In the desktop app, Pi starts in the current vault folder through Mesa's native

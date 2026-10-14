@@ -439,6 +439,7 @@ export function SyncModal() {
 
   useEffect(() => {
     if (!open) return;
+    void useAppStore.getState().loadSyncSecrets().catch(() => undefined);
     void syncServerRunning().then((running) => {
       if (running !== useAppStore.getState().syncListening) {
         useAppStore.setState({ syncListening: running });

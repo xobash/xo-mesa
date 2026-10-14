@@ -114,3 +114,34 @@ it('keeps externally replaced invalid text read-only even when decoded text is u
   await vi.waitFor(() => expect(f.state.getState().activeContentState).toBe('ready'));
   f.controller.dispose();
 });
+
+it('forgets the side-by-side file when it is deleted outside Mesa', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const files = [file('Live.md'), file('Side.md')];
+  f.state.setState({ files, activePath: 'Live.md', docSplit: { active: 'doc2', other: 'Side.md' },
+    fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });
+  f.change([{ kind: 'remove', paths: ['/v/Side.md'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files).toHaveLength(1));
+  expect(f.state.getState().docSplit).toEqual({ active: 'doc2', other: null });
+  f.controller.dispose();
+});
+
+it('removes 300 external deletes with one catalogue commit and clears their tabs, notes and text', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const existing = Array.from({length:2000}, (_, i) => file(`Old-${i}.md`));
+  const removed = existing.slice(0, 300).map(file => file.relPath);
+  f.state.setState({ files: existing, openTabs: ['Old-0.md', 'Old-1999.md'], activePath: 'Old-0.md', content: 'text',
+    contentCache: Object.fromEntries(existing.map(file => [file.relPath, 'text'])),
+    notes: Object.fromEntries(existing.map(file => [file.relPath, { relPath: file.relPath, title: file.name, rawLinks: [], tags: [], aliases: [] }])),
+    fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });
+  let commits = 0;
+  const stop = f.state.subscribe((state, previous) => { if (state.files !== previous.files) commits++; });
+  f.change([{ kind: 'remove', paths: removed.map(rel => `/v/${rel}`) }]);
+  await vi.waitFor(() => expect(f.state.getState().files).toHaveLength(1700));
+  const state = f.state.getState();
+  expect(commits).toBe(1);
+  expect(state).toMatchObject({ openTabs: ['Old-1999.md'], activePath: null, content: '' });
+  expect(removed.some(rel => rel in state.notes || state.contentCache[rel] !== undefined)).toBe(false);
+  expect(state.contentCache['Old-1999.md']).toBe('text');
+  stop(); f.controller.dispose();
+});

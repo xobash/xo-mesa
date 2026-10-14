@@ -16,6 +16,8 @@ struct Session {
     root: PathBuf,
     entry: PathBuf,
     digest: [u8; 32],
+    /// Bytes of every other resource as first served; later changes are refused.
+    served: HashMap<PathBuf, [u8; 32]>,
     online: bool,
     created: Instant,
     touched: Instant,
@@ -87,6 +89,7 @@ fn create_session(
             root,
             entry: entry.to_path_buf(),
             digest,
+            served: HashMap::new(),
             online,
             created: now,
             touched: now,
@@ -204,10 +207,7 @@ fn policy(online: bool) -> String {
     let on = if online { " https:" } else { "" };
     format!("default-src 'none'; script-src {SOURCES} 'unsafe-inline' 'unsafe-eval' blob:{on}; style-src {SOURCES} 'unsafe-inline'{on}; img-src {SOURCES} data: blob:{on}; font-src {SOURCES} data:{on}; media-src {SOURCES} data: blob:{on}; connect-src {SOURCES}{on}; worker-src {SOURCES} blob:; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'")
 }
-fn read_session(
-    owner: &str,
-    uri: &tauri::http::Uri,
-) -> Result<(PathBuf, bool, Option<[u8; 32]>), String> {
+fn read_session(owner: &str, uri: &tauri::http::Uri) -> Result<(String, PathBuf, bool), String> {
     let (token, raw) = uri
         .path()
         .strip_prefix('/')
@@ -223,8 +223,28 @@ fn read_session(
         .ok_or("session denied")?;
     let path = resolve(&session.root, raw)?;
     session.touched = now;
-    let digest = (path == session.entry).then_some(session.digest);
-    Ok((path, session.online, digest))
+    Ok((token.to_string(), path, session.online))
+}
+/// Consent covers the exact entry bytes and each resource's bytes as first served.
+fn admit_resource(session: &mut Session, path: &Path, digest: [u8; 32]) -> Result<(), String> {
+    let expected = if path == session.entry {
+        session.digest
+    } else {
+        *session.served.entry(path.to_path_buf()).or_insert(digest)
+    };
+    if expected == digest {
+        Ok(())
+    } else {
+        Err("HTML changed after consent".into())
+    }
+}
+fn admit_served(owner: &str, token: &str, path: &Path, body: &[u8]) -> Result<(), String> {
+    let mut map = sessions().lock().map_err(|_| "HTML sessions unavailable")?;
+    let session = map
+        .get_mut(token)
+        .filter(|s| s.owner == owner)
+        .ok_or("session denied")?;
+    admit_resource(session, path, Sha256::digest(body).into())
 }
 pub(crate) fn navigation_allowed(owner: &str, url: &tauri::Url) -> bool {
     let origin = (url.scheme() == "mesa-html" && url.host_str() == Some("localhost"))
@@ -267,15 +287,11 @@ pub(crate) fn serve(
         if request.method() != "GET" {
             return Err("method blocked".into());
         }
-        let (path, online, expected_digest) = read_session(owner, request.uri())?;
+        let (token, path, online) = read_session(owner, request.uri())?;
         crate::vaultscope::require_approved_file(app, path.to_str().ok_or("path unavailable")?)?;
         let content_type = mime(&path).ok_or("type blocked")?;
         let body = read_file(&path)?;
-        if expected_digest
-            .is_some_and(|expected| <[u8; 32]>::from(Sha256::digest(&body)) != expected)
-        {
-            return Err("HTML changed after consent".into());
-        }
+        admit_served(owner, &token, &path, &body)?;
         Ok::<_, String>((body, content_type, online))
     })();
     let (status, body, content_type, online) = match result {
@@ -305,4 +321,45 @@ pub(crate) fn serve(
         }
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session() -> Session {
+        let now = Instant::now();
+        Session {
+            owner: "main".into(),
+            root: PathBuf::from("/vault/site"),
+            entry: PathBuf::from("/vault/site/index.html"),
+            digest: Sha256::digest(b"<script src=app.js></script>").into(),
+            served: HashMap::new(),
+            online: false,
+            created: now,
+            touched: now,
+        }
+    }
+
+    #[test]
+    fn consent_refuses_changed_entry_and_resources_after_first_serve() {
+        let mut s = session();
+        let entry = s.entry.clone();
+        let app = PathBuf::from("/vault/site/app.js");
+        assert!(admit_resource(
+            &mut s,
+            &entry,
+            Sha256::digest(b"<script src=app.js></script>").into()
+        )
+        .is_ok());
+        assert!(admit_resource(
+            &mut s,
+            &entry,
+            Sha256::digest(b"<script>changed</script>").into()
+        )
+        .is_err());
+        assert!(admit_resource(&mut s, &app, Sha256::digest(b"run()").into()).is_ok());
+        assert!(admit_resource(&mut s, &app, Sha256::digest(b"run()").into()).is_ok());
+        assert!(admit_resource(&mut s, &app, Sha256::digest(b"steal()").into()).is_err());
+    }
 }

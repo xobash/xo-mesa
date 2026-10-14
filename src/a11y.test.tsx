@@ -39,6 +39,7 @@ it('names the editor and retains calendar rows and keyboard date navigation', as
   expect(grid).not.toBeNull();
   expect(grid.querySelectorAll(':scope > [role="row"]').length).toBeGreaterThan(4);
   expect(host.querySelector('.cm-content')?.getAttribute('aria-label')).toBe('Note editor');
+  expect(host.querySelector('button[aria-label^="Add event on "]')).not.toBeNull();
   const selected = grid.querySelector<HTMLButtonElement>('[role="gridcell"][aria-selected="true"]')!;
   const date = selected.dataset.calendarDate!;
   act(() => selected.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));

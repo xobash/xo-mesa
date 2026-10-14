@@ -6,7 +6,7 @@ use std::{
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock},
+    sync::{mpsc, Arc, Condvar, Mutex, MutexGuard},
     thread,
     time::{Duration, Instant},
 };
@@ -445,19 +445,25 @@ fn session_id() -> Result<String, String> {
     ))
 }
 
+/// Prompts only when no saved decision exists. A failed save still allows this
+/// launch; Mesa asks again next time. Denial is never recorded.
 fn approve_external_process(
-    grants: &Mutex<HashSet<PathBuf>>,
-    root: &Path,
+    gate: &Mutex<()>,
+    remembered: impl FnOnce() -> bool,
     confirm: impl FnOnce() -> bool,
+    remember: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut grants = grants
+    let _gate = gate
         .lock()
         .map_err(|_| "Pi permission state is unavailable")?;
-    if !grants.contains(root) {
-        if !confirm() {
-            return Err("Pi launch cancelled: external process access was not approved".into());
-        }
-        grants.insert(root.to_path_buf());
+    if remembered() {
+        return Ok(());
+    }
+    if !confirm() {
+        return Err("Pi launch cancelled: external process access was not approved".into());
+    }
+    if let Err(error) = remember() {
+        eprintln!("Mesa could not save the Pi permission: {error}");
     }
     Ok(())
 }
@@ -1038,20 +1044,21 @@ pub async fn terminal_start(
     let root = cwd.as_deref().ok_or("Pi needs an approved vault folder")?;
     let root = crate::vaultscope::require_approved(&app, root)?;
     let (mut cmd, path_prefixes) = terminal_command(program.as_deref())?;
-    static PROCESS_GRANTS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    static PROCESS_GATE: Mutex<()> = Mutex::new(());
     let approved_root = root.clone();
     let dialog_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
         approve_external_process(
-            PROCESS_GRANTS.get_or_init(|| Mutex::new(HashSet::new())),
-            &approved_root,
+            &PROCESS_GATE,
+            || crate::vaultscope::pi_process_allowed(&dialog_app, &approved_root).unwrap_or(false),
             || dialog_app.dialog().message(
-                format!("Vault: {}\n\nPi runs with your normal OS permissions. It can read or change files outside this vault, run commands, and use the network. Pi edits bypass Mesa's verified saves and recovery. Untrusted notes, webpages, and extensions can influence its actions. Allow this trusted external process for this vault until Mesa quits?", approved_root.display())
+                format!("Vault: {}\n\nPi runs with your normal OS permissions. It can read or change files outside this vault, run commands, and use the network. Pi edits bypass Mesa's verified saves and recovery. Untrusted notes, webpages, and extensions can influence its actions. Allow this trusted external process for this vault?\n\nMesa remembers this choice. To remove it, remove this vault from the recent list in the vault menu.", approved_root.display())
             ).title("Allow Pi external process access?")
                 .kind(MessageDialogKind::Warning)
                 .buttons(MessageDialogButtons::OkCancelCustom("Allow Pi".into(), "Cancel".into()))
                 .blocking_show(),
+            || crate::vaultscope::remember_pi_process(&dialog_app, &approved_root),
         )
     }).await.map_err(|_| "Pi permission dialog failed")??;
     let id = session_id()?;
@@ -1535,18 +1542,35 @@ mod tests {
     }
 
     #[test]
-    fn external_process_consent_is_root_scoped_and_denial_is_not_cached() {
-        let grants = Mutex::new(HashSet::new());
-        let root = Path::new("vault-one");
-        assert!(approve_external_process(&grants, root, || false).is_err());
-        assert!(grants.lock().unwrap().is_empty());
-        assert!(approve_external_process(&grants, root, || true).is_ok());
-        assert!(approve_external_process(&grants, root, || panic!(
-            "existing grant prompted again"
-        ))
+    fn external_process_consent_prompts_only_without_a_saved_decision() {
+        let gate = Mutex::new(());
+        let saved = std::cell::Cell::new(false);
+        let ask = |answer: bool| {
+            approve_external_process(
+                &gate,
+                || saved.get(),
+                || answer,
+                || {
+                    saved.set(true);
+                    Ok(())
+                },
+            )
+        };
+        assert!(ask(false).is_err());
+        assert!(!saved.get(), "denial is not saved");
+        assert!(ask(true).is_ok());
+        assert!(saved.get());
+        assert!(approve_external_process(
+            &gate,
+            || true,
+            || panic!("saved decision prompted again"),
+            || panic!("saved decision written again"),
+        )
         .is_ok());
-        assert!(approve_external_process(&grants, Path::new("vault-two"), || false).is_err());
-        assert!(approve_external_process(&Mutex::new(HashSet::new()), root, || false).is_err());
+        assert!(
+            approve_external_process(&gate, || false, || true, || Err("disk full".into())).is_ok(),
+            "a failed save still allows this launch"
+        );
     }
 
     #[cfg(target_os = "windows")]

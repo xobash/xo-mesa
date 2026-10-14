@@ -13,6 +13,13 @@ const APPROVED_ROOTS_FILE: &str = "approved-vault-roots.json";
 #[derive(Clone, Default, Deserialize, Serialize)]
 struct ApprovedRoots {
     roots: BTreeSet<String>,
+    /// Approved roots whose user also allowed Pi as a trusted external process.
+    #[serde(
+        default,
+        rename = "piProcess",
+        skip_serializing_if = "BTreeSet::is_empty"
+    )]
+    pi_process: BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -122,6 +129,40 @@ fn require_approved_from(approval_path: &Path, root: &str) -> Result<PathBuf, St
 
 pub fn require_approved(app: &AppHandle, root: &str) -> Result<PathBuf, String> {
     require_approved_from(&approved_roots_path(app)?, root)
+}
+
+fn pi_process_allowed_from(approval_path: &Path, root: &Path) -> Result<bool, String> {
+    let key = normalized_root(root.to_str().ok_or("vault root is not valid UTF-8")?)?;
+    let approved = load_approved_roots(approval_path)?;
+    Ok(approved.roots.contains(&key) && approved.pi_process.contains(&key))
+}
+
+fn remember_pi_process_from(approval_path: &Path, root: &Path) -> Result<(), String> {
+    let key = normalized_root(root.to_str().ok_or("vault root is not valid UTF-8")?)?;
+    invalidate_approved_roots();
+    let mut approved = load_approved_roots(approval_path)?;
+    if !approved.roots.contains(&key) {
+        return Err("vault folder has not been selected in Mesa".into());
+    }
+    if approved.pi_process.insert(key) {
+        save_approved_roots(approval_path, &approved)?;
+    }
+    Ok(())
+}
+
+/// True when the user already allowed Pi for this canonical approved root.
+pub(crate) fn pi_process_allowed(app: &AppHandle, root: &Path) -> Result<bool, String> {
+    pi_process_allowed_from(&approved_roots_path(app)?, root)
+}
+
+/// Records the Pi decision with the vault approval; forgetting the vault removes both.
+pub(crate) fn remember_pi_process(app: &AppHandle, root: &Path) -> Result<(), String> {
+    let state = app.state::<VaultScopeState>();
+    let _guard = state
+        .0
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    remember_pi_process_from(&approved_roots_path(app)?, root)
 }
 
 fn visible_vault_path(path: &Path) -> bool {
@@ -379,6 +420,9 @@ fn revoke_from(approval_path: &Path, root: &str) -> Result<bool, String> {
     approved
         .roots
         .retain(|approved_root| !spellings.contains(approved_root));
+    approved
+        .pi_process
+        .retain(|approved_root| !spellings.contains(approved_root));
     if approved.roots.len() == before {
         return Ok(false);
     }
@@ -386,30 +430,11 @@ fn revoke_from(approval_path: &Path, root: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Forget a vault folder (recents "forget"). Native commands refuse the root
+/// immediately; the fs/asset plugin scopes cannot drop an allowed directory at
+/// runtime and are rebuilt from the record on the next launch.
 pub(crate) fn revoke_native(app: &AppHandle, root: &str) -> Result<bool, String> {
     revoke_from(&approved_roots_path(app)?, root)
-}
-
-/// Forget a vault folder ("Remove from recents"). Native commands refuse the
-/// root immediately and it can return only through a new folder-dialog pick.
-/// The fs/asset plugin scopes cannot drop an allowed directory at runtime and
-/// are rebuilt from the record on the next launch.
-// Blocking work: run off the main (UI) thread.
-#[tauri::command(async)]
-pub fn vault_revoke(
-    window: tauri::Window,
-    app: AppHandle,
-    state: State<'_, VaultScopeState>,
-    root: String,
-) -> Result<bool, String> {
-    if window.label() != "main" {
-        return Err("vault approval belongs to the main workspace".into());
-    }
-    let _guard = state
-        .0
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    revoke_from(&approved_roots_path(&app)?, &root)
 }
 
 fn is_write_artifact_name(name: &str) -> bool {
@@ -609,6 +634,7 @@ mod tests {
         let approval = dir.join("approved.json");
         let roots = ApprovedRoots {
             roots: BTreeSet::from([normalized_root(root.to_str().unwrap()).unwrap()]),
+            ..Default::default()
         };
         save_approved_roots(&approval, &roots).unwrap();
         for (rel, allowed) in [
@@ -746,6 +772,41 @@ mod tests {
         assert!(normalized_root("/vault/../private").is_err());
         #[cfg(windows)]
         assert!(normalized_root("C:\\Vault\\..\\Private").is_err());
+    }
+
+    #[test]
+    fn pi_process_consent_persists_with_the_vault_and_is_revoked_with_it() {
+        let base = std::env::temp_dir().join(format!("mesa-scope-pi-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (a, b) = (base.join("a"), base.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let (a, b) = (fs::canonicalize(a).unwrap(), fs::canonicalize(b).unwrap());
+        let record = base.join("approved.json");
+        let roots = ApprovedRoots {
+            roots: BTreeSet::from([normalized_root(a.to_str().unwrap()).unwrap()]),
+            ..Default::default()
+        };
+        save_approved_roots(&record, &roots).unwrap();
+
+        assert!(!pi_process_allowed_from(&record, &a).unwrap());
+        assert!(
+            remember_pi_process_from(&record, &b).is_err(),
+            "unselected vault"
+        );
+        remember_pi_process_from(&record, &a).unwrap();
+        invalidate_approved_roots();
+        assert!(
+            pi_process_allowed_from(&record, &a).unwrap(),
+            "survives a reload"
+        );
+        assert!(!pi_process_allowed_from(&record, &b).unwrap());
+
+        assert!(revoke_from(&record, a.to_str().unwrap()).unwrap());
+        let reloaded = read_approved_roots(&record).unwrap();
+        assert!(reloaded.roots.is_empty() && reloaded.pi_process.is_empty());
+        invalidate_approved_roots();
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

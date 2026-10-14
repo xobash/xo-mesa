@@ -21,6 +21,14 @@ surface, read-only code surface, or `MediaView`.
 The “other” row is not an internal document implementation. Mesa preserves and
 lists those files but does not claim to parse, render, or serialize them.
 
+Main and detached image viewers and hover/search previews use `VaultImage`.
+It preserves the approved-vault asset URL and lets the system webview decode
+the image. A load or decode failure replaces the broken-image icon with a
+message and Retry image action. Opening another image clears that failure;
+retry creates a fresh image element. Mesa does not rewrite damaged images.
+`MediaView.test.tsx` covers load failure, retry and document-switch isolation.
+File validity and native webview decoding remain separate checks.
+
 `CodeView` keeps the exact tokenized code view and RFC-style CSV/TSV table for
 ordinary files. Very large code and data files use a windowed row view, so file
 open and scroll work scales with the viewport instead of total line count.

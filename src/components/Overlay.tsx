@@ -724,7 +724,7 @@ function AppleCalendar() {
               if (e.key === "Enter") submitEvent();
             }}
           />
-          <button className="btn" onClick={submitEvent} disabled={!evTitle.trim()}>
+          <button className="btn" onClick={submitEvent} disabled={!evTitle.trim()} aria-label={`Add event on ${selected}`} title="Add event">
             +
           </button>
         </div>

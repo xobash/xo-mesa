@@ -43,8 +43,8 @@ function focusOpenedDocument(): void {
 }
 
 function readSavedSearches(): string[] {
-  if (typeof localStorage === "undefined") return [];
   try {
+    if (typeof localStorage === "undefined") return [];
     const parsed = JSON.parse(localStorage.getItem(SAVED_SEARCHES_KEY) || "[]");
     return Array.isArray(parsed)
       ? parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0).slice(0, MAX_SAVED_SEARCHES)
@@ -55,7 +55,7 @@ function readSavedSearches(): string[] {
 }
 
 function writeSavedSearches(searches: string[]): void {
-  if (typeof localStorage === "undefined") return;
+  if (typeof localStorage === "undefined") throw new Error("Local storage unavailable");
   localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(searches.slice(0, MAX_SAVED_SEARCHES)));
 }
 
@@ -172,6 +172,8 @@ export function SearchSurface({
   const [q, setQ] = useState(initialQuery);
   const [sel, setSel] = useState(0);
   const [savedSearches, setSavedSearches] = useState<string[]>(() => readSavedSearches());
+  const [savedSearchIssue, setSavedSearchIssue] = useState(false);
+  const resultsRef = useRef<HTMLDivElement | null>(null);
   const dq = useDeferredValue(q);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -236,8 +238,10 @@ export function SearchSurface({
     const executor = indexedSearch.current;
     let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     if (executor?.accepts(cache)) {
+      let fallbackStarted = false;
       const fallBackToMainThread = () => {
-        if (cancelled) return;
+        if (cancelled || fallbackStarted) return;
+        fallbackStarted = true;
         executor.cancel();
         executor.release();
         indexedSearch.current = null;
@@ -251,14 +255,14 @@ export function SearchSurface({
       fallbackTimer = setTimeout(fallBackToMainThread, 2500);
       void executor.run(files, cache, dq).then(pass => {
         if (fallbackTimer) clearTimeout(fallbackTimer);
-        if (cancelled) return;
+        if (cancelled || fallbackStarted) return;
         passRef.current = pass;
         setResultSet({ query: dq, files, cache, hits: pass.hits });
         markMesaPerf("search-complete", { queryLength: dq.length, hits: pass.hits.length, files: files.length, worker: true });
         setActiveScanGeneration(current => current === generation ? null : current);
       }).catch(() => {
         if (fallbackTimer) clearTimeout(fallbackTimer);
-        if (!cancelled) { executor.release(); indexedSearch.current = null; step(); }
+        fallBackToMainThread();
       });
     } else step();
     return () => {
@@ -297,22 +301,24 @@ export function SearchSurface({
     const next = `${parsed.term ? `${parsed.term} ` : ""}ext:${nextExt}`;
     updateQuery(next);
   }, [q, updateQuery]);
+  const persistSavedSearches = useCallback((next: string[]) => {
+    try {
+      writeSavedSearches(next);
+      setSavedSearches(next);
+      setSavedSearchIssue(false);
+    } catch {
+      setSavedSearchIssue(true);
+    }
+  }, []);
   const saveCurrentSearch = useCallback(() => {
     const trimmed = q.trim();
     if (trimmed.length < 2 && !parseSearchQuery(trimmed).ext) return;
-    setSavedSearches((current) => {
-      const next = [trimmed, ...current.filter((item) => item !== trimmed)].slice(0, MAX_SAVED_SEARCHES);
-      writeSavedSearches(next);
-      return next;
-    });
-  }, [q]);
+    const next = [trimmed, ...savedSearches.filter((item) => item !== trimmed)].slice(0, MAX_SAVED_SEARCHES);
+    persistSavedSearches(next);
+  }, [q, savedSearches, persistSavedSearches]);
   const removeSavedSearch = useCallback((query: string) => {
-    setSavedSearches((current) => {
-      const next = current.filter((item) => item !== query);
-      writeSavedSearches(next);
-      return next;
-    });
-  }, []);
+    persistSavedSearches(savedSearches.filter((item) => item !== query));
+  }, [savedSearches, persistSavedSearches]);
   const previewTarget = useMemo(
     () => (active ? ({ kind: "note", id: active.rel } as const) : null),
     [active]
@@ -322,10 +328,14 @@ export function SearchSurface({
     if (results.length === 0) return;
     if (e.key === "ArrowDown" || (e.key === "Tab" && !e.shiftKey)) {
       e.preventDefault();
-      setSel((s) => Math.min(results.length - 1, s + 1));
+      const next = Math.min(results.length - 1, selClamped + 1);
+      setSel(next);
+      resultsRef.current?.querySelectorAll<HTMLElement>(".search-item")[next]?.scrollIntoView({ block: "nearest" });
     } else if (e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey)) {
       e.preventDefault();
-      setSel((s) => Math.max(0, s - 1));
+      const next = Math.max(0, selClamped - 1);
+      setSel(next);
+      resultsRef.current?.querySelectorAll<HTMLElement>(".search-item")[next]?.scrollIntoView({ block: "nearest" });
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (active) openActive(active.rel);
@@ -372,6 +382,11 @@ export function SearchSurface({
           </button>
         )}
       </div>
+      {savedSearchIssue && (
+        <div className="palette-empty" role="alert">
+          Could not save searches in local storage. Your saved searches are unchanged. Try again.
+        </div>
+      )}
       {savedSearches.length > 0 && (
         <div className="saved-searches" aria-label="Saved searches">
           {savedSearches.map((query) => (
@@ -404,6 +419,7 @@ export function SearchSurface({
       </div>
       <div className="search-body">
         <div
+          ref={resultsRef}
           className="palette-list search-results"
           aria-busy={!resultsCurrent}
         >

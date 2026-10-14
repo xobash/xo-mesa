@@ -1,3 +1,4 @@
+import { VaultImage } from "./VaultImage";
 import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { readTextFile } from "@tauri-apps/plugin-fs";
@@ -7,19 +8,12 @@ import { IN_TAURI, fileKind, isTextExt, urlForPath } from "../lib/vault";
 import { rtfToText } from "../lib/rtf";
 import { statusLine } from "../lib/faces";
 import { compareNames } from "../lib/sort";
-import {
-  MAX_SAVED_HTML_ASSET_CHARS,
-  hydrateSavedHtml,
-  rewriteSavedHtml,
-  stripSavedHtmlPreviewCode,
-  savedHtmlFrameDocument,
-} from "../lib/html";
 import type { ActivityOp } from "../lib/activity";
 import type { PreviewTarget, VaultFile } from "../types";
 
-async function readSavedStylesheet(path: string): Promise<string> {
+async function readSavedStylesheet(path: string, maxBytes: number): Promise<string> {
   if (!IN_TAURI) return readTextFile(path);
-  const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes: MAX_SAVED_HTML_ASSET_CHARS, requireComplete: true });
+  const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes, requireComplete: true });
   return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
@@ -192,19 +186,23 @@ function PreviewCardImpl({
       setHtmlPreview({ rel, html: HTML_PREVIEW_TOO_LARGE });
       return;
     }
-    const stripped = stripSavedHtmlPreviewCode(rawContent);
-    if (rawContent.length <= 256 * 1024) {
-      const fallback = rewriteSavedHtml(stripped, noteFile.path, urlForPath);
-      setHtmlPreview({ rel, html: savedHtmlFrameDocument(fallback) });
-    } else setHtmlPreview(null);
-    if (!rawContent) return;
-    void hydrateSavedHtml(
-      stripped,
-      noteFile.path,
-      urlForPath,
-      readSavedStylesheet,
-      { vaultRoot: vaultRoot ?? undefined, scripts: false, previewCodeStripped: true }
-    ).then((html) => {
+    setHtmlPreview(null);
+    // The saved-HTML sanitizer stays out of startup until a preview needs it.
+    void import("../lib/html").then(async ({ MAX_SAVED_HTML_ASSET_CHARS, hydrateSavedHtml, rewriteSavedHtml, stripSavedHtmlPreviewCode, savedHtmlFrameDocument }) => {
+      if (!alive) return;
+      const stripped = stripSavedHtmlPreviewCode(rawContent);
+      if (rawContent.length <= 256 * 1024) {
+        const fallback = rewriteSavedHtml(stripped, noteFile.path, urlForPath);
+        setHtmlPreview({ rel, html: savedHtmlFrameDocument(fallback) });
+      }
+      if (!rawContent) return;
+      const html = await hydrateSavedHtml(
+        stripped,
+        noteFile.path,
+        urlForPath,
+        (path) => readSavedStylesheet(path, MAX_SAVED_HTML_ASSET_CHARS),
+        { vaultRoot: vaultRoot ?? undefined, scripts: false, previewCodeStripped: true }
+      );
       if (alive) setHtmlPreview({ rel, html: savedHtmlFrameDocument(html) });
     }).catch(() => { if (alive) setHtmlPreview({ rel, html: "Safe HTML preview is unavailable." }); });
     return () => {
@@ -258,7 +256,7 @@ function PreviewCardImpl({
     if (noteFile && kind === "image") {
       body = (
         <div className="preview-media">
-          <img className="preview-img" src={urlForPath(noteFile.path)} alt={title} />
+          <VaultImage className="preview-img" src={urlForPath(noteFile.path)} alt={title} />
         </div>
       );
     } else if (noteFile && kind === "pdf") {

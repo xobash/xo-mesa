@@ -13,6 +13,13 @@ function matchesWindow(pattern: string, label: string): boolean {
 }
 
 describe("native filesystem and remote-browser scopes", () => {
+  it("lets the OS opener receive only http(s) URLs and never opens page links by itself", () => {
+    const openers = capabilities.flatMap((capability) => capability.permissions ?? [])
+      .filter((permission) => (typeof permission === "string" ? permission : permission.identifier).startsWith("opener:"));
+    expect(openers).toEqual([{ identifier: "opener:allow-open-url", allow: [{ url: "https://*" }, { url: "http://*" }] }]);
+    expect(registered).toContain(".open_js_links_on_click(false)");
+  });
+
   it("starts filesystem and asset access empty", () => {
     const fsScope = defaultCapability.permissions.find(
       (permission) => typeof permission === "object" && permission.identifier === "fs:scope",

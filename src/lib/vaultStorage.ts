@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export const VAULT_INDEX_STORAGE_VERSION = 5;
+export const VAULT_INDEX_STORAGE_VERSION = 6;
 const namespaces = new Map<string, string>();
 function desktop(): boolean { return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window; }
 const opaque = (root: string) => /^vault:[0-9a-f]{64}$/.test(root);

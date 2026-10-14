@@ -39,6 +39,12 @@ export function syncSecretsFromSettings(settings: Settings): SyncSecrets {
   return { syncToken: settings.syncToken, peers };
 }
 
+/** Startup reads the OS credential store only when sync can run or old
+ *  settings still hold keys to migrate; sync surfaces load it when opened. */
+export function syncSecretsNeededAtStartup(settings: Settings): boolean {
+  return settings.syncEnabled || settings.syncToken.length > 0 || settings.peers.some(peer => !!peer.token);
+}
+
 export function syncSecretSignature(settings: Settings): string {
   return JSON.stringify(syncSecretsFromSettings(settings));
 }

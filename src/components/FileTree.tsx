@@ -232,6 +232,7 @@ async function copyText(text: string): Promise<boolean> {
     ok = false;
   }
   document.body.removeChild(ta);
+  if (!ok) useAppStore.setState({ status: "Could not copy to the clipboard." });
   return ok;
 }
 
@@ -258,7 +259,7 @@ const TreeRow = memo(function TreeRow({
   renaming: boolean;
   onOpen: (rel: string) => void;
   onToggle: (path: string) => void;
-  onContext: (rel: string, kind: "file" | "folder", name: string, x: number, y: number) => void;
+  onContext: (rel: string, kind: "file" | "folder", name: string, x: number, y: number, invoker?: HTMLElement) => void;
   onCommitRename: (rel: string, name: string) => void;
   onCancelRename: () => void;
   onFocus: () => void;
@@ -274,6 +275,7 @@ const TreeRow = memo(function TreeRow({
       return (
         <input
           className="tree-rename"
+          aria-label={`Rename ${node.name}`}
           style={{ marginLeft: depth * 14 + 10 }}
           autoFocus
           defaultValue={node.name}
@@ -308,6 +310,12 @@ const TreeRow = memo(function TreeRow({
           });
         }}
         onKeyDown={(e) => {
+          if (opensContextMenu(e)) {
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            onContext(rel, "file", node.name, r.left + 16, r.bottom, e.currentTarget);
+            return;
+          }
           if (e.repeat || (e.key !== "Enter" && e.key !== " ")) return;
           e.preventDefault();
           previewLeave();
@@ -327,7 +335,7 @@ const TreeRow = memo(function TreeRow({
             await copyText(file.path);
             return;
           }
-          onContext(rel, "file", node.name, e.clientX, e.clientY);
+          onContext(rel, "file", node.name, e.clientX, e.clientY, e.currentTarget);
         }}
         title={node.path}
       >
@@ -364,10 +372,16 @@ const TreeRow = memo(function TreeRow({
             )
           }
           onMouseLeave={previewLeave}
+          onKeyDown={(e) => {
+            if (!opensContextMenu(e)) return;
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            onContext(node.path, "folder", node.name, r.left + 16, r.bottom, e.currentTarget);
+          }}
           onContextMenu={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            onContext(node.path, "folder", node.name, e.clientX, e.clientY);
+            onContext(node.path, "folder", node.name, e.clientX, e.clientY, e.currentTarget);
           }}
         >
           <span className="caret">{open ? "▾" : "▸"}</span>
@@ -382,6 +396,11 @@ const TreeRow = memo(function TreeRow({
 /** Mount viewport rows, overscan, and the keyboard focus range.
  * Rows receive state through props. Reserve the full row-list height and
  * position rows by index so scrolling remains stable. memo isolates parent renders. */
+/** Shift+F10 and the Menu key open a row's context menu from the keyboard. */
+function opensContextMenu(e: React.KeyboardEvent): boolean {
+  return (e.key === "F10" && e.shiftKey) || e.key === "ContextMenu";
+}
+
 export const FileTree = memo(function FileTree() {
   const files = useAppStore((s) => s.files);
   // Subscribe to notes only for links sorting. Event handlers read current titles from the store.
@@ -446,6 +465,8 @@ export const FileTree = memo(function FileTree() {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  // Row that opened the menu; keyboard dismissal returns focus to it.
+  const menuInvokerRef = useRef<HTMLElement | null>(null);
   const treeRef = useRef<HTMLDivElement | null>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT);
@@ -525,8 +546,10 @@ export const FileTree = memo(function FileTree() {
   const onOpen = useCallback((rel: string) => void openFile(rel), [openFile]);
   const onToggle = useCallback((path: string) => toggleFolder(path), [toggleFolder]);
   const onContext = useCallback(
-    (rel: string, kind: "file" | "folder", name: string, x: number, y: number) =>
-      setMenu({ rel, kind, name, x, y }),
+    (rel: string, kind: "file" | "folder", name: string, x: number, y: number, invoker?: HTMLElement) => {
+      menuInvokerRef.current = invoker ?? null;
+      setMenu({ rel, kind, name, x, y });
+    },
     []
   );
   const onCommitRename = useCallback(
@@ -603,6 +626,31 @@ export const FileTree = memo(function FileTree() {
     }
   }, [menu]);
 
+  const menuOpen = menu !== null;
+  useEffect(() => {
+    if (menuOpen) menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [menuOpen]);
+  function restoreMenuFocus(): void {
+    const invoker = menuInvokerRef.current;
+    menuInvokerRef.current = null;
+    if (invoker?.isConnected) invoker.focus();
+  }
+  const onMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      setMenu(null);
+      restoreMenuFocus();
+      return;
+    }
+    const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next = e.key === "ArrowDown" ? at + 1 : e.key === "ArrowUp" ? at - 1
+      : e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : null;
+    if (next === null || !items.length) return;
+    e.preventDefault();
+    items[(next + items.length) % items.length].focus();
+  };
+
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
@@ -614,6 +662,7 @@ export const FileTree = memo(function FileTree() {
       if (e.key === "Escape") {
         e.stopPropagation();
         close();
+        restoreMenuFocus();
       }
     };
     window.addEventListener("click", close);
@@ -678,13 +727,22 @@ export const FileTree = memo(function FileTree() {
           <div
             ref={menuRef}
             className="context-menu"
+            role="menu"
+            aria-label={`Actions for ${menu.name}`}
             data-native-webview-occluder=""
             style={{ left: menu.x, top: menu.y }}
             onClick={(e) => e.stopPropagation()}
+            // Like native menus, activating an item returns focus to its row
+            // before the action runs, so dialogs it opens can restore focus there.
+            onClickCapture={(e) => {
+              if ((e.target as HTMLElement).closest('[role="menuitem"]')) restoreMenuFocus();
+            }}
+            onKeyDown={onMenuKeyDown}
           >
           {menu.kind === "folder" ? (
             <>
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   void createChildNote(menu.rel);
@@ -694,6 +752,7 @@ export const FileTree = memo(function FileTree() {
                 New note
               </button>
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   void createChildFolder(menu.rel);
@@ -702,8 +761,9 @@ export const FileTree = memo(function FileTree() {
               >
                 New folder
               </button>
-              <div className="context-sep" />
+              <div className="context-sep" role="separator" />
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   toggleBookmark(menu.rel);
@@ -713,6 +773,7 @@ export const FileTree = memo(function FileTree() {
                 {bookmarks.includes(menu.rel) ? "Remove from bookmarks" : "Bookmark…"}
               </button>
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   void copyText(menu.rel);
@@ -726,7 +787,8 @@ export const FileTree = memo(function FileTree() {
             <>
               {enableTabs && (
                 <button
-                  className="context-item"
+                  role="menuitem"
+                className="context-item"
                   onClick={() => {
                     void openFile(menu.rel);
                     setMenu(null);
@@ -736,6 +798,7 @@ export const FileTree = memo(function FileTree() {
                 </button>
               )}
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   void getStore().openToSide(menu.rel);
@@ -745,6 +808,7 @@ export const FileTree = memo(function FileTree() {
                 Open to the side
               </button>
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   void openDocWindow(menu.rel);
@@ -753,8 +817,9 @@ export const FileTree = memo(function FileTree() {
               >
                 Open in new window
               </button>
-              <div className="context-sep" />
+              <div className="context-sep" role="separator" />
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   void duplicateEntry(menu.rel);
@@ -764,6 +829,7 @@ export const FileTree = memo(function FileTree() {
                 Duplicate
               </button>
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   toggleBookmark(menu.rel);
@@ -773,6 +839,7 @@ export const FileTree = memo(function FileTree() {
                 {bookmarks.includes(menu.rel) ? "Remove from bookmarks" : "Bookmark…"}
               </button>
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   void copyText(absPath(menu.rel));
@@ -781,8 +848,9 @@ export const FileTree = memo(function FileTree() {
               >
                 Copy path
               </button>
-              <div className="context-sep" />
+              <div className="context-sep" role="separator" />
               <button
+                role="menuitem"
                 className="context-item"
                 onClick={() => {
                   setRenaming(menu.rel);
@@ -793,9 +861,10 @@ export const FileTree = memo(function FileTree() {
               </button>
             </>
           )}
-          <div className="context-sep" />
+          <div className="context-sep" role="separator" />
           <button
-            className="context-item danger"
+            role="menuitem"
+                className="context-item danger"
             onClick={() => {
               const title =
                 menu.kind === "file"
@@ -817,7 +886,8 @@ export const FileTree = memo(function FileTree() {
             Move to recovery
           </button>
           <button
-            className="context-item"
+            role="menuitem"
+                className="context-item"
             onClick={() => {
               setMenu(null);
               openRecovery();

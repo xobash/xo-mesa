@@ -43,6 +43,14 @@ export function ConnectVaultModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const cancelled = useRef(false);
 
+  // Saved keys load on demand; keep anything the user already typed.
+  useEffect(() => {
+    void useAppStore.getState().loadSyncSecrets().then(() => {
+      const saved = useAppStore.getState().settings.syncToken;
+      setKey(current => current || saved);
+    }).catch(() => undefined);
+  }, []);
+
   // Live LAN discovery while this modal is open.
   useEffect(() => {
     if (!IN_TAURI) return;

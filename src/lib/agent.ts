@@ -164,42 +164,6 @@ export function piBinaryWriteBlock(
   };
 }
 
-/** Configure the loopback activity bridge and append bundled extensions without replacing user extensions. */
-export function piActivityLaunch(info: ActivityInfo | null | undefined): {
-  env: Record<string, string>;
-  args: string[];
-} {
-  if (!info || !info.port || !info.token || !info.extensionPath) {
-    return { env: {}, args: [] };
-  }
-  const args = ["--extension", info.extensionPath];
-  if (info.goalExtensionPath) args.push("--extension", info.goalExtensionPath);
-  if (info.contextExtensionPath) args.push("--extension", info.contextExtensionPath);
-  if (info.browserExtensionPath) args.push("--extension", info.browserExtensionPath);
-  return {
-    env: {
-      MESA_ACTIVITY_PORT: String(info.port),
-      MESA_ACTIVITY_TOKEN: info.token,
-    },
-    args,
-  };
-}
-
-/** Add the research extension and active-run configuration only for a Deep Research launch. */
-export function piDeepResearchLaunch(
-  info: ActivityInfo | null | undefined,
-  runId: string
-): { env: Record<string, string>; args: string[] } {
-  if (!runId.trim() || !info?.deepResearchExtensionPath) return { env: {}, args: [] };
-  return {
-    env: {
-      MESA_DEEP_RESEARCH: "1",
-      MESA_DEEP_RESEARCH_RUN_ID: runId,
-    },
-    args: ["--extension", info.deepResearchExtensionPath],
-  };
-}
-
 export function webSearchUrl(query: string): string {
   const q = query.trim();
   return q
@@ -236,4 +200,19 @@ export function archiveRelPath(url: string, now = new Date()): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
   return `Web Archives/${stamp}-${slug || "page"}.html`;
+}
+
+/** Mirrors native `terminal_start` (terminal.rs): research extension and run env only for a nonblank run ID. The bundled-extension tests pin against it. */
+export function piDeepResearchLaunch(
+  info: ActivityInfo | null | undefined,
+  runId: string
+): { env: Record<string, string>; args: string[] } {
+  if (!runId.trim() || !info?.deepResearchExtensionPath) return { env: {}, args: [] };
+  return {
+    env: {
+      MESA_DEEP_RESEARCH: "1",
+      MESA_DEEP_RESEARCH_RUN_ID: runId,
+    },
+    args: ["--extension", info.deepResearchExtensionPath],
+  };
 }

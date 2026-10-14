@@ -15,6 +15,7 @@ const expectedLazyPrefixes = [
   "ConnectVaultModal-",
   "Editor-",
   "GraphView-",
+  "HtmlView-",
   "Overlay-",
   "SearchPanel-",
   "SettingsModal-",
