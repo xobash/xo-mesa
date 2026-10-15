@@ -195,26 +195,6 @@ export async function deletePage(bytes: Uint8Array, index: number): Promise<Uint
   return doc.save();
 }
 
-/** Reorder existing pages inside the same document to preserve forms, metadata, outlines, and destinations. */
-export async function reorderPages(
-  bytes: Uint8Array,
-  order: number[]
-): Promise<Uint8Array> {
-  const doc = await loadForEdit(bytes);
-  const n = doc.getPageCount();
-  const isPermutation =
-    order.length === n &&
-    new Set(order).size === n &&
-    order.every((i) => Number.isInteger(i) && i >= 0 && i < n);
-  if (!isPermutation) {
-    throw new Error(`Page order must be a permutation of 0..${n - 1}.`);
-  }
-  const pages = doc.getPages();
-  for (let i = n - 1; i >= 0; i--) doc.removePage(i);
-  for (const i of order) doc.addPage(pages[i]);
-  return doc.save();
-}
-
 /** Move a page from one position to another (same-document reattach). */
 export async function movePage(
   bytes: Uint8Array,

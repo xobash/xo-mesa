@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   togglePanel,
   removeView,
-  placeView,
   placeInCenter,
   placeInRight,
   closeCenterView,
@@ -33,26 +32,6 @@ describe("removePanel", () => {
   });
 });
 
-describe("placePanel", () => {
-  it("inserts at an index", () => {
-    expect(placeView(["preview", "tasks"], "graph", 1)).toEqual([
-      "preview",
-      "graph",
-      "tasks",
-    ]);
-  });
-  it("moves an existing panel (dedupes) to the new index", () => {
-    expect(placeView(["preview", "graph", "tasks"], "tasks", 0)).toEqual([
-      "tasks",
-      "preview",
-      "graph",
-    ]);
-  });
-  it("clamps the index to the ends", () => {
-    expect(placeView(["preview"], "graph", 99)).toEqual(["preview", "graph"]);
-    expect(placeView(["preview"], "graph", -5)).toEqual(["graph", "preview"]);
-  });
-});
 
 describe("region placement", () => {
   it("swaps the side panel into the center and moves the editor to the side", () => {

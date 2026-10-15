@@ -34,18 +34,6 @@ export function removeView(stack: PaneView[], view: PaneView): PaneView[] {
   return stack.filter((v) => v !== view);
 }
 
-/**
- * Place `view` at `index` (removing any existing copy first, then clamping).
- */
-export function placeView(
-  stack: PaneView[],
-  view: PaneView,
-  index: number
-): PaneView[] {
-  const without = stack.filter((v) => v !== view);
-  const i = Math.max(0, Math.min(index, without.length));
-  return [...without.slice(0, i), view, ...without.slice(i)];
-}
 
 export interface WorkspacePlacement {
   centerView: WorkspaceView;

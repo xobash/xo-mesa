@@ -427,7 +427,6 @@ src/lib/shortcuts.test.ts
 src/lib/shortcuts.ts
 src/lib/sort.test.ts
 src/lib/sort.ts
-src/lib/startupTextCache.test.ts
 src/lib/startupTextCache.ts
 src/lib/supplyChainContract.test.ts
 src/lib/sync.test.ts

@@ -20,7 +20,6 @@ import {
   buildChangeSet,
   safeNoteTitle,
   safeFolderName,
-  makeLinkTarget,
   titleSlug,
   validateResearchResult,
   researchReportQualityIssues,
@@ -311,13 +310,9 @@ describe("safeNoteTitle / safeFolderName", () => {
   });
 });
 
-describe("titleSlug / makeLinkTarget", () => {
+describe("titleSlug", () => {
   it("slugifies for dedupe comparison", () => {
     expect(titleSlug("Deep Research — Foo Bar!")).toBe("deep-research-foo-bar");
-  });
-  it("builds a vault-relative md link target", () => {
-    expect(makeLinkTarget("Research", "My Note")).toBe("Research/My Note.md");
-    expect(makeLinkTarget("", "Root Note")).toBe("Root Note.md");
   });
 });
 

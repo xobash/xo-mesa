@@ -5,7 +5,6 @@ import {
   rotatePage,
   deletePage,
   movePage,
-  reorderPages,
   addText,
   replaceText,
   addHighlight,
@@ -76,9 +75,7 @@ describe("pdf editing core", () => {
     expect(await readPdfPages(one)).toHaveLength(1); // refused to go to 0
   });
 
-  it("reorders and moves pages", async () => {
-    const r = await reorderPages(await makePdf(3), [2, 0, 1]);
-    expect(await readPdfPages(r)).toHaveLength(3);
+  it("moves pages", async () => {
     const m = await movePage(await makePdf(3), 0, 2);
     expect(await readPdfPages(m)).toHaveLength(3);
   });
@@ -348,7 +345,6 @@ describe("pdf editing core", () => {
     await expect(rotatePage(enc, 0, 90)).rejects.toThrow(guard);
     await expect(deletePage(enc, 0)).rejects.toThrow(guard);
     await expect(movePage(enc, 0, 1)).rejects.toThrow(guard);
-    await expect(reorderPages(enc, [1, 0])).rejects.toThrow(guard);
     await expect(
       addText(enc, { page: 0, x: 10, y: 10, text: "x" })
     ).rejects.toThrow(guard);
@@ -370,7 +366,7 @@ describe("pdf editing core", () => {
   });
 
   it("preserves form fields and metadata across page moves", async () => {
-    // reorderPages used to copy pages into a fresh document, silently dropping
+    // Page moves used to copy pages into a fresh document, silently dropping
     // the AcroForm (every form field), title/author metadata, and outlines.
     const doc = await PDFDocument.create();
     doc.setTitle("Move Fixture");
@@ -403,13 +399,6 @@ describe("pdf editing core", () => {
     const three = await makePdf(3);
     expect(pdfBytesEqual(await movePage(three, 1, 1), three)).toBe(true);
     expect(pdfBytesEqual(await movePage(three, 5, 0), three)).toBe(true);
-  });
-
-  it("rejects a non-permutation page order", async () => {
-    const three = await makePdf(3);
-    await expect(reorderPages(three, [0, 0, 1])).rejects.toThrow(/permutation/i);
-    await expect(reorderPages(three, [0, 1])).rejects.toThrow(/permutation/i);
-    await expect(reorderPages(three, [0, 1, 3])).rejects.toThrow(/permutation/i);
   });
 
   it("detects blank pdf.js paint output", () => {

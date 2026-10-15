@@ -867,12 +867,6 @@ export function safeFolderName(folder: string): string {
   return base || "Research";
 }
 
-/** Vault-relative `[[link]]` target for a note titled `title` in `folder`. */
-export function makeLinkTarget(folder: string, title: string): string {
-  const name = safeNoteTitle(title);
-  return folder ? `${safeFolderName(folder)}/${name}.md` : `${name}.md`;
-}
-
 // ---------------------------------------------------------------------------
 // Context builder
 // ---------------------------------------------------------------------------
