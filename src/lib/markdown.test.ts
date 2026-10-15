@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // renderMarkdown sanitizes its output through DOMPurify, which needs a DOM;
 // the extraction tests below are DOM-agnostic and run fine under jsdom too.
+import MarkdownIt from "markdown-it";
 import { describe, it, expect } from "vitest";
 import { renderMarkdown, sanitizeHtml } from "./markdown";
 import {
@@ -41,7 +42,7 @@ describe("extractTags", () => {
     expect(extractTags(src).sort()).toEqual(["alpha", "beta/gamma"]);
   });
 
-  it("matches the previous fenced-code stripping behavior without copying the source", () => {
+  it("skips exactly the code the renderer shows as code", () => {
     const cases = [
       "#a\n```js\n#skip\n```\n#b",
       "text```js\n#skip\n``` #after",
@@ -49,12 +50,17 @@ describe("extractTags", () => {
       "```unterminated\n#kept",
       "#one\n```a``` #two\n```b\n#skip\n``` #three",
     ];
+    // Oracle: tags in the text markdown-it shows outside code.
+    const md = new MarkdownIt({ html: true, linkify: true });
     const reference = (source: string) => {
       const out = new Set<string>();
-      const cleaned = source.replace(/```[\s\S]*?```/g, "");
-      const re = /(?:^|\s)#([A-Za-z][\w/-]*)/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(cleaned))) out.add(m[1]);
+      const text = md.parse(source, {})
+        .filter((t) => t.type === "inline")
+        .map((t) => (t.children ?? [])
+          .map((c) => (c.type === "text" ? c.content : c.type.endsWith("break") ? "\n" : "\0"))
+          .join(""))
+        .join("\n");
+      for (const m of text.matchAll(/(?:^|\s)#([A-Za-z][\w/-]*)/g)) out.add(m[1]);
       return [...out];
     };
     for (const source of cases) {

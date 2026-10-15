@@ -339,7 +339,7 @@ export function DiagnosticsModal() {
           <div className="diag-marks">
             {snapshot.latest.length ? snapshot.latest.map((event) => (
               <div className="diag-mark" key={`${event.name}-${event.at}`}>
-                <span>{event.name}</span>
+                <span>{event.name}{event.detail ? ` · ${Object.entries(event.detail).map(([key, value]) => `${key} ${value}`).join(" · ")}` : ""}</span>
                 <time>at {(event.at / 1000).toFixed(1)} s</time>
               </div>
             )) : <span className="setting-desc">No local marks recorded yet.</span>}

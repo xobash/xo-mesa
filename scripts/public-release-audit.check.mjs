@@ -148,6 +148,11 @@ it('checks staged Markdown file links and admits anchors, external URLs and fenc
   assert.match(result.stderr, /broken Markdown file link/);
   const valid = auditFixture({ files: { 'README.md': '[local](docs/page.md#topic) [anchor](#topic) [web](https://example.com)\n```md\n[example](missing.md)\n```\n', 'docs/page.md': '# Topic\n' } });
   assert.equal(valid.status, 0, valid.stderr);
+  const nested = auditFixture({ files: { 'README.md': '````md\n```\n[example](missing.md)\n```\n````\n```\nx\n```js\n[example](missing.md)\n' } });
+  assert.equal(nested.status, 0, nested.stderr);
+  const notFence = auditFixture({ files: { 'README.md': '``` a`b\n[missing](docs/missing.md)\n' } });
+  assert.notEqual(notFence.status, 0);
+  assert.match(notFence.stderr, /broken Markdown file link/);
 });
 
 it('rejects omitted native modules and accepts file or directory module layouts', () => {

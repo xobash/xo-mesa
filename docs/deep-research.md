@@ -228,7 +228,7 @@ before it can become a change set:
   `###` heading containing the exact text of each `result.subQuestions` entry.
   Numbering and emphasis are normalized; unrelated topic labels are not
   considered equivalent questions. Each subsection must contain its own
-  validated source URL citation. Headings in fenced examples or other sections,
+  validated source URL citation. Headings in code examples or other sections,
   and citations from a later Synthesis section, cannot satisfy this requirement. Every final source must also be
   present in Mesa's observed-navigation record. An incomplete or
   unobserved-source report is rejected with the missing elements listed; it is

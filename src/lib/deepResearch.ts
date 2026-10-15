@@ -1,6 +1,7 @@
 import type { ProposedOp } from "./researchApplyPlan";
 import type { NoteMeta, VaultFile } from "../types";
 import { safeBaseName } from "./fsnames";
+import { codeLineScanner } from "./markdownCode";
 import { extractLinks } from "./markdownExtract";
 import { makeResolver } from "./graph";
 import { backlinksFor } from "./graph";
@@ -1386,15 +1387,9 @@ export function researchReportQualityIssues(
   // Only real Markdown headings count. Fenced examples and citations in the
   // next top-level section must not satisfy a missing findings subsection.
   const sections: Array<{ level: number; title: string; body: string }> = [];
-  let fence: string | null = null;
+  const isCode = codeLineScanner();
   for (const line of markdown.split(/\r?\n/)) {
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
-    if (marker) {
-      if (!fence) fence = marker[1];
-      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && !line.slice(marker[0].length).trim()) fence = null;
-      continue;
-    }
-    if (fence) continue;
+    if (isCode(line)) continue;
     const heading = line.match(/^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
     if (heading) sections.push({ level: heading[1].length, title: heading[2].replace(/[*_`]/g, ""), body: "" });
     else if (sections.length) sections[sections.length - 1].body += `${line}\n`;

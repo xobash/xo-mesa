@@ -6,6 +6,7 @@ import {
 import { forkContentCache, markCacheTaskStable } from "../lib/documentWorkingSet";
 import { buildNotes, resolveTarget } from "../lib/graph";
 import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
+import { isMarkdownPath } from "../lib/markdownCode";
 import {
   openViewInWorkspace,
   placeInCenter
@@ -73,8 +74,8 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       [file.relPath]: {
         relPath: file.relPath,
         title: file.name,
-        rawLinks: extractLinks(content),
-        tags: extractTags(content),
+        rawLinks: extractLinks(content, isMarkdownPath(file.relPath)),
+        tags: extractTags(content, isMarkdownPath(file.relPath)),
         aliases: extractAliases(content),
         firstImagePath: undefined,
       },

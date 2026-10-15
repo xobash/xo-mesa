@@ -1,5 +1,6 @@
 import type { VaultFile, NoteMeta, GraphNode, GraphLink } from "../types";
 import { extractLinksAndFirstImage, extractTags, extractAliases } from "./markdownExtract";
+import { isMarkdownPath } from "./markdownCode";
 import { isTextualVaultFile } from "./vault";
 
 /** Shared lazy image lookup for parsed and persisted note metadata. */
@@ -40,14 +41,14 @@ export function buildNotes(
     if (!isTextualVaultFile(f) || (only && !only.has(f.relPath))) continue;
     const src = contents.get(f.relPath) ?? "";
     // One wiki scan feeds both the links and the thumbnail image.
-    const { links: rawLinks, references: rawReferences, firstImage } = extractLinksAndFirstImage(src);
+    const { links: rawLinks, references: rawReferences, firstImage } = extractLinksAndFirstImage(src, !!f.isMarkdown);
     const firstImagePath = firstImage ? resolveImage(firstImage) : undefined;
     notes[f.relPath] = {
       relPath: f.relPath,
       title: f.name,
       rawLinks,
       rawReferences,
-      tags: extractTags(src),
+      tags: extractTags(src, !!f.isMarkdown),
       aliases: extractAliases(src),
       firstImagePath,
     };
@@ -64,8 +65,9 @@ function sameStrings(a: string[], b: string[]): boolean {
 /** Refresh link/tag/alias metadata, returning null when it is unchanged.
  * Preserves notes-object identity for topology caches. Thumbnails update on rescan. */
 export function refreshedNoteMeta(cur: NoteMeta, src: string): NoteMeta | null {
-  const { links: rawLinks, references: rawReferences } = extractLinksAndFirstImage(src);
-  const tags = extractTags(src);
+  const markdown = isMarkdownPath(cur.relPath);
+  const { links: rawLinks, references: rawReferences } = extractLinksAndFirstImage(src, markdown);
+  const tags = extractTags(src, markdown);
   const aliases = extractAliases(src);
   if (
     sameStrings(cur.rawLinks, rawLinks) &&

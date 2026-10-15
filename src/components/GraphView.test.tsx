@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Simulation, ForceLink, ForceManyBody } from "d3-force";
+import type { Simulation, ForceCollide, ForceLink, ForceManyBody } from "d3-force";
 import type { GraphNode, GraphLink, VaultFile } from "../types";
 import { useAppStore } from "../store";
 import { buildNotes } from "../lib/graph";
@@ -75,6 +75,64 @@ it("replays creation order with only admitted nodes and links in the real force 
   expect(linkForce().links()).toHaveLength(2);
   expect(host.querySelector('[aria-label="Start timelapse animation"]')).not.toBeNull();
   expect(simulation()).toBe(sim);
+});
+it("runs large-graph drag physics in a worker while the canvas keeps the grabbed node at the pointer", () => {
+  const posted: { type: string; session: number; index?: number; fx?: number; init?: { grab: number; collideIterations: number } }[] = [];
+  const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
+  vi.stubGlobal("Worker", class {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor() { workers.push(this); }
+    postMessage(message: (typeof posted)[number]) { posted.push(message); }
+    terminate() {}
+  });
+  const frames = () => (requestAnimationFrame as unknown as { mock: { calls: [FrameRequestCallback][] } }).mock.calls;
+  const runFrame = () => act(() => frames()[frames().length - 1][0](performance.now()));
+  const entries = Object.fromEntries(Array.from({ length: 700 }, (_, i) =>
+    [`Node-${i}.md`, i > 0 && i < 100 ? "[[Node-0]]" : ""]));
+  const files: VaultFile[] = Object.keys(entries).map((relPath) => ({
+    path: `/demo/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true,
+  }));
+  act(() => {
+    useAppStore.setState({ files, notes: buildNotes(files, new Map(Object.entries(entries))),
+      settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false },
+      openDocWindow: vi.fn().mockResolvedValue(undefined) });
+    root.render(<GraphView />);
+  });
+  const sim = simulation();
+  const nodes = sim.nodes();
+  const hubIndex = nodes.findIndex(n => n.degree > 50);
+  const hub = nodes[hubIndex];
+  const other = nodes[(hubIndex + 1) % nodes.length];
+  const x = hub.x!, y = hub.y!;
+  pointer("pointerdown", x, y);
+  pointer("pointermove", x + 8, y + 2);
+  const start = posted.find(m => m.type === "start")!;
+  expect(start.init!.grab).toBe(hubIndex);
+  expect(start.init!.collideIterations).toBeGreaterThan(1);
+  pointer("pointermove", x + 20, y + 5);
+  expect(posted.at(-1)).toMatchObject({ type: "move", session: start.session, index: hubIndex, fx: x + 20 });
+  expect(hub.x).toBeCloseTo(x + 20);
+
+  const tick = vi.spyOn(sim, "tick");
+  const state = new Float64Array(nodes.length * 4);
+  nodes.forEach((n, i) => { state[i * 4] = n.x! + 7; state[i * 4 + 1] = n.y!; });
+  const otherX = other.x!;
+  act(() => workers[0].onmessage!({ data: { type: "state", session: start.session, state, alpha: 0.25 } }));
+  runFrame();
+  expect(tick).not.toHaveBeenCalled();
+  expect(other.x).toBeCloseTo(otherX + 7);
+  expect(hub.x).toBeCloseTo(x + 20);
+  expect(sim.alpha()).toBe(0.25);
+
+  pointer("pointerup", x + 20, y + 5);
+  expect(posted.at(-1)).toMatchObject({ type: "release", session: start.session, index: hubIndex });
+  state.fill(0);
+  nodes.forEach((n, i) => { state[i * 4] = n.x!; state[i * 4 + 1] = n.y!; });
+  act(() => workers[0].onmessage!({ data: { type: "idle", session: start.session, state, alpha: 0.003 } }));
+  runFrame();
+  expect(posted.at(-1)).toMatchObject({ type: "stop", session: start.session });
+  expect(Number.isFinite(hub.x)).toBe(true);
 });
 it("keeps large-graph hubs and isolated nodes free in the shared simulation", () => {
   const entries = new Map<string, string>();
@@ -217,12 +275,16 @@ it("replays and drags a synthetic large graph without non-finite physics", () =>
   const hub = [...sim.nodes()].sort((a, b) => b.degree - a.degree)[0];
   const orphan = sim.nodes().find(n => n.degree === 0)!;
   expect(hub.degree).toBeGreaterThan(50);
+  const collide = sim.force("collide") as ForceCollide<GraphNode>;
+  const collidePasses = collide.iterations();
+  expect(collidePasses).toBeGreaterThan(1);
   for (const node of [hub, orphan]) {
     const x = node.x!, y = node.y!;
     pointer("pointerdown", x, y);
     expect(node.fx).toBeCloseTo(x);
     for (let i = 1; i <= 60; i++) {
       pointer("pointermove", x + i * 4, y + i);
+      if (i > 1) expect(collide.iterations()).toBe(1);
       sim.tick();
       expect(node.x).toBeCloseTo(x + i * 4);
       expect(node.y).toBeCloseTo(y + i);
@@ -230,6 +292,7 @@ it("replays and drags a synthetic large graph without non-finite physics", () =>
     const alpha = sim.alpha();
     pointer("pointerup", x + 240, y + 60);
     expect(sim.alpha()).toBe(alpha);
+    expect(collide.iterations()).toBe(collidePasses);
     sim.tick(100);
     expect(sim.nodes().every(n => Number.isFinite(n.x) && Number.isFinite(n.y))).toBe(true);
   }

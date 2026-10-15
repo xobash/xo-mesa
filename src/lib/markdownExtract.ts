@@ -1,4 +1,10 @@
-/** Dependency-free note metadata extraction. Rendering imports extraction, never the reverse. */
+/**
+ * Dependency-free note metadata extraction. Rendering imports extraction, never
+ * the reverse. Links, images and tags come from prose only, never from code
+ * (`markdownCode.ts`). Every extractor takes `markdown`: false for other text
+ * files, whose only code is fenced blocks.
+ */
+import { codeRanges, proseText } from "./markdownCode";
 
 export const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
 
@@ -36,6 +42,8 @@ export function extractAliases(source: string): string[] {
 }
 
 const WIKI_END_RE = /[\]\n]/g;
+/** Characters whose presence in code could change what the link scans find. */
+const LINK_SYNTAX = /[[\]()<>]/;
 const TARGET_END_RE = /[)\s]/g;
 
 /** All [[note]] targets referenced by a note (image embeds excluded). */
@@ -210,16 +218,18 @@ function firstMarkdownImage(source: string): string | null {
   return null;
 }
 
-export function extractLinks(source: string): string[] {
+export function extractLinks(source: string, markdown = true): string[] {
   if (!source.includes("[")) return [];
+  source = proseText(source, markdown, LINK_SYNTAX);
   const out = scanWikiRefs(source).links;
   appendMarkdownLinks(source, out);
   return out;
 }
 
 /** The first image a note references, used for the graph thumbnail. */
-export function extractFirstImage(source: string): string | null {
+export function extractFirstImage(source: string, markdown = true): string | null {
   if (!source.includes("[")) return null;
+  source = proseText(source, markdown, LINK_SYNTAX);
   return scanWikiRefs(source).firstImage ?? firstMarkdownImage(source);
 }
 
@@ -227,12 +237,13 @@ export function extractFirstImage(source: string): string | null {
  * Both of the above from a SINGLE wiki scan — what `buildNotes` wants for every
  * note in the vault. Identical results to calling them separately.
  */
-export function extractLinksAndFirstImage(source: string): {
+export function extractLinksAndFirstImage(source: string, markdown = true): {
   links: string[];
   references: string[];
   firstImage: string | null;
 } {
   if (!source.includes("[")) return { links: [], references: [], firstImage: null };
+  source = proseText(source, markdown, LINK_SYNTAX);
   const { links, references, firstImage } = scanWikiRefs(source);
   appendMarkdownLinks(source, links);
   appendMarkdownReferences(source, references);
@@ -241,25 +252,20 @@ export function extractLinksAndFirstImage(source: string): {
 }
 
 // #tags — a hash directly followed by a word (no space), not a Markdown heading
-// (headings have a space after the hashes) and not a fenced code block.
+// (headings have a space after the hashes) and not code.
 const TAG_RE = /(?:^|\s)#([A-Za-z][\w/-]*)/g;
-const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
 
-export function extractTags(source: string): string[] {
+export function extractTags(source: string, markdown = true): string[] {
   if (!source.includes("#")) return [];
+  const code = codeRanges(source, markdown);
   const out = new Set<string>();
-  FENCE_RE.lastIndex = 0;
-  let fence = FENCE_RE.exec(source);
+  let k = 0;
   let m: RegExpExecArray | null;
   TAG_RE.lastIndex = 0;
   while ((m = TAG_RE.exec(source))) {
     const hashAt = m.index + m[0].lastIndexOf("#");
-    while (fence && fence.index + fence[0].length <= hashAt) {
-      fence = FENCE_RE.exec(source);
-    }
-    if (fence && fence.index <= hashAt && hashAt < fence.index + fence[0].length) {
-      continue;
-    }
+    while (k < code.length && code[k + 1] <= hashAt) k += 2;
+    if (k < code.length && code[k] <= hashAt) continue;
     out.add(m[1]);
   }
   return [...out];

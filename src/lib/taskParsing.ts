@@ -3,6 +3,8 @@
  * notes, with optional due dates, bucketed into Overdue / Today / Upcoming /
  * No date / Done — the core of an Obsidian "Tasks"-style dashboard.
  */
+import { codeLineScanner, isMarkdownPath, mayHoldCode } from "./markdownCode";
+
 export type TaskKind = "agent" | "personal";
 
 export interface TaskItem {
@@ -42,24 +44,19 @@ export function taskProject(rel: string): string {
   return i < 0 ? "" : norm.slice(0, i);
 }
 
+/** `markdown` is false for other text files, whose only code is fenced blocks. */
 export function parseTasks(
   rel: string,
   noteTitle: string,
-  content: string
+  content: string,
+  markdown = isMarkdownPath(rel)
 ): TaskItem[] {
   const out: TaskItem[] = [];
-  // A fence closes only on the same character with at least the same length.
-  let fence: string | null = null;
+  const isCode = mayHoldCode(content, markdown) ? codeLineScanner(markdown) : null;
   const lines = content.split("\n");
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
-    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
-    if (marker) {
-      if (!fence) fence = marker;
-      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = null;
-      continue;
-    }
-    if (fence) continue;
+    if (isCode?.(line)) continue;
     const m = TASK_RE.exec(line);
     if (!m) continue;
     const dueMatch = DUE_RE.exec(m[2]);

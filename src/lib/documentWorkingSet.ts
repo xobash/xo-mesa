@@ -1,9 +1,11 @@
 import { inflateSync } from 'fflate';
 import type { IndexedDocument } from "./documentCodec";
+import { isMarkdownPath } from "./markdownCode";
 import type { TaskItem } from "./taskParsing";
 export type { IndexedDocument } from "./documentCodec";
 
-interface Entry { value?: string; indexed?: IndexedDocument }
+/** `markdown` is false for other text files, whose tasks follow plain-text code rules. */
+interface Entry { value?: string; indexed?: IndexedDocument; markdown?: boolean }
 interface State { buckets: Map<string, Entry>[]; shared: Set<number>; pool: WorkingSet }
 const states = new WeakMap<object, State>();
 const cacheLineage = new WeakMap<object, { parent: WeakRef<object>; changed: Set<string>; taskStable: Set<string> }>();
@@ -42,7 +44,7 @@ async function drainCompactions(): Promise<void> {
         if (entry?.value !== undefined) { entries.push(entry); chars += entry.value.length; }
       }
       const texts = entries.map(entry => entry.value!);
-      const docs = await codec.encode(texts);
+      const docs = await codec.encode(texts, entries.map(entry => entry.markdown ?? true));
       entries.forEach((entry, i) => { entry.indexed = docs[i]; delete entry.value; });
       if (compactions.length) await new Promise(resolve => setTimeout(resolve, 0));
     }
@@ -106,7 +108,7 @@ function wrap(s: State): Record<string, string> {
       cacheLineage.get(proxy)?.changed.add(key);
       const bucket = hash(key) % BUCKETS;
       if (s.shared.has(bucket)) { s.buckets[bucket] = new Map(s.buckets[bucket]); s.shared.delete(bucket); }
-      const entry = { value };
+      const entry = { value, markdown: isMarkdownPath(key) };
       s.buckets[bucket].set(key, entry); scheduleCompaction(entry); return true;
     },
     deleteProperty: (_target, key) => {

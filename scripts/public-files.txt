@@ -245,6 +245,7 @@ src/controllers/persistence.test.ts
 src/controllers/persistence.ts
 src/controllers/research.test.ts
 src/controllers/research.ts
+src/controllers/vault.indexReopen.test.ts
 src/controllers/vault.test.ts
 src/controllers/vault.ts
 src/controllers/vault.watcherLimit.test.ts
@@ -310,6 +311,9 @@ src/lib/fsnames.test.ts
 src/lib/fsnames.ts
 src/lib/graph.test.ts
 src/lib/graph.ts
+src/lib/graphPhysics.test.ts
+src/lib/graphPhysics.ts
+src/lib/graphPhysics.worker.ts
 src/lib/graphWindowBootstrap.test.ts
 src/lib/graphWindowBootstrap.ts
 src/lib/highlight.test.ts
@@ -335,6 +339,8 @@ src/lib/localNotes.ts
 src/lib/markdown.test.ts
 src/lib/markdown.ts
 src/lib/markdown.worker.ts
+src/lib/markdownCode.test.ts
+src/lib/markdownCode.ts
 src/lib/markdownDom.test.ts
 src/lib/markdownDom.ts
 src/lib/markdownExtract.test.ts

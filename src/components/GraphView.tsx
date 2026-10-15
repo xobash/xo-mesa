@@ -8,6 +8,7 @@ import {
   forceCollide,
   forceX,
   forceY,
+  type ForceCollide,
   type Simulation,
 } from "d3-force";
 import type { GraphNode, GraphLink } from "../types";
@@ -55,6 +56,16 @@ const LABEL_TOP_N = 10;
 // visually cross, giving a hard no-overlap guarantee that coexists with living
 // motion. Constant (not zoom-dependent) so layout is stable under zoom.
 const OVERLAP_GAP = 8;
+// Graphs this large tick slower than a frame, so their drag physics runs in a
+// worker and the canvas keeps drawing at display rate.
+const WORKER_DRAG_MIN_NODES = 500;
+// Settling after release runs two ticks per frame below this node count.
+const DOUBLE_TICK_BELOW = 650;
+
+/** Uniform neighbour velocity cap during a drag — no hub boost. */
+function dragVelocityCap(nodeCount: number): number {
+  return nodeCount > 700 ? 4 : nodeCount > 350 ? 5 : 6;
+}
 
 function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): number {
   if (moving || active) return ACTIVE_FRAME_MS;
@@ -87,6 +98,8 @@ function rectLinePenalty(
 }
 
 import { graphLinkNodeId, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
+import { markMesaPerf } from "../lib/mesaPerf";
 export { resolveOverlaps } from "./graphGeometry";
 
 /** Tag and phantom nodes are synthetic — they have no backing file, so they
@@ -166,6 +179,8 @@ interface DragState {
   moved: boolean;
   offsetX?: number;
   offsetY?: number;
+  /** Configured collide passes, restored when a moved node drag ends. */
+  collideIterations?: number;
 }
 
 /** A gear glyph for the graph-settings button. */
@@ -329,6 +344,19 @@ export function GraphView() {
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   const simRef = useRef<Simulation<GraphNode, GraphLink> | null>(null);
+  // Bounded per-drag frame samples, summarized into one local `graph-drag` mark.
+  const dragPerfRef = useRef<{ startedAt: number; last: number; intervals: number[]; work: number[]; draw: number[]; physics: number } | null>(null);
+  // Off-thread drag physics: while active, the worker owns ticking and the
+  // frame loop copies its latest state into these node objects.
+  const physicsRef = useRef<{
+    worker: Worker | null;
+    failed: boolean;
+    active: boolean;
+    session: number;
+    nodes: GraphNode[];
+    index: Map<GraphNode, number>;
+    pending: GraphPhysicsResponse | null;
+  }>({ worker: null, failed: false, active: false, session: 0, nodes: [], index: new Map(), pending: null });
   const nodesRef = useRef<GraphNode[]>([]);
   const forceNodesRef = useRef<GraphNode[]>([]);
   const linksRef = useRef<GraphLink[]>([]);
@@ -457,6 +485,7 @@ export function GraphView() {
     allLinks: GraphLink[],
     reheat = true
   ): void {
+    stopDragPhysics();
     const visibleIds = new Set(visibleNodes.map((n) => n.id));
     const visibleLinks = allLinks.filter(
       (l) =>
@@ -677,7 +706,7 @@ export function GraphView() {
     if (!nodes.length) return;
     // During drag, a hub's neighbors follow the link force with a modest
     // velocity cap; overlap resolution stays suspended until drag ends.
-    const baseCap = nodes.length > 700 ? 4 : nodes.length > 350 ? 5 : 6;
+    const baseCap = dragVelocityCap(nodes.length);
     for (const n of nodes) {
       if (n === dragging) continue;
       // Same cap for every node — no hub boost. Calm, uniform follow.
@@ -685,6 +714,115 @@ export function GraphView() {
       if (n.vy != null) n.vy = clamp(n.vy, -baseCap, baseCap);
     }
   }
+
+  function physicsWorker(): Worker | null {
+    const p = physicsRef.current;
+    if (p.worker || p.failed) return p.worker;
+    if (typeof Worker === "undefined") {
+      p.failed = true;
+      return null;
+    }
+    try {
+      const worker = new Worker(new URL("../lib/graphPhysics.worker.ts", import.meta.url), { type: "module" });
+      worker.onmessage = (event: MessageEvent<GraphPhysicsResponse>) => {
+        const current = physicsRef.current;
+        if (!current.active || event.data.session !== current.session) return;
+        current.pending = event.data;
+        if (dragPerfRef.current) dragPerfRef.current.physics++;
+        needsRedrawRef.current = true;
+        resumeRef.current();
+      };
+      worker.onerror = () => {
+        const current = physicsRef.current;
+        current.failed = true;
+        stopDragPhysics();
+        worker.terminate();
+        current.worker = null;
+      };
+      p.worker = worker;
+    } catch {
+      p.failed = true;
+    }
+    return p.worker;
+  }
+
+  function copyPhysicsState(message: GraphPhysicsResponse): void {
+    const { nodes } = physicsRef.current;
+    const grabbed = dragRef.current.node;
+    const state = message.state;
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      // The grabbed node already sits at the pointer; the worker trails it.
+      if (n !== grabbed) {
+        n.x = state[i * 4];
+        n.y = state[i * 4 + 1];
+      }
+      n.vx = state[i * 4 + 2];
+      n.vy = state[i * 4 + 3];
+    }
+    simRef.current?.alpha(message.alpha);
+  }
+
+  /** Apply the newest worker state. Returns true when positions changed. */
+  function applyDragPhysics(): boolean {
+    const p = physicsRef.current;
+    const message = p.pending;
+    if (!message) return false;
+    p.pending = null;
+    copyPhysicsState(message);
+    if (message.type === "idle" && !(dragRef.current.node && dragRef.current.moved)) stopDragPhysics();
+    return true;
+  }
+
+  /** Return physics to the main-thread simulation with the latest worker state. */
+  function stopDragPhysics(): void {
+    const p = physicsRef.current;
+    if (!p.active) return;
+    if (p.pending) copyPhysicsState(p.pending);
+    p.pending = null;
+    p.active = false;
+    p.worker?.postMessage({ type: "stop", session: p.session } satisfies GraphPhysicsRequest);
+  }
+
+  function postPhysics(message: GraphPhysicsRequest): void {
+    physicsRef.current.worker?.postMessage(message);
+  }
+
+  /** Move a large graph's drag physics off the UI thread, or re-grab in a running session. */
+  function startDragPhysics(node: GraphNode, collideIterations: number | undefined): void {
+    const p = physicsRef.current;
+    const sim = simRef.current;
+    if (!sim || timelapseRef.current) return;
+    if (p.active) {
+      const index = p.index.get(node);
+      if (index == null) stopDragPhysics();
+      else postPhysics({ type: "grab", session: p.session, index, fx: node.fx ?? node.x ?? 0, fy: node.fy ?? node.y ?? 0 });
+      return;
+    }
+    const nodes = sim.nodes();
+    if (nodes.length < WORKER_DRAG_MIN_NODES) return;
+    const worker = physicsWorker();
+    if (!worker) return;
+    const collide = sim.force("collide") as ForceCollide<GraphNode> | null | undefined;
+    const init = snapshotGraphPhysics(sim, {
+      collideIterations: collideIterations ?? collide?.iterations() ?? 1,
+      velocityCap: dragVelocityCap(forceNodesRef.current.length),
+      doubleTickBelow: DOUBLE_TICK_BELOW,
+      grab: node,
+    });
+    p.session += 1;
+    p.active = true;
+    p.nodes = nodes;
+    p.index = new Map(nodes.map((n, i) => [n, i]));
+    p.pending = null;
+    worker.postMessage({ type: "start", session: p.session, init } satisfies GraphPhysicsRequest);
+  }
+
+  useEffect(() => () => {
+    physicsRef.current.worker?.terminate();
+    physicsRef.current.worker = null;
+    physicsRef.current.active = false;
+  }, []);
 
   // Center + scale so the whole graph fits the viewport.
   function fitView(): boolean {
@@ -711,6 +849,7 @@ export function GraphView() {
     // A filter or metadata refresh replaces node objects. Release any grab
     // before replacing them so it cannot pin a stale node or keep alpha hot.
     if (dragRef.current.node || dragRef.current.panning) endDrag(false);
+    stopDragPhysics();
     const { nodes, links } = buildGraph(notes, files, {
       showTags: graphShowTags,
       existingOnly: graphExistingFilesOnly,
@@ -938,6 +1077,7 @@ export function GraphView() {
   useEffect(() => {
     const sim = simRef.current;
     if (!sim) return;
+    stopDragPhysics();
     const count = timelineNodesRef.current.length;
     const big = count > 300;
     const huge = count > 800;
@@ -987,6 +1127,8 @@ export function GraphView() {
     layoutSettledRef.current = false;
     needsRedrawRef.current = true;
     resumeRef.current();
+  // stopDragPhysics only reads refs; graph settings drive this effect.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     graphNodeSize,
     graphCenterForce,
@@ -2069,10 +2211,16 @@ export function GraphView() {
         nodesRef.current.length > 0 &&
         now - lastDrawAtRef.current >= frameMs;
 
-      // Tick the sim if it still has energy or we're dragging a node.
-      if (sim && (sim.alpha() > 0.004 || isMovingNode)) {
+      // Tick the sim if it still has energy or we're dragging a node. While
+      // the worker owns physics, take its newest state instead.
+      if (physicsRef.current.active) {
+        if (applyDragPhysics()) {
+          needsRedrawRef.current = true;
+          layoutSettledRef.current = false;
+        }
+      } else if (sim && (sim.alpha() > 0.004 || isMovingNode)) {
         const ticks =
-          nodesRef.current.length < 650 && sim.alpha() > 0.06 && !isNodeDragging ? 2 : 1;
+          nodesRef.current.length < DOUBLE_TICK_BELOW && sim.alpha() > 0.06 && !isNodeDragging ? 2 : 1;
         for (let i = 0; i < ticks; i++) {
           sim.tick();
           if (isMovingNode) clampNodeVelocities(dragRef.current.node);
@@ -2085,7 +2233,7 @@ export function GraphView() {
       if (zooming) needsRedrawRef.current = true;
 
       // Run the positional overlap resolver only at idle; forceCollide owns moving and dragged nodes.
-      const settling = isNodeDragging || (sim ? sim.alpha() > 0.02 : false);
+      const settling = isNodeDragging || physicsRef.current.active || (sim ? sim.alpha() > 0.02 : false);
       if (!settling && !layoutSettledRef.current && forceNodesRef.current.length > 0) {
         if (resolveOverlaps(forceNodesRef.current, graphNodeRadius, OVERLAP_GAP, 2)) {
           needsRedrawRef.current = true;
@@ -2110,7 +2258,10 @@ export function GraphView() {
       // Ambient motion is not a dirty-flag side effect. When animations are on,
       // the canvas redraws at the living cadence even after d3 is fully settled.
       if (shouldDraw) {
+        const drawStart = performance.now();
         draw(now, activeItems);
+        const perf = dragPerfRef.current;
+        if (perf && perf.draw.length < 4096) perf.draw.push(performance.now() - drawStart);
         lastDrawAtRef.current = now;
         needsRedrawRef.current = false;
       }
@@ -2137,8 +2288,16 @@ export function GraphView() {
       raf = 0;
       if (!alive || document.hidden || !canvasVisibleRef.current) return;
       running = true;
+      const frameStart = performance.now();
       try {
         frame();
+        const perf = dragPerfRef.current;
+        if (perf && perf.work.length < 4096) {
+          const end = performance.now();
+          perf.intervals.push(frameStart - perf.last);
+          perf.work.push(end - frameStart);
+          perf.last = frameStart;
+        }
         if (hadFrameError) {
           hadFrameError = false;
           setDrawingFailed(false);
@@ -2162,7 +2321,8 @@ export function GraphView() {
         dragRef.current.node || dragRef.current.panning || activeRecords(0.02).length ||
         activityRef.current.some(item => item.visible) ||
         focusRef.current.k !== focusTarget || (hoverRef.current.id && shownIdRef.current !== hoverRef.current.id) || !layoutSettledRef.current ||
-        replayCameraRef.current || fitPendingRef.current || timelapseRef.current;
+        replayCameraRef.current || fitPendingRef.current || timelapseRef.current ||
+        physicsRef.current.active;
       if ((animationsOn && nodesRef.current.length > 0) || urgent) {
         const quiet = !document.hasFocus() || performance.now() - lastInputAt >= 15_000;
         if (urgent || !quiet) raf = requestAnimationFrame(loop);
@@ -2274,9 +2434,28 @@ export function GraphView() {
           const target = 0.3;
           sim?.alpha(Math.max(sim.alpha(), target));
           sim?.alphaTarget(target);
+          // A drag frame is dominated by the whole-graph tick. One collide pass
+          // per tick keeps the drag within layout noise of the configured
+          // passes; idle overlap cleanup still runs after release.
+          const collide = sim?.force("collide") as ForceCollide<GraphNode> | null | undefined;
+          if (collide) {
+            d.collideIterations = collide.iterations();
+            collide.iterations(1);
+          }
+          startDragPhysics(d.node, d.collideIterations);
+          const startedAt = performance.now();
+          dragPerfRef.current = { startedAt, last: startedAt, intervals: [], work: [], draw: [], physics: 0 };
         }
         motionUntilRef.current = performance.now() + 2400;
         fastDrawUntilRef.current = performance.now() + 260;
+      }
+      const physics = physicsRef.current;
+      const physicsIndex = d.moved && physics.active ? physics.index.get(d.node) : undefined;
+      if (physicsIndex != null) {
+        // The worker trails the pointer by a step; draw the grabbed node at the pointer now.
+        d.node.x = d.node.fx;
+        d.node.y = d.node.fy;
+        postPhysics({ type: "move", session: physics.session, index: physicsIndex, fx: d.node.fx, fy: d.node.fy });
       }
       needsRedrawRef.current = true;
       resumeRef.current();
@@ -2306,10 +2485,16 @@ export function GraphView() {
         void getStore().openDocWindow(d.node.id);
       d.node.fx = null;
       d.node.fy = null;
+      const physics = physicsRef.current;
+      const physicsIndex = physics.active ? physics.index.get(d.node) : undefined;
+      if (physicsIndex != null) postPhysics({ type: "release", session: physics.session, index: physicsIndex });
       const sim = simRef.current;
       if (sim) {
         // Let existing energy decay; releasing a hub must not add a kick.
         sim.alphaTarget(0);
+        if (d.collideIterations != null) {
+          (sim.force("collide") as ForceCollide<GraphNode> | null)?.iterations(d.collideIterations);
+        }
       }
       // Longer, eased motion tail so the post-drag settle reads as living
       // motion, not a hard stop. The draw loop scales ambient amplitude with
@@ -2333,6 +2518,23 @@ export function GraphView() {
       } else {
         lastBgClickRef.current = now;
       }
+    }
+    const perf = dragPerfRef.current;
+    dragPerfRef.current = null;
+    if (perf && perf.work.length > 1) {
+      const quantile = (values: number[], q: number) =>
+        Math.round([...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * q)] * 10) / 10;
+      const seconds = (performance.now() - perf.startedAt) / 1000;
+      markMesaPerf("graph-drag", {
+        nodes: forceNodesRef.current.length,
+        worker: physicsRef.current.active,
+        fps: Math.round((perf.work.length / seconds) * 10) / 10,
+        frameGapP90Ms: quantile(perf.intervals.slice(1), 0.9),
+        frameWorkP50Ms: quantile(perf.work, 0.5),
+        frameWorkP90Ms: quantile(perf.work, 0.9),
+        drawP50Ms: perf.draw.length ? quantile(perf.draw, 0.5) : 0,
+        physicsPerSec: Math.round((physicsRef.current.active ? perf.physics : perf.work.length) / seconds),
+      });
     }
     dragRef.current = { node: null, panning: false, lastX: 0, lastY: 0, moved: false };
   }

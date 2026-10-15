@@ -280,7 +280,8 @@ describe("task whitespace regression", () => {
     for (const prefix of spaces) for (const gap of spaces) {
       for (const body of bodies) for (const suffix of spaces) {
         const line = `${prefix}* [X]${gap}${body}${suffix}`;
-        const parsed = oldParse.exec(line);
+        // A tab reaches column 4, so those lines are indented code, not tasks.
+        const parsed = /^ ?\t/.test(prefix) ? null : oldParse.exec(line);
         const tasks = parseTasks("n.md", "Note", line);
         expect(tasks.map((t) => t.text)).toEqual(parsed ? [parsed[2].trim()] : []);
         const edited = oldEdit.exec(line);

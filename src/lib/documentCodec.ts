@@ -16,7 +16,8 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
-export function encodeDocument(text: string): IndexedDocument {
+/** `markdown` is false for other text files, whose tasks follow plain-text code rules. */
+export function encodeDocument(text: string, markdown = true): IndexedDocument {
   let loneSurrogate = false;
   if (/[\uD800-\uDFFF]/.test(text)) {
     for (let i = 0; i < text.length; i++) {
@@ -55,6 +56,6 @@ export function encodeDocument(text: string): IndexedDocument {
     encoding,
     chars: text.length,
     bloom,
-    tasks: JSON.parse(JSON.stringify(parseTasks("", "", text))) as TaskItem[],
+    tasks: JSON.parse(JSON.stringify(parseTasks("", "", text, markdown))) as TaskItem[],
   };
 }

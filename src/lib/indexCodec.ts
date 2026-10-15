@@ -39,20 +39,22 @@ export function createIndexCodec() {
   }
 
   return {
-    async encode(texts: string[]): Promise<IndexedDocument[]> {
+    /** `markdown[i]` is false when `texts[i]` is another text file, not a Markdown note. */
+    async encode(texts: string[], markdown: readonly boolean[] = []): Promise<IndexedDocument[]> {
       if (!texts.length) return [];
-      if (!worker) return texts.map(encodeDocument);
+      const local = () => texts.map((text, i) => encodeDocument(text, markdown[i] ?? true));
+      if (!worker) return local();
       const id = ++nextId;
       try {
         return await new Promise<IndexedDocument[]>((resolve, reject) => {
           const timer = setTimeout(stop, 30_000);
           pending.set(id, { resolve, reject, timer });
-          try { worker!.postMessage({ id, texts }); }
+          try { worker!.postMessage({ id, texts, markdown }); }
           catch { stop(); }
         });
       } catch {
         // The cache is optional. Preserve exact text when workers are unavailable.
-        return texts.map(encodeDocument);
+        return local();
       }
     },
     dispose: stop,

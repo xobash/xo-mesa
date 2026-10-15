@@ -1,3 +1,4 @@
+import { forEachSegment, inlineCodeSpans, isMarkdownPath } from "./markdownCode";
 import { extOf, stripExt } from "./vault";
 
 const WIKI_LINK_RE = /(!?)\[\[([^\]\n]+?)\]\]/g;
@@ -7,57 +8,43 @@ const MARKDOWN_LINK_RE = /(!?)\[((?:[^\]\n]*?!\[[^[\]\n]*\]\([^()\s]+\))?[^\]\n]
 /** Percent-encode the characters a bare Markdown destination cannot hold literally. */
 const encodeDestination = (path: string) => path
   .replace(/%/g, "%25").replace(/#/g, "%23").replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29");
+/** Stands in for an inline code span (a private-use character); resolves to no file, so no rewrite touches it. */
+const PLACEHOLDER = "\uE000";
+const PLACEHOLDER_RE = /\uE000(\d+)\uE000/g;
 const REFERENCE_DEFINITION_RE = /^(\s{0,3}\[[^\]\n]+\]:\s*)(<[^>\n]+>|[^\s]+)(.*)$/gm;
 
 /**
  * Apply a link rewrite only to Markdown prose. Regexes are useful for the
  * link token itself, but not for deciding where a token is meaningful: a
- * literal example in a fenced or inline code span must never be "repaired".
- * The complete fence delimiter is retained: a four-backtick fence may contain
- * ordinary three-backtick examples without ending the protected range.
+ * literal example in code must never be "repaired". Code lines pass through
+ * unchanged. Each paragraph is rewritten as one text with its inline code
+ * spans (which may cross lines) held as placeholders, so a link whose label
+ * holds code (``[`a.md`](a.md)``) is still one link. Other text files have
+ * fenced blocks as their only code lines, and inline spans per line.
  */
 function rewriteMarkdownProse(
   content: string,
-  rewriteLine: (line: string) => string
+  markdown: boolean,
+  rewriteText: (text: string) => string
 ): string {
-  let fence: string | null = null;
-  return content
-    .split(/(\n)/)
-    .map((part) => {
-      if (part === "\n") return part;
-      const opening = part.match(/^\s*(`{3,}|~{3,})/);
-      if (opening) {
-        const marker = opening[1];
-        if (!fence) fence = marker;
-        else if (marker[0] === fence[0] && marker.length >= fence.length) fence = null;
-        return part;
-      }
-      if (fence) return part;
-
-      // Keep every inline code span byte-for-byte. Matching the delimiter run
-      // (rather than a single backtick) also handles Markdown's ``code ` x``.
-      let out = "";
-      let cursor = 0;
-      while (cursor < part.length) {
-        const start = part.indexOf("`", cursor);
-        if (start < 0) return out + rewriteLine(part.slice(cursor));
-        out += rewriteLine(part.slice(cursor, start));
-        let endRun = start;
-        while (part[endRun] === "`") endRun++;
-        const delimiter = part.slice(start, endRun);
-        const close = part.indexOf(delimiter, endRun);
-        // CommonMark: an unmatched backtick run is literal text, not code.
-        if (close < 0) {
-          out += delimiter;
-          cursor = endRun;
-          continue;
-        }
-        out += part.slice(start, close + delimiter.length);
-        cursor = close + delimiter.length;
-      }
-      return out;
-    })
-    .join("");
+  const out: string[] = [];
+  forEachSegment(content, (start, end, code) => {
+    const text = content.slice(start, end);
+    const spans = code ? [] : inlineCodeSpans(text);
+    // A placeholder character already in the text would be ambiguous; leave it as written.
+    if (code || (spans.length && text.includes(PLACEHOLDER))) return out.push(text);
+    if (!spans.length) return out.push(rewriteText(text));
+    const held: string[] = [];
+    let masked = "";
+    let at = 0;
+    for (let k = 0; k < spans.length; k += 2) {
+      masked += `${text.slice(at, spans[k])}${PLACEHOLDER}${held.length}${PLACEHOLDER}`;
+      held.push(text.slice(spans[k], spans[k + 1]));
+      at = spans[k + 1];
+    }
+    out.push(rewriteText(masked + text.slice(at)).replace(PLACEHOLDER_RE, (_, n: string) => held[Number(n)]));
+  }, markdown);
+  return out.join("\n");
 }
 
 export function rewriteInboundLinks(
@@ -116,7 +103,7 @@ export function rewriteInboundLinks(
     return hadExt || !renamedIsMarkdown ? base : stripExt(base);
   };
   let changed = false;
-  const text = rewriteMarkdownProse(content, (prose) => prose
+  const text = rewriteMarkdownProse(content, isMarkdownPath(sourceRel), (prose) => prose
     .replace(WIKI_LINK_RE, (match, bang: string, body: string) => {
       // Inside tables the alias separator is written `\|`; keep that escape.
       let pipe = body.indexOf("|");

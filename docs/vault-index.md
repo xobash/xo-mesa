@@ -23,6 +23,13 @@ when their results are incomplete. A vault switch or reopen cancels obsolete
 work; an editor or watcher result that lands first is never replaced by an older
 index result.
 
+When a stored index exists, Mesa shows it as soon as it loads, before any
+document is re-read. Search, graph, backlinks and tasks then work from the
+last indexed text while the check below runs; only files missing from the
+stored index count as still indexing. When the check finds changed bytes,
+Mesa replaces only those documents, unless an edit or watcher refresh already
+replaced them. An unchanged index is not written back.
+
 The index validates cached text against native SHA-256
 content fingerprints, batched at up to 128 paths per call. Hashing streams source
 bytes through a 64 KiB native buffer. A warm open still reads bytes from disk;
@@ -31,6 +38,11 @@ Size and modification time alone never authorize reuse.
 
 Misses are read and encoded in groups of at most 64 documents and approximately
 4 MiB of source bytes. All supported text types can contribute vault links.
+Links, tags and tasks come from prose only. In Markdown notes Mesa skips what
+the preview shows as code: fenced and indented code blocks (also inside lists
+and block quotes) and inline code. Other text files are not rendered as
+Markdown, so only their fenced blocks count as code; indentation never does.
+Index version 8 rebuilds caches written with the older code rules once.
 Cached image targets are resolved against the current file listing, so image
 additions and moves remain visible after indexing.
 

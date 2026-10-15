@@ -23,6 +23,7 @@ import { ancestorFolders, childRelPath, duplicateRelPath, safeBaseName } from ".
 import { makeResolver } from "./lib/graph";
 import type { KeyboardFocus } from "./lib/keyboardNav";
 import { extractAliases, extractLinks, extractLinksAndFirstImage, extractTags } from "./lib/markdownExtract";
+import { isMarkdownPath } from "./lib/markdownCode";
 import { normalizeSyncPort, parsePeerInput } from "./lib/pairing";
 import { validSyncKey } from "./lib/syncKey";
 import {
@@ -1178,7 +1179,7 @@ export const useAppStore = create<AppState>((set, get) => {
               [saved.relPath]: {
                 relPath: saved.relPath,
                 title: saved.name,
-                rawLinks: extractLinks(text), tags: extractTags(text), aliases: extractAliases(text), firstImagePath: undefined,
+                rawLinks: extractLinks(text, isMarkdownPath(saved.relPath)), tags: extractTags(text, isMarkdownPath(saved.relPath)), aliases: extractAliases(text), firstImagePath: undefined,
               },
             },
             contentCache: forkContentCache(get().contentCache, { [saved.relPath]: text }),
@@ -1249,8 +1250,8 @@ export const useAppStore = create<AppState>((set, get) => {
               [newFile.relPath]: {
                 relPath: newFile.relPath,
                 title: newFile.name,
-                rawLinks: extractLinks(text),
-                tags: extractTags(text),
+                rawLinks: extractLinks(text, isMarkdownPath(newFile.relPath)),
+                tags: extractTags(text, isMarkdownPath(newFile.relPath)),
                 aliases: extractAliases(text),
                 firstImagePath: undefined,
               },
@@ -1431,8 +1432,8 @@ export const useAppStore = create<AppState>((set, get) => {
         if (m) {
           notes[rel] = {
             ...m,
-            rawLinks: extractLinks(next),
-            tags: extractTags(next),
+            rawLinks: extractLinks(next, isMarkdownPath(rel)),
+            tags: extractTags(next, isMarkdownPath(rel)),
             aliases: extractAliases(next),
           };
         }
@@ -1802,9 +1803,9 @@ export const useAppStore = create<AppState>((set, get) => {
         notes[update.file.relPath] = {
           relPath: update.file.relPath,
           title: update.file.name,
-          rawLinks: extractLinks(update.after),
-          rawReferences: extractLinksAndFirstImage(update.after).references,
-          tags: extractTags(update.after),
+          rawLinks: extractLinks(update.after, isMarkdownPath(update.file.relPath)),
+          rawReferences: extractLinksAndFirstImage(update.after, isMarkdownPath(update.file.relPath)).references,
+          tags: extractTags(update.after, isMarkdownPath(update.file.relPath)),
           aliases: extractAliases(update.after),
         };
       }

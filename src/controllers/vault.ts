@@ -9,6 +9,7 @@ import {
 } from "../lib/daily";
 import { documentEntries, forkContentCache } from "../lib/documentWorkingSet";
 import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
+import { isMarkdownPath } from "../lib/markdownCode";
 import {
   DEMO_ROOT,
   IN_TAURI,
@@ -116,8 +117,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           [rel]: {
             relPath: rel,
             title: name,
-            rawLinks: extractLinks(content),
-            tags: extractTags(content),
+            rawLinks: extractLinks(content, isMarkdownPath(rel)),
+            tags: extractTags(content, isMarkdownPath(rel)),
             aliases: extractAliases(content),
             firstImagePath: undefined,
           },
@@ -174,8 +175,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         nextNotes[f.relPath] = {
           relPath: f.relPath,
           title: f.name,
-          rawLinks: extractLinks(text),
-          tags: extractTags(text),
+          rawLinks: extractLinks(text, isMarkdownPath(f.relPath)),
+          tags: extractTags(text, isMarkdownPath(f.relPath)),
           aliases: extractAliases(text),
           firstImagePath: undefined,
         };
@@ -473,8 +474,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               if (cur) {
                 pendingNotes.set(rel, {
                   ...cur,
-                  rawLinks: extractLinks(text),
-                  tags: extractTags(text),
+                  rawLinks: extractLinks(text, isMarkdownPath(rel)),
+                  tags: extractTags(text, isMarkdownPath(rel)),
                   aliases: extractAliases(text),
                 });
               }
@@ -560,7 +561,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             const text = texts.get(file.relPath);
             if (text === undefined) continue;
             cache[file.relPath] = text;
-            notes[file.relPath] = { relPath: file.relPath, title: file.name, rawLinks: extractLinks(text), tags: extractTags(text), aliases: extractAliases(text), firstImagePath: undefined };
+            notes[file.relPath] = { relPath: file.relPath, title: file.name, rawLinks: extractLinks(text, isMarkdownPath(file.relPath)), tags: extractTags(text, isMarkdownPath(file.relPath)), aliases: extractAliases(text), firstImagePath: undefined };
           }
           set({ files: [...get().files, ...fresh].sort((a,b) => fileOrder(a.relPath,b.relPath)), notes, contentCache: cache });
           for (const file of fresh) {
@@ -883,7 +884,25 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         }
         void (async () => {
           try {
+            // A reopened vault shows its stored index at once; verification
+            // below then patches only documents whose bytes changed.
+            let provisional: { notes: Record<string, NoteMeta> } | null = null;
             const indexed = await loadIndexedNotes({
+              onCached: (cached) => {
+                if (!isCurrentOpen()) return;
+                const current = get();
+                const cache = forkContentCache(cached.cache);
+                // The selected document and any watcher refresh own their bytes.
+                for (const { rel } of documentEntries(current.contentCache)) cache[rel] = current.contentCache[rel];
+                provisional = { notes: cached.notes };
+                set({
+                  contentCache: cache,
+                  notes: { ...cached.notes, ...current.notes },
+                  indexingTextFiles: cached.missing,
+                  status: `${Object.keys(cached.notes).length} documents loaded from the local index. Checking for changes…`,
+                });
+                markMesaPerf("index-cache-published", { files: Object.keys(cached.notes).length, missing: cached.missing });
+              },
               root, files, stopped: () => !isCurrentOpen(),
               read: group => readVaultTextOutcomes(root, group),
               fingerprints: rels => IN_TAURI && rels.length
@@ -893,11 +912,41 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                   return result.ok ? fingerprintText(result.text) : null;
                 })),
               onProgress: (completed, total) => {
-                if (isCurrentOpen()) set({ indexingTextFiles: total - completed });
+                if (isCurrentOpen() && !provisional) set({ indexingTextFiles: total - completed });
               },
             });
             if (!isCurrentOpen()) return;
             const current = get();
+            const shown = (provisional as { notes: Record<string, NoteMeta> } | null)?.notes;
+            if (shown) {
+              // Patch only re-read documents, unless an edit or watcher refresh
+              // replaced that document after the stored index was shown.
+              const changes: Record<string, string> = {};
+              const changedNotes: Record<string, NoteMeta> = {};
+              for (const [rel, text] of indexed.changed) {
+                if (rel in shown && current.notes[rel] !== shown[rel]) continue;
+                if (!(rel in shown) && rel in current.notes) continue;
+                changes[rel] = text;
+                if (indexed.notes[rel]) changedNotes[rel] = indexed.notes[rel];
+              }
+              const unreadable: Record<string, "skipped" | "failed"> = {};
+              for (const rel of indexed.skipped) unreadable[rel] = "skipped";
+              for (const rel of indexed.failed) unreadable[rel] = "failed";
+              set({
+                ...(Object.keys(changes).length ? {
+                  contentCache: forkContentCache(current.contentCache, changes),
+                  notes: { ...current.notes, ...changedNotes },
+                } : {}),
+                indexingTextFiles: 0,
+                unindexedTextFiles: Object.keys(unreadable).length,
+                skippedTextFiles: indexed.skipped.length,
+                failedTextFiles: indexed.failed.length,
+                unreadableTextReasons: unreadable,
+                status: `${Object.keys(indexed.notes).length} documents indexed`,
+              });
+              markMesaPerf("search-index-ready", { files: Object.keys(indexed.notes).length, reused: indexed.reused, read: indexed.read });
+              return;
+            }
             const mergedCache = forkContentCache(indexed.cache);
             // A direct open, edit or watcher refresh during indexing owns its
             // current bytes. Copy only those newer records over the snapshot.

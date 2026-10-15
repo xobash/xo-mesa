@@ -161,8 +161,14 @@ export async function loadIndexedNotes(options: {
   fingerprints(rels: string[]): Promise<(string | null)[]>;
   stopped(): boolean;
   onProgress?: (completed: number, total: number) => void;
+  /**
+   * Receives the stored snapshot before verification, so a reopened vault can
+   * show its last index at once. `missing` counts text files the snapshot lacks.
+   * When given, the result's `changed` holds the text of every document read.
+   */
+  onCached?: (cached: { notes: Record<string, NoteMeta>; cache: Record<string, string>; missing: number }) => void;
   storage?: VaultIndexStorage;
-}): Promise<{ notes: Record<string, NoteMeta>; cache: Record<string, string>; reused: number; read: number; skipped: string[]; failed: string[] }> {
+}): Promise<{ notes: Record<string, NoteMeta>; cache: Record<string, string>; reused: number; read: number; skipped: string[]; failed: string[]; changed: Map<string, string> }> {
   const { root, files, read, fingerprints, stopped } = options;
   const storage = options.storage ?? vaultIndexStorage;
   const epoch = epochs.get(root) ?? 0;
@@ -173,6 +179,22 @@ export async function loadIndexedNotes(options: {
   // graph index; non-link-bearing search-only hydration is handled separately
   // by the store after this authoritative note pass.
   const textDocuments = files.filter(isTextualVaultFile);
+  const resolveImage = createImageResolver(files);
+  const noteFor = (file: VaultFile, entry: RecordEntry): NoteMeta =>
+    ({ ...entry.note, relPath: file.relPath, title: file.name, firstImagePath: entry.imageTarget ? resolveImage(entry.imageTarget) : undefined });
+  if (options.onCached && prior.size && !stopped()) {
+    const notes: Record<string, NoteMeta> = {};
+    const documents: [string, IndexedDocument][] = [];
+    let missing = 0;
+    for (const file of textDocuments) {
+      const entry = prior.get(file.relPath);
+      if (!entry) { missing++; continue; }
+      notes[file.relPath] = noteFor(file, entry);
+      documents.push([file.relPath, entry.document]);
+    }
+    options.onCached({ notes, cache: indexedContentCache(documents), missing });
+  }
+  const changed = new Map<string, string>();
   let completed = 0;
   const entries = new Map<string, RecordEntry>();
   let reused = 0, reads = 0;
@@ -188,10 +210,10 @@ export async function loadIndexedNotes(options: {
     try { hashes = await fingerprints(candidates.map(f => f.relPath)); } catch { /* rebuild */ }
     if (stopped()) break;
     const reusable = new Map<string, string | null>();
-    for (let i = 0; i < candidates.length; i++) {
-      const file = candidates[i], entry = prior.get(file.relPath)!;
+    await Promise.all(candidates.map(async (file, i) => {
+      const entry = prior.get(file.relPath)!;
       try { if (hashes[i] === entry.digest && await integrity(entry) === entry.integrity) reusable.set(file.relPath, hashes[i]); } catch { /* corrupt entry is rebuilt */ }
-    }
+    }));
     const missing = group.filter(file => reusable.get(file.relPath) !== prior.get(file.relPath)?.digest || !prior.has(file.relPath));
     for (const file of group) {
       if (!missing.includes(file)) { entries.set(file.relPath, prior.get(file.relPath)!); reused++; }
@@ -209,15 +231,16 @@ export async function loadIndexedNotes(options: {
     });
     if (!successful.length) continue;
     const metadata = buildNotes(files, new Map(successful.map(({ file, text }) => [file.relPath, text])), new Set(successful.map(({ file }) => file.relPath)));
-    const documents = await runCancellableBackgroundWork("index", () => codec.encode(successful.map(({ text }) => text)), stopped);
+    const documents = await runCancellableBackgroundWork("index", () => codec.encode(successful.map(({ text }) => text), successful.map(({ file }) => !!file.isMarkdown)), stopped);
     if (stopped()) break;
     for (let i = 0; i < successful.length; i++) {
       const { file, text } = successful[i];
       let sha = '';
       try { sha = await fingerprintText(text); } catch { /* not persisted/reused */ }
-      const entry = { digest: sha, document: documents[i], note: metadata[file.relPath], integrity: '', imageTarget: extractLinksAndFirstImage(text).firstImage ?? undefined };
+      const entry = { digest: sha, document: documents[i], note: metadata[file.relPath], integrity: '', imageTarget: extractLinksAndFirstImage(text, !!file.isMarkdown).firstImage ?? undefined };
       try { entry.integrity = await integrity(entry); } catch { /* cache unavailable */ }
       entries.set(file.relPath, entry); reads++;
+      if (options.onCached) changed.set(file.relPath, text);
     }
     }
     // Yield between corpus batches, including all-cache-hit batches.
@@ -227,13 +250,14 @@ export async function loadIndexedNotes(options: {
   }
   } finally { codec.dispose(); }
   // Resolve image targets against today's file list, even when note bytes were reused.
-  const resolveImage = createImageResolver(files);
   const notes: Record<string, NoteMeta> = {};
   for (const file of textDocuments) {
     const entry = entries.get(file.relPath);
-    if (entry) notes[file.relPath] = { ...entry.note, relPath: file.relPath, title: file.name, firstImagePath: entry.imageTarget ? resolveImage(entry.imageTarget) : undefined };
+    if (entry) notes[file.relPath] = noteFor(file, entry);
   }
-  if (!stopped() && (epochs.get(root) ?? 0) === epoch) {
+  // An unchanged snapshot needs no rewrite: storing it clones every compressed body.
+  const unchanged = reads === 0 && entries.size === prior.size && [...prior.keys()].every(rel => entries.has(rel));
+  if (!unchanged && !stopped() && (epochs.get(root) ?? 0) === epoch) {
     // One atomic IndexedDB transaction; failure never changes vault files.
     let persistedBytes = 0;
     const persisted = [...entries].filter(([, entry]) => {
@@ -246,7 +270,7 @@ export async function loadIndexedNotes(options: {
     });
     void storage.save({ version: VERSION, root, cachedAt: Date.now(), entries: persisted }).catch(() => {});
   }
-  return { notes, cache: indexedContentCache([...entries].map(([rel, entry]) => [rel, entry.document])), reused, read: reads, skipped, failed };
+  return { notes, cache: indexedContentCache([...entries].map(([rel, entry]) => [rel, entry.document])), reused, read: reads, skipped, failed, changed };
 }
 
 export async function forgetVaultIndex(root: string): Promise<void> {

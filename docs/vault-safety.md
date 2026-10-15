@@ -193,13 +193,17 @@ Two operations that LOOK like text operations are held to the same rule:
   style where the existing link used one. Attachment renames repair exact
   vault-relative and unambiguous bare-filename wiki links/embeds, inline and
   reference-style Markdown links/images, including relative paths. External URLs, anchors, ambiguous
-  duplicate basenames, fenced code (including four-backtick fences), and inline
-  code examples remain byte-for-byte unchanged. Each rename builds one note
+  duplicate basenames, and code remain byte-for-byte unchanged. In Markdown
+  notes, code is what the preview shows as code: fenced and indented code
+  blocks (also inside lists and block quotes) and inline code, which may wrap
+  across lines. In other text files, code is fenced blocks and inline code on
+  one line. A link whose label holds inline code is still repaired. Each rename builds one note
   resolver and uses metadata-indexed local reference candidates, so a large
   vault does not open unrelated Markdown files during one rename. If an
   inbound-link write sees a concurrent external edit, the rename remains
   byte-safe and Mesa reports the partial link update instead of overwriting the
-  edited file. Regression coverage: `src/lib/renameNote.test.ts`.
+  edited file. Regression coverage: `src/lib/renameNote.test.ts`; the code
+  boundary is checked against the Markdown renderer in `src/lib/markdownCode.test.ts`.
 - **Delete** is recoverable. Mesa moves files and folders into a hidden
   `.mesa-trash/` recovery area on the same vault volume and removes them from
   the workspace only after that move succeeds. A locked file, permission error,

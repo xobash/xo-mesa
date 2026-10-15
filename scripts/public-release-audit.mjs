@@ -100,13 +100,20 @@ function hasPrivateIpv4(text) {
 const approvedGenericIgnoreFiles = new Set([".gitignore", ".dockerignore"]);
 
 function checkMarkdownTargets(file, text) {
-  let fenced = false;
+  // CommonMark fences: a backtick info string holds no backtick, and only the
+  // same character, at least as long, with nothing after it, closes.
+  let fence = "";
   for (const line of text.split("\n")) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      fenced = !fenced;
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*?)\r?$/.exec(line);
+    if (marker && !fence && !(marker[1][0] === "`" && marker[2].includes("`"))) {
+      fence = marker[1];
       continue;
     }
-    if (fenced) continue;
+    if (marker && fence && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) {
+      fence = "";
+      continue;
+    }
+    if (fence) continue;
     const targets = [
       ...line.matchAll(/!?\[[^\]]*\]\((<[^>]+>|[^\s)]+)(?:\s+[^)]*)?\)/g),
       ...line.matchAll(/^\s*\[[^\]]+\]:\s*(<[^>]+>|\S+)/g),

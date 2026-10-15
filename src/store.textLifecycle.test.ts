@@ -29,7 +29,7 @@ const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = n
 type Indexed = Awaited<ReturnType<typeof import('./lib/vaultIndex').loadIndexedNotes>>;
 const indexed = (root: string, text: string): Indexed => ({
   notes: { 'Note.md': metadata('Note.md') }, cache: { 'Note.md': text, 'Code.py': `source from ${root}` },
-  reused: 0, read: 2, skipped: [], failed: [],
+  reused: 0, read: 2, skipped: [], failed: [], changed: new Map(),
 });
 beforeEach(() => {
   vi.clearAllMocks();

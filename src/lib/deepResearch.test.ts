@@ -742,6 +742,22 @@ describe("researchReportQualityIssues", () => {
       'findings subsection for sub-question "Q2" has no source URL citation'
     );
   });
+
+  it("reads headings after a backtick line whose info string holds a backtick", () => {
+    const result: DeepResearchResult = {
+      version: 1,
+      subQuestions: ["Q1", "Q2"],
+      report: {
+        title: "R",
+        markdown: "# R\n\n## Abstract\nUse ``` a`b inline.\n``` a`b\n\n## Methodology\nTwo rounds.\n\n## Findings\n### Q1\nEvidence [A](https://a.com/x).\n\n### Q2\nMore evidence [A](https://a.com/x).\n\n## Synthesis\nConclusion.\n\n## Confidence and limitations\nHigh with limits.\n\n## Disagreements\nNone.\n\n## Open questions\nNext work.",
+      },
+      notes: [],
+      sources: [{ url: "https://a.com/x", title: "A" }],
+      claims: [{ text: "verified", kind: "verified", sourceUrl: "https://a.com/x" }],
+      related: [],
+    };
+    expect(researchReportQualityIssues(result, depth)).toEqual([]);
+  });
 });
 
 
