@@ -48,15 +48,18 @@ export function parseTasks(
   content: string
 ): TaskItem[] {
   const out: TaskItem[] = [];
-  let inFence = false;
+  // A fence closes only on the same character with at least the same length.
+  let fence: string | null = null;
   const lines = content.split("\n");
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker) {
+      if (!fence) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = null;
       continue;
     }
-    if (inFence) continue;
+    if (fence) continue;
     const m = TASK_RE.exec(line);
     if (!m) continue;
     const dueMatch = DUE_RE.exec(m[2]);

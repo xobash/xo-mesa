@@ -92,20 +92,46 @@ function linkCloseAfter(source: string, at: number): number {
   return source[i] === ")" ? i : -1;
 }
 
+/** When the `]` at `imageClose` ends an inline image `![alt](dest)`, the
+ * index of the following `]` that closes an enclosing label and is directly
+ * followed by `(`; otherwise -1. */
+function imageLabelClose(source: string, imageClose: number): number {
+  TARGET_END_RE.lastIndex = imageClose + 2;
+  const end = TARGET_END_RE.exec(source)?.index ?? -1;
+  if (end <= imageClose + 2 || source[end] !== ")") return -1;
+  const close = source.indexOf("]", end + 1);
+  return close >= 0 && source[close + 1] === "(" ? close : -1;
+}
+
 /** Scan each label once, including malformed nested opening brackets.
  * Preserve the legacy link prefix consumption and image target grammar. */
 function* markdownTargets(source: string, image: boolean): Generator<string> {
   let next = 0;
   let matchEnd = 0;
   let targetEnd = -1;
+  // Labels that share a first `]` share its image-label answer; resolve it once.
+  let badgeFor = -1;
+  let badgeImage = -1;
+  let badgeClose = -1;
   while (next < source.length) {
     const start = source.indexOf(image ? "![" : "[", next);
     if (start < 0) return;
     const open = image ? start + 1 : start;
     next = open + 1;
     if (!image && open !== 0 && (open <= matchEnd || source[open - 1] === "!")) continue;
-    const close = source.indexOf("]", open + 1);
-    if (close < 0) return;
+    const firstClose = source.indexOf("]", open + 1);
+    if (firstClose < 0) return;
+    let close = firstClose;
+    if (!image && source[close + 1] === "(") {
+      if (badgeFor !== close) {
+        badgeFor = close;
+        const inner = source.lastIndexOf("[", close);
+        badgeImage = source[inner - 1] === "!" ? inner : -1;
+        badgeClose = badgeImage >= 0 ? imageLabelClose(source, close) : -1;
+      }
+      // `[![alt](img.png)](Note.md)`: the first `]` closes the image, not the link.
+      if (badgeClose >= 0 && badgeImage > open) close = badgeClose;
+    }
     const targetStart = close + 2;
     if (source[close + 1] !== "(") {
       next = close + 1;
@@ -132,7 +158,9 @@ function* markdownTargets(source: string, image: boolean): Generator<string> {
     }
     const linkEnd = image || source[targetEnd] === ")" ? targetEnd : linkCloseAfter(source, targetEnd);
     if (targetEnd === targetStart || linkEnd < 0) {
-      next = close + 1;
+      next = firstClose + 1;
+      // A failed image label moved the target start back; drop the cached terminator.
+      if (close !== firstClose) targetEnd = -1;
       continue;
     }
     matchEnd = image ? targetEnd : linkEnd + 1;
@@ -215,7 +243,7 @@ export function extractLinksAndFirstImage(source: string): {
 // #tags — a hash directly followed by a word (no space), not a Markdown heading
 // (headings have a space after the hashes) and not a fenced code block.
 const TAG_RE = /(?:^|\s)#([A-Za-z][\w/-]*)/g;
-const FENCE_RE = /```[\s\S]*?```/g;
+const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
 
 export function extractTags(source: string): string[] {
   if (!source.includes("#")) return [];

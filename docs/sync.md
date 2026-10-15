@@ -217,10 +217,14 @@ vault walk would list: any name starting with `.`, any `node_modules` folder in
 any letter case, and any Windows 8.3 short-name segment such as `GIT~1` are
 refused on the file routes, in journal operations and in manifest or baseline
 entries (`is_peer_rel` in `sync_core`). A short name could otherwise open an
-ignored folder under another spelling, so files with such names do not sync. A peer therefore cannot reach `.git/`,
-`.obsidian/`, `.env`, `.mesa-trash/` or the journal. The client ignores such
-remote manifest entries and logs a warning. Mesa's own recovery paths never come
-from a peer.
+ignored folder under another spelling. A peer therefore cannot reach `.git/`,
+`.obsidian/`, `.env`, `.mesa-trash/` or the journal. The local scan reports a
+`node_modules` case variant or a short-name segment (`draft~1.md`) as a scan
+error, like a name Windows cannot hold: sync stops until the user renames it,
+and such a name never enters the manifest or the journal. A remote manifest
+that contains one is refused. A journal written by an older version can hold
+an operation on such a name; no peer accepts it, so loading the journal drops
+it and rewrites the file. Mesa's own recovery paths never come from a peer.
 
 **Connection limits.** The receiver closes a connection that does not finish its
 request headers within 10 seconds (this also closes idle keep-alive connections),

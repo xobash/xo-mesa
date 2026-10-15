@@ -1945,3 +1945,67 @@ fn incoming_journal_rejects_hidden_sources_and_destinations() {
     }
     assert!(validate_journal(&op(JournalOperationKind::Delete, "ok.md", None), "j").is_ok());
 }
+
+#[test]
+fn local_walk_reports_names_peers_refuse_instead_of_advertising_them() {
+    let v = ManifestVault::new("peer-reserved-walk");
+    std::fs::write(v.0.join("draft~1.md"), b"x").unwrap();
+    std::fs::create_dir(v.0.join("Node_Modules")).unwrap();
+    std::fs::write(v.0.join("Node_Modules/n.md"), b"y").unwrap();
+    std::fs::write(v.0.join("ok.md"), b"z").unwrap();
+    let (entries, skipped) = build_manifest(&v.0);
+    let rels: Vec<_> = entries.iter().map(|entry| entry.rel.as_str()).collect();
+    assert_eq!(rels, ["ok.md"]);
+    assert!(entries.iter().all(|entry| is_peer_rel(&entry.rel)));
+    let mut skipped: Vec<_> = skipped.into_iter().map(|(rel, _)| rel).collect();
+    skipped.sort();
+    assert_eq!(skipped, ["Node_Modules", "draft~1.md"]);
+}
+
+#[test]
+fn reconcile_ignores_legacy_known_names_peers_refuse() {
+    let v = ManifestVault::new("peer-reserved-journal");
+    let hash = "a".repeat(64);
+    let legacy = |rel: &str| ManifestEntry {
+        rel: rel.into(),
+        size: 1,
+        hash: hash.clone(),
+    };
+    // Simulates a journal written before walkers reported reserved names.
+    reconcile_journal(&v.0, &[legacy("draft~1.md"), legacy("keep.md")]).unwrap();
+    reconcile_journal(&v.0, &[legacy("keep.md")]).unwrap();
+    let journal = load_journal(&v.0).expect("journal must still load");
+    assert!(journal.operations.iter().all(|op| op.from != "draft~1.md"));
+    assert!(journal.known.iter().all(|entry| is_peer_rel(&entry.rel)));
+}
+
+#[test]
+fn load_repairs_a_journal_holding_operations_peers_refuse() {
+    let v = ManifestVault::new("peer-reserved-legacy-op");
+    let mut journal = SyncJournal::empty("local".into());
+    for (sequence, from) in [(1, "draft~1.md"), (2, "keep.md")] {
+        journal.operations.push(JournalOperation {
+            id: format!("local:{sequence}"),
+            device: "local".into(),
+            sequence,
+            at_ms: 0,
+            kind: JournalOperationKind::Delete,
+            from: from.into(),
+            to: None,
+            size: 1,
+            hash: "a".repeat(64),
+        });
+    }
+    journal.next_sequence = 3;
+    save_journal(&v.0, &journal).unwrap();
+    let loaded = load_journal(&v.0).expect("journal written by an older walk must load");
+    let froms: Vec<_> = loaded
+        .operations
+        .iter()
+        .map(|op| op.from.as_str())
+        .collect();
+    assert_eq!(froms, ["keep.md"]);
+    assert_eq!(loaded.next_sequence, 3);
+    let bytes = std::fs::read(v.0.join(".mesa-sync-journal.json")).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("draft~1.md"));
+}

@@ -1,5 +1,7 @@
 import { expect, it } from "vitest";
 import { referenceMayTarget, rewriteInboundLinks } from "./linkRewrite";
+import { makeResolver } from "./graph";
+import type { NoteMeta } from "../types";
 
 it("rewrites a relative Markdown link while preserving code examples and external links", () => {
   const source = "[open](../old/Note.md#part) `[[Note]]`\n```md\n[[Note]]\n```\n[web](https://example.test/Note.md)";
@@ -46,4 +48,48 @@ it("repairs titled, angle-bracket, table-escaped and leading-slash links and enc
   ].join("\n"));
   expect(rewriteInboundLinks("a/src.md", "[x](b/Note.md)", "b/Note.md", "b/C#.md", resolve, false, true).text)
     .toBe("[x](b/C%23.md)");
+});
+
+const noteMeta = (relPath: string, aliases: string[] = []): NoteMeta => ({
+  relPath, title: relPath.slice(relPath.lastIndexOf("/") + 1).replace(/\.md$/, ""), rawLinks: [], tags: [], aliases,
+});
+
+it("a dot in a note name is not read as a file extension", () => {
+  const before = { "archive/v2.0 notes.md": noteMeta("archive/v2.0 notes.md"), "sub/v1.2 notes.md": noteMeta("sub/v1.2 notes.md"), "other/src.md": noteMeta("other/src.md") };
+  const nested = rewriteInboundLinks("other/src.md", "see [[sub/v1.2 notes]]", "sub/v1.2 notes.md", "sub/v2.0 notes.md", makeResolver(before), true, false);
+  expect(nested.text).toBe("see [[sub/v2.0 notes]]");
+  const after = { "archive/v2.0 notes.md": noteMeta("archive/v2.0 notes.md"), "sub/v2.0 notes.md": noteMeta("sub/v2.0 notes.md"), "other/src.md": noteMeta("other/src.md") };
+  expect(makeResolver(after)("sub/v2.0 notes")).toBe("sub/v2.0 notes.md");
+  const bare = rewriteInboundLinks("src.md", "see [[v1.2 notes]]", "v1.2 notes.md", "v2.0 notes.md", makeResolver({ "v1.2 notes.md": noteMeta("v1.2 notes.md") }), true, true);
+  expect(bare.text).toBe("see [[v2.0 notes]]");
+});
+
+it("an unmatched backtick does not hide a later live link", () => {
+  const resolver = makeResolver({ "Note.md": noteMeta("Note.md") });
+  expect(rewriteInboundLinks("src.md", "press ` then [[Note]]", "Note.md", "Renamed.md", resolver, true, true).text).toBe("press ` then [[Renamed]]");
+  expect(rewriteInboundLinks("src.md", "``a` [[Note]]", "Note.md", "Renamed.md", resolver, true, true).text).toBe("``a` [[Renamed]]");
+});
+
+it("leaves a frontmatter-alias wikilink as written", () => {
+  const r = rewriteInboundLinks("src.md", "[[Nick]] [[Note]]", "Note.md", "Renamed.md", makeResolver({ "Note.md": noteMeta("Note.md", ["Nick"]) }), true, true);
+  expect(r.text).toBe("[[Nick]] [[Renamed]]");
+});
+
+it("percent-encodes % in a rewritten reference definition so the next rename still finds it", () => {
+  const first = rewriteInboundLinks("src.md", "[x][r]\n\n[r]: Note.md", "Note.md", "100% done.md", makeResolver({ "Note.md": noteMeta("Note.md") }), true, true);
+  expect(first.text).toBe("[x][r]\n\n[r]: 100%25%20done.md");
+  expect(referenceMayTarget("src.md", "100%25%20done.md", "100% done.md", true)).toBe(true);
+  const second = rewriteInboundLinks("src.md", first.text, "100% done.md", "Final.md", makeResolver({ "100% done.md": noteMeta("100% done.md") }), true, true);
+  expect(second.text).toBe("[x][r]\n\n[r]: Final.md");
+});
+
+it("repairs a badge link and its image independently", () => {
+  const resolver = makeResolver({ "Note.md": noteMeta("Note.md") });
+  const source = "[![b](x.png)](Note.md)";
+  expect(rewriteInboundLinks("src.md", source, "Note.md", "Renamed.md", resolver, true, true).text)
+    .toBe("[![b](x.png)](Renamed.md)");
+  expect(rewriteInboundLinks("src.md", source, "x.png", "y.png", resolver, false, true).text)
+    .toBe("[![b](y.png)](Note.md)");
+  expect(rewriteInboundLinks("src.md", "[![b](x.png)](https://example.test)", "x.png", "y.png", resolver, false, true).text)
+    .toBe("[![b](y.png)](https://example.test)");
 });

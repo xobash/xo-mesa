@@ -1333,19 +1333,8 @@ pub async fn sync_run(
             "Peer uses an unsupported sync protocol. Update Mesa before syncing.".to_string(),
         );
     }
+    // `fetch_manifest_with` already refused any entry that fails `is_peer_rel`.
     let mut remote = remote_manifest.files;
-    let offered = remote.len();
-    remote.retain(|entry| sync_core::is_peer_rel(&entry.rel));
-    if remote.len() != offered {
-        emit_log(
-            &app,
-            "warn",
-            format!(
-                "ignored {} remote manifest entries with hidden, ignored or unsafe paths",
-                offered - remote.len()
-            ),
-        );
-    }
     emit_log(
         &app,
         "info",

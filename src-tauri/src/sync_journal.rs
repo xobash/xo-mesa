@@ -164,12 +164,28 @@ pub(super) fn load_journal_unlocked(root: &Path) -> std::io::Result<SyncJournal>
             format!("invalid Mesa sync journal: {error}"),
         )
     })?;
+    let dropped = drop_unexchangeable_records(&mut journal);
     if journal.version == 1 {
         migrate_legacy_journal(root, &mut journal)?;
+        save_journal_unlocked(root, &journal)?;
+    } else if dropped {
+        validate_journal(&journal, "Mesa sync journal")?;
         save_journal_unlocked(root, &journal)?;
     }
     validate_journal(&journal, "Mesa sync journal")?;
     Ok(journal)
+}
+
+/// Older walks could record names peers refuse (`draft~1.md`,
+/// `Node_Modules/`). No current peer accepts an operation on such a path, so
+/// it can never be delivered; keeping it would make every load fail.
+fn drop_unexchangeable_records(journal: &mut SyncJournal) -> bool {
+    let before = (journal.operations.len(), journal.known.len());
+    journal
+        .operations
+        .retain(|op| is_peer_rel(&op.from) && op.to.as_deref().is_none_or(is_peer_rel));
+    journal.known.retain(|entry| is_peer_rel(&entry.rel));
+    before != (journal.operations.len(), journal.known.len())
 }
 
 // Only local version-one records need this compatibility digest. It never
@@ -728,6 +744,7 @@ pub fn reconcile_journal(root: &Path, manifest: &[ManifestEntry]) -> std::io::Re
     }
     journal.known = manifest
         .iter()
+        .filter(|entry| is_peer_rel(&entry.rel))
         .map(|entry| JournalEntry {
             rel: entry.rel.clone(),
             size: entry.size,

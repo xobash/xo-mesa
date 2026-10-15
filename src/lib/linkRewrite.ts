@@ -1,8 +1,9 @@
-import { stripExt } from "./vault";
+import { extOf, stripExt } from "./vault";
 
 const WIKI_LINK_RE = /(!?)\[\[([^\]\n]+?)\]\]/g;
 // Destination: `<with spaces>` or a bare run with balanced parentheses; optional CommonMark title.
-const MARKDOWN_LINK_RE = /(!?)\[([^\]\n]*?)\]\((<[^<>\n]+>|(?:\\.|[^\\\s()])+(?:\((?:\\.|[^\\\n()])*\)(?:\\.|[^\\\s()])*)*)([ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\))[ \t]*)?\)/g;
+// A label may hold one inline image, as in a badge: `[![alt](img.png)](Note.md)`.
+const MARKDOWN_LINK_RE = /(!?)\[((?:[^\]\n]*?!\[[^[\]\n]*\]\([^()\s]+\))?[^\]\n]*?)\]\((<[^<>\n]+>|(?:\\.|[^\\\s()])+(?:\((?:\\.|[^\\\n()])*\)(?:\\.|[^\\\s()])*)*)([ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\))[ \t]*)?\)/g;
 /** Percent-encode the characters a bare Markdown destination cannot hold literally. */
 const encodeDestination = (path: string) => path
   .replace(/%/g, "%25").replace(/#/g, "%23").replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29");
@@ -45,7 +46,12 @@ function rewriteMarkdownProse(
         while (part[endRun] === "`") endRun++;
         const delimiter = part.slice(start, endRun);
         const close = part.indexOf(delimiter, endRun);
-        if (close < 0) return out + part.slice(start);
+        // CommonMark: an unmatched backtick run is literal text, not code.
+        if (close < 0) {
+          out += delimiter;
+          cursor = endRun;
+          continue;
+        }
         out += part.slice(start, close + delimiter.length);
         cursor = close + delimiter.length;
       }
@@ -65,6 +71,13 @@ export function rewriteInboundLinks(
 ): { text: string; changed: boolean } {
   const sourceDir = sourceRel.includes("/") ? sourceRel.slice(0, sourceRel.lastIndexOf("/")) : "";
   const oldBase = oldRel.slice(oldRel.lastIndexOf("/") + 1).toLowerCase();
+  const oldExt = `.${extOf(oldRel)}`;
+  // A wikilink that names the file (not a frontmatter alias) breaks on rename.
+  const namesOldFile = (target: string) => {
+    const path = normalizeRelativeTarget(sourceDir, target).replace(/^\/+/, "").toLowerCase();
+    const bare = path.endsWith(oldExt) ? path.slice(0, -oldExt.length) : path;
+    return bare.slice(bare.lastIndexOf("/") + 1) === stripExt(oldBase);
+  };
   const resolve = (target: string) => {
     const normalized = normalizeRelativeTarget(sourceDir, target);
     if (renamedIsMarkdown && (
@@ -81,7 +94,10 @@ export function rewriteInboundLinks(
   };
   const replacementTarget = (rawTarget: string): string => {
     const slashy = rawTarget.replace(/\\/g, "/");
-    const hadExt = /\.[^/]+$/.test(slashy.split("#")[0] ?? "");
+    // Only the renamed note's own extension counts: `v1.2 notes` has none.
+    const hadExt = renamedIsMarkdown
+      ? slashy.toLowerCase().endsWith(oldExt)
+      : /\.[^/]+$/.test(slashy);
     const hadDir = slashy.includes("/");
     // Mesa resolves a path from the vault root before a relative one, and
     // never resolves `../`; keep the form that actually matched.
@@ -111,23 +127,27 @@ export function rewriteInboundLinks(
       const target = (hash >= 0 ? targetAndHeading.slice(0, hash) : targetAndHeading).trim();
       const heading = hash >= 0 ? targetAndHeading.slice(hash) : "";
       if (!target || !resolve(target)) return match;
+      if (renamedIsMarkdown && !namesOldFile(target)) return match;
       changed = true;
       // A wiki embed of a Markdown note is still a note reference and must
       // follow the renamed file. Image/file embeds never resolve through the
       // note resolver, so they remain byte-for-byte unchanged.
       return `${bang}[[${replacementTarget(target)}${heading}${alias}]]`;
     })
-    .replace(MARKDOWN_LINK_RE, (match, bang: string, label: string, raw: string, title: string | undefined) => {
+    .replace(MARKDOWN_LINK_RE, function rewriteLink(_match: string, bang: string, label: string, raw: string, title: string | undefined): string {
+      // The label's own image follows a renamed attachment independently.
+      label = label.includes("](") ? label.replace(MARKDOWN_LINK_RE, rewriteLink) : label;
+      const unchanged = `${bang}[${label}](${raw}${title ?? ""})`;
       const angle = raw.startsWith("<");
       const destination = angle ? raw.slice(1, -1) : raw;
-      if (/^(https?:|mailto:|tel:|data:|#)/i.test(destination)) return match;
+      if (/^(https?:|mailto:|tel:|data:|#)/i.test(destination)) return unchanged;
       const rawTarget = destination.replace(/\\([()\\])/g, "$1");
       // Split the heading before decoding, so an encoded `%23` stays in the name.
       const hash = rawTarget.indexOf("#");
       const decode = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
       const target = decode(hash >= 0 ? rawTarget.slice(0, hash) : rawTarget).trim();
       const heading = hash >= 0 ? rawTarget.slice(hash) : "";
-      if (!target || !resolve(target)) return match;
+      if (!target || !resolve(target)) return unchanged;
       changed = true;
       const nextTarget = replacementTarget(target);
       const dest = angle ? `<${nextTarget}${heading}>` : `${encodeDestination(nextTarget)}${heading}`;
@@ -147,7 +167,7 @@ export function rewriteInboundLinks(
       const heading = hash >= 0 ? decoded.slice(hash) : "";
       if (!target || !resolve(target)) return match;
       changed = true;
-      const encoded = (replacementTarget(target) + heading)
+      const encoded = encodeDestination(replacementTarget(target)) + heading
         .replace(/ /g, "%20")
         .replace(/\(/g, "%28")
         .replace(/\)/g, "%29");

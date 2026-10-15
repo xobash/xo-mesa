@@ -11,7 +11,11 @@ function legacy(source: string) {
     } else if (target) links.push(target);
   }
   // CommonMark link: `<destination>` or a bare one, then an optional title and spaces.
-  for (const m of source.matchAll(/(^|[^!])\[[^\]]*\]\((?:<([^>\n]+)>|([^)\s]+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*\)/g)) {
+  // A label that holds an inline image (`[![alt](img)](Note.md)`) closes after the image.
+  const imageLabel = String.raw`[^\]]*!\[[^\[\]]*\]\([^)\s]+\)[^\]]*`;
+  const label = `(?:(?=${imageLabel}\\]\\()${imageLabel}|(?!${imageLabel}\\]\\()[^\\]]*)`;
+  const link = new RegExp(String.raw`(^|[^!])\[` + label + String.raw`\]\((?:<([^>\n]+)>|([^)\s]+))(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*\)`, "g");
+  for (const m of source.matchAll(link)) {
     let target = (m[2] ?? m[3]).trim();
     if (/^(https?:|mailto:|tel:|data:|#)/i.test(target)) continue;
     target = target.split("#")[0];
@@ -84,4 +88,16 @@ it("links titled and angle-bracket Markdown destinations into the graph", () => 
   expect(extractLinks('[t](Note.md "Title") [a](<My Note.md>) [p](Other.md (paren)) [s](Spaced.md )'))
     .toEqual(["Note.md", "My Note.md", "Other.md", "Spaced.md"]);
   expect(extractLinks("| [[b/Note\\|alias]] |")).toEqual(["b/Note"]);
+});
+
+it("does not read tags inside a ~~~ fence", async () => {
+  const { extractTags } = await import("./markdownExtract");
+  expect(extractTags("~~~\n#notatag\n~~~\n#real")).toEqual(["real"]);
+});
+
+it("links and indexes a Markdown link whose label is an image", () => {
+  const { links, references } = extractLinksAndFirstImage("[![b](x.png)](Note.md) [t ![i](y.png) more](<My N.md> \"t\")");
+  expect(links).toEqual(["Note.md", "My N.md"]);
+  expect(references).toEqual(["Note.md", "My N.md", "x.png", "y.png"]);
+  expect(extractLinks("[![b](x.png)](no destination [a](A.md)")).toEqual(["A.md"]);
 });

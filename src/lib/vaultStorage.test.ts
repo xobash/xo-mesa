@@ -52,7 +52,7 @@ it("migrates closed-vault metadata at native startup without opening a directory
   expect(invoke).toHaveBeenCalledWith("vault_storage_id", { root: "/synthetic/one" });
 });
 
-it.each([[5, true], [6, false]] as const)("drops obsolete index version %s without expiring the current cache", async (version, removed) => {
+it.each([[6, true], [7, false]] as const)("drops obsolete index version %s without expiring the current cache", async (version, removed) => {
   const deleteDatabase = vi.fn(() => {
     const request = { onsuccess: null as (() => void) | null, onerror: null, onblocked: null, error: null };
     queueMicrotask(() => request.onsuccess?.()); return request;

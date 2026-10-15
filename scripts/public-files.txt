@@ -442,6 +442,7 @@ src/lib/syncUi.test.ts
 src/lib/syncUi.ts
 src/lib/syncWorkflow.test.ts
 src/lib/syncWorkflow.ts
+src/lib/taskParsing.test.ts
 src/lib/taskParsing.ts
 src/lib/tasks.test.ts
 src/lib/tasks.ts

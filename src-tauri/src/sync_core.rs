@@ -232,10 +232,20 @@ pub fn ignored_name(name: &str) -> bool {
 /// recovery paths use `safe_join` directly and never come from a peer.
 pub fn is_peer_rel(rel: &str) -> bool {
     safe_join(Path::new("."), rel).is_some()
-        && !rel.split('/').any(|seg| {
-            ignored_name(seg) || seg.eq_ignore_ascii_case("node_modules") || short_name_alias(seg)
-        })
+        && !rel
+            .split('/')
+            .any(|seg| ignored_name(seg) || peer_reserved_name(seg))
 }
+
+/// Names a local walk would include but peers refuse (`is_peer_rel`). The
+/// walkers report them as scan errors so a manifest or journal never holds a
+/// path the receiving side rejects.
+pub fn peer_reserved_name(seg: &str) -> bool {
+    seg.eq_ignore_ascii_case("node_modules") || short_name_alias(seg)
+}
+
+const PEER_RESERVED_NAME_ERROR: &str =
+    "name is reserved for sync (Windows short name or node_modules); rename this file or folder before syncing";
 
 /// A Windows 8.3 short name (`GIT~1`, `OBSIDI~1.JSO`) can open an ignored
 /// directory or file under a different spelling, so peers may not use one.
@@ -384,6 +394,10 @@ fn walk(
         }
         let path = entry.path();
         let rel = rel_for_error(root, &path);
+        if peer_reserved_name(&name) {
+            errors.push((rel, PEER_RESERVED_NAME_ERROR.to_string()));
+            continue;
+        }
         if safe_join(root, &rel).is_none() {
             errors.push((
                 rel,
@@ -457,6 +471,10 @@ fn walk_rooted(
         } else {
             format!("{prefix}/{name}")
         };
+        if peer_reserved_name(&name) {
+            errors.push((rel, PEER_RESERVED_NAME_ERROR.to_string()));
+            continue;
+        }
         if safe_join(root, &rel).is_none() {
             errors.push((
                 rel,
