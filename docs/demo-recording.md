@@ -23,9 +23,13 @@ frontend so it follows the current interface (Studio by default).
   real terminal surface, and `stage/research.js` sends the Deep Research events. Mesa's real
   research controller validates the finish payload, so the script must keep passing that gate.
 - `stage/` draws the desktop, window frame, pop-out windows, captions, keycaps, and cursor.
-- Recording runs page time 4× slower (`timeshim.js` plus the CDP animation playback rate) so
-  CPU-only Chromium captures smooth frames. `encode.mjs` maps the frames back to page time,
-  crossfades the end into the first frame, and encodes with ffmpeg's `libwebp_anim`.
+- Recording runs page time 6× slower (`SLOW`; `timeshim.js` plus the CDP animation playback
+  rate) so CPU-only Chromium delivers a new frame for every 1/60 s of page time. Frames are
+  lossless PNG; the recorder keeps the newest frame in each 60 fps slot (`FPS`).
+- `encode.mjs` maps the frames back to page time at the recorded rate, crossfades the end into
+  the first frame, and encodes lossless WebP with libwebp's `img2webp` in parallel segments. Lossy WebP
+  (`--quality`) stores colour at quarter resolution and blocks dark gradients and small text;
+  use it only when the lossless file is over GitHub's 100 MB limit.
 
 ## Re-record
 
@@ -33,7 +37,9 @@ One-time tools, not project dependencies:
 
 ```bash
 npm i --no-save playwright@1.56.1 @fontsource/source-serif-4@5
-# ffmpeg with libwebp_anim must be on PATH
+# ffmpeg and libwebp's img2webp must be on PATH
+# DEMO_BROWSER: an installed Chromium-based browser, never Chrome for Testing
+export DEMO_BROWSER="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
 ```
 
 Without the font, Studio headings fall back to a generic serif.
@@ -42,10 +48,13 @@ Without the font, Studio headings fall back to a generic serif.
 # Optional: checkpoint screenshots without capture (fast)
 SLOW=1 node scripts/demo/record.mjs tmp/demo-dry --no-capture --shots
 
-# Capture (about 10 minutes), then encode
+# Capture (about 15 minutes, several GB of PNG frames), then encode
 node scripts/demo/record.mjs tmp/demo-frames
-node scripts/demo/encode.mjs tmp/demo-frames docs/mesa-demo.webp --quality 90
+node scripts/demo/encode.mjs tmp/demo-frames docs/mesa-demo.webp --effort 100
 ```
+
+`--effort 100` takes about 30 minutes on 8 cores for a file about 4% smaller than the default
+(effort 75, under 2 minutes). Encoding needs libwebp's `img2webp`; ffmpeg only renders the crossfade.
 
 To inspect the stage interactively, run `node scripts/demo/serve.mjs` and open
 `http://localhost:5174/__rec/index.html`.
@@ -53,6 +62,8 @@ To inspect the stage interactively, run `node scripts/demo/serve.mjs` and open
 ## Before publishing
 
 - Decode a few frames and look at every caption beat.
+- Check frame timing: `webpinfo` durations should be 16–17 ms during motion. Longer holds are
+  only valid where the screen is still.
 - Keep the file well under GitHub's 100 MB limit.
 - Update the `docs/mesa-demo.webp` entry in `docs/binary-review.json` (bytes, SHA-256,
   `status: "pending"`). Only a human reviewer may mark it approved after checking every frame.

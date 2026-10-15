@@ -17,12 +17,17 @@ const OUT = path.resolve(positional[0] ?? "tmp/demo-frames");
 const CAPTURE = !process.argv.includes("--no-capture");
 const SHOTS = process.argv.includes("--shots");
 // Page time runs SLOW x slower than real time so CPU-only Chromium keeps up.
-const SLOW = Number(process.env.SLOW || 4);
+const SLOW = Number(process.env.SLOW || 6);
+// Frames are kept per 1/FPS slot of page time; encode.mjs uses the same rate.
+const FPS = Number(process.env.FPS || 60);
+// An installed Chromium-based browser; never Playwright's Chrome for Testing.
+const BROWSER = process.env.DEMO_BROWSER;
+if (!BROWSER) throw new Error("Set DEMO_BROWSER to an installed Chromium-based browser executable");
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
 const server = await startServer(PORT);
-const browser = await chromium.launch({ args: ["--force-color-profile=srgb", "--font-render-hinting=none"] });
+const browser = await chromium.launch({ executablePath: BROWSER, args: ["--force-color-profile=srgb", "--font-render-hinting=none"] });
 const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 }, colorScheme: "dark", deviceScaleFactor: 1 });
 await ctx.addInitScript((k) => { if (window.top === window) window.__REC_K__ = 1 / k; }, SLOW);
 await ctx.addInitScript({ path: path.join(here, "timeshim.js") });
@@ -156,16 +161,22 @@ async function wipeTheme(theme, ms = 1100) {
 // --- capture -------------------------------------------------------------------
 const cdp = await page.context().newCDPSession(page);
 let frames = 0;
+let t0 = null;
 const index = [];
+// Lossless frames; a newer frame in the same page-time slot replaces the older one.
 cdp.on("Page.screencastFrame", async (f) => {
-  const name = `f${String(frames++).padStart(5, "0")}.jpg`;
+  frames++;
+  t0 ??= f.metadata.timestamp;
+  const slot = Math.floor(((f.metadata.timestamp - t0) / SLOW) * FPS);
+  const name = `f${String(slot).padStart(5, "0")}.png`;
   fs.writeFileSync(path.join(OUT, name), Buffer.from(f.data, "base64"));
-  index.push([name, f.metadata.timestamp]);
+  if (index.at(-1)?.[0] === name) index.at(-1)[1] = f.metadata.timestamp;
+  else index.push([name, f.metadata.timestamp]);
   try { await cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }); } catch { /* capture stopped */ }
 });
 await cdp.send("Animation.enable");
 await cdp.send("Animation.setPlaybackRate", { playbackRate: 1 / SLOW });
-async function startCapture() { if (CAPTURE) await cdp.send("Page.startScreencast", { format: "jpeg", quality: 93, everyNthFrame: 1, maxWidth: 1920, maxHeight: 1080 }); }
+async function startCapture() { if (CAPTURE) await cdp.send("Page.startScreencast", { format: "png", everyNthFrame: 1, maxWidth: 1920, maxHeight: 1080 }); }
 async function stopCapture() { if (CAPTURE) await cdp.send("Page.stopScreencast"); }
 const marks = [];
 const mark = (label) => marks.push([label, Date.now() / 1000]);
@@ -334,8 +345,8 @@ mark("end");
 await stopCapture();
 await wait(300);
 
-fs.writeFileSync(path.join(OUT, "index.json"), JSON.stringify({ frames: index, marks, slow: SLOW }, null, 1));
-console.log(`frames ${frames}  span ${(index.at(-1)?.[1] - index[0]?.[1]).toFixed(1)}s`);
+fs.writeFileSync(path.join(OUT, "index.json"), JSON.stringify({ frames: index, marks, slow: SLOW, fps: FPS }, null, 1));
+console.log(`frames ${frames} captured, ${index.length} slots kept  span ${(index.at(-1)?.[1] - index[0]?.[1]).toFixed(1)}s`);
 console.log(logs.filter((l) => /error|PAGEERR/i.test(l)).slice(0, 20).join("\n"));
 await browser.close();
 await server.close();
