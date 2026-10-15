@@ -12,12 +12,12 @@
     },
     {
       "path": "docs/mesa-hero-themes.png",
-      "bytes": 2799309,
-      "sha256": "aecf1f870939ca105cbf18e5006fce22009701a2ad67e45b303e6dd29667b040",
+      "bytes": 1555722,
+      "sha256": "71b9de84eff05ea3fc3c4d7e4d8bcd459006f52d8e1a2224091778e740336ea6",
       "status": "approved",
       "reviewerType": "human",
-      "reviewedOn": "2026-10-08",
-      "evidence": "Project owner approved the cropped Midnight and Dusk hero with its diagonal divider and authorized publication on 2026-10-08."
+      "reviewedOn": "2026-10-15",
+      "evidence": "Project owner selected the synthetic Lorem Ipsum vault Midnight and Dusk hero with its diagonal divider and authorized publication on 2026-10-15."
     },
     {
       "path": "docs/mesa-wordmark.gif",
