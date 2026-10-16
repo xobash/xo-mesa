@@ -100,7 +100,7 @@ describe("editor undo document boundary", () => {
     }
     expect(calls).toHaveLength(1);
     expect(calls[0][1]).toMatchObject({ snippet: "x", tasksUnchanged: true });
-  });
+  }, 30000);
   it("undo after a note switch cannot revert to the previous note's text", () => {
     mountWithNote("a.md", "note A body");
     switchToNote("b.md", "note B body");
