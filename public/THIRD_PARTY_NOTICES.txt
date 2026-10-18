@@ -1,6 +1,6 @@
 Mesa third-party notices
 Generated from installed, locked dependencies. Mesa's own MIT license is separate.
-package-lock-sha256: 6bc686107518cf45dd1fba891889201233e6893f018ec716800044e8fead03bf
+package-lock-sha256: b48c72cd3e570a6ca74ab9c0768d6c5a78aacc2f1bb8d325c64816f32bd793c2
 Cargo-lock-sha256: e9d403e2d6e49a0f0637a875d161a8bd0b056cf3bfa4e0aadc5a54f7bc7777a1
 native-notices-sha256: 935d870c930baaf4722aadb50f62c6967ad983a247c212e9c032a2103867df5f
 
@@ -802,7 +802,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 
 ========================================================================
-@tauri-apps/plugin-dialog@2.7.1
+@tauri-apps/plugin-dialog@2.7.3
 License: MIT OR Apache-2.0
 
 --- LICENSE.spdx ---
@@ -828,7 +828,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 
 ========================================================================
-@tauri-apps/plugin-fs@2.5.1
+@tauri-apps/plugin-fs@2.5.2
 License: MIT OR Apache-2.0
 
 --- LICENSE.spdx ---
@@ -854,7 +854,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 
 ========================================================================
-@tauri-apps/plugin-opener@2.5.0
+@tauri-apps/plugin-opener@2.5.5
 License: MIT OR Apache-2.0
 
 --- LICENSE.spdx ---
@@ -1399,7 +1399,7 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 
 ========================================================================
-dompurify@3.4.16
+dompurify@3.4.17
 License: (MPL-2.0 OR Apache-2.0)
 
 --- LICENSE ---
