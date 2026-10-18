@@ -288,11 +288,11 @@ of the source toolchain trust. Development checkouts are a separate path.
 ## Native advisory review
 
 `node scripts/native-advisory-check.mjs` runs the current registry-backed Cargo
-audit. It rejects vulnerabilities and every unreviewed warning. Only the two
-exact legacy GTK warning/package/version combinations documented in
+audit. It rejects vulnerabilities and every unreviewed warning. Only the exact
+legacy GTK and `zbus` 5 warning/package/version combinations documented in
 `docs/security.md` are tracked. A version or advisory change requires review;
-removal needs the supported upstream GTK binding transition and fresh Linux
-acceptance, not a forced incompatible dependency override.
+removal needs the supported upstream GTK and D-Bus binding transitions and
+fresh Linux acceptance, not a forced incompatible dependency override.
 
 The source installer checks that the final checkout commit equals the signed
 release tag; an ahead checkout is preserved and never launched by this path.

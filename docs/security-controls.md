@@ -122,11 +122,12 @@ The checker verifies records, not the truth of human observations. Ordinary
 source CI checks binary metadata without `--review`; display in the README
 does not establish the separate human pixel-review record required for release.
 
-CONTROL-029 (AUDIT; enforced): the two exact native advisory exceptions are
-reviewed 2026-10-11 and expire after 2026-11-10 (UTC). The expiry regression in
-`release-gate.check.mjs` rejects the same warnings after that date. Removal
-requires a compatible complete Linux binding-chain upgrade and Linux acceptance;
-the exception does not fix the upstream advisories.
+CONTROL-029 (AUDIT; enforced): the five exact native advisory exceptions
+(two GTK-chain warnings reviewed 2026-10-11 and three `zbus` 5 unmaintained
+warnings reviewed 2026-10-18) expire after 2026-11-10 (UTC). The expiry
+regression in `release-gate.check.mjs` rejects the same warnings after that
+date. Removal requires compatible upstream Linux GTK and D-Bus chain upgrades
+and Linux acceptance; the exception does not fix the upstream advisories.
 
 Private working-document path checks apply to the staged tree and candidate ancestry. Secret-byte and identity checks still cover every fetched public ref. Other published branches require their own content review and cleanup; a passing candidate scan does not establish their removal.
 

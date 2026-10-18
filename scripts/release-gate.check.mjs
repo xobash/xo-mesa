@@ -34,6 +34,10 @@ it('permits only the exact tracked upstream warning versions and fails on new vu
   assert.throws(() => validateNativeAudit(old, new Date('2026-11-11')), /expired/);
   old.warnings.unsound[0].package.version = '0.18.6';
   assert.throws(() => validateNativeAudit(old));
+  const zbus = { ...clean, warnings: { unmaintained: [{ advisory: { id: 'RUSTSEC-2026-0371' }, package: { name: 'zbus_names', version: '4.3.4' } }] } };
+  assert.equal(validateNativeAudit(zbus, new Date('2026-11-09')), 1);
+  zbus.warnings.unmaintained[0].package.version = '4.3.5';
+  assert.throws(() => validateNativeAudit(zbus, new Date('2026-11-09')), /Unreviewed/);
   assert.throws(() => validateNativeAudit({ ...clean, vulnerabilities: { found: true, count: 1 } }));
 });
 
