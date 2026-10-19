@@ -31,7 +31,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' asset: http://asset.localhost https://asset.localhost tauri:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' mesa-web: http://mesa-web.localhost https://mesa-web.localhost asset: http://asset.localhost https://asset.localhost data: blob: https:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-gG7q72k24KbGKHD4BRn9xaUok2022yKslwchcGrrnvA='; worker-src 'self' blob:; font-src 'self' data: mesa-web: http://mesa-web.localhost https://mesa-web.localhost; frame-src mesa-html: http://mesa-html.localhost https://mesa-html.localhost 'self' asset: http://asset.localhost https://asset.localhost blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "csp": "default-src 'self' asset: http://asset.localhost https://asset.localhost tauri:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; img-src 'self' mesa-web: http://mesa-web.localhost https://mesa-web.localhost asset: http://asset.localhost https://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-gG7q72k24KbGKHD4BRn9xaUok2022yKslwchcGrrnvA='; worker-src 'self' blob:; font-src 'self' data: mesa-web: http://mesa-web.localhost https://mesa-web.localhost; frame-src mesa-html: http://mesa-html.localhost https://mesa-html.localhost 'self' asset: http://asset.localhost https://asset.localhost blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": []

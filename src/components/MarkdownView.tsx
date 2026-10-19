@@ -5,6 +5,7 @@ import { resolveAssetPath } from "../lib/graph";
 import { urlForPath } from "../lib/vault";
 import { useAppStore } from "../store";
 import { markMesaPerf } from "../lib/mesaPerf";
+import { rewriteSrcset, useRemoteImageRewrite, type RemoteImageRewrite } from "../lib/remoteImages";
 
 /**
  * Parses Markdown in a worker, sanitizes accepted output, delegates wiki clicks,
@@ -17,19 +18,21 @@ import { markMesaPerf } from "../lib/mesaPerf";
 /** Keep sanitized URL markers so reused blocks can revoke consent before paint. */
 const REMOTE_ATTRIBUTES = ["src", "poster", "background", "data", "href", "xlink:href", "srcset"];
 const REMOTE_SELECTOR = REMOTE_ATTRIBUTES.map(name => `[data-remote-${name.replace(":", "-")}]`).join(",");
-function applyRemoteMediaConsent(root: Element, allowed: boolean) {
+/** Without a rewrite, parked remote URLs stay unloaded; with one, they load through it. */
+function applyRemoteMediaConsent(root: Element, rewrite: RemoteImageRewrite | null) {
   const found = [...root.querySelectorAll<Element>(REMOTE_SELECTOR)];
   if (root.matches(REMOTE_SELECTOR)) found.push(root);
   found.forEach((el) => {
     for (const name of REMOTE_ATTRIBUTES) {
       const value = el.getAttribute(`data-remote-${name.replace(":", "-")}`);
       if (value === null) continue;
-      if (!allowed) el.removeAttribute(name);
+      const live = rewrite ? (name === "srcset" ? rewriteSrcset(value, rewrite) : rewrite(value)) : "";
+      if (!live) el.removeAttribute(name);
       else if (name === "xlink:href") {
-        if (el.getAttributeNS("http://www.w3.org/1999/xlink", "href") !== value) {
-          el.setAttributeNS("http://www.w3.org/1999/xlink", name, value);
+        if (el.getAttributeNS("http://www.w3.org/1999/xlink", "href") !== live) {
+          el.setAttributeNS("http://www.w3.org/1999/xlink", name, live);
         }
-      } else if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+      } else if (el.getAttribute(name) !== live) el.setAttribute(name, live);
     }
   });
 }
@@ -65,15 +68,18 @@ export function MarkdownView({
   const [remoteConsent, setRemoteConsent] = useState({ source, allowed: false });
   if (remoteConsent.source !== source) setRemoteConsent({ source, allowed: false });
   const allowRemote = remoteConsent.source === source && remoteConsent.allowed;
+  // Consented media loads only through Mesa's image broker, never directly.
+  const remoteRewrite = useRemoteImageRewrite(allowRemote);
+  const liveRewrite = allowRemote ? remoteRewrite ?? null : null;
   const [remoteCount, setRemoteCount] = useState(0);
-  const allowRemoteRef = useRef(false);
-  allowRemoteRef.current = allowRemote;
+  const remoteRewriteRef = useRef<RemoteImageRewrite | null>(null);
+  remoteRewriteRef.current = liveRewrite;
   const rendererRef = useRef<ReturnType<typeof import("../lib/markdownRender").createMarkdownRenderer> | null>(null);
   const domRef = useRef<ReturnType<typeof import("../lib/markdownDom").createMarkdownDom> | null>(null);
   const filesRef = useRef(useFiles);
   filesRef.current = useFiles;
   const resolveImages = (nodes: readonly Node[]) => {
-    for (const node of nodes) if (node instanceof Element) applyRemoteMediaConsent(node, allowRemoteRef.current);
+    for (const node of nodes) if (node instanceof Element) applyRemoteMediaConsent(node, remoteRewriteRef.current);
     const resolve = (img: HTMLImageElement) => {
       const raw = img.getAttribute("data-embed") ?? img.getAttribute("src") ?? "";
       if (!raw || /^(https?:|data:|asset:|blob:|tauri:|file:)/i.test(raw)) return;
@@ -154,9 +160,9 @@ export function MarkdownView({
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    applyRemoteMediaConsent(el, allowRemote);
+    applyRemoteMediaConsent(el, liveRewrite);
     setRemoteCount(allowRemote ? 0 : el.querySelectorAll(REMOTE_SELECTOR).length);
-  }, [revision, allowRemote]);
+  }, [revision, allowRemote, liveRewrite]);
 
   useEffect(() => {
     const el = ref.current;
@@ -204,6 +210,9 @@ export function MarkdownView({
   return (
     <>
       {error && <div role="alert">Preview unavailable: {error}</div>}
+      {allowRemote && remoteRewrite === null && (
+        <div className="md-remote-notice" role="status">Remote images cannot load in this window.</div>
+      )}
       {remoteCount > 0 && (
         <div className="md-remote-notice" role="status">
           Remote images and media are not loaded. Loading them tells their servers you opened this note.{" "}

@@ -76,11 +76,14 @@ with an independent URL parser. The sanitizer parks each URL in `data-remote-*`
 and `MarkdownView` shows a notice with **Load remote images for this note**; the
 SVG XLink namespace is restored with the URL after consent. The
 choice lasts while that rendered source remains unchanged in the open view.
-A new source requires new consent, including navigation in a reused viewer. This is why the app CSP still lists `https:`
-in `img-src`. Sanitizer-produced URL markers remain on approved media so a
-source change can revoke live URLs before paint, even on unchanged reused blocks.
-This is a sanitizer boundary with regression coverage, not a
-second network-denial layer for HTTPS images. Links in a note never navigate
+A new source requires new consent, including navigation in a reused viewer.
+Consented media loads through the window-owned `mesa-web` image broker, which
+fetches public addresses natively within the reader's request, size and type
+budgets; Deep Research source icons use the same broker. The app and browser
+demo CSPs therefore omit `https:` from `img-src`, so a URL that escapes the
+sanitizer still cannot load directly. Windows without broker access keep
+consented media unloaded and say so. Sanitizer-produced URL markers remain on approved media so a
+source change can revoke live URLs before paint, even on unchanged reused blocks. Links in a note never navigate
 Mesa's own window: `http(s)` links
 ask before opening in Mesa's read-only reader (it needs a mounted Pi surface),
 vault-relative links open the note, and every other scheme is ignored. A native

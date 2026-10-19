@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useRemoteImageRewrite } from "../lib/remoteImages";
 import { useAppStore, getStore } from "../store";
 import type { DeepResearchRunState } from "../store";
 import { IN_TAURI } from "../lib/vault";
@@ -452,13 +453,16 @@ function ResearchActivityGraph({
 function ResearchSourceIcon({ source }: { source: ResearchSourcePresentation }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [source.faviconUrl]);
+  // Favicons load through Mesa's image broker; the app CSP blocks direct remote images.
+  const rewrite = useRemoteImageRewrite(true);
+  const src = rewrite ? rewrite(source.faviconUrl) : "";
   return (
     <span className="dr-source-icon" title={source.siteName} aria-hidden="true">
-      {failed ? (
+      {failed || !src ? (
         <span className="dr-source-icon-fallback">{source.initial}</span>
       ) : (
         <img
-          src={source.faviconUrl}
+          src={src}
           alt=""
           loading="lazy"
           referrerPolicy="no-referrer"
