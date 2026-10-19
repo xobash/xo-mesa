@@ -77,6 +77,7 @@ scripts/dev.mjs
 scripts/docker-context.check.mjs
 scripts/document-fuzz.entry.ts
 scripts/document-fuzz.mjs
+scripts/graph-bench.mjs
 scripts/independent-privacy.mjs
 scripts/index-acceptance.html
 scripts/index-memory-bench.mjs

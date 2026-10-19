@@ -28,6 +28,7 @@
     "test:index": "node --test scripts/index-search-behavior.check.mjs",
     "test:docker-context": "node scripts/docker-context.check.mjs",
     "bench:index": "node scripts/index-memory-bench.mjs",
+    "bench:graph": "node scripts/graph-bench.mjs",
     "acceptance:native-template": "node scripts/native-acceptance-template.mjs",
     "acceptance:native-check": "node scripts/native-acceptance-check.mjs",
     "audit:public": "node scripts/public-release-audit.mjs",

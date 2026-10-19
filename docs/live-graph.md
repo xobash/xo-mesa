@@ -168,6 +168,39 @@ pan, resize, and node drag, Mesa enters a fast draw path that temporarily skips
 labels and thumbnails so interaction stays smooth; full visual detail returns
 after the interaction settles.
 
+## Large-graph tiers
+
+| Nodes | Rule |
+| --- | --- |
+| > 300 / > 800 | Force tiers weaken charge, widen its range and decay faster (`graphSimulationTier`). |
+| ≥ 500 | Node drag physics runs in the physics worker. |
+| ≥ 2,000 | Settling after open, data changes and slider retunes also runs in the worker, including the idle overlap cleanup. The main thread copies each posted state and draws. |
+| > 4,000 | Settled ambient redraws use 20 fps instead of 30 fps. |
+
+The first painted frame is unchanged: the synchronous warm ticks still run
+before it at every size. The worker runs the same ticks and the same overlap
+passes in the same order as the main-thread frame loop, so both paths end in
+the same layout. Snapshot buffers are transferred to the worker and state
+buffers back; neither direction copies them. Without `Worker`, or after a
+worker error, the main thread keeps settling as before.
+
+Hover and click hit-tests use a grid over frozen layout positions. The grid is
+rebuilt on the first hit-test after the layout re-freezes; while nodes move,
+hit-tests scan all nodes. Both pick the same node. Labels stay bounded to the
+10 highest-degree nodes plus hovered, active and up to 24 hovered-neighbour
+labels per frame.
+
+Linked image thumbnails decode only for visible nodes whose radius is at least
+4 screen px. At most 192 thumbnails stay cached; when every cached image was
+drawn in the current frame, further nodes draw as dots instead of evicting.
+
+`npm run bench:graph` runs a seeded synthetic-vault benchmark at 1k, 5k, 10k
+and 20k nodes (pass a comma-separated size list to change them). It measures
+graph build, warm ticks, main-thread versus worker settle frames, idle overlap
+passes, worker parity, hit-testing, label placement and retained heap in Node.
+It does not measure WebKit, WebView2 or WebKitGTK canvas drawing or native
+frame times.
+
 ## External Activity
 
 The Tauri activity bridge accepts activity payloads and forwards them into the
