@@ -39,6 +39,15 @@ npm run mesa
 - Do not include credentials, private vault data, personal paths, or generated
   local output.
 
+## Automation
+
+Dependabot proposes grouped minor and patch updates weekly for npm, Cargo
+(`src-tauri`) and GitHub Actions. Review each update like any other change:
+regenerate third-party notices after a dependency change and run the checks
+above. The `codeql` workflow scans the JavaScript and TypeScript sources on
+pushes, pull requests and weekly. `.github/CODEOWNERS` assigns review to the
+repository owner.
+
 ## Pull requests
 
 Use a focused branch and a clear title. Keep unrelated changes out of the pull
