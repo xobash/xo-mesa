@@ -251,6 +251,8 @@ do not treat a key fetched beside a download as an independent trust anchor.
 
 ### Versioned source bootstrap
 
+**Not available yet:** no `v0.1.0` tag or release is published, so these
+commands fail at the download or tag check until the first signed release.
 For a published `v0.1.0` source release, these commands check the bootstrap's
 reviewed SHA-256 before execution. The installer then verifies the signed
 release tag using Git's configured release-signing trust and launches only that
@@ -262,13 +264,13 @@ reuses an unchanged local release build on later starts.
 macOS and Linux:
 
 ```bash
-( set -e; p=$(mktemp); trap 'rm -f "$p"' EXIT; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.sh -o "$p"; if command -v shasum >/dev/null; then printf '6c4a390912e85dea27ee55824f59f858a9a18c39115fc2bcb66302db5a6702cb  %s\n' "$p" | shasum -a 256 -c -; else printf '6c4a390912e85dea27ee55824f59f858a9a18c39115fc2bcb66302db5a6702cb  %s\n' "$p" | sha256sum -c -; fi; bash "$p" )
+( set -e; p=$(mktemp); trap 'rm -f "$p"' EXIT; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.sh -o "$p"; if command -v shasum >/dev/null; then printf '65453fc669bed657411b25f86e80051ff109ee73be978eb74f3e02fd92357c45  %s\n' "$p" | shasum -a 256 -c -; else printf '65453fc669bed657411b25f86e80051ff109ee73be978eb74f3e02fd92357c45  %s\n' "$p" | sha256sum -c -; fi; bash "$p" )
 ```
 
 Windows 10 and Windows 11:
 
 ```powershell
-& { $ErrorActionPreference = 'Stop'; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne '7d2a450400421f730392e1052d454a40cc0b418b26c218f94d86f3276d7bf8c6') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
+& { $ErrorActionPreference = 'Stop'; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne '41e9ecbb1ac6cddd61020fdc8cbe2601e47e791c0a27a19c87519561109a1e81') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
 ```
 
 The source installers preserve existing local files and refuse non-fast-forward

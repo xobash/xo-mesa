@@ -3,6 +3,8 @@
 set -euo pipefail
 
 repo_url="https://github.com/xobash/xo-mesa.git"
+# The v0.1.0 default needs the first signed release tag, which is not published
+# yet. Until then this installer stops at the tag check.
 release_version="${MESA_VERSION:-v0.1.0}"
 [[ "$release_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { printf "Invalid Mesa release version\n" >&2; exit 1; }
 current_dir="$(pwd -P)"
