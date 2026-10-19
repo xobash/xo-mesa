@@ -351,8 +351,10 @@ resource bytes, with 6 MiB per image/font and 2 MiB per stylesheet. Resource
 tokens belong to one window, expire after ten minutes, and are revoked on
 navigation, viewer close or window destruction; at most eight are retained.
 The persisted **Text only** toggle skips brokered assets. HTTP error statuses
-remain visible. **Open in system browser** opens the current HTTP(S) URL in
-the user's normal browser outside Mesa, including normal scripts/sign-in.
+remain visible. **Open in system browser** opens the current HTTPS URL in
+the user's normal browser outside Mesa, including normal scripts/sign-in. The
+native opener admits only HTTPS; for a plain-HTTP page Mesa asks before it
+opens the HTTPS form of the same address.
 Subresource requests can reveal reading activity to the page's CDNs; the page
 host already sees the page request. These assets never receive the user's or
 Pi's page cookies. JavaScript-only and signed-in pages may not be readable.

@@ -4,6 +4,9 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
 const mock = vi.hoisted(() => ({ invoke: vi.fn(), state: { settings: { browserTextOnly: false }, setSetting: vi.fn(), vaultPath: '/vault', openVault: vi.fn(), registerVaultFile: vi.fn(), openFile: vi.fn() } }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }));
+const opener = vi.hoisted(() => ({ openUrl: vi.fn(async () => {}), confirm: vi.fn(async () => true) }));
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: opener.openUrl }));
+vi.mock('../lib/confirmAction', () => ({ confirmAction: opener.confirm }));
 vi.mock('../lib/vault', () => ({ IN_TAURI: true, writeVaultTextFile: vi.fn() }));
 vi.mock('../store', () => ({ useAppStore: Object.assign((fn: (s: unknown) => unknown) => fn(mock.state), { getState: () => mock.state }) }));
 import { BrowserHarness } from './BrowserHarness';
@@ -102,4 +105,23 @@ it('revokes resource tokens for responses that cannot become a readable view', a
   await navigate('https://example.com/');
   expect(mock.invoke).toHaveBeenCalledWith('browse_resource_session', { token: 'unused-view' });
   expect(host.querySelector('iframe')).toBeNull();
+});
+it('opens HTTPS pages directly and offers the HTTPS address for plain-HTTP pages', async () => {
+  const open = async (url: string) => {
+    opener.openUrl.mockClear(); opener.confirm.mockClear();
+    mock.invoke.mockResolvedValue(page(url, '<p>Page</p>'));
+    await navigate(url);
+    const button = [...host.querySelectorAll('button')].find(b => b.textContent === 'Open in system browser')!;
+    await act(async () => button.click());
+  };
+  await mount();
+  await open('https://example.com/a');
+  expect(opener.confirm).not.toHaveBeenCalled();
+  expect(opener.openUrl).toHaveBeenCalledWith('https://example.com/a');
+  await open('http://example.com/b');
+  expect(opener.confirm).toHaveBeenCalledOnce();
+  expect(opener.openUrl).toHaveBeenCalledWith('https://example.com/b');
+  opener.confirm.mockResolvedValueOnce(false);
+  await open('http://example.com/c');
+  expect(opener.openUrl).not.toHaveBeenCalled();
 });

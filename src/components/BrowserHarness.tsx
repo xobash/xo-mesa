@@ -6,6 +6,17 @@ import { resolveNavTarget } from "../lib/agent";
 import { IN_TAURI, writeVaultTextFile } from "../lib/vault";
 import { archiveWebPage } from "../lib/webArchive";
 import { buildReaderDocument, buildReaderHtml } from "../lib/browserReader";
+import { confirmAction } from "../lib/confirmAction";
+
+/** The native opener admits only HTTPS; offer the HTTPS address for a plain-HTTP page. */
+async function openInSystemBrowser(url: string): Promise<void> {
+  if (/^https:/i.test(url)) return openUrl(url);
+  if (!/^http:/i.test(url)) throw new Error("Only web addresses can open in the system browser.");
+  const secure = url.replace(/^http:/i, "https:");
+  if (await confirmAction(`This page uses unencrypted HTTP. Mesa opens only HTTPS addresses in your system browser. Open ${secure} instead?`, { okLabel: "Open HTTPS address" })) {
+    await openUrl(secure);
+  }
+}
 
 interface BrowsePage {
   finalUrl: string;
@@ -174,7 +185,7 @@ export function BrowserHarness({ externalNav, onClose }: {
       <button className="browser-nav-btn" aria-label="Read page" title="Read page" onClick={() => navigate(input)}>→</button>
       <button className="browser-nav-btn" aria-label="Archive page to vault" title="Archive page to vault" disabled={!page} onClick={() => void archive()}>↓</button>
       <button className="browser-nav-btn" aria-pressed={textOnly} onClick={() => setSetting("browserTextOnly", !textOnly)}>Text only</button>
-      <button className="browser-nav-btn" disabled={!url || !IN_TAURI} onClick={() => void openUrl(url).catch(reason => setError(String(reason)))}>Open in system browser</button>
+      <button className="browser-nav-btn" disabled={!url || !IN_TAURI} onClick={() => void openInSystemBrowser(url).catch(reason => setError(String(reason)))}>Open in system browser</button>
       {onClose && <button className="browser-nav-btn" aria-label="Close browser" title="Close browser" onClick={onClose}>×</button>}
     </div>
     <div className="agent-browser-frame-slot">
