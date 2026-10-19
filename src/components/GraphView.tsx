@@ -1,7 +1,6 @@
 import { prefersReducedMotion, onReducedMotionChange } from "../lib/motion";
 import { useEffect, useRef, useState } from "react";
 import {
-  forceSimulation,
   forceManyBody,
   forceLink,
   forceCenter,
@@ -61,6 +60,13 @@ const OVERLAP_GAP = 8;
 const WORKER_DRAG_MIN_NODES = 500;
 // Settling after release runs two ticks per frame below this node count.
 const DOUBLE_TICK_BELOW = 650;
+// Heavy graphs also settle (after open, data changes and retunes) in the
+// physics worker: one main-thread tick costs ~100 ms at 10,000 nodes.
+const WORKER_SETTLE_MIN_NODES = 2000;
+// Thumbnails decode only for visible nodes at least this many screen px in
+// radius; smaller ones draw as dots. At most THUMB_CACHE_MAX images stay cached.
+const THUMB_MIN_SCREEN_RADIUS = 4;
+const THUMB_CACHE_MAX = 192;
 
 /** Uniform neighbour velocity cap during a drag — no hub boost. */
 function dragVelocityCap(nodeCount: number): number {
@@ -97,8 +103,8 @@ function rectLinePenalty(
   return hits;
 }
 
-import { graphLinkNodeId, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "./graphGeometry";
-import { snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
+import { GraphHitIndex, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { createGraphSimulation, graphPhysicsTransferables, graphSimulationTier, snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
 import { markMesaPerf } from "../lib/mesaPerf";
 export { resolveOverlaps } from "./graphGeometry";
 
@@ -400,11 +406,15 @@ export function GraphView() {
   // Skip idle overlap checks once settled; simulation ticks re-arm them.
   // Ambient motion changes render coordinates only, not layout x/y.
   const layoutSettledRef = useRef(false);
+  // Grid over frozen layout positions; rebuilt on the first hit-test after the
+  // layout re-freezes (layoutSettledRef false → true drops it).
+  const hitIndexRef = useRef<GraphHitIndex | null>(null);
+  const hitIndexSizeRef = useRef(1);
   const transformRef = useRef<Transform>({ x: 0, y: 0, k: 1 });
   const targetKRef = useRef(1); // for smooth wheel zoom
   const sizeRef = useRef({ w: 800, h: 600 });
   const fitPendingRef = useRef(true);
-  const imgCache = useRef<Map<string, HTMLImageElement>>(new Map());
+  const imgCache = useRef<Map<string, { img: HTMLImageElement; frame: number }>>(new Map());
   const pointerRef = useRef({ x: 0, y: 0, inside: false });
   const dragRef = useRef<DragState>({
     node: null,
@@ -514,13 +524,7 @@ export function GraphView() {
     adjacencyRef.current = adjacency;
     neighborsRef.current = buildNeighbors(visibleLinks);
 
-    const endpointCache = linkEndpointsRef.current;
-    endpointCache.sx = new Float32Array(visibleLinks.length);
-    endpointCache.sy = new Float32Array(visibleLinks.length);
-    endpointCache.tx = new Float32Array(visibleLinks.length);
-    endpointCache.ty = new Float32Array(visibleLinks.length);
-    endpointCache.sId = visibleLinks.map((l) => graphLinkNodeId(l.source));
-    endpointCache.tId = visibleLinks.map((l) => graphLinkNodeId(l.target));
+    reserveLinkEndpoints(visibleLinks.length);
 
     const sim = simRef.current;
     if (sim) {
@@ -557,33 +561,36 @@ export function GraphView() {
   }, [graphSettingsOpen]);
 
   // ---- ref-only helpers (safe to capture once) ---------------------------
+  /**
+   * Flat link-endpoint buffers for the draw loop, which refills the first
+   * `count` entries every frame. Grow only; replay batches and filters reuse them.
+   */
+  function reserveLinkEndpoints(count: number): void {
+    const le = linkEndpointsRef.current;
+    if (le.sx.length >= count) return;
+    const capacity = Math.max(count, Math.ceil(le.sx.length * 1.5));
+    le.sx = new Float32Array(capacity);
+    le.sy = new Float32Array(capacity);
+    le.tx = new Float32Array(capacity);
+    le.ty = new Float32Array(capacity);
+  }
+
   function nodeAtScreen(sx: number, sy: number): GraphNode | null {
     const t = transformRef.current;
     const gx = (sx - t.x) / t.k;
     const gy = (sy - t.y) / t.k;
-    const hit = (nodes: GraphNode[]): GraphNode | null => {
-      let nearest: GraphNode | null = null;
-      let nearestDistance = Infinity;
-      for (let i = nodes.length - 1; i >= 0; i--) {
-        const n = nodes[i];
-        if (n.x == null || n.y == null) continue;
-        // Minimum SCREEN-space hit radius (like Obsidian): a degree-0 dot is
-        // ~2.4 world units, which at fit zoom is a ~1px target — effectively
-        // ungrabbable. Guarantee ~9px of screen no matter the zoom.
-        const r = Math.max(graphNodeRadius(n) + 6, 9 / t.k);
-        const dx = gx - n.x;
-        const dy = gy - n.y;
-        const distance = dx * dx + dy * dy;
-        if (distance <= r * r && distance < nearestDistance) {
-          nearest = n;
-          nearestDistance = distance;
-        }
-      }
-      return nearest;
-    };
-    // Hit-test every node — the force cluster and the orphan halo are both
-    // interactive (hover preview, click to open, drag to move).
-    return hit(nodesRef.current);
+    // Every node is interactive, including the orphan halo. Hit targets use
+    // layout x/y and keep at least ~9 screen px at any zoom.
+    const nodes = nodesRef.current;
+    const frozen = layoutSettledRef.current && !physicsRef.current.active && !dragRef.current.node;
+    if (!frozen) return nearestNodeLinear(nodes, gx, gy, t.k, graphNodeRadius);
+    let index = hitIndexRef.current;
+    if (!index || index.nodes !== nodes || hitIndexSizeRef.current !== graphDisplayRef.current.nodeSize) {
+      index = new GraphHitIndex(nodes, graphNodeRadius);
+      hitIndexRef.current = index;
+      hitIndexSizeRef.current = graphDisplayRef.current.nodeSize;
+    }
+    return index.nearest(gx, gy, t.k);
   }
 
   function graphBounds(nodes: GraphNode[]): {
@@ -651,18 +658,34 @@ export function GraphView() {
     }
   }
 
-  function getImage(path: string): HTMLImageElement {
+  /**
+   * Cached thumbnail for a drawn node, or null when the cache is full of
+   * images drawn this frame (the node then draws as a dot instead of thrashing).
+   */
+  function getImage(path: string, frame: number): HTMLImageElement | null {
     const cache = imgCache.current;
-    let img = cache.get(path);
-    if (!img) {
-      img = new Image();
-      img.onload = () => {
-        needsRedrawRef.current = true;
-        resumeRef.current();
-      };
-      img.src = urlForPath(path);
-      cache.set(path, img);
+    const hit = cache.get(path);
+    if (hit) {
+      // Most recently drawn last; the oldest entry is evicted first.
+      cache.delete(path);
+      hit.frame = frame;
+      cache.set(path, hit);
+      return hit.img;
     }
+    if (cache.size >= THUMB_CACHE_MAX) {
+      const [oldestPath, oldest] = cache.entries().next().value as [string, { img: HTMLImageElement; frame: number }];
+      if (oldest.frame === frame) return null;
+      oldest.img.onload = null;
+      oldest.img.removeAttribute("src");
+      cache.delete(oldestPath);
+    }
+    const img = new Image();
+    img.onload = () => {
+      needsRedrawRef.current = true;
+      resumeRef.current();
+    };
+    img.src = urlForPath(path);
+    cache.set(path, { img, frame });
     return img;
   }
 
@@ -763,15 +786,21 @@ export function GraphView() {
     simRef.current?.alpha(message.alpha);
   }
 
-  /** Apply the newest worker state. Returns true when positions changed. */
-  function applyDragPhysics(): boolean {
+  /**
+   * Apply the newest worker state. Returns "settled" when the worker finished,
+   * including idle overlap cleanup, "moved" for other new state, or null.
+   */
+  function applyDragPhysics(): "moved" | "settled" | null {
     const p = physicsRef.current;
     const message = p.pending;
-    if (!message) return false;
+    if (!message) return null;
     p.pending = null;
     copyPhysicsState(message);
-    if (message.type === "idle" && !(dragRef.current.node && dragRef.current.moved)) stopDragPhysics();
-    return true;
+    if (message.type === "idle" && !(dragRef.current.node && dragRef.current.moved)) {
+      stopDragPhysics();
+      return "settled";
+    }
+    return "moved";
   }
 
   /** Return physics to the main-thread simulation with the latest worker state. */
@@ -788,19 +817,23 @@ export function GraphView() {
     physicsRef.current.worker?.postMessage(message);
   }
 
-  /** Move a large graph's drag physics off the UI thread, or re-grab in a running session. */
-  function startDragPhysics(node: GraphNode, collideIterations: number | undefined): void {
+  /**
+   * Move a large graph's drag physics, or a heavy graph's settle (`node`
+   * null), off the UI thread; a grab re-uses a running session.
+   */
+  function startDragPhysics(node: GraphNode | null, collideIterations: number | undefined): void {
     const p = physicsRef.current;
     const sim = simRef.current;
     if (!sim || timelapseRef.current) return;
     if (p.active) {
+      if (!node) return;
       const index = p.index.get(node);
       if (index == null) stopDragPhysics();
       else postPhysics({ type: "grab", session: p.session, index, fx: node.fx ?? node.x ?? 0, fy: node.fy ?? node.y ?? 0 });
       return;
     }
     const nodes = sim.nodes();
-    if (nodes.length < WORKER_DRAG_MIN_NODES) return;
+    if (nodes.length < (node ? WORKER_DRAG_MIN_NODES : WORKER_SETTLE_MIN_NODES)) return;
     const worker = physicsWorker();
     if (!worker) return;
     const collide = sim.force("collide") as ForceCollide<GraphNode> | null | undefined;
@@ -809,13 +842,24 @@ export function GraphView() {
       velocityCap: dragVelocityCap(forceNodesRef.current.length),
       doubleTickBelow: DOUBLE_TICK_BELOW,
       grab: node,
+      overlap: {
+        gap: OVERLAP_GAP,
+        radius: graphNodeRadius,
+        phase: (n) => phaseFromId(n.id),
+      },
     });
     p.session += 1;
     p.active = true;
     p.nodes = nodes;
     p.index = new Map(nodes.map((n, i) => [n, i]));
     p.pending = null;
-    worker.postMessage({ type: "start", session: p.session, init } satisfies GraphPhysicsRequest);
+    worker.postMessage({ type: "start", session: p.session, init } satisfies GraphPhysicsRequest, graphPhysicsTransferables(init));
+  }
+
+  /** Hand a heavy graph's settle to the worker. Returns true when the worker owns physics. */
+  function startSettlePhysics(): boolean {
+    startDragPhysics(null, undefined);
+    return physicsRef.current.active;
   }
 
   useEffect(() => () => {
@@ -933,104 +977,28 @@ export function GraphView() {
     adjacencyRef.current = adj;
     neighborsRef.current = buildNeighbors(links);
 
-    // Pre-compute flat typed arrays for the link-drawing hot loop.
-    const le = linkEndpointsRef.current;
-    const lc = links.length;
-    le.sx = new Float32Array(lc);
-    le.sy = new Float32Array(lc);
-    le.tx = new Float32Array(lc);
-    le.ty = new Float32Array(lc);
-    le.sId = new Array(lc);
-    le.tId = new Array(lc);
+    reserveLinkEndpoints(links.length);
 
     needsRedrawRef.current = true;
     resumeRef.current();
 
     let sim = simRef.current;
     if (!sim) {
-      // For large graphs, weaken charge and increase distanceMax so the O(n²)
-      // force computation spreads out faster, and raise alphaDecay so it settles
-      // sooner rather than simmering for hundreds of extra ticks.
-      const simCount = forceNodes.length;
-      const big = simCount > 300;
-      const huge = simCount > 800;
-      const chargeStrength = (huge ? -12 : big ? -18 : -24) * graphRepelForce;
-      const chargeDistMax = huge ? 1400 : big ? 1100 : 900;
-      const warmTicks = huge ? 42 : big ? 56 : 78;
-      // All nodes share charge and centering. Isolated nodes differ only by
-      // having no links, so they can move freely around the linked cluster.
-      const chargeFor = (_n: GraphNode) => chargeStrength;
-      const centerStrength = clamp(graphCenterForce, 0, 1) * 0.1;
-      const pullFor = (_n: GraphNode) => centerStrength * 0.4;
-
-      sim = forceSimulation<GraphNode, GraphLink>(forceNodes)
-        .force(
-          "charge",
-          forceManyBody<GraphNode>()
-            .strength(chargeFor)
-            .distanceMax(chargeDistMax)
-            .theta(huge ? 0.95 : 0.9)
-        )
-        .force(
-          "link",
-          forceLink<GraphNode, GraphLink>(links)
-            .id((d) => d.id)
-            // Link distance respects both endpoint radii so the link force can
-            // never pull two connected nodes closer than their circles + a gap.
-            // (Hubs have radius up to 24; a flat 48px distance let two hubs be
-            // pulled into overlap because their collision radii sum to >48.)
-            .distance((l) => {
-              const s = l.source as GraphNode | string;
-              const t = l.target as GraphNode | string;
-              const rs = typeof s === "object" ? graphNodeRadius(s) : 6;
-              const rt = typeof t === "object" ? graphNodeRadius(t) : 6;
-              return rs + rt + graphLinkDistance / 10;
-            })
-            // Degree-scaled link strength — d3's DEFAULT behavior, which
-            // Obsidian/Logseq/Athens/Foam all inherit unchanged. Strength per
-            // link = 1 / min(deg(source), deg(target)), clamped, so a link
-            // between two hubs (e.g. INDEX deg 227 ↔ Privacy deg 65) is weak
-            // (~0.015) and doesn't violently yank them together, while a leaf
-            // link stays strong and snugs up to its hub. The prior flat 0.55
-            // gave INDEX's 227 links full aggregate strength → flinging/jitter
-            // on hub drag. This is the single biggest hub-jitter fix.
-            .strength((l) => {
-              const s = l.source as GraphNode | string;
-              const t = l.target as GraphNode | string;
-              const ds = typeof s === "object" ? s.degree ?? 1 : 1;
-              const dt = typeof t === "object" ? t.degree ?? 1 : 1;
-              return clamp(
-                (1 / Math.max(1, Math.min(ds, dt))) * graphLinkForce,
-                0,
-                2
-              );
-            })
-        )
-        .force("center", forceCenter(w / 2, h / 2).strength(centerStrength))
-        .force(
-          "collide",
-          forceCollide<GraphNode>()
-            // Smooth iterative collision WHILE THE SIM HAS ENERGY (incl. drag
-            // + settle). This is what Obsidian/Logseq/Athens use — they have
-            // no hard alpha-independent resolver fighting the sim during drag.
-            // resolveOverlaps() (below) is gated off during drag/settle and
-            // only takes over at idle as the no-overlap backstop. Both key off
-            // OVERLAP_GAP so ambient breathing can't cross it.
-            .radius((n) => graphNodeRadius(n) + 6)
-            .strength(1)
-            .iterations(big ? 3 : 4)
-        )
-        .force("x", forceX<GraphNode>(w / 2).strength(pullFor))
-        .force("y", forceY<GraphNode>(h / 2).strength(pullFor));
-      // Lower friction than d3's 0.4 default would be too loose at scale, but
-      // the prior 0.44–0.52 was *above* default — i.e. stickier than Obsidian,
-      // which killed the springy release exhale. Match Obsidian/d3's feel: ~0.38
-      // (slightly looser than default for a touch of follow-through), huge
-      // graphs a hair tighter so a big cluster can't swing wild.
-      sim.velocityDecay(huge ? 0.42 : big ? 0.4 : 0.38).alphaDecay(huge ? 0.06 : big ? 0.04 : 0.028).alpha(0.85).stop();
+      // Size tiers weaken charge, widen its range and decay faster for large
+      // graphs so they settle sooner (see graphSimulationTier).
+      const tier = graphSimulationTier(forceNodes.length);
+      sim = createGraphSimulation<GraphNode, GraphLink>(forceNodes, links, {
+        w,
+        h,
+        radius: (node: unknown) => graphNodeRadius(node as GraphNode),
+        repel: graphRepelForce,
+        center: graphCenterForce,
+        linkForce: graphLinkForce,
+        linkDistance: graphLinkDistance,
+      });
       // Tiny prewarm only: enough to avoid an initial singular pile-up without
       // blocking first paint for seconds on larger vaults.
-      for (let i = 0; i < warmTicks; i++) sim.tick();
+      for (let i = 0; i < tier.warmTicks; i++) sim.tick();
       // Safety: if the force layout ever produced a non-finite position, reset
       // it so the node still renders (otherwise it would silently vanish).
       for (const n of nodes) {
@@ -1042,7 +1010,7 @@ export function GraphView() {
           n.vy = 0;
         }
       }
-      sim.alpha(huge ? 0.12 : big ? 0.16 : 0.2);
+      sim.alpha(tier.openAlpha);
       motionUntilRef.current = performance.now() + 2400;
       simRef.current = sim;
       fitPendingRef.current = true;
@@ -1757,7 +1725,7 @@ export function GraphView() {
           ctx.fill();
         }
 
-        const img = !fastDraw && n.thumbPath ? getImage(n.thumbPath) : null;
+        const img = !fastDraw && n.thumbPath && r * t.k >= THUMB_MIN_SCREEN_RADIUS ? getImage(n.thumbPath, now) : null;
         // Clip image thumbnails to circles. Keep grabbed nodes steady while other nodes twinkle.
         const twinkle =
           animationsOn && !act && !isActive && n !== dragRef.current.node
@@ -2214,10 +2182,17 @@ export function GraphView() {
       // Tick the sim if it still has energy or we're dragging a node. While
       // the worker owns physics, take its newest state instead.
       if (physicsRef.current.active) {
-        if (applyDragPhysics()) {
+        const applied = applyDragPhysics();
+        if (applied) {
           needsRedrawRef.current = true;
-          layoutSettledRef.current = false;
+          // The worker ran the same idle overlap cleanup; skip a main-thread pass.
+          layoutSettledRef.current = applied === "settled";
+          hitIndexRef.current = null;
         }
+      } else if (sim && sim.alpha() > 0.004 && !isNodeDragging && startSettlePhysics()) {
+        // A heavy graph's settle now runs in the worker; its first state arrives next frame.
+        needsRedrawRef.current = true;
+        layoutSettledRef.current = false;
       } else if (sim && (sim.alpha() > 0.004 || isMovingNode)) {
         const ticks =
           nodesRef.current.length < DOUBLE_TICK_BELOW && sim.alpha() > 0.06 && !isNodeDragging ? 2 : 1;
@@ -2242,10 +2217,14 @@ export function GraphView() {
           // x/y are now frozen and overlap-free. Stop rebuilding the grid every
           // frame until the sim ticks again (which clears this flag).
           layoutSettledRef.current = true;
+          hitIndexRef.current = null;
         }
       }
 
-      if (forceNodesRef.current.length === 0) layoutSettledRef.current = true;
+      if (forceNodesRef.current.length === 0) {
+        layoutSettledRef.current = true;
+        hitIndexRef.current = null;
+      }
       if (nodesRef.current.length === 0) fitPendingRef.current = false;
 
       // If there are active (flickering) nodes, we must keep redrawing.
