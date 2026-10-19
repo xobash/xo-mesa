@@ -22,8 +22,8 @@ npm run mesa
   exact helper names. Tests added with code are regression coverage, not
   independent validation.
 - Run the frontend CI checks: `npm ci`, `npm run typecheck`, `npm run lint`,
-  `npm run test:coverage` (the test suite plus coverage floors for `src/lib` and
-  `src/controllers`), `npm run test:release`, `npm run test:bootstrap`, `npm run test:index`,
+  `npm run test:coverage` (the test suite plus coverage floors for `src/lib`,
+  `src/controllers`, `src/components`, `src/store.ts` and `src/App.tsx`), `npm run test:release`, `npm run test:bootstrap`, `npm run test:index`,
   `npm run test:markdown`, `npm run test:notices`, `npm run test:toolchains`,
   `npm run test:assets`, `npm run audit:assets`, `npm run test:documents`, `npm run build`,
   `npm run audit:public`, `npm run audit:independent`, and `npm audit --audit-level=moderate`.

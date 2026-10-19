@@ -53,11 +53,12 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "**/dist/**", "**/.backups/**", "**/tmp/**", "**/output/**"],
     coverage: {
       provider: "v8",
-      include: ["src/lib/**/*.ts", "src/controllers/**/*.ts", "src/components/**/*.tsx"],
+      include: ["src/lib/**/*.ts", "src/controllers/**/*.ts", "src/components/**/*.tsx", "src/store.ts", "src/App.tsx"],
       exclude: ["**/*.test.ts", "**/*.test.tsx", "**/*.d.ts"],
       reporter: ["text-summary"],
-      // Floors are two points below the measured statement/branch/function/line
-      // coverage: 73.64 / 62.88 / 70.71 / 77.02, including UI components.
+      // Floors were set two points below the measured statement/branch/function/line
+      // coverage before store.ts and App.tsx joined; with them the suite measures
+      // 73.13 / 64.92 / 68.98 / 76.32. Do not lower the floors.
       thresholds: { statements: 71.64, branches: 60.88, functions: 68.71, lines: 75.02 },
     },
   },
