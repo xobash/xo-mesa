@@ -41,12 +41,11 @@ npm run mesa
 
 ## Automation
 
-Dependabot proposes grouped minor and patch updates weekly for npm, Cargo
-(`src-tauri`) and GitHub Actions. Review each update like any other change:
-regenerate third-party notices after a dependency change and run the checks
-above. The `codeql` workflow scans the JavaScript and TypeScript sources on
-pushes, pull requests and weekly. `.github/CODEOWNERS` assigns review to the
-repository owner.
+The `codeql` workflow scans the JavaScript and TypeScript sources on pushes,
+pull requests and weekly. `.github/CODEOWNERS` assigns review to the
+repository owner. Dependency updates are reviewed and landed by hand: the
+public audit admits only the owner's identity on reachable commits, so
+bot-authored update branches cannot pass CI.
 
 ## Pull requests
 
