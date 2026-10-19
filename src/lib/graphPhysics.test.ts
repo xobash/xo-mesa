@@ -10,7 +10,8 @@ import {
   type ForceCollide,
   type Simulation,
 } from "d3-force";
-import { GraphPhysicsSession, snapshotGraphPhysics } from "./graphPhysics";
+import { GraphPhysicsSession, GRAPH_SETTLED_ALPHA, graphPhysicsTransferables, snapshotGraphPhysics } from "./graphPhysics";
+import { phaseFromId, resolveOverlaps } from "../components/graphGeometry";
 
 type Node = { id: string; degree: number; x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
 type Link = { source: string | Node; target: string | Node };
@@ -119,5 +120,52 @@ describe("graph drag physics session", () => {
     session.step();
     expect(session.nodes[5].x).toBe(10);
     expect(session.nodes[5].y).toBe(20);
+  });
+});
+
+describe("graph settle session with idle overlap cleanup", () => {
+  it("matches GraphView's frame order: tick while hot, resolve overlaps below 0.02, settle when nothing moves", () => {
+    const { sim, nodes } = graphSim();
+    sim.alpha(0.12);
+    const r = (n: Node) => Math.min(24, 2.4 + 1.75 * Math.sqrt(n.degree));
+    const init = snapshotGraphPhysics(sim, {
+      collideIterations: 3, velocityCap: 5, doubleTickBelow: 650, grab: null,
+      overlap: { gap: 8, radius: r, phase: (n) => phaseFromId(n.id) },
+    });
+    const session = new GraphPhysicsSession(structuredClone(init));
+    // Main-thread reference: the GraphView frame loop without a worker.
+    let resolved = false;
+    for (let frame = 0; frame < 2000; frame++) {
+      if (sim.alpha() > GRAPH_SETTLED_ALPHA) {
+        sim.tick(nodes.length < 650 && sim.alpha() > 0.06 ? 2 : 1);
+        resolved = false;
+      }
+      if (sim.alpha() <= 0.02 && !resolved) resolved = !resolveOverlaps(nodes as never, r as never, 8, 2);
+      session.step();
+      if (resolved && sim.alpha() <= GRAPH_SETTLED_ALPHA) break;
+      expect(session.settled).toBe(false);
+    }
+    expect(session.settled).toBe(true);
+    const state = session.state();
+    nodes.forEach((n, i) => {
+      expect(state[i * 4]).toBeCloseTo(n.x!, 9);
+      expect(state[i * 4 + 1]).toBeCloseTo(n.y!, 9);
+    });
+  });
+
+  it("transfers every snapshot buffer to the worker instead of copying it", () => {
+    const { sim } = graphSim();
+    const init = snapshotGraphPhysics(sim, {
+      collideIterations: 3, velocityCap: 5, doubleTickBelow: 650, grab: null,
+      overlap: { gap: 8, radius: () => 3, phase: () => 0 },
+    });
+    const buffers = graphPhysicsTransferables(init);
+    const arrays = Object.values(init).filter(ArrayBuffer.isView).concat([init.overlap!.radius, init.overlap!.phase]);
+    expect(new Set(buffers)).toEqual(new Set(arrays.map((a) => (a as Float64Array).buffer)));
+    const channel = new MessageChannel();
+    channel.port1.postMessage(init, buffers);
+    expect(init.state.byteLength).toBe(0);
+    channel.port1.close();
+    channel.port2.close();
   });
 });

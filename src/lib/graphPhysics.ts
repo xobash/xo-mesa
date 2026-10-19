@@ -16,6 +16,81 @@ import {
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
+import { resolveOverlaps } from "../components/graphGeometry";
+
+/** Size-tiered force constants shared by GraphView's open, retune and benchmark paths. */
+export function graphSimulationTier(count: number) {
+  const big = count > 300;
+  const huge = count > 800;
+  return {
+    big,
+    huge,
+    chargeScale: huge ? -12 : big ? -18 : -24,
+    chargeDistanceMax: huge ? 1400 : big ? 1100 : 900,
+    theta: huge ? 0.95 : 0.9,
+    warmTicks: huge ? 42 : big ? 56 : 78,
+    collideIterations: big ? 3 : 4,
+    velocityDecay: huge ? 0.42 : big ? 0.4 : 0.38,
+    alphaDecay: huge ? 0.06 : big ? 0.04 : 0.028,
+    /** Alpha left after the synchronous warm ticks, before the first paint. */
+    openAlpha: huge ? 0.12 : big ? 0.16 : 0.2,
+  };
+}
+
+export interface GraphForceSettings {
+  w: number;
+  h: number;
+  radius: (node: GraphForceNode) => number;
+  repel: number;
+  center: number;
+  linkForce: number;
+  linkDistance: number;
+}
+type GraphForceNode = SimulationNodeDatum & { degree?: number };
+const clampForce = (value: number, lo: number, hi: number) => Math.max(lo, Math.min(value, hi));
+
+/**
+ * Build GraphView's single force simulation, stopped at alpha 0.85. Every node
+ * shares charge and centering; links are degree-scaled; collision keys off the
+ * displayed radius plus the overlap gap.
+ */
+export function createGraphSimulation<N extends GraphForceNode & { id: string }, L extends SimulationLinkDatum<N>>(
+  nodes: N[],
+  links: L[],
+  settings: GraphForceSettings
+): Simulation<N, L> {
+  const tier = graphSimulationTier(nodes.length);
+  const chargeStrength = tier.chargeScale * settings.repel;
+  const centerStrength = clampForce(settings.center, 0, 1) * 0.1;
+  const pull = centerStrength * 0.4;
+  const radius = settings.radius as (node: N) => number;
+  const endpoint = (value: N | string | number) => (typeof value === "object" ? value : null);
+  return forceSimulation<N, L>(nodes)
+    .force("charge", forceManyBody<N>().strength(() => chargeStrength).distanceMax(tier.chargeDistanceMax).theta(tier.theta))
+    .force(
+      "link",
+      forceLink<N, L>(links)
+        .id((d) => d.id)
+        // Link distance respects both endpoint radii so links cannot pull circles into overlap.
+        .distance((l) => {
+          const s = endpoint(l.source), t = endpoint(l.target);
+          return (s ? radius(s) : 6) + (t ? radius(t) : 6) + settings.linkDistance / 10;
+        })
+        // d3's default degree scaling: hub-to-hub links are weak, leaf links stay strong.
+        .strength((l) => {
+          const s = endpoint(l.source), t = endpoint(l.target);
+          return clampForce((1 / Math.max(1, Math.min(s?.degree ?? 1, t?.degree ?? 1))) * settings.linkForce, 0, 2);
+        })
+    )
+    .force("center", forceCenter<N>(settings.w / 2, settings.h / 2).strength(centerStrength))
+    .force("collide", forceCollide<N>().radius((n) => radius(n) + 6).strength(1).iterations(tier.collideIterations))
+    .force("x", forceX<N>(settings.w / 2).strength(() => pull))
+    .force("y", forceY<N>(settings.h / 2).strength(() => pull))
+    .velocityDecay(tier.velocityDecay)
+    .alphaDecay(tier.alphaDecay)
+    .alpha(0.85)
+    .stop();
+}
 
 /** Alpha below which a released graph counts as settled (GraphView's tick threshold). */
 export const GRAPH_SETTLED_ALPHA = 0.004;
@@ -63,6 +138,12 @@ export interface GraphPhysicsInit {
   doubleTickBelow: number;
   /** Grabbed node index, or -1. */
   grab: number;
+  /**
+   * When present, the session also runs GraphView's idle overlap cleanup: it
+   * ticks only while hot or grabbed, resolves overlaps once alpha falls to
+   * 0.02, and counts as settled only after a pass moves nothing.
+   */
+  overlap?: { gap: number; radius: Float64Array; phase: Float64Array };
 }
 
 type GraphNodeLike = SimulationNodeDatum & { id: string };
@@ -71,7 +152,13 @@ type IndexLink = SimulationLinkDatum<SimulationNodeDatum> & { source: number; ta
 /** Copy a live simulation's node state and force values into a clonable init. */
 export function snapshotGraphPhysics<N extends GraphNodeLike, L extends SimulationLinkDatum<N>>(
   sim: Simulation<N, L>,
-  options: { collideIterations: number; velocityCap: number; doubleTickBelow: number; grab: N | null }
+  options: {
+    collideIterations: number;
+    velocityCap: number;
+    doubleTickBelow: number;
+    grab: N | null;
+    overlap?: { gap: number; radius: (node: N) => number; phase: (node: N) => number };
+  }
 ): GraphPhysicsInit {
   const nodes = sim.nodes();
   const n = nodes.length;
@@ -139,7 +226,19 @@ export function snapshotGraphPhysics<N extends GraphNodeLike, L extends Simulati
     velocityCap: options.velocityCap,
     doubleTickBelow: options.doubleTickBelow,
     grab: options.grab ? index.get(options.grab) ?? -1 : -1,
+    overlap: options.overlap && {
+      gap: options.overlap.gap,
+      radius: Float64Array.from(nodes, options.overlap.radius),
+      phase: Float64Array.from(nodes, options.overlap.phase),
+    },
   };
+}
+
+/** Buffers a start message can transfer instead of copying; the init is unusable afterwards. */
+export function graphPhysicsTransferables(init: GraphPhysicsInit): ArrayBuffer[] {
+  const arrays = [init.state, init.fixed, init.links, init.linkDistance, init.linkStrength, init.charge, init.collideRadius, init.xTarget, init.xStrength, init.yTarget, init.yStrength];
+  if (init.overlap) arrays.push(init.overlap.radius, init.overlap.phase);
+  return [...new Set(arrays.map((array) => array.buffer as ArrayBuffer))];
 }
 
 /** The worker-side copy of a GraphView simulation for one drag and its settle. */
@@ -150,6 +249,8 @@ export class GraphPhysicsSession {
   private readonly configuredCollide: number;
   private readonly velocityCap: number;
   private readonly doubleTickBelow: number;
+  private readonly overlap: GraphPhysicsInit["overlap"];
+  private overlapsResolved = false;
   private grabbed = -1;
 
   constructor(init: GraphPhysicsInit) {
@@ -173,6 +274,7 @@ export class GraphPhysicsSession {
     this.configuredCollide = init.collideIterations;
     this.velocityCap = init.velocityCap;
     this.doubleTickBelow = init.doubleTickBelow;
+    this.overlap = init.overlap;
     this.collide = forceCollide<SimulationNodeDatum>()
       .radius((_, i) => init.collideRadius[i])
       .strength(init.collideStrength)
@@ -214,7 +316,7 @@ export class GraphPhysicsSession {
 
   /** True once a released graph has cooled below the tick threshold. */
   get settled(): boolean {
-    return this.grabbed < 0 && this.sim.alpha() <= GRAPH_SETTLED_ALPHA;
+    return this.grabbed < 0 && this.sim.alpha() <= GRAPH_SETTLED_ALPHA && (!this.overlap || this.overlapsResolved);
   }
 
   /** Pin a node and reheat exactly as GraphView's first drag move does. */
@@ -250,6 +352,24 @@ export class GraphPhysicsSession {
   /** One GraphView frame of physics: tick count and velocity caps match the main thread. */
   step(): void {
     const grabbing = this.grabbed >= 0;
+    if (this.overlap) {
+      // GraphView's frame order: tick while hot or grabbed, then clean up
+      // overlaps below alpha 0.02 until a pass moves nothing.
+      if (grabbing || this.sim.alpha() > GRAPH_SETTLED_ALPHA) {
+        this.tick(grabbing);
+        this.overlapsResolved = false;
+      }
+      if (!grabbing && this.sim.alpha() <= 0.02 && !this.overlapsResolved) {
+        const { gap, radius, phase } = this.overlap;
+        const moved = resolveOverlaps(this.nodes, (n) => radius[n.index!], gap, 2, (n) => phase[n.index!]);
+        this.overlapsResolved = !moved;
+      }
+      return;
+    }
+    this.tick(grabbing);
+  }
+
+  private tick(grabbing: boolean): void {
     const ticks =
       this.nodes.length < this.doubleTickBelow && this.sim.alpha() > 0.06 && !grabbing ? 2 : 1;
     for (let t = 0; t < ticks; t++) {
