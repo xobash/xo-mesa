@@ -152,7 +152,7 @@ jobs:
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         with:
           args: ${{ matrix.name == 'macos' && '--target universal-apple-darwin' || matrix.name == 'windows' && '--bundles msi,nsis' || '' }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: mesa-${{ matrix.name }}
           path: |
