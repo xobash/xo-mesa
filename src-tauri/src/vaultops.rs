@@ -47,7 +47,7 @@ fn create_directory(root: &Path, rel: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn move_entry(root: &Path, from: &str, to: &str) -> Result<(), String> {
+pub(crate) fn move_entry(root: &Path, from: &str, to: &str) -> Result<(), String> {
     #[cfg(unix)]
     {
         let from =
@@ -161,7 +161,7 @@ fn stale(path: &Path) -> Result<bool, String> {
         .elapsed()
         .is_ok_and(|age| age >= Duration::from_secs(60)))
 }
-fn recover_artifact(root: &Path, rel: &str, restore: bool) -> Result<(), String> {
+pub(crate) fn recover_artifact(root: &Path, rel: &str, restore: bool) -> Result<(), String> {
     let path = sync_core::safe_join_confined(root, rel).ok_or("invalid artifact path")?;
     let name = path
         .file_name()
@@ -267,8 +267,8 @@ pub async fn vault_recover_artifact(
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryEntry {
-    trash_rel_path: String,
-    original_rel_path: String,
+    pub(crate) trash_rel_path: String,
+    pub(crate) original_rel_path: String,
     name: String,
     is_directory: bool,
 }
@@ -289,7 +289,7 @@ fn recovery_original(rel: &str) -> Option<String> {
     let name = name.strip_prefix("remote--").unwrap_or(name);
     Some(format!("{}/{}", parts[..index].join("/"), name))
 }
-fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
+pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
     fn walk(
         root: &Path,
         dir: &Path,

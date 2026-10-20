@@ -271,8 +271,9 @@ The desktop applies the complete change set through `vault_apply_research`.
 Before publishing any target, it flushes an atomic recovery record containing
 original and proposed bytes. Each target uses Mesa's native verified atomic
 write. Completion is recorded durably before success is returned. A failed
-step restores prior updates and moves newly created files into hidden recovery
-storage. An interrupted process resumes recovery before vault opening, saves,
+step restores prior updates and moves newly created files to Deleted files
+(the hidden `.mesa-trash` folder), where they can be restored to their original
+path. An interrupted process resumes recovery before vault opening, saves,
 renames, or sync can continue. Recovery never overwrites an unrelated external
 edit: it retains the record and originals, reports pending recovery, and blocks
 further writes until the conflict is resolved.

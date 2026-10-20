@@ -225,7 +225,7 @@ fn validate(record: &Record) -> Result<(), String> {
 }
 fn rollback(root: &Path, record: &Record) -> Result<(), String> {
     let mut failures = Vec::new();
-    for (index, entry) in record.entries.iter().enumerate().rev() {
+    for entry in record.entries.iter().rev() {
         let result = (|| {
             let path = target(root, &entry.rel)?;
             let current = read(&path)?;
@@ -238,22 +238,24 @@ fn rollback(root: &Path, record: &Record) -> Result<(), String> {
             match &entry.before {
                 Some(bytes) => write_atomic(&path, bytes, &expected(Some(&entry.after))),
                 None => {
-                    // Rename to hidden recovery storage instead of deleting authored
-                    // bytes. Recheck immediately; external replacement stays intact.
-                    let rescue = root.join(format!(
-                        ".mesa-research-created-{:x}-{:x}.tmp",
-                        crate::sync_core::now_ms(),
-                        index
-                    ));
-                    crate::sync_core::move_file_no_replace(&path, &rescue)
-                        .map_err(|e| e.to_string())?;
+                    // Move to Deleted files instead of deleting authored bytes,
+                    // in the form that lists and restores the exact original path.
+                    // Recheck immediately; external replacement stays intact.
+                    let stamp = crate::sync_core::now_ms();
+                    let trash_rel = match entry.rel.rsplit_once('/') {
+                        Some((parent, name)) => format!("{parent}/.mesa-trash/{stamp}-{name}"),
+                        None => format!(".mesa-trash/{stamp}/{}", entry.rel),
+                    };
+                    crate::vaultops::move_entry(root, &entry.rel, &trash_rel)?;
+                    let rescue = crate::sync_core::safe_join_confined(root, &trash_rel)
+                        .ok_or("unsafe research recovery path")?;
                     if read(&rescue)?.as_deref() != Some(entry.after.as_slice()) {
-                        let _ = crate::sync_core::move_file_no_replace(&rescue, &path);
+                        let _ = crate::vaultops::move_entry(root, &trash_rel, &entry.rel);
                         return Err(format!("{} changed during recovery", entry.rel));
                     }
                     // Make both the source unlink and rescued bytes durable.
                     flush_parents(root, &path)?;
-                    flush_folder(root)
+                    flush_parents(root, &rescue)
                 }
             }
         })();
@@ -500,12 +502,19 @@ mod tests {
     #[test]
     fn nested_creation_recovers_after_interruption() {
         let root = folder("nested");
-        let changes = vec![Change {
-            rel_path: "reports/topic/new.md".into(),
-            content: "reviewed content".into(),
-            expected_content: None,
-        }];
-        assert!(apply(&root, changes, Some(1)).is_err());
+        let changes = vec![
+            Change {
+                rel_path: "reports/topic/new.md".into(),
+                content: "reviewed content".into(),
+                expected_content: None,
+            },
+            Change {
+                rel_path: "top.md".into(),
+                content: "top content".into(),
+                expected_content: None,
+            },
+        ];
+        assert!(apply(&root, changes, Some(2)).is_err());
         assert_eq!(
             fs::read(root.join("reports/topic/new.md")).unwrap(),
             b"reviewed content"
@@ -513,18 +522,19 @@ mod tests {
         recover(&root).unwrap();
         assert!(!root.join("reports/topic/new.md").exists());
         assert!(!root.join(RECORD).exists());
-        let rescued: Vec<_> = fs::read_dir(&root)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".mesa-research-created-")
-            })
-            .collect();
-        assert_eq!(rescued.len(), 1);
-        assert_eq!(fs::read(rescued[0].path()).unwrap(), b"reviewed content");
+        assert!(!root.join("top.md").exists());
+        let listed = crate::vaultops::list_recovery(&root).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].original_rel_path, "reports/topic/new.md");
+        assert_eq!(
+            fs::read(root.join(&listed[0].trash_rel_path)).unwrap(),
+            b"reviewed content"
+        );
+        assert_eq!(listed[1].original_rel_path, "top.md");
+        assert_eq!(
+            fs::read(root.join(&listed[1].trash_rel_path)).unwrap(),
+            b"top content"
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

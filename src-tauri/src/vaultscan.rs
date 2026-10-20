@@ -46,7 +46,7 @@ pub struct ScanResult {
 /// This is a superset of `isMesaWriteArtifactName` in
 /// `src/lib/writeRecovery.ts`. The frontend filters the result before recovery;
 /// omitting a valid artifact here could lose the only surviving copy.
-fn looks_like_write_artifact(name: &str) -> bool {
+pub(crate) fn looks_like_write_artifact(name: &str) -> bool {
     if !name.starts_with('.') {
         return false;
     }

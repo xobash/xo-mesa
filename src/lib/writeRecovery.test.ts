@@ -99,6 +99,16 @@ describe("planWriteRecovery", () => {
     ]);
   });
 
+  it("restores the hop a native case-only rename strands between its two moves", () => {
+    // vaultmove.rs `unique_case_hop`: `.{name}.mesa-rescue-{ms}-{pid hex}r{attempt}.tmp`.
+    const name = ".Note.md.mesa-rescue-1792531142333-1f4ar0.tmp";
+    expect(isMesaWriteArtifactName(name)).toBe(true);
+    expect(planWriteRecovery([artifact({ name, targetExists: false })], NOW)).toEqual([
+      { kind: "restore", dir: "/vault", artifactName: name, targetName: "Note.md" },
+    ]);
+    expect(isMesaWriteArtifactName(".Note.md.mesa-rename-1792531142333000000-8123-0.tmp")).toBe(false);
+  });
+
   it("selects the newest backup and preserves every nonselected backup", () => {
     const oldest = artifactName("note.md", "backup", 100, "z9");
     const sameTimeLowerId = artifactName("note.md", "backup", 300, "a1");

@@ -185,7 +185,9 @@ Two operations that LOOK like text operations are held to the same rule:
   destination-exists check before an overwrite-capable filesystem rename. A
   concurrently created destination is preserved. Case-only renames use two
   native no-replace hops so case-insensitive filesystems can still change
-  spelling without treating the destination as overwrite authority. The store's `renameNote` uses it
+  spelling without treating the destination as overwrite authority. The
+  intermediate name is a `rescue` artifact, so if Mesa stops between the hops,
+  crash recovery restores the original name. The store's `renameNote` uses it
   for every file type and preserves the file's real extension. Markdown note renames
   also update inbound wiki and Markdown links that resolve to the old note
   through verified text writes, preserving aliases, headings, balanced

@@ -55,13 +55,12 @@ fn unique_case_hop(from: &Path) -> Result<PathBuf, String> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file");
+    // The recognised rescue form lets crash recovery restore the source name
+    // if the process stops between the two hops.
     for attempt in 0..32_u32 {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| error.to_string())?
-            .as_nanos();
         let candidate = parent.join(format!(
-            ".{name}.mesa-rename-{stamp}-{}-{attempt}.tmp",
+            ".{name}.mesa-rescue-{}-{:x}r{attempt}.tmp",
+            crate::sync_core::now_ms(),
             std::process::id()
         ));
         if !candidate.exists() {
@@ -205,6 +204,50 @@ mod tests {
             fs::read_to_string(vault.0.join("to.md")).unwrap(),
             "concurrent"
         );
+    }
+
+    #[test]
+    fn failed_second_case_hop_restores_the_source() {
+        let vault = TempVault::new("case-fail");
+        vault.write("a.md", "original");
+        vault.write("b.md", "concurrent");
+        let root = fs::canonicalize(&vault.0).unwrap();
+
+        assert!(rename_no_replace(&root, "a.md", "b.md", true).is_err());
+
+        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "original");
+        assert_eq!(fs::read_to_string(root.join("b.md")).unwrap(), "concurrent");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn interrupted_case_hop_is_a_recoverable_rescue() {
+        let vault = TempVault::new("case-hop");
+        vault.write("Note.md", "original");
+        let root = fs::canonicalize(&vault.0).unwrap();
+        // Stop after the first hop, as a process loss between hops would.
+        let hop = unique_case_hop(&root.join("Note.md")).unwrap();
+        move_confined(&root, &root.join("Note.md"), &hop).unwrap();
+        let name = hop.file_name().unwrap().to_str().unwrap().to_owned();
+        assert!(crate::vaultscan::looks_like_write_artifact(&name), "{name}");
+
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&hop)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(120),
+                ),
+            )
+            .unwrap();
+        crate::vaultops::recover_artifact(&root, &name, true).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("Note.md")).unwrap(),
+            "original"
+        );
+        assert!(!hop.exists());
     }
 
     #[test]
