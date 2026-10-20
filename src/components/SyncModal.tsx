@@ -510,9 +510,15 @@ export function SyncModal() {
     [nearby, peers]
   );
 
+  // Discovery consent lasts only while the dialog is open. App unmounts the
+  // lazy modal on close, so revoke in cleanup rather than on `open === false`.
   useEffect(() => {
-    if (!open && settings.syncDiscovery) setSetting("syncDiscovery", false);
-  }, [open, settings.syncDiscovery, setSetting]);
+    if (!open) return;
+    return () => {
+      const state = useAppStore.getState();
+      if (state.settings.syncDiscovery) state.setSetting("syncDiscovery", false);
+    };
+  }, [open]);
 
   if (!open) return null;
 

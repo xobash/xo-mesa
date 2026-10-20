@@ -15,16 +15,21 @@ vi.mock('./Modal',()=>({Modal:({children}:{children:React.ReactNode})=><div>{chi
 vi.mock('./SyncConflictReview',()=>({SyncConflictReview:()=>null}));
 import { SyncModal } from './SyncModal';
 let host:HTMLDivElement;let root:ReturnType<typeof createRoot>;
-async function render() { await act(async()=>{root.render(<SyncModal/>);}); }
+// App mounts the lazy SyncModal only while Sync is open; render through the same gate.
+async function render() { await act(async()=>{root.render(io.state.syncOpen ? <SyncModal/> : null);}); }
+const setSetting=(key:string,value:unknown)=>{io.setSetting(key,value);io.state.settings={...(io.state.settings as object),[key]:value};};
 afterEach(async()=>{await act(async()=>root?.unmount());host?.remove();vi.clearAllMocks();});
 it('opening Sync or receiving never announces until temporary consent; closing revokes it',async()=>{
   io.state={syncOpen:true,syncListening:false,syncBusy:false,syncStatus:'',vaultName:'Synthetic',syncLog:[],syncProgress:null,syncReport:null,files:[],syncPhase:'idle',
-    settings:{...DEFAULT_SETTINGS,syncEnabled:true,syncToken:'credential:device'},setSetting:io.setSetting,setSyncOpen:vi.fn(),loadSyncSecrets:io.loadSecrets};
+    settings:{...DEFAULT_SETTINGS,syncEnabled:true,syncToken:'credential:device'},setSetting,setSyncOpen:vi.fn(),loadSyncSecrets:io.loadSecrets};
   host=document.createElement('div');document.body.append(host);root=createRoot(host);
   await render();expect(io.start).not.toHaveBeenCalled();expect(io.loadSecrets).toHaveBeenCalledTimes(1);
   io.state.syncListening=true;await render();expect(io.start).not.toHaveBeenCalled();
-  io.state.settings={...DEFAULT_SETTINGS,syncEnabled:true,syncDiscovery:true,syncToken:'credential:device'};
+  setSetting('syncDiscovery',true);io.setSetting.mockClear();
   await render();await vi.waitFor(()=>expect(io.start).toHaveBeenCalledTimes(1));
   io.state.syncOpen=false;await render();await vi.waitFor(()=>expect(io.stop).toHaveBeenCalledTimes(1));
   expect(io.setSetting).toHaveBeenCalledWith('syncDiscovery',false);
+  expect((io.state.settings as {syncDiscovery:boolean}).syncDiscovery).toBe(false);
+  io.state.syncOpen=true;await render();await act(async()=>{await new Promise(r=>setTimeout(r,20));});
+  expect(io.start).toHaveBeenCalledTimes(1);
 });
