@@ -49,3 +49,32 @@ it("pages large task groups in list and board without losing access to later tas
     .find((button) => button.textContent === "Board")!.click());
   expect(host.querySelectorAll(".kanban-card")).toHaveLength(120);
 });
+
+it("keeps the typed task until the store reports it was added", async () => {
+  const results: Array<(added: boolean) => void> = [];
+  act(() => {
+    useAppStore.setState({
+      addPersonalTask: (() => new Promise<boolean>((resolve) => results.push(resolve))) as never,
+    });
+    root.render(<TasksPanel />);
+  });
+  const input = host.querySelector(".task-add input") as HTMLInputElement;
+  const type = (value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const submit = () => act(() => {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+
+  type("Call the plumber");
+  submit();
+  expect(input.value).toBe("Call the plumber");
+  await act(async () => results[0](false));
+  expect(input.value).toBe("Call the plumber");
+
+  submit();
+  await act(async () => results[1](true));
+  expect(input.value).toBe("");
+  expect(results).toHaveLength(2);
+});

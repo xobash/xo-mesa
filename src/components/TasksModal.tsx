@@ -44,12 +44,15 @@ export function TasksPanel({ onPick }: { onPick?: () => void }) {
     [notes, cache, tasksFile]
   );
 
+  // Clear the draft only after the store confirms the task was added, so a
+  // failed read or create keeps the typed text.
   const submitDraft = () => {
     const text = draft.trim();
     if (!text) return;
-    setDraft("");
     setFilter("personal");
-    void addPersonalTask(text);
+    void addPersonalTask(text).then((added) => {
+      if (added) setDraft((current) => (current.trim() === text ? "" : current));
+    });
   };
 
   const counts = useMemo(() => {

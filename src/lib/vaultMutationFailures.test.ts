@@ -30,6 +30,7 @@ const fsCalls = vi.hoisted(() => ({
   folders: [] as string[],
   partialImportFailure: null as string | null,
   cancelledImport: false,
+  readFails: false,
 }));
 
 const asFile = (relPath: string, root = "/vault"): VaultFile => {
@@ -84,6 +85,8 @@ vi.mock("./vault", async (importOriginal) => {
       };
     },
     readNote: async () => "",
+    readNoteResult: async () =>
+      fsCalls.readFails ? { ok: false, text: "" } : { ok: true, text: "" },
     selectFile: undefined,
   };
 });
@@ -100,6 +103,7 @@ beforeEach(() => {
   fsCalls.folders.length = 0;
   fsCalls.partialImportFailure = null;
   fsCalls.cancelledImport = false;
+  fsCalls.readFails = false;
   useAppStore.setState(initial, true);
   useAppStore.setState({
     vaultPath: "/vault",
@@ -212,7 +216,38 @@ describe("a failed vault mutation is reported, not swallowed", () => {
     expect(s.status).not.toContain("Import failed");
   });
 
+  it("reports a task that could not be added because Tasks.md is unreadable", async () => {
+    fsCalls.readFails = true;
+    useAppStore.setState({ files: [asFile("Tasks.md")] });
 
+    await expect(useAppStore.getState().addPersonalTask("Call the plumber")).resolves.toBe(false);
+
+    const s = useAppStore.getState();
+    expect(s.status).toContain("Add task failed");
+    expect(s.status).toContain("Tasks.md");
+    expect(s.contentCache["Tasks.md"]).toBeUndefined();
+    expect(s.pendingTextSaves()).toEqual([]);
+  });
+
+  it("reports a task update whose note cannot be read", async () => {
+    fsCalls.readFails = true;
+    useAppStore.setState({ files: [asFile("Tasks.md")] });
+
+    await useAppStore.getState().updateTask("Tasks.md", 2, { checked: true });
+
+    expect(useAppStore.getState().status).toContain("Update task failed");
+    expect(useAppStore.getState().contentCache["Tasks.md"]).toBeUndefined();
+  });
+
+  it("reports a daily note whose template cannot be read", async () => {
+    fsCalls.readFails = true;
+    useAppStore.setState({ files: [asFile("Templates/daily.md")] });
+
+    await useAppStore.getState().openDailyNote("2026-08-05");
+
+    expect(useAppStore.getState().status).toContain("Open daily note failed");
+    expect(fsCalls.created).toEqual([]);
+  });
 });
 
 describe("the success paths are unchanged", () => {

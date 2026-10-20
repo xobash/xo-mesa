@@ -360,7 +360,8 @@ export interface AppState {
   openDailyNote: (dateISO: string) => Promise<void>;
   addCalendarEvent: (date: string, title: string) => Promise<void>;
   removeCalendarEvent: (date: string, title: string) => Promise<void>;
-  addPersonalTask: (text: string) => Promise<void>;
+  /** Resolves true once the task is in the vault or its pending save; false when it was not added. */
+  addPersonalTask: (text: string) => Promise<boolean>;
   updateTask: (relPath: string, line: number, patch: TaskLinePatch) => Promise<void>;
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   loadSyncSecrets: () => Promise<void>;
@@ -1318,19 +1319,18 @@ export const useAppStore = create<AppState>((set, get) => {
       let body = `# ${dateISO}\n\n`;
       const tf = get().settings.templatesFolder.trim().replace(/^\/+|\/+$/g, "");
       const tplRel = tf ? `${tf}/daily.md` : "daily.md";
-      if (get().fileFor(tplRel)) {
-        const tpl = await get().ensureContent(tplRel);
-        if (!current()) return;
-        body = applyTemplate(tpl, {
-          date: dateISO,
-          time: localTime(),
-          title: dateISO,
-        });
-      }
       let file: VaultFile | undefined;
       await reportingFailure("Open daily note", async () => {
+        if (get().fileFor(tplRel)) {
+          const tpl = await get().ensureContent(tplRel);
+          if (!current()) return;
+          body = applyTemplate(tpl, {
+            date: dateISO,
+            time: localTime(),
+            title: dateISO,
+          });
+        }
         file = await createNote(root, rel, body);
-        if (!current()) return;
       });
       if (!file || !current()) return;
       documents.addNote(file, body);
@@ -1411,13 +1411,21 @@ export const useAppStore = create<AppState>((set, get) => {
     addPersonalTask: async (text) => {
       const root = get().vaultPath;
       const body = text.trim();
-      if (!root || !body) return;
+      if (!root || !body) return false;
       const generation = vault.generation;
       const current = () => get().vaultPath === root && vault.generation === generation;
       const rel = (get().settings.tasksFile || "Tasks.md").trim();
       const line = `- [ ] ${body}`;
-      const found = get().fileFor(rel);
-      if (found) {
+      let added = false;
+      await reportingFailure("Add task", async () => {
+        if (!get().fileFor(rel)) {
+          const content = `# Tasks\n\n${line}\n`;
+          const file = await createNote(root, rel, content);
+          if (!current()) return;
+          documents.addNote(file, content);
+          added = true;
+          return;
+        }
         const loaded = await get().ensureContent(rel);
         if (!current()) return;
         const existing = get().fileFor(rel);
@@ -1442,15 +1450,12 @@ export const useAppStore = create<AppState>((set, get) => {
           content: get().activePath === rel ? next : get().content,
           contentCache: forkContentCache(get().contentCache, { [rel]: next }),
         });
+        // From here the task is in the editor cache; a failed write stays a
+        // dirty save issue with Retry rather than losing the text.
+        added = true;
         await saveTextMutation(existing, next, cur);
-      } else {
-        await reportingFailure("Add task", async () => {
-          const content = `# Tasks\n\n${line}\n`;
-          const file = await createNote(root, rel, content);
-          if (!current()) return;
-          documents.addNote(file, content);
-        });
-      }
+      });
+      return added;
     },
 
     updateTask: async (relPath, line, patch) => {
@@ -1458,30 +1463,32 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!root || !get().fileFor(relPath)) return;
       const generation = vault.generation;
       const current = () => get().vaultPath === root && vault.generation === generation;
-      const loaded = await get().ensureContent(relPath);
-      if (!current()) return;
-      const file = get().fileFor(relPath);
-      if (!file) {
-        set({ status: `Update task failed: ${relPath} is no longer available.` });
-        return;
-      }
-      const prev = get().contentCache[relPath] ?? loaded;
-      const next = updateTaskLine(prev, line, patch);
-      if (next === prev) return;
-      set({
-        content: get().activePath === relPath ? next : get().content,
-        contentCache: forkContentCache(get().contentCache, { [relPath]: next }),
-        status: `Updated task in ${relPath}`,
+      await reportingFailure("Update task", async () => {
+        const loaded = await get().ensureContent(relPath);
+        if (!current()) return;
+        const file = get().fileFor(relPath);
+        if (!file) {
+          set({ status: `Update task failed: ${relPath} is no longer available.` });
+          return;
+        }
+        const prev = get().contentCache[relPath] ?? loaded;
+        const next = updateTaskLine(prev, line, patch);
+        if (next === prev) return;
+        set({
+          content: get().activePath === relPath ? next : get().content,
+          contentCache: forkContentCache(get().contentCache, { [relPath]: next }),
+          status: `Updated task in ${relPath}`,
+        });
+        bumpActivityAmount(
+          relPath,
+          0.6,
+          "edit",
+          "Task moved on Kanban board",
+          changedSnippet(prev, next),
+          changedLineStats(prev, next)
+        );
+        await saveTextMutation(file, next, prev);
       });
-      bumpActivityAmount(
-        relPath,
-        0.6,
-        "edit",
-        "Task moved on Kanban board",
-        changedSnippet(prev, next),
-        changedLineStats(prev, next)
-      );
-      await saveTextMutation(file, next, prev);
     },
 
     importDropped: async (paths) => {
