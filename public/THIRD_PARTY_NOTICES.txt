@@ -1,8 +1,8 @@
 Mesa third-party notices
 Generated from installed, locked dependencies. Mesa's own MIT license is separate.
-package-lock-sha256: b48c72cd3e570a6ca74ab9c0768d6c5a78aacc2f1bb8d325c64816f32bd793c2
-Cargo-lock-sha256: e9d403e2d6e49a0f0637a875d161a8bd0b056cf3bfa4e0aadc5a54f7bc7777a1
-native-notices-sha256: 935d870c930baaf4722aadb50f62c6967ad983a247c212e9c032a2103867df5f
+package-lock-sha256: 0e1fc204a0eeb89e05a5f0abd4454b90f621d0685b1ae09ce1815271fbf39eed
+Cargo-lock-sha256: e50e9df5288ff25b004e2c9b78e943631e79f75e4a4a0e6f90b8901fd439d5a7
+native-notices-sha256: e665f648fd51ff1d4ef22e9eb96c2397bef40cae157b45fc4e3734b98f2ded4c
 
 Frontend runtime dependencies (package-lock.json)
 
@@ -55894,7 +55894,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ========================================================================
-rustls-webpki@0.103.15
+rustls-webpki@0.103.16
 License: ISC
 Desktop targets: x86_64-apple-darwin, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu
 
@@ -74841,7 +74841,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ========================================================================
-webpki-roots@1.0.9
+webpki-roots@1.0.10
 License: CDLA-Permissive-2.0
 Desktop targets: x86_64-apple-darwin, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu
 
