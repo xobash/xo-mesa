@@ -1,0 +1,28 @@
+name: advisory-review
+
+# Weekly native advisory gate. It fails seven days before the tracked
+# exception review in scripts/native-advisory-check.mjs expires, so the
+# re-review happens before rust-advisory starts failing on every push.
+on:
+  schedule:
+    - cron: '43 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-advisory-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+      - run: node scripts/native-advisory-check.mjs --fail-days-before-expiry 7

@@ -85,3 +85,34 @@ it('packages Windows products from the target-triple folder that the launcher bu
     assert.deepEqual(JSON.parse(readFileSync(join(output, 'candidate-windows.json'), 'utf8')), { schema: 1, platform: 'windows', commit: sha, tag });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+import { chmodSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { reviewExpiryWarning } from './native-advisory-check.mjs';
+function runAdvisoryCheck(report, status, args = [], today = null) {
+  const bin = mkdtempSync(join(tmpdir(), 'mesa-fake-cargo-'));
+  try {
+    writeFileSync(join(bin, 'report.json'), JSON.stringify(report));
+    writeFileSync(join(bin, 'cargo'), `#!/bin/sh\ncat "${join(bin, 'report.json')}"\nexit ${status}\n`);
+    chmodSync(join(bin, 'cargo'), 0o755);
+    const clock = today ? ['--import', 'data:text/javascript,' + encodeURIComponent(`const Real = Date; globalThis.Date = class extends Real { constructor(...a) { super(...(a.length ? a : ['${today}T12:00:00Z'])); } };`)] : [];
+    const script = fileURLToPath(new URL('./native-advisory-check.mjs', import.meta.url));
+    return spawnSync(process.execPath, [...clock, script, ...args], { encoding: 'utf8', env: { PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin` } });
+  } finally { rmSync(bin, { recursive: true, force: true }); }
+}
+it('prints the cargo audit vulnerability list when the native audit fails', { skip: process.platform === 'win32' && 'uses a POSIX fake cargo' }, () => {
+  const report = { vulnerabilities: { found: true, count: 1, list: [{ advisory: { id: 'RUSTSEC-2099-0001', title: 'Example flaw' }, package: { name: 'example-crate', version: '1.2.3' }, versions: { patched: ['>=1.2.4'] } }] }, warnings: {} };
+  const result = runAdvisoryCheck(report, 1);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /vulnerability RUSTSEC-2099-0001 example-crate 1\.2\.3: Example flaw; patched: >=1\.2\.4/);
+});
+it('fails the scheduled review seven days before the advisory exception expires', { skip: process.platform === 'win32' && 'uses a POSIX fake cargo' }, () => {
+  assert.equal(reviewExpiryWarning(new Date('2026-11-02T23:59:00Z')), null);
+  assert.match(reviewExpiryWarning(new Date('2026-11-03T00:00:00Z')), /expires on 2026-11-10 \(7 days\)/);
+  const clean = { vulnerabilities: { found: false, count: 0, list: [] }, warnings: {} };
+  assert.equal(runAdvisoryCheck(clean, 0, ['--fail-days-before-expiry', '7'], '2026-11-02').status, 0);
+  const due = runAdvisoryCheck(clean, 0, ['--fail-days-before-expiry', '7'], '2026-11-04');
+  assert.equal(due.status, 1);
+  assert.match(due.stderr, /expires on 2026-11-10 \(6 days\)/);
+  assert.equal(runAdvisoryCheck(clean, 0, [], '2026-11-04').status, 0);
+});

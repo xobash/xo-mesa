@@ -18,10 +18,39 @@ export function validateNativeAudit(report, now = new Date()) {
   }
   return Object.values(report.warnings).flat().length;
 }
+// Fails once the review date is at most `days` days away (UTC dates).
+export function reviewExpiryWarning(now = new Date(), days = 7) {
+  const left = Math.round((Date.parse(`${nativeAdvisoryReview.reviewBy}T00:00:00Z`) - Date.parse(`${now.toISOString().slice(0, 10)}T00:00:00Z`)) / 86400000);
+  return left <= days ? `Tracked native advisory review expires on ${nativeAdvisoryReview.reviewBy} (${left} days). Re-review the exceptions now: ${nativeAdvisoryReview.removal}` : null;
+}
+// Readable lines for every vulnerability and warning in a cargo audit report.
+export function auditFindings(report) {
+  const entry = (item, kind) => {
+    const advisory = item.advisory || {};
+    const patched = item.versions?.patched?.length ? `; patched: ${item.versions.patched.join(', ')}` : '';
+    return `${kind} ${advisory.id || 'unknown advisory'} ${item.package?.name || '?'} ${item.package?.version || '?'}: ${advisory.title || 'no title'}${patched}`;
+  };
+  const lines = (report?.vulnerabilities?.list || []).map(item => entry(item, 'vulnerability'));
+  for (const [kind, warnings] of Object.entries(report?.warnings || {})) for (const item of warnings) lines.push(entry(item, kind));
+  return lines;
+}
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const flag = process.argv.indexOf('--fail-days-before-expiry');
+  const warnDays = flag > 0 ? Number(process.argv[flag + 1]) : null;
   const run = spawnSync('cargo', ['audit', '--file', 'src-tauri/Cargo.lock', '--json'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  let report = null;
+  try { report = JSON.parse(run.stdout); } catch { report = null; }
   try {
-    if (run.error || run.status !== 0) throw new Error('Native registry audit failed.');
-    console.log(`Native audit: no vulnerabilities; ${validateNativeAudit(JSON.parse(run.stdout))} specifically tracked upstream warnings.`);
-  } catch (error) { console.error(error.message); process.exitCode = 1; }
+    if (flag > 0 && !Number.isInteger(warnDays)) throw new Error('--fail-days-before-expiry needs a whole number of days.');
+    if (run.error || !report) throw new Error(`Native registry audit failed.${run.error ? ` ${run.error.message}` : ''}${run.stderr ? `\n${run.stderr.trim()}` : ''}`);
+    if (run.status !== 0) throw new Error('Native registry audit failed.');
+    console.log(`Native audit: no vulnerabilities; ${validateNativeAudit(report)} specifically tracked upstream warnings.`);
+    const warning = warnDays === null ? null : reviewExpiryWarning(new Date(), warnDays);
+    if (warning) throw new Error(warning);
+  } catch (error) {
+    console.error(error.message);
+    const findings = auditFindings(report);
+    if (findings.length) console.error(`cargo audit reported:\n${findings.map(line => `  ${line}`).join('\n')}`);
+    process.exitCode = 1;
+  }
 }

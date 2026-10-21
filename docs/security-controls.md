@@ -128,6 +128,16 @@ warnings reviewed 2026-10-18) expire after 2026-11-10 (UTC). The expiry
 regression in `release-gate.check.mjs` rejects the same warnings after that
 date. Removal requires compatible upstream Linux GTK and D-Bus chain upgrades
 and Linux acceptance; the exception does not fix the upstream advisories.
+The weekly `advisory-review` workflow runs the same registry check with
+`--fail-days-before-expiry 7`, so it fails from 2026-11-03 and names the date.
+Re-review before that date: run `cargo audit --file src-tauri/Cargo.lock --json`,
+confirm that each tracked warning still has no compatible upstream fix, then
+either remove the exception through the upgrade or record the new review date
+in `nativeAdvisoryReview` and in this entry. A failed native audit prints every
+vulnerability and warning that `cargo audit` reported. The regressions
+`prints the cargo audit vulnerability list when the native audit fails` and
+`fails the scheduled review seven days before the advisory exception expires`
+cover both behaviors.
 
 Private working-document path checks apply to the staged tree and candidate ancestry. Secret-byte and identity checks still cover every fetched public ref. Other published branches require their own content review and cleanup; a passing candidate scan does not establish their removal.
 
