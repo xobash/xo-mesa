@@ -64,3 +64,24 @@ it('admits exact package inventories and rejects changed bytes or unapproved ext
     assert.throws(() => candidateProducts(dir, sha, tag));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+import { mkdirSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+it('packages Windows products from the target-triple folder that the launcher builds into', () => {
+  const root = mkdtempSync(join(tmpdir(), 'mesa-release-windows-'));
+  try {
+    const bundle = join(root, 'src-tauri', 'target', 'x86_64-pc-windows-msvc', 'release', 'bundle');
+    mkdirSync(join(bundle, 'msi'), { recursive: true });
+    mkdirSync(join(bundle, 'nsis'), { recursive: true });
+    writeFileSync(join(bundle, 'msi', 'Mesa_0.1.0_x64_en-US.msi'), 'msi bytes');
+    writeFileSync(join(bundle, 'nsis', 'Mesa_0.1.0_x64-setup.exe'), 'nsis bytes');
+    const script = fileURLToPath(new URL('./release-products.mjs', import.meta.url));
+    const result = spawnSync(process.execPath, [script, 'windows'], { cwd: root, encoding: 'utf8', env: { ...process.env, MESA_RELEASE_SHA: sha, MESA_RELEASE_TAG: tag } });
+    assert.equal(result.status, 0, result.stderr);
+    const output = join(root, 'output', 'release-windows');
+    const listed = readFileSync(join(output, 'checksums-windows.txt'), 'utf8').trim().split('\n').map(line => line.split('  ')[1]);
+    assert.deepEqual(listed.sort(), ['Mesa_0.1.0_x64-setup.exe', 'Mesa_0.1.0_x64_en-US.msi']);
+    assert.deepEqual(JSON.parse(readFileSync(join(output, 'candidate-windows.json'), 'utf8')), { schema: 1, platform: 'windows', commit: sha, tag });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

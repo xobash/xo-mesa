@@ -99,6 +99,7 @@ scripts/release-gate.mjs
 scripts/release-macos.sh
 scripts/release-products.mjs
 scripts/release-windows.ps1
+scripts/tauri-targets.mjs
 scripts/third-party-notices.check.mjs
 scripts/third-party-notices.mjs
 scripts/toolchain-contract.check.mjs

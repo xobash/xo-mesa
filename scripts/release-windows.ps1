@@ -6,6 +6,8 @@ foreach ($name in @('WINDOWS_CERTIFICATE_BASE64', 'WINDOWS_CERTIFICATE_PASSWORD'
 $pfx = Join-Path ([IO.Path]::GetTempPath()) ("mesa-signing-" + [guid]::NewGuid().ToString('N') + '.pfx')
 $config = Join-Path ([IO.Path]::GetTempPath()) ("mesa-signing-" + [guid]::NewGuid().ToString('N') + '.json')
 $certificate = $null
+# scripts/dev.mjs builds Windows with --target x86_64-pc-windows-msvc (scripts/tauri-targets.mjs).
+$release = 'src-tauri/target/x86_64-pc-windows-msvc/release'
 try {
   [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
   $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
@@ -14,10 +16,10 @@ try {
   @{ bundle = @{ windows = @{ certificateThumbprint = $certificate.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = 'https://timestamp.digicert.com'; tsp = $true } } } | ConvertTo-Json -Depth 5 | Set-Content $config
   & npm run mesa:build -- --bundles msi,nsis --config $config
   if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed' }
-  $msi = @(Get-ChildItem src-tauri/target/release/bundle/msi -Filter '*.msi')
-  $nsis = @(Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*.exe')
+  $msi = @(Get-ChildItem "$release/bundle/msi" -Filter '*.msi')
+  $nsis = @(Get-ChildItem "$release/bundle/nsis" -Filter '*.exe')
   if ($msi.Count -ne 1 -or $nsis.Count -ne 1) { throw 'Expected exactly one MSI and one NSIS installer' }
-  foreach ($file in @($msi[0].FullName, $nsis[0].FullName, (Resolve-Path src-tauri/target/release/mesa.exe).Path)) {
+  foreach ($file in @($msi[0].FullName, $nsis[0].FullName, (Resolve-Path "$release/mesa.exe").Path)) {
     $signature = Get-AuthenticodeSignature -LiteralPath $file
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_SIGNING_THUMBPRINT -or -not $signature.TimeStamperCertificate) { throw "Invalid signed product: $file" }
   }

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WINDOWS_TARGET } from "./tauri-targets.mjs";
 
 const env = { ...process.env };
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -33,7 +34,7 @@ const extra = passed.filter((a) => a !== "dev" && a !== "build");
 
 if (sub === "build") {
   if (process.platform === "win32") {
-    const rustup = spawnSync("rustup", ["target", "add", "x86_64-pc-windows-msvc"], {
+    const rustup = spawnSync("rustup", ["target", "add", WINDOWS_TARGET], {
       stdio: "inherit",
       env,
       shell: false,
@@ -48,7 +49,7 @@ if (sub === "build") {
 
 const tauriArgs = [sub, ...extra];
 if (sub === "build" && process.platform === "win32") {
-  tauriArgs.push("--target", "x86_64-pc-windows-msvc");
+  tauriArgs.push("--target", WINDOWS_TARGET);
   if (!extra.includes("--no-bundle") && !extra.includes("--bundles")) {
     tauriArgs.push("--bundles", "msi", "nsis");
   }
