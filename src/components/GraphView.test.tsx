@@ -134,45 +134,6 @@ it("runs large-graph drag physics in a worker while the canvas keeps the grabbed
   expect(posted.at(-1)).toMatchObject({ type: "stop", session: start.session });
   expect(Number.isFinite(hub.x)).toBe(true);
 });
-it("settles heavy graphs in the worker with overlap cleanup and transferred buffers", () => {
-  const posted: { message: { type: string; session: number; init?: { grab: number; overlap?: { gap: number } } }; transfer?: unknown[] }[] = [];
-  const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
-  vi.stubGlobal("Worker", class {
-    onmessage: ((event: { data: unknown }) => void) | null = null;
-    onerror: (() => void) | null = null;
-    constructor() { workers.push(this); }
-    postMessage(message: (typeof posted)[number]["message"], transfer?: unknown[]) { posted.push({ message, transfer }); }
-    terminate() {}
-  });
-  const frames = () => (requestAnimationFrame as unknown as { mock: { calls: [FrameRequestCallback][] } }).mock.calls;
-  const runFrame = () => act(() => frames()[frames().length - 1][0](performance.now()));
-  const entries = Object.fromEntries(Array.from({ length: 2100 }, (_, i) => [`Note-${i}.md`, i % 3 ? `[[Note-${(i * 7) % 2100}]]` : ""]));
-  const files: VaultFile[] = Object.keys(entries).map((relPath) => ({ path: `/demo/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true }));
-  act(() => {
-    useAppStore.setState({ files, notes: buildNotes(files, new Map(Object.entries(entries))),
-      settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false } });
-    root.render(<GraphView />);
-  });
-  const sim = simulation();
-  expect(sim.alpha()).toBeGreaterThan(0.004);
-  const tick = vi.spyOn(sim, "tick");
-  runFrame();
-  const start = posted.find((p) => p.message.type === "start")!;
-  expect(start.message.init).toMatchObject({ grab: -1, overlap: { gap: 8 } });
-  expect(start.transfer?.length).toBeGreaterThan(5);
-  expect(tick).not.toHaveBeenCalled();
-  const nodes = sim.nodes();
-  const state = new Float64Array(nodes.length * 4);
-  nodes.forEach((n, i) => { state[i * 4] = n.x! + 3; state[i * 4 + 1] = n.y!; });
-  const first = nodes[0].x!;
-  act(() => workers[0].onmessage!({ data: { type: "idle", session: start.message.session, state, alpha: 0.003 } }));
-  runFrame();
-  expect(nodes[0].x).toBeCloseTo(first + 3);
-  expect(posted.at(-1)!.message).toMatchObject({ type: "stop", session: start.message.session });
-  runFrame();
-  expect(tick).not.toHaveBeenCalled();
-  expect(posted.filter((p) => p.message.type === "start")).toHaveLength(1);
-});
 it("keeps large-graph hubs and isolated nodes free in the shared simulation", () => {
   const entries = new Map<string, string>();
   entries.set("Hub.md", Array.from({ length: 139 }, (_, i) => `[[Linked-${i}]]`).join(" "));

@@ -193,6 +193,7 @@ src/components/DropOverlay.tsx
 src/components/Editor.tsx
 src/components/ErrorBoundary.tsx
 src/components/FileTree.tsx
+src/components/GraphView.heavy.test.tsx
 src/components/GraphView.test.tsx
 src/components/GraphView.tsx
 src/components/Guide.tsx
