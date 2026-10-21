@@ -92,7 +92,7 @@ jobs:
         env:
           MESA_RELEASE_TAG: ${{ inputs.tag }}
           MESA_RELEASE_SHA: ${{ inputs.commit }}
-      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: output/release-macos/*
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -136,7 +136,7 @@ jobs:
         env:
           MESA_RELEASE_TAG: ${{ inputs.tag }}
           MESA_RELEASE_SHA: ${{ inputs.commit }}
-      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: output/release-windows/*
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -171,7 +171,7 @@ jobs:
         env:
           MESA_RELEASE_TAG: ${{ inputs.tag }}
           MESA_RELEASE_SHA: ${{ inputs.commit }}
-      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: output/release-linux/*
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

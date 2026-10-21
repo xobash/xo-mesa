@@ -63,7 +63,7 @@ jobs:
             gh attestation verify "$product" --repo xobash/xo-mesa --signer-workflow xobash/xo-mesa/.github/workflows/release-candidate.yml
           done
       - run: node scripts/release-acceptance.mjs verify output/products
-      - uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: output/release-acceptance.json
       - name: Publish immutable products with acceptance summary

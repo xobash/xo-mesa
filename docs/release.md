@@ -177,6 +177,34 @@ Candidate builds pin Node 22.22.3 and Rust 1.96.0 with locked dependency
 inventories. Hosted OS images and signing timestamps can still change bytes;
 these pins do not claim reproducible bit-for-bit packages.
 
+### Workflow action pins
+
+Every `uses:` reference names a full commit SHA. An annotated tag object SHA is
+not a commit: GitHub documents action pins as commits, and the resolver's
+behavior for a tag object is not guaranteed. Before adding or changing a pin,
+confirm that the SHA is a commit of that repository:
+
+```bash
+gh api repos/actions/attest-build-provenance/commits/977bb373ede98d70efdf65b84cb5f73e068dcc2a --jq .sha
+```
+
+The command prints the same SHA for a commit and fails with HTTP 422 for a tag
+object (`git/tags/<sha>` then shows the commit it points to). Record the
+reviewed commit here; `npm run test:toolchains` rejects a workflow pin that is
+missing from this table.
+
+| Action repository | Reviewed commit | Version |
+| --- | --- | --- |
+| `actions/attest-build-provenance` | `977bb373ede98d70efdf65b84cb5f73e068dcc2a` | v3.0.0 |
+| `actions/checkout` | `3d3c42e5aac5ba805825da76410c181273ba90b1` | v7 |
+| `actions/download-artifact` | `634f93cb2916e3fdff6788551b99b062d0335ce0` | v5 |
+| `actions/setup-node` | `249970729cb0ef3589644e2896645e5dc5ba9c38` | v6 |
+| `actions/upload-artifact` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | v7 |
+| `dtolnay/rust-toolchain` | `6bed0761d98439e5a578e2877258200ad565ba87` | stable |
+| `github/codeql-action` | `6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee` | v4.39.0 |
+| `Swatinem/rust-cache` | `6323deb102c322ba6fcbdcafc7e3dddab59af2b6` | v2 |
+| `tauri-apps/tauri-action` | `1deb371b0cd8bd54025b384f1cd735e725c4060f` | v1 |
+
 Windows signing requires protected `WINDOWS_CERTIFICATE_BASE64` and
 `WINDOWS_CERTIFICATE_PASSWORD` secrets and the reviewed
 `WINDOWS_SIGNING_THUMBPRINT` environment variable. `scripts/release-windows.ps1`
