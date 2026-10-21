@@ -78,6 +78,46 @@ pub(super) fn hyper_auth_ok(req: &HyperRequest<Incoming>, token: &str) -> bool {
         })
 }
 
+/// Ends the connection after this response. Every response to a request
+/// without a valid credential carries it, so an unauthenticated client cannot
+/// keep a pooled connection slot alive with a trickle of rejected requests.
+pub(super) fn closing(mut response: HyperResponse<HyperBody>) -> HyperResponse<HyperBody> {
+    response.headers_mut().insert(
+        hyper::header::CONNECTION,
+        hyper::header::HeaderValue::from_static("close"),
+    );
+    response
+}
+
+/// Admits a protected request or returns the rejection status to send.
+pub(super) fn authenticate_request(
+    req: &HyperRequest<Incoming>,
+    peer: IpAddr,
+    auth_limiter: &AuthLimiter,
+    credential: &str,
+) -> Result<(), StatusCode> {
+    if auth_limiter.blocked(peer) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+    let authorized = hyper_auth_ok(req, credential);
+    auth_limiter.record(peer, authorized);
+    if authorized {
+        Ok(())
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+/// The closing response for a status from `authenticate_request`.
+pub(super) fn rejection(status: StatusCode) -> HyperResponse<HyperBody> {
+    let message = if status == StatusCode::TOO_MANY_REQUESTS {
+        "too many attempts"
+    } else {
+        "unauthorized"
+    };
+    closing(hyper_response(status, message))
+}
+
 // A credential is scoped to the server certificate. First contact may trust
 // the wrong certificate, but it must never reveal the reusable shared key.
 pub(super) fn scoped_sync_credential(key: &str, fingerprint: &str) -> String {
@@ -171,8 +211,9 @@ pub(super) struct IdentityProof {
 
 /// Serves one HTTP/1 connection. Request headers must arrive within
 /// `header_timeout`, which also closes idle keep-alive connections, and the
-/// whole connection is drained and closed after `CONNECTION_LIFETIME`, so unauthenticated hosts
-/// cannot hold the small connection pool open.
+/// whole connection is drained and closed after `CONNECTION_LIFETIME`.
+/// Unauthenticated responses close the connection (`closing`), so
+/// unauthenticated hosts cannot hold the small connection pool open.
 pub(super) async fn serve_bounded<I, S>(io: I, service: S, header_timeout: Duration)
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin,
@@ -451,44 +492,64 @@ pub(super) async fn handle_hyper(
 ) -> HyperResponse<HyperBody> {
     let method = req.method().clone();
     if method == HyperMethod::GET && req.uri().path() == "/sync/identity" {
+        // First contact is unauthenticated; the client continues on a fresh
+        // pinned connection, so this one always closes.
         if !auth_limiter.admit_identity(peer) {
-            return hyper_response(StatusCode::TOO_MANY_REQUESTS, "too many attempts");
+            return closing(hyper_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many attempts",
+            ));
         }
         let Some((message, challenge)) = parse_identity_request(req.uri().query().unwrap_or(""))
         else {
-            return hyper_response(StatusCode::BAD_REQUEST, "invalid key exchange");
+            return closing(hyper_response(
+                StatusCode::BAD_REQUEST,
+                "invalid key exchange",
+            ));
         };
         let identity = match get_identity(&app) {
             Ok(identity) => identity,
             Err(_) => {
-                return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, "identity unavailable")
+                return closing(hyper_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "identity unavailable",
+                ))
             }
         };
-        return match make_identity_proof(&token, &message, &challenge, &identity.fingerprint) {
-            Ok(proof) => hyper_json(serde_json::to_string(&proof).expect("serializable proof")),
-            Err(_) => hyper_response(StatusCode::BAD_REQUEST, "invalid key exchange"),
-        };
-    }
-    if auth_limiter.blocked(peer) {
-        return hyper_response(StatusCode::TOO_MANY_REQUESTS, "too many attempts");
+        return closing(
+            match make_identity_proof(&token, &message, &challenge, &identity.fingerprint) {
+                Ok(proof) => hyper_json(serde_json::to_string(&proof).expect("serializable proof")),
+                Err(_) => hyper_response(StatusCode::BAD_REQUEST, "invalid key exchange"),
+            },
+        );
     }
     let fingerprint = match get_identity(&app) {
         Ok(identity) => identity.fingerprint,
-        Err(_) => return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, "identity unavailable"),
+        Err(_) => {
+            return closing(hyper_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "identity unavailable",
+            ))
+        }
     };
-    let authorized = hyper_auth_ok(&req, &scoped_sync_credential(&token, &fingerprint));
-    auth_limiter.record(peer, authorized);
-    if !authorized {
-        emit_log(
-            &app,
-            "warn",
-            format!(
-                "[serve] rejected {} {} — bad or missing sync key",
-                method,
-                req.uri()
-            ),
-        );
-        return hyper_response(StatusCode::UNAUTHORIZED, "unauthorized");
+    if let Err(status) = authenticate_request(
+        &req,
+        peer,
+        &auth_limiter,
+        &scoped_sync_credential(&token, &fingerprint),
+    ) {
+        if status == StatusCode::UNAUTHORIZED {
+            emit_log(
+                &app,
+                "warn",
+                format!(
+                    "[serve] rejected {} {} — bad or missing sync key",
+                    method,
+                    req.uri()
+                ),
+            );
+        }
+        return rejection(status);
     }
     if method == HyperMethod::OPTIONS {
         return hyper_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");

@@ -893,6 +893,94 @@ async fn stalled_connections_are_closed_and_real_clients_still_served() {
     assert!(reply.starts_with(b"HTTP/1.1 200"), "{reply:?}");
 }
 
+async fn auth_test_server(credential: &'static str) -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let limiter = Arc::new(AuthLimiter::default());
+    tokio::spawn(async move {
+        loop {
+            let (stream, peer) = listener.accept().await.unwrap();
+            let limiter = limiter.clone();
+            tokio::spawn(async move {
+                let service = service_fn(move |req: HyperRequest<Incoming>| {
+                    let limiter = limiter.clone();
+                    async move {
+                        Ok::<_, hyper::Error>(
+                            match authenticate_request(&req, peer.ip(), &limiter, credential) {
+                                Ok(()) => hyper_response(StatusCode::OK, "ok"),
+                                Err(status) => rejection(status),
+                            },
+                        )
+                    }
+                });
+                // A long header timeout: only the response may end the connection.
+                serve_bounded(TokioIo::new(stream), service, Duration::from_secs(60)).await;
+            });
+        }
+    });
+    addr
+}
+
+/// Reads one response with a Content-Length body, leaving later bytes unread.
+async fn read_response(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut response = Vec::new();
+    let mut byte = [0u8; 1];
+    let body_length = loop {
+        let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte))
+            .await
+            .expect("response arrives")
+            .unwrap();
+        assert!(n > 0, "connection closed before a response");
+        response.push(byte[0]);
+        if response.ends_with(b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&response).to_ascii_lowercase();
+            break head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .map(|value| value.trim().parse::<usize>().unwrap())
+                .unwrap_or(0);
+        }
+    };
+    let mut body = vec![0u8; body_length];
+    stream.read_exact(&mut body).await.unwrap();
+    response.extend_from_slice(&body);
+    response
+}
+
+#[tokio::test]
+async fn unauthenticated_keep_alive_connections_close_after_the_rejection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = auth_test_server("credential").await;
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET /sync/manifest HTTP/1.1\r\nHost: x\r\n\r\n")
+        .await
+        .unwrap();
+    let reply = read_response(&mut stream).await;
+    assert!(reply.starts_with(b"HTTP/1.1 401"), "{reply:?}");
+    assert!(String::from_utf8_lossy(&reply)
+        .to_ascii_lowercase()
+        .contains("connection: close"));
+    // The server ends the connection instead of waiting for another request.
+    let mut rest = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest))
+        .await
+        .expect("server must close an unauthenticated keep-alive connection");
+    assert!(rest.is_empty());
+
+    // An authenticated client keeps its connection for further requests.
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    for _ in 0..2 {
+        stream
+            .write_all(b"GET /sync/manifest HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer credential\r\n\r\n")
+            .await
+            .unwrap();
+        let reply = read_response(&mut stream).await;
+        assert!(reply.starts_with(b"HTTP/1.1 200"), "{reply:?}");
+    }
+}
+
 #[tokio::test]
 async fn one_address_cannot_take_every_connection_slot() {
     let (addr, slots) = bounded_test_server(Duration::from_secs(5)).await;

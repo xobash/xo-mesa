@@ -289,7 +289,9 @@ compaction. A journal is refused when it holds more than 131,072 operations,
 more than 256 participants or operation origins, a device name over 128 bytes,
 or an acknowledgement list longer than 139,264 IDs. The receiver also bounds concurrent TLS connections and aborts a
 handshake that does not finish promptly; a slow or hostile peer cannot create
-unbounded server work.
+unbounded server work. Every response to a request without a valid credential,
+including the first-contact identity exchange, closes its connection, so
+rejected requests cannot keep a connection slot open.
 
 ## Built for Large Vaults
 
