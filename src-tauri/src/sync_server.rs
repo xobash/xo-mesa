@@ -507,7 +507,7 @@ pub(super) async fn handle_hyper(
                 "invalid key exchange",
             ));
         };
-        let identity = match get_identity(&app) {
+        let identity = match get_identity_async(&app).await {
             Ok(identity) => identity,
             Err(_) => {
                 return closing(hyper_response(
@@ -523,7 +523,7 @@ pub(super) async fn handle_hyper(
             },
         );
     }
-    let fingerprint = match get_identity(&app) {
+    let fingerprint = match get_identity_async(&app).await {
         Ok(identity) => identity.fingerprint,
         Err(_) => {
             return closing(hyper_response(

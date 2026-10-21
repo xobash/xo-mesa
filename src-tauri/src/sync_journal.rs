@@ -137,7 +137,7 @@ pub(super) fn journal_mutex() -> &'static Mutex<()> {
     JOURNAL_MUTEX.get_or_init(|| Mutex::new(()))
 }
 
-pub(super) fn journal_guard() -> std::io::Result<MutexGuard<'static, ()>> {
+pub(crate) fn journal_guard() -> std::io::Result<MutexGuard<'static, ()>> {
     journal_mutex()
         .lock()
         .map_err(|_| std::io::Error::other("sync journal coordinator poisoned"))

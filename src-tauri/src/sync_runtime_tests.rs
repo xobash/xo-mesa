@@ -981,6 +981,86 @@ async fn unauthenticated_keep_alive_connections_close_after_the_rejection() {
     }
 }
 
+type JournalStep = Box<
+    dyn FnOnce(PathBuf) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send,
+>;
+
+/// Runs `step` on a one-thread runtime while the journal lock is held. A step
+/// that blocks the runtime thread starves the ticker task until the lock is
+/// released; a step on the blocking pool lets it tick.
+fn runtime_ticks_while_journal_is_locked(label: &str, step: JournalStep) -> bool {
+    let dir = identity_test_dir(label);
+    let held = sync_core::journal_guard().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let root = dir.clone();
+    let runner = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let ticker = tokio::spawn(async move {
+                loop {
+                    let _ = tx.send(());
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            });
+            step(root).await;
+            ticker.abort();
+        });
+    });
+    let ticked = rx.recv_timeout(Duration::from_secs(2)).is_ok();
+    drop(held);
+    runner.join().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    ticked
+}
+
+#[test]
+fn sync_journal_steps_leave_the_async_runtime_free() {
+    let common = vec![sync_core::JournalEntry {
+        rel: "note.md".into(),
+        size: 4,
+        hash: sync_core::content_hash_hex(b"note"),
+    }];
+    let steps: Vec<(&str, JournalStep)> = vec![
+        (
+            "bind",
+            Box::new(|root| {
+                Box::pin(async move {
+                    bind_peer_journal(root, "fingerprint".into(), "device".into())
+                        .await
+                        .unwrap();
+                })
+            }),
+        ),
+        (
+            "save-base",
+            Box::new(move |root| {
+                Box::pin(async move {
+                    store_peer_base(root, "fingerprint".into(), common)
+                        .await
+                        .unwrap();
+                })
+            }),
+        ),
+        (
+            "load-base",
+            Box::new(|root| {
+                Box::pin(async move {
+                    load_peer_base(root, "fingerprint".into()).await.unwrap();
+                })
+            }),
+        ),
+    ];
+    for (label, step) in steps {
+        assert!(
+            runtime_ticks_while_journal_is_locked(label, step),
+            "{label} blocked the async runtime thread"
+        );
+    }
+}
+
 #[tokio::test]
 async fn one_address_cannot_take_every_connection_slot() {
     let (addr, slots) = bounded_test_server(Duration::from_secs(5)).await;

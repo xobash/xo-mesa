@@ -1255,6 +1255,51 @@ pub fn sync_cancel(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs blocking journal, identity or hashing work on the blocking pool, so a
+/// sync never stalls the shared async runtime workers.
+async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+async fn bind_peer_journal(
+    root: PathBuf,
+    fingerprint: String,
+    device: String,
+) -> Result<(), String> {
+    run_blocking(move || {
+        sync_core::bind_journal_peer(&root, &fingerprint, &device, true)
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
+async fn load_peer_base(
+    root: PathBuf,
+    fingerprint: String,
+) -> Result<Vec<sync_core::JournalEntry>, String> {
+    run_blocking(move || {
+        sync_core::peer_baseline(&root, &fingerprint)
+            .map_err(|error| format!("could not load peer sync base: {error}"))
+    })
+    .await
+}
+
+async fn store_peer_base(
+    root: PathBuf,
+    fingerprint: String,
+    common: Vec<sync_core::JournalEntry>,
+) -> Result<(), String> {
+    run_blocking(move || {
+        sync_core::save_peer_baseline(&root, &fingerprint, common)
+            .map_err(|error| format!("could not save sync base: {error}"))
+    })
+    .await
+}
+
 /// Run one native sync with fresh manifests, journal reconciliation, bounded transfers, and final verification.
 #[tauri::command]
 pub async fn sync_run(
@@ -1348,8 +1393,13 @@ pub async fn sync_run(
     );
 
     let remote_journal = fetch_journal_with(&client, &base, &token).await?;
-    sync_core::bind_journal_peer(&root, &fingerprint, &remote_journal.device, true)
-        .map_err(|error| error.to_string())?;
+    bind_peer_journal(
+        root.clone(),
+        fingerprint.clone(),
+        remote_journal.device.clone(),
+    )
+    .await?;
+    let own_fingerprint = get_identity_async(&app).await?.fingerprint;
 
     // 2. Local manifest — fresh streaming hashes off the async runtime.
     emit_progress(&app, "scan", 0, 0, "");
@@ -1415,15 +1465,10 @@ pub async fn sync_run(
     // Deliver local intent before calculating the ordinary file transfer plan.
     // The receiver applies a delete/rename and we then re-fetch its
     // manifest, so an initiator cannot pull the old path back in the same run.
-    let remote_journal = deliver_journal_with(
-        &client,
-        &base,
-        &token,
-        &local_journal,
-        &get_identity(&app)?.fingerprint,
-    )
-    .await
-    .map_err(|error| format!("Peer rejected journal delivery: {error}"))?;
+    let remote_journal =
+        deliver_journal_with(&client, &base, &token, &local_journal, &own_fingerprint)
+            .await
+            .map_err(|error| format!("Peer rejected journal delivery: {error}"))?;
     let refreshed = fetch_manifest_with(&client, &base, &token).await?;
     if refreshed.journal_version != sync_core::JOURNAL_VERSION
         || refreshed.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION
@@ -1513,8 +1558,7 @@ pub async fn sync_run(
     }
 
     // 3. Diff.
-    let peer_base = sync_core::peer_baseline(&root, &fingerprint)
-        .map_err(|error| format!("could not load peer sync base: {error}"))?;
+    let peer_base = load_peer_base(root.clone(), fingerprint.clone()).await?;
     let diff = sync_core::diff_manifests_from_base(&local, &remote, &peer_base);
     emit_log(
         &app,
@@ -1614,29 +1658,52 @@ pub async fn sync_run(
     // Skip when any contiguous numbered conflict copy is already identical.
     // A different same-day copy gets the next suffix during the verified
     // commit.
-    for rel in &diff.conflict {
-        if !retry_allows(retry_set.as_ref(), rel) {
-            continue;
-        }
+    // Existing copies are hashed in one blocking task, not on the runtime.
+    let conflict_checks: Vec<(String, String, u64, String)> = diff
+        .conflict
+        .iter()
+        .filter(|rel| retry_allows(retry_set.as_ref(), rel))
+        .map(|rel| {
+            let e = remote_by_rel[rel.as_str()];
+            let dest_rel = sync_core::conflict_name(rel, &host, &date);
+            (rel.clone(), dest_rel, e.size, e.hash.clone())
+        })
+        .collect();
+    let conflict_present = {
+        let root = root.clone();
+        let checks: Vec<(String, u64, String)> = conflict_checks
+            .iter()
+            .map(|(_, dest_rel, size, hash)| (dest_rel.clone(), *size, hash.clone()))
+            .collect();
+        run_blocking(move || {
+            Ok(checks
+                .iter()
+                .map(|(dest_rel, size, hash)| {
+                    sync_core::conflict_copy_already_present(&root, dest_rel, *size, hash)
+                })
+                .collect::<Vec<_>>())
+        })
+        .await?
+    };
+    for ((rel, dest_rel, _, _), present) in conflict_checks.iter().zip(conflict_present) {
         let e = remote_by_rel[rel.as_str()];
-        let dest_rel = sync_core::conflict_name(rel, &host, &date);
-        let already =
-            match sync_core::conflict_copy_already_present(&root, &dest_rel, e.size, &e.hash) {
-                Ok(already) => already,
-                Err(error) => {
-                    emit_log(
-                        &app,
-                        "warn",
-                        format!("conflict copy scan for {rel} failed: {error}"),
-                    );
-                    failed.push(SyncFailureItem {
-                        rel: rel.clone(),
-                        op: Op::Conflict.name().to_string(),
-                        error: format!("conflict copy scan failed: {error}"),
-                    });
-                    continue;
-                }
-            };
+        let dest_rel = dest_rel.clone();
+        let already = match present {
+            Ok(already) => already,
+            Err(error) => {
+                emit_log(
+                    &app,
+                    "warn",
+                    format!("conflict copy scan for {rel} failed: {error}"),
+                );
+                failed.push(SyncFailureItem {
+                    rel: rel.clone(),
+                    op: Op::Conflict.name().to_string(),
+                    error: format!("conflict copy scan failed: {error}"),
+                });
+                continue;
+            }
+        };
         if already {
             emit_log(
                 &app,
@@ -1773,11 +1840,10 @@ pub async fn sync_run(
                 return Err("peer sync protocol changed during transfer".to_string());
             }
             let common = sync_core::common_baseline(&final_local, &final_remote.files);
-            let own_fingerprint = get_identity(&app)?.fingerprint;
             let response = transfer_client
                 .put(format!("{}/sync/base", base.trim_end_matches('/')))
                 .bearer_auth(&token)
-                .header("x-mesa-fingerprint", own_fingerprint)
+                .header("x-mesa-fingerprint", own_fingerprint.as_str())
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(serde_json::to_vec(&common).map_err(|error| error.to_string())?)
                 .timeout(Duration::from_secs(300))
@@ -1790,8 +1856,7 @@ pub async fn sync_run(
                     response.status()
                 ));
             }
-            sync_core::save_peer_baseline(&root, &fingerprint, common)
-                .map_err(|error| format!("could not save sync base: {error}"))?;
+            store_peer_base(root.clone(), fingerprint.clone(), common).await?;
             Ok::<_, String>(())
         }
         .await;

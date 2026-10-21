@@ -345,6 +345,15 @@ pub(super) fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
     Ok(id)
 }
 
+/// `get_identity` on the blocking pool: the first call reads or creates the
+/// identity on disk (two PowerShell ACL runs on Windows).
+pub(super) async fn get_identity_async(app: &tauri::AppHandle) -> Result<Identity, String> {
+    let app = app.clone();
+    tokio::task::spawn_blocking(move || get_identity(&app))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// This device's certificate fingerprint (lowercase hex SHA-256), for the UI to
 /// display so users can compare it out-of-band with a peer.
 // Blocking work: run off the main (UI) thread.
