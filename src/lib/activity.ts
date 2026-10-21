@@ -174,15 +174,6 @@ export function bumpActivityAmount(
   }
 }
 
-/** Register a single keystroke for a note id (counts as an edit). */
-export function bumpActivity(id: string): void {
-  bumpActivityAmount(id, 0.6, "edit");
-}
-
-export function getActivity(id: string): ActivityRec | undefined {
-  return records.get(id);
-}
-
 /**
  * Every node currently "alive" (intensity above a small threshold), strongest
  * first — used to float a live preview card over each file being read/edited/

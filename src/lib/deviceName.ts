@@ -29,6 +29,3 @@ export function generateDeviceName(rand: () => number = Math.random): string {
     words[Math.min(Math.floor(rand() * words.length), words.length - 1)];
   return `${pick(ADJECTIVES)} ${pick(NOUNS)}`;
 }
-
-/** Exposed for tests (combination-space checks). */
-export const DEVICE_NAME_WORDS = { adjectives: ADJECTIVES, nouns: NOUNS };

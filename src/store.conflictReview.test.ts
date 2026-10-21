@@ -3,7 +3,7 @@ import { afterEach, expect, it } from 'vitest';
 import { useAppStore } from './store';
 import { createNote, DEMO_ROOT, readNote } from './lib/vault';
 import { findSyncConflicts } from './lib/syncConflicts';
-import { clearTextRevisionsForTests, listTextRevisions } from './lib/textRevisionHistory';
+import { clearTextRevisionsForTests, listTextRevisionsAsync } from './lib/textRevisionHistory';
 const initial = useAppStore.getState();
 afterEach(() => { clearTextRevisionsForTests(); useAppStore.setState(initial); });
 it('saves reviewed text through the real store and preserves both source versions', async () => {
@@ -24,7 +24,7 @@ it('stores and restores bounded local text revisions through the store', async (
 
   useAppStore.getState().setContentFromEditor('second version');
   await useAppStore.getState().flushSave();
-  const revision = listTextRevisions(DEMO_ROOT, note.relPath)[0];
+  const revision = (await listTextRevisionsAsync(DEMO_ROOT, note.relPath))[0];
   expect(revision.content).toBe('first version');
 
   await useAppStore.getState().restoreTextRevision(revision.id);

@@ -1,8 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  bumpActivity,
   bumpActivityAmount,
-  getActivity,
   decayActivity,
   activeRecords,
   ACTIVITY_MAX_RECORDS,
@@ -11,9 +9,12 @@ import {
 } from "./activity";
 import { faceFor, statusLine } from "./faces";
 
+/** The live record for one id, as the graph reads it. */
+const getActivity = (id: string) => activeRecords(0).find((record) => record.id === id)?.rec;
+
 describe("activity tracker", () => {
   it("raises intensity on a keystroke", () => {
-    bumpActivity("note-a");
+    bumpActivityAmount("note-a", 0.6, "edit");
     const rec = getActivity("note-a");
     expect(rec).toBeDefined();
     expect(rec!.intensity).toBeGreaterThan(0);

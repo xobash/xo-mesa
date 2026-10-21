@@ -80,7 +80,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
 const { MAX_TEXT_CACHE_FILE_BYTES } = await import("./textCachePlan");
-const { readVaultText, readVaultTextOptional, readNoteResult, VAULT_TEXT_CHUNK } = await import("./vault");
+const { readVaultTextOutcomes, readNoteResult } = await import("./vault");
+/** Content in request order; null marks a skipped or failed read. */
+const readVaultText = async (root: string, list: Parameters<typeof readVaultTextOutcomes>[1]) =>
+  (await readVaultTextOutcomes(root, list)).map((result) => (result.kind === "content" ? result.text : null));
 
 const files = (...rels: string[]) =>
   rels.map((relPath) => ({
@@ -106,7 +109,7 @@ beforeEach(() => {
   perFileReads = [];
 });
 
-describe("readVaultText", () => {
+describe("readVaultTextOutcomes", () => {
   it("distinguishes an unreadable file from a real empty file", async () => {
     const unreadable = await readNoteResult(files("unreadable.md")[0]);
     const readable = await readNoteResult(files("empty.md")[0]);
@@ -149,7 +152,7 @@ describe("readVaultText", () => {
 
   it("preserves unreadable slots for cache hydration callers", async () => {
     nativeBehaviour = () => frame(["kept", null, "also kept"]);
-    const texts = await readVaultTextOptional(ROOT, files("a.md", "bad.md", "c.md"));
+    const texts = await readVaultText(ROOT, files("a.md", "bad.md", "c.md"));
     expect(texts).toEqual(["kept", null, "also kept"]);
   });
 
@@ -162,7 +165,7 @@ describe("readVaultText", () => {
 
   it("fallback skips a known oversized non-markdown file before reading it", async () => {
     nativeBehaviour = () => Promise.reject(new Error("command not found"));
-    const texts = await readVaultTextOptional(
+    const texts = await readVaultText(
       ROOT,
       textFiles(
         ["small.log", 10],
@@ -224,12 +227,5 @@ describe("readVaultText", () => {
     ] as never);
     expect(invokeCalls).toEqual([]);
     expect(texts).toHaveLength(1);
-  });
-
-  it("the chunk size is what bounds a batch, and it is a real bound", async () => {
-    // Peak memory and the decode burst are governed here and nowhere else —
-    // the read parallelism itself is chosen natively.
-    expect(VAULT_TEXT_CHUNK).toBeGreaterThan(1);
-    expect(VAULT_TEXT_CHUNK).toBeLessThanOrEqual(512);
   });
 });

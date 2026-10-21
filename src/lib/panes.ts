@@ -15,10 +15,10 @@ export interface PaneDrag {
 }
 
 /** Number of side panes beside the center: split view has exactly one. */
-export const SIDE_PANES = 1;
+const SIDE_PANES = 1;
 
 /** Clamp a side list to the split-view limit. */
-export function splitSide(stack: PaneView[]): PaneView[] {
+function splitSide(stack: PaneView[]): PaneView[] {
   return stack.slice(0, SIDE_PANES);
 }
 

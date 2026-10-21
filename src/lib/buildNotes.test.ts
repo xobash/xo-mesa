@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildNotes } from "./graph";
-import {
-  extractFirstImage,
-  extractLinks,
-  extractLinksAndFirstImage,
-} from "./markdownExtract";
+import { extractLinks, extractLinksAndFirstImage } from "./markdownExtract";
 import type { VaultFile } from "../types";
 
 const file = (relPath: string, isMarkdown = true): VaultFile => ({
@@ -16,26 +12,26 @@ const file = (relPath: string, isMarkdown = true): VaultFile => ({
 });
 
 describe("extractLinksAndFirstImage", () => {
-  const cases = [
-    "",
-    "plain prose with no refs at all",
-    "a [[Note]] and a [[Other|aliased]] link",
-    "embed ![[picture.png]] then a [[Note]]",
-    "![[first.png]] and ![[second.jpg]] — only the first wins",
-    "![[not-an-image.md]] is an embed but not an image",
-    "[[]] empty target, [[ | ]] blank alias",
-    "markdown image ![alt](assets/pic.png) with no wiki embed",
-    "![alt](a.png) plus ![[b.png]] — the wiki embed takes priority",
-    "[text](Some%20Note.md) encoded md link",
-    "[ext](https://example.com/x.md) must not count",
-    "![img](x.png) then [[Note]] then ![[y.gif]] mixed",
-    "line1\n![[deep/nested/img.webp]]\nline2 [[A]] [[B]] [[C]]",
+  const cases: [string, string | null][] = [
+    ["", null],
+    ["plain prose with no refs at all", null],
+    ["a [[Note]] and a [[Other|aliased]] link", null],
+    ["embed ![[picture.png]] then a [[Note]]", "picture.png"],
+    ["![[first.png]] and ![[second.jpg]] — only the first wins", "first.png"],
+    ["![[not-an-image.md]] is an embed but not an image", null],
+    ["[[]] empty target, [[ | ]] blank alias", null],
+    ["markdown image ![alt](assets/pic.png) with no wiki embed", "assets/pic.png"],
+    ["![alt](a.png) plus ![[b.png]] — the wiki embed takes priority", "b.png"],
+    ["[text](Some%20Note.md) encoded md link", null],
+    ["[ext](https://example.com/x.md) must not count", null],
+    ["![img](x.png) then [[Note]] then ![[y.gif]] mixed", "y.gif"],
+    ["line1\n![[deep/nested/img.webp]]\nline2 [[A]] [[B]] [[C]]", "deep/nested/img.webp"],
   ];
 
-  it.each(cases)("matches the separate extractors for: %j", (src) => {
+  it.each(cases)("matches extractLinks and finds the first image in: %j", (src, firstImage) => {
     const merged = extractLinksAndFirstImage(src);
     expect(merged.links).toEqual(extractLinks(src));
-    expect(merged.firstImage).toEqual(extractFirstImage(src));
+    expect(merged.firstImage).toEqual(firstImage);
   });
 });
 

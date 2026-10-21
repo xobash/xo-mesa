@@ -22,7 +22,7 @@ export function isDocPane(view: WorkspaceView | PaneView): view is DocPaneId {
   return view === "doc" || view === "doc2";
 }
 
-export function otherDocPane(pane: DocPaneId): DocPaneId {
+function otherDocPane(pane: DocPaneId): DocPaneId {
   return pane === "doc" ? "doc2" : "doc";
 }
 

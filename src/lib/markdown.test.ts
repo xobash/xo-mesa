@@ -7,7 +7,7 @@ import { renderMarkdown, sanitizeHtml } from "./markdown";
 import {
   extractLinks,
   extractTags,
-  extractFirstImage,
+  extractLinksAndFirstImage,
   parseFrontmatter,
   extractAliases,
 } from "./markdownExtract";
@@ -69,11 +69,11 @@ describe("extractTags", () => {
   });
 });
 
-describe("extractFirstImage", () => {
+describe("first image", () => {
   it("prefers embeds then markdown images", () => {
-    expect(extractFirstImage("text ![[shot.png]] more")).toBe("shot.png");
-    expect(extractFirstImage("![](a.jpg)")).toBe("a.jpg");
-    expect(extractFirstImage("no images here")).toBeNull();
+    expect(extractLinksAndFirstImage("text ![[shot.png]] more").firstImage).toBe("shot.png");
+    expect(extractLinksAndFirstImage("![](a.jpg)").firstImage).toBe("a.jpg");
+    expect(extractLinksAndFirstImage("no images here").firstImage).toBeNull();
   });
 });
 

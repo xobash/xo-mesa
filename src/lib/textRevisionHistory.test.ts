@@ -2,12 +2,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearTextRevisionsForTests,
-  listTextRevisions,
-  migrateTextRevisions,
-  recordTextRevision,
   recordTextRevisionAsync,
   listTextRevisionsAsync,
   migrateRevisionNamespaces,
+  migrateTextRevisionsAsync,
 } from "./textRevisionHistory";
 
 afterEach(() => {
@@ -17,74 +15,74 @@ afterEach(() => {
 });
 
 describe("text revision history", () => {
-  it("keeps bounded local revisions per vault file", () => {
+  it("keeps bounded local revisions per vault file", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     for (let i = 0; i < 25; i++) {
-      recordTextRevision("/vault", "Note.md", `v${i}`, i + 1);
+      await recordTextRevisionAsync("/vault", "Note.md", `v${i}`, i + 1);
     }
 
-    const revisions = listTextRevisions("/vault", "Note.md");
+    const revisions = await listTextRevisionsAsync("/vault", "Note.md");
     expect(revisions).toHaveLength(20);
     expect(revisions[0].content).toBe("v24");
     expect(revisions[revisions.length - 1]?.content).toBe("v5");
   });
 
-  it("keeps monotonic newest-first order when saves share a timestamp", () => {
-    recordTextRevision("/vault", "Note.md", "first", 10);
-    recordTextRevision("/vault", "Note.md", "second", 10);
-    recordTextRevision("/vault", "Note.md", "third", 10);
+  it("keeps monotonic newest-first order when saves share a timestamp", async () => {
+    await recordTextRevisionAsync("/vault", "Note.md", "first", 10);
+    await recordTextRevisionAsync("/vault", "Note.md", "second", 10);
+    await recordTextRevisionAsync("/vault", "Note.md", "third", 10);
 
-    expect(listTextRevisions("/vault", "Note.md").map((revision) => revision.content)).toEqual([
+    expect((await listTextRevisionsAsync("/vault", "Note.md")).map((revision) => revision.content)).toEqual([
       "third",
       "second",
       "first",
     ]);
   });
 
-  it("moves revisions with a verified file rename", () => {
-    recordTextRevision("/vault", "Old.md", "first", 1);
-    recordTextRevision("/vault", "Old.md", "second", 2);
-    expect(migrateTextRevisions("/vault", "Old.md", "New.md")).toBe(true);
-    expect(listTextRevisions("/vault", "Old.md")).toEqual([]);
-    expect(listTextRevisions("/vault", "New.md").map((revision) => revision.content)).toEqual([
+  it("moves revisions with a verified file rename", async () => {
+    await recordTextRevisionAsync("/vault", "Old.md", "first", 1);
+    await recordTextRevisionAsync("/vault", "Old.md", "second", 2);
+    expect(await migrateTextRevisionsAsync("/vault", "Old.md", "New.md")).toBe(true);
+    expect(await listTextRevisionsAsync("/vault", "Old.md")).toEqual([]);
+    expect((await listTextRevisionsAsync("/vault", "New.md")).map((revision) => revision.content)).toEqual([
       "second",
       "first",
     ]);
   });
 
-  it("does not store duplicate consecutive content", () => {
-    const first = recordTextRevision("/vault", "Note.md", "same", 1);
-    expect(recordTextRevision("/vault", "Note.md", "same", 2)).toEqual(first);
+  it("does not store duplicate consecutive content", async () => {
+    const first = await recordTextRevisionAsync("/vault", "Note.md", "same", 1);
+    expect(await recordTextRevisionAsync("/vault", "Note.md", "same", 2)).toEqual(first);
 
-    expect(listTextRevisions("/vault", "Note.md")).toHaveLength(1);
+    expect(await listTextRevisionsAsync("/vault", "Note.md")).toHaveLength(1);
   });
 
   it("preserves an empty baseline and reports an existing revision as available", async () => {
     const empty = await recordTextRevisionAsync("/vault", "Note.md", "", 1);
     expect(empty?.content).toBe("");
     expect(await recordTextRevisionAsync("/vault", "Note.md", "", 2)).toEqual(empty);
-    expect(listTextRevisions("/vault", "Note.md")).toHaveLength(1);
+    expect(await listTextRevisionsAsync("/vault", "Note.md")).toHaveLength(1);
   });
 
-  it("fails closed when browser history storage is full without throwing", () => {
+  it("fails closed when browser history storage is full without throwing", async () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");
     });
 
-    expect(recordTextRevision("/vault", "Note.md", "saved text", 1)).toBeNull();
+    expect(await recordTextRevisionAsync("/vault", "Note.md", "saved text", 1)).toBeNull();
     setItem.mockRestore();
   });
 
-  it("does not depend on settings storage to mint the next revision identity", () => {
-    const first = recordTextRevision("/vault", "Note.md", "first", 10);
+  it("does not depend on settings storage to mint the next revision identity", async () => {
+    const first = await recordTextRevisionAsync("/vault", "Note.md", "first", 10);
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("Quota exceeded", "QuotaExceededError");
     });
     // A localStorage-only browser cannot retain this copy, but an IDB-backed
     // desktop history must never derive its identity from this settings write.
-    expect(recordTextRevision("/vault", "Other.md", "second", 10)).toBeNull();
+    expect(await recordTextRevisionAsync("/vault", "Other.md", "second", 10)).toBeNull();
     setItem.mockRestore();
-    const revision = recordTextRevision("/vault", "Other.md", "third", 10);
+    const revision = await recordTextRevisionAsync("/vault", "Other.md", "third", 10);
     expect(revision?.id).not.toBe(first?.id);
     expect(revision?.order).toBeGreaterThan(first?.order ?? 0);
   });
@@ -165,7 +163,7 @@ it("protects other notes when a large note fills the history budget", async () =
 it("coalesces autosaves without coalescing an external snapshot", async () => {
   await recordTextRevisionAsync("/vault", "a.md", "first", 1, { source: "autosave" });
   await recordTextRevisionAsync("/vault", "a.md", "second", 1001, { source: "autosave" });
-  expect(listTextRevisions("/vault", "a.md").map(entry => entry.content)).toEqual(["first"]);
+  expect((await listTextRevisionsAsync("/vault", "a.md")).map(entry => entry.content)).toEqual(["first"]);
   await recordTextRevisionAsync("/vault", "a.md", "external", 2001, { source: "external" });
-  expect(listTextRevisions("/vault", "a.md").map(entry => entry.content)).toEqual(["external", "first"]);
+  expect((await listTextRevisionsAsync("/vault", "a.md")).map(entry => entry.content)).toEqual(["external", "first"]);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLikelyRemoteVaultPath, vaultTextChunkConcurrency } from "./vault";
+import { isLikelyRemoteVaultPath } from "./vault";
 
 describe("remote vault hints", () => {
   it("recognizes UNC and macOS mounted-volume roots", () => {
@@ -8,9 +8,7 @@ describe("remote vault hints", () => {
     expect(isLikelyRemoteVaultPath(["", "Volumes", "Example", "Mesa"].join("/"))).toBe(true);
   });
 
-  it("does not change local-root concurrency", () => {
+  it("treats an ordinary local root as local", () => {
     expect(isLikelyRemoteVaultPath("/tmp/MesaVault")).toBe(false);
-    expect(vaultTextChunkConcurrency("/tmp/MesaVault")).toBe(3);
-    expect(vaultTextChunkConcurrency(["", "Volumes", "Example", "Vault"].join("/"))).toBe(1);
   });
 });

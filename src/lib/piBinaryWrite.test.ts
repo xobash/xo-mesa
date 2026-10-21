@@ -1,10 +1,9 @@
 /**
  * Reproduction of the reported PDF corruption, and the guarantee that fixes it.
  *
- * `agent.test.ts` unit-tests the block decision and `deepResearchExtension.test.ts`
- * proves the shipped Pi extension mirrors it exactly. Neither shows *why* the
- * block has to exist. This file does, on real PDF bytes: it reproduces the
- * corruption end to end and then asserts the decision that prevents it.
+ * This file reproduces the corruption end to end on real PDF bytes, then
+ * executes the shipped Pi activity extension (`src-tauri/resources/mesa-activity.ts`)
+ * to check the block that prevents it and the activity it reports.
  *
  * Deliberately written against web-standard APIs only (`Uint8Array`,
  * `TextDecoder`/`TextEncoder`) rather than Node's `Buffer`/`fs`: Mesa's
@@ -13,10 +12,39 @@
  * boundary on purpose. Keeping this test inside the boundary means it is
  * typechecked like the rest of the app.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { piBinaryWriteBlock } from "./agent";
+import { transpileModule, ScriptTarget, ModuleKind } from "typescript";
+import activityExtension from "../../src-tauri/resources/mesa-activity.ts?raw";
 import { hasPdfEofMarker, sanitizePdfBytes } from "./pdfBytes";
+
+type ToolCallResult = { block: true; reason: string } | undefined;
+
+/** Runs the shipped extension with a fake Pi host, bridge and filesystem. */
+function activityHook(existing: string[] = []) {
+  const js = transpileModule(
+    activityExtension
+      .replace('import { resolve } from "node:path";', "")
+      .replace('import { existsSync } from "node:fs";', "")
+      .replace("export default function", "function"),
+    { compilerOptions: { target: ScriptTarget.ES2022, module: ModuleKind.ESNext } },
+  ).outputText;
+  const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response("ok"));
+  const resolve = (cwd: string, path: string) => (path.startsWith("/") ? path : `${cwd}/${path}`);
+  const existsSync = (path: string) => existing.includes(path);
+  const register = new Function("process", "fetch", "resolve", "existsSync", `${js}; return mesaActivity;`)(
+    { env: { MESA_ACTIVITY_PORT: "8788", MESA_ACTIVITY_TOKEN: "test-token", MESA_VAULT_PATH: "/vault" }, cwd: () => "/" },
+    fetch,
+    resolve,
+    existsSync,
+  );
+  let hook: (event: { toolName?: string; input?: Record<string, unknown> }) => ToolCallResult = () => undefined;
+  register({ on: (name: string, handler: typeof hook) => { if (name === "tool_call") hook = handler; } });
+  return {
+    call: (toolName: string, path?: unknown) => hook({ toolName, input: { path } }),
+    reported: () => fetch.mock.calls.map(([, init]) => JSON.parse(String(init.body)) as { path: string; op: string }),
+  };
+}
 
 /** A realistic PDF: real files carry compressed streams and embedded font
  *  programs, and that is where the non-UTF-8 bytes live. A text-only PDF with
@@ -80,19 +108,82 @@ describe("Pi writing a PDF (the reported corruption)", () => {
   });
 
   it("never happens now: every content-write tool is refused on a PDF", () => {
+    const ext = activityHook();
     for (const tool of ["write", "edit", "apply_patch"]) {
-      expect(piBinaryWriteBlock(tool, "/vault/report.pdf")?.block, tool).toBe(true);
+      expect(ext.call(tool, "/vault/report.pdf")?.block, tool).toBe(true);
     }
+    // A blocked write never happens, so it is not reported as activity.
+    expect(ext.reported()).toEqual([]);
   });
 
   it("leaves the rest of the agent workflow intact", () => {
+    const ext = activityHook();
     // Reading a PDF is fine, and bash still reaches it so the agent can use a
     // real format-aware tool.
-    expect(piBinaryWriteBlock("read", "/vault/report.pdf")).toBeNull();
-    expect(piBinaryWriteBlock("bash", "/vault/report.pdf")).toBeNull();
+    expect(ext.call("read", "/vault/report.pdf")).toBeUndefined();
+    expect(ext.call("bash", "/vault/report.pdf")).toBeUndefined();
     // Writing notes — the intended workflow — is untouched.
     for (const path of ["note.md", "data.json", "Notes/deep/nested.md", "styles.css"]) {
-      expect(piBinaryWriteBlock("write", path), path).toBeNull();
+      expect(ext.call("write", path), path).toBeUndefined();
     }
+  });
+});
+
+describe("shipped Pi activity extension", () => {
+  it("names the offending path and the routes that do work", () => {
+    const blocked = activityHook().call("write", "/vault/Papers/thesis.pdf");
+    expect(blocked?.reason).toContain("binary file");
+    expect(blocked?.reason).toContain("/vault/Papers/thesis.pdf");
+    // The reason string is the model's only feedback — without these it just
+    // retries the same corrupting write with different content.
+    expect(blocked?.reason).toContain("Do not retry");
+    expect(blocked?.reason).toContain("bash");
+  });
+
+  it("blocks regardless of tool-name case or path separator", () => {
+    const ext = activityHook();
+    expect(ext.call("WRITE", "C:\\vault\\Report.PDF")?.block).toBe(true);
+    expect(ext.call("Edit", "/vault/scan.PdF")?.block).toBe(true);
+  });
+
+  it("covers the binary formats most likely to be in a vault and leaves text alone", () => {
+    const ext = activityHook();
+    for (const extension of ["pdf", "docx", "xlsx", "png", "jpg", "zip", "mp4", "sqlite"]) {
+      expect(ext.call("write", `/vault/file.${extension}`)?.block, extension).toBe(true);
+    }
+    for (const path of ["/vault/note.md", "/vault/data.json", "/vault/a.txt", "/vault/page.svg", "/vault/doc.rtf", "/vault/rows.csv"]) {
+      expect(ext.call("write", path), path).toBeUndefined();
+    }
+  });
+
+  it("treats a dotfile or a trailing dot as having no extension", () => {
+    const ext = activityHook();
+    for (const path of ["/vault/.pdf", "/vault/README", "/vault/trailing."]) {
+      expect(ext.call("write", path), path).toBeUndefined();
+    }
+  });
+
+  it("never blocks reads, bash or grep, and ignores calls with no usable path", () => {
+    const ext = activityHook();
+    for (const tool of ["read", "bash", "grep"]) expect(ext.call(tool, "/vault/report.pdf"), tool).toBeUndefined();
+    for (const path of [undefined, "", 42]) expect(ext.call("write", path)).toBeUndefined();
+    expect(ext.reported()).toEqual([{ path: "/vault/report.pdf", op: "read" }]);
+  });
+
+  it("reports file tools as graph activity and ignores the rest", () => {
+    const ext = activityHook(["/vault/existing.md"]);
+    ext.call("read", "notes/a.md");
+    ext.call("Read", "/vault/b.md");
+    ext.call("edit", "/vault/c.md");
+    ext.call("write", "/vault/existing.md");
+    ext.call("write", "/vault/new.md");
+    for (const tool of ["bash", "grep", "find", "ls", "deploy"]) ext.call(tool, "/vault/d.md");
+    expect(ext.reported()).toEqual([
+      { path: "/vault/notes/a.md", op: "read" },
+      { path: "/vault/b.md", op: "read" },
+      { path: "/vault/c.md", op: "edit" },
+      { path: "/vault/existing.md", op: "write" },
+      { path: "/vault/new.md", op: "create" },
+    ]);
   });
 });

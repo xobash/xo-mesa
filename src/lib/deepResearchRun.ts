@@ -22,7 +22,7 @@ export function currentPiSessionId(): string | null {
 }
 
 /** Write raw input to the shared Pi session's PTY. */
-export async function sendToPi(sessionId: string, input: string): Promise<void> {
+async function sendToPi(sessionId: string, input: string): Promise<void> {
   if (!IN_TAURI) throw new Error("Pi is unavailable outside the desktop app.");
   await invoke("terminal_write", { sessionId, input });
 }

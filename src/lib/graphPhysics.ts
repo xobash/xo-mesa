@@ -95,7 +95,7 @@ export function createGraphSimulation<N extends GraphForceNode & { id: string },
 /** Alpha below which a released graph counts as settled (GraphView's tick threshold). */
 export const GRAPH_SETTLED_ALPHA = 0.004;
 /** Drag reheat target shared with GraphView. */
-export const GRAPH_DRAG_ALPHA = 0.3;
+const GRAPH_DRAG_ALPHA = 0.3;
 
 /**
  * A plain-number copy of a live GraphView simulation: node state, every

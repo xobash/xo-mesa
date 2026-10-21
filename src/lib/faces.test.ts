@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { faceFor, phraseFor, statusLine, varietyFor } from "./faces";
+import { faceFor, phraseFor, statusLine } from "./faces";
 import type { ActivityOp } from "./activity";
 
 const OPS: ActivityOp[] = ["read", "edit", "write", "create"];
@@ -29,11 +29,13 @@ describe("faces", () => {
 
   it("offers plenty of variety per op (quirky personality expansion)", () => {
     // The user explicitly wants several different face+message variations.
+    const seen = (op: ActivityOp) =>
+      new Set(Array.from({ length: 5000 }, (_, i) => statusLine(op, `note-${i}`))).size;
     for (const op of OPS) {
-      expect(varietyFor(op)).toBeGreaterThanOrEqual(20);
+      expect(seen(op), op).toBeGreaterThanOrEqual(20);
     }
     // edit got the biggest personality pass — make sure it's rich
-    expect(varietyFor("edit")).toBeGreaterThanOrEqual(100);
+    expect(seen("edit")).toBeGreaterThanOrEqual(100);
   });
 
   it("different seeds surface different faces/phrases (variety is real)", () => {

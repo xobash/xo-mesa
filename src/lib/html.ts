@@ -37,7 +37,7 @@ const EVENT_HANDLER_ATTR_RE =
 const FONT_FACE_RULE_RE = /@font-face\s*\{[^{}]*\}/gi;
 export const CSS_URL_RE =
   /url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s][^)]*?))\s*\)/gi;
-export const CSS_IMPORT_RE =
+const CSS_IMPORT_RE =
   /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?/gi;
 const SKIP_SCHEME_RE =
   /^(?:#|data:|blob:|mailto:|tel:|javascript:|about:)/i;

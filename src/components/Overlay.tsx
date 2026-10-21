@@ -767,7 +767,7 @@ function Scratchpad() {
   </div>;
 }
 
-export function ScratchpadDocument({ day }: { day: string }) {
+function ScratchpadDocument({ day }: { day: string }) {
   const draft = useOverlayDraft("scratchpad", `Scratchpad/${day}.md`, SCRATCH_PREFIX + day, day);
   return <>
     <textarea aria-label="Scratchpad draft" className="ov-scratch" placeholder="A quick note for this day…"
@@ -784,7 +784,7 @@ function Whiteboard() {
   return <WhiteboardDocument key={identity} />;
 }
 
-export function WhiteboardDocument() {
+function WhiteboardDocument() {
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const draft = useOverlayDraft("whiteboard", "Whiteboard/Board.mesa-board.json", WHITEBOARD_KEY);

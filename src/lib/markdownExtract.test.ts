@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractLinks, extractFirstImage, extractLinksAndFirstImage } from "./markdownExtract";
+import { extractLinks, extractLinksAndFirstImage } from "./markdownExtract";
 
 function legacy(source: string) {
   const links: string[] = [];
@@ -53,7 +53,6 @@ describe("metadata delimiter scanning", () => {
       const expected = legacy(source);
       expect(extractLinksAndFirstImage(source), source).toMatchObject(expected);
       expect(extractLinks(source), source).toEqual(expected.links);
-      expect(extractFirstImage(source), source).toEqual(expected.firstImage);
     }
   });
 

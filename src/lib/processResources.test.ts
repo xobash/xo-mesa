@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
-import {
-  cpuPercent,
-  requestProcessTreeSample,
-  resetProcessTreeResourceSamples,
-  type ProcessTreeSample,
-} from "./processResources";
+import { describe, expect, it, vi } from "vitest";
+import { cpuPercent, type ProcessTreeSample } from "./processResources";
+
+/** A module instance with no previous or pending sample. */
+async function freshSampler() {
+  vi.resetModules();
+  return (await import("./processResources")).requestProcessTreeSample;
+}
 
 const sample = (overrides: Partial<ProcessTreeSample>): ProcessTreeSample => ({
   pid: 7,
@@ -33,7 +34,7 @@ describe("process resource diagnostics", () => {
   });
 
   it("coalesces overlapping diagnostics ticks into one native request", async () => {
-    resetProcessTreeResourceSamples();
+    const requestProcessTreeSample = await freshSampler();
     let resolve!: (value: ProcessTreeSample) => void;
     let calls = 0;
     const request = () => {
@@ -53,7 +54,7 @@ it("rejects CPU comparisons when the observed process membership changes", () =>
   expect(cpuPercent(sample({ processIds: [7, 8], processCount: 2 }), sample({ sampledAtMs: 1000, cpuTimeMs: 8000, processIds: [7, 9], processCount: 2 }))).toBeNull();
 });
 it("a failed sample is retryable without an unhandled cleanup rejection", async () => {
-  resetProcessTreeResourceSamples();
+  const requestProcessTreeSample = await freshSampler();
   await expect(requestProcessTreeSample(async () => { throw new Error("unavailable"); })).rejects.toThrow("unavailable");
   await expect(requestProcessTreeSample(async () => sample({}))).resolves.toMatchObject({ pid: 7 });
 });

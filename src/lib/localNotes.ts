@@ -25,7 +25,7 @@ export interface LocalNoteStore {
 }
 
 /** Recognize quota errors by standard names and legacy WebKit/Gecko codes. */
-export function isQuotaError(err: unknown): boolean {
+function isQuotaError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { name?: unknown; code?: unknown };
   const name = typeof e.name === "string" ? e.name : "";

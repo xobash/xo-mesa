@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { PDFDocument, PDFHexString, StandardFonts } from "pdf-lib";
 import {
-  readPdfPages,
   rotatePage,
   deletePage,
   movePage,
@@ -25,6 +24,15 @@ import {
   sanitizePdfBytes,
   sniffFileType,
 } from "./pdfBytes";
+
+/** Page geometry as a PDF reader sees it, for checking edit results. */
+async function readPdfPages(bytes: Uint8Array) {
+  const doc = await PDFDocument.load(sanitizePdfBytes(bytes), { ignoreEncryption: true });
+  return doc.getPages().map((page, index) => {
+    const { width, height } = page.getSize();
+    return { index, width, height, rotation: page.getRotation().angle };
+  });
+}
 
 /** Build a fresh N-page PDF; each page tagged so we can track reordering. */
 async function makePdf(n: number): Promise<Uint8Array> {

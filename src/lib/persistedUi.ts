@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 export const LAST_VAULT_KEY = "mesa:lastVault";
 export const THEME_KEY = "mesa:theme";
 export const RECENTS_KEY = "mesa:recentVaults";
-export const MAX_RECENTS = 8;
+const MAX_RECENTS = 8;
 
 export const THEME_IDS = [
   "system",
@@ -29,7 +29,7 @@ export const UI_STYLE_KEY = "mesa:uiStyle";
 export const UI_STYLE_IDS = ["classic", "studio", "vault", "canvas"] as const;
 export type UiStyleId = (typeof UI_STYLE_IDS)[number];
 
-export function isUiStyleId(value: unknown): value is UiStyleId {
+function isUiStyleId(value: unknown): value is UiStyleId {
   return typeof value === "string" && (UI_STYLE_IDS as readonly string[]).includes(value);
 }
 

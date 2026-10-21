@@ -23,8 +23,8 @@ describe("opaque vault storage", () => {
     expect(localStorage.getItem(oldKey)).toBeNull();
     expect(localStorage.getItem(key)).toBe(original);
     expect(localStorage.getItem("mesa:textRevisionHistory:v1")).not.toContain("synthetic");
-    const { listTextRevisions } = await import("./textRevisionHistory");
-    expect(listTextRevisions("/synthetic/two", "note.md")[0].content).toBe("prior text");
+    const { listTextRevisionsAsync } = await import("./textRevisionHistory");
+    expect((await listTextRevisionsAsync("/synthetic/two", "note.md"))[0].content).toBe("prior text");
   });
   it("retains the legacy draft if quota blocks migration", async () => {
     const oldKey = `mesa:overlay-draft:${JSON.stringify(["/synthetic/one", "draft.md"])}`;

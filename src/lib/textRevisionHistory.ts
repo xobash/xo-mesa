@@ -297,26 +297,14 @@ export async function purgeTextRevisionAsync(root: string, relPath: string, revi
   }
 }
 
-export function recordTextRevision(
-  root: string,
-  relPath: string,
-  content: string,
-  now = Date.now()
-): TextRevision | null {
-  root = vaultStorageId(root);
-  if (!root || !relPath) return null;
-  const entries = readAll();
-  const revision = addRevision(entries, root, { relPath, content, source: "restore" }, now);
-  return revision && writeAll(trim(entries)) ? revision : null;
-}
-
-export function listTextRevisions(root: string, relPath: string): TextRevision[] {
+/** Fallback when IndexedDB is unavailable. */
+function listTextRevisions(root: string, relPath: string): TextRevision[] {
   root = vaultStorageId(root);
   return readAll().filter((entry) => entry.root === root && entry.relPath === relPath);
 }
 
-/** Move local recovery identity after Mesa's verified filesystem rename. */
-export function migrateTextRevisions(root: string, fromRelPath: string, toRelPath: string): boolean {
+/** Fallback when IndexedDB is unavailable: move local recovery identity after a verified rename. */
+function migrateTextRevisions(root: string, fromRelPath: string, toRelPath: string): boolean {
   root = vaultStorageId(root);
   if (!root || !fromRelPath || !toRelPath || fromRelPath === toRelPath) return true;
   const entries = readAll();

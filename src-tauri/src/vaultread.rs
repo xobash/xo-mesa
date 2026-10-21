@@ -139,8 +139,8 @@ fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
 ///     u8   bytes[len]
 /// ```
 ///
-/// All integers are little-endian. `src/lib/vault.ts` `decodeTextChunk` is the
-/// other half; `vaultReadWire.test.ts` checks the frontend decoder.
+/// All integers are little-endian. `src/lib/vault.ts` `decodeTextChunkOutcomes`
+/// is the other half; `vaultReadWire.test.ts` checks the frontend decoder.
 fn encode(results: &[ReadResult]) -> Vec<u8> {
     let total: usize = results
         .iter()
@@ -456,7 +456,7 @@ mod tests {
     #[ignore]
     fn bench_real_vault() {
         use std::time::Instant;
-        const CHUNK: usize = 128; // VAULT_TEXT_CHUNK in src/lib/vault.ts
+        const CHUNK: usize = 128; // paths per bulk read request
 
         let root =
             std::env::var("MESA_PARITY_VAULT").expect("set MESA_PARITY_VAULT to a vault path");
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     #[ignore]
     fn parity_dump_for_real_vault() {
-        const CHUNK: usize = 128; // VAULT_TEXT_CHUNK in src/lib/vault.ts
+        const CHUNK: usize = 128; // paths per bulk read request
         let root =
             std::env::var("MESA_PARITY_VAULT").expect("set MESA_PARITY_VAULT to a vault path");
         let out_dir =

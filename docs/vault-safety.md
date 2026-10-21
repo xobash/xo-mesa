@@ -276,11 +276,10 @@ not constrain arbitrary shell commands or third-party tools:
   which fires *before* a built-in tool runs. When the tool is a content write
   (`write`/`edit`/`apply_patch`) and the target path has a binary extension,
   the extension returns `{ block: true, reason }` and the write never happens.
-- The decision is a pure, unit-tested contract in `src/lib/agent.ts`
-  (`piBinaryWriteBlock` / `PI_BLOCKED_BINARY_EXTENSIONS`). The extension is
-  compiled into the Rust binary via `include_str!` and cannot import from
-  `src/lib`, so it hand-mirrors the list, the predicate, and the reason string;
-  direct behavioral tests cover the frontend and bundled extension copies.
+- The extension alone owns the extension list, the predicate and the reason
+  string; it is compiled into the Rust binary via `include_str!`.
+  `src/lib/piBinaryWrite.test.ts` executes the shipped extension file and
+  checks the block, its reason and the activity it reports.
 - The `reason` string is the model's only feedback, so it states the constraint
   and both routes that do work: a format-aware tool via `bash` (qpdf,
   ImageMagick, a Python library), or Mesa's own editor. Without that, a capable

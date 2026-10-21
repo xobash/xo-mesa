@@ -551,18 +551,10 @@ export async function readNote(file: VaultFile): Promise<string> {
   return (await readNoteResult(file)).text;
 }
 
-/** Maximum paths per native text-read response, bounding decode and progress batches. */
-export const VAULT_TEXT_CHUNK = 128;
-
 /** Use lower read concurrency for UNC and mounted-volume path hints without probing storage. */
 export function isLikelyRemoteVaultPath(root: string): boolean {
   const normalized = root.replace(/\\/g, "/");
   return normalized.startsWith("//") || normalized.startsWith("/Volumes/");
-}
-
-/** Number of native bulk read batches allowed to overlap. */
-export function vaultTextChunkConcurrency(root: string): number {
-  return isLikelyRemoteVaultPath(root) ? 1 : 3;
 }
 
 /** Failure marker in the `vault_read_text` frame — see `vaultread.rs`. */
@@ -621,11 +613,6 @@ export function decodeTextChunkOutcomes(
   }
   if (at !== bytes.byteLength) throw new Error("trailing vault_read_text bytes");
   return out;
-}
-
-/** Compatibility view for search-only callers. Neither unavailable outcome is content. */
-export function decodeTextChunk(body: ArrayBuffer | Uint8Array | number[]): (string | null)[] {
-  return decodeTextChunkOutcomes(body).map(result => result.kind === "content" ? result.text : null);
 }
 
 /**
@@ -696,18 +683,6 @@ export async function readVaultTextOutcomes(
     out[i] = await readSearchTextFallback(file);
   });
   return out;
-}
-
-export async function readVaultTextOptional(root: string, files: readonly VaultFile[]): Promise<(string | null)[]> {
-  return (await readVaultTextOutcomes(root, files)).map(result => result.kind === "content" ? result.text : null);
-}
-
-/** Read files in request order. Null means no authoritative read, never an editable empty document. */
-export async function readVaultText(
-  root: string,
-  files: readonly VaultFile[]
-): Promise<(string | null)[]> {
-  return readVaultTextOptional(root, files);
 }
 
 /** Decode a byte-capped peek to text, dropping any trailing partial UTF-8

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import deepResearchExt from "../../src-tauri/resources/mesa-deep-research.ts?raw";
 import { transpileModule, ScriptTarget, ModuleKind } from "typescript";
-import { piDeepResearchLaunch } from "./agent";
 
 describe("bundled Deep Research extension behavior", () => {
   type Result = {
@@ -11,15 +10,10 @@ describe("bundled Deep Research extension behavior", () => {
   };
 
   function extension(runId = "run-1") {
-    const launch = piDeepResearchLaunch(
-      {
-        port: 8788,
-        token: "test-token",
-        extensionPath: "/fixture/mesa-activity.ts",
-        deepResearchExtensionPath: "/fixture/mesa-deep-research.ts",
-      },
-      runId,
-    );
+    // Native terminal_start sets these only for a nonblank run ID (terminal.rs).
+    const launch = {
+      env: runId.trim() ? { MESA_DEEP_RESEARCH: "1", MESA_DEEP_RESEARCH_RUN_ID: runId } : {},
+    };
     const registered = new Map<
       string,
       {
@@ -60,7 +54,6 @@ describe("bundled Deep Research extension behavior", () => {
       on: (name: string, handler: (event: unknown) => unknown) => hooks.set(name, handler),
     });
     return {
-      launch,
       fetch,
       hooks,
       call: (name: string, params: Record<string, unknown>) =>
@@ -72,7 +65,6 @@ describe("bundled Deep Research extension behavior", () => {
     "leaves ordinary Pi tools and agent turns alone for run ID %j",
     async (runId) => {
       const ext = extension(runId);
-      expect(ext.launch).toEqual({ env: {}, args: [] });
       for (const toolName of ["write", "edit", "apply_patch", "read", "bash"]) {
         expect(ext.hooks.get("tool_call")!({ toolName })).toBeUndefined();
       }
@@ -84,7 +76,6 @@ describe("bundled Deep Research extension behavior", () => {
 
   it("activates the write gate and reports the exact active run ID", async () => {
     const ext = extension("run-active-2");
-    expect(ext.launch.args).toEqual(["--extension", "/fixture/mesa-deep-research.ts"]);
     for (const toolName of ["write", "edit", "apply_patch"]) {
       expect(ext.hooks.get("tool_call")!({ toolName })).toMatchObject({ block: true });
     }

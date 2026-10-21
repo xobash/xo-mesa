@@ -73,7 +73,7 @@ export interface ReaderResources {
   allowLocal?: boolean;
   onStats?: (stats: { requested: number; failed: number; timedOut: number }) => void;
 }
-export const RESOURCE_SOURCES = "mesa-web: http://mesa-web.localhost https://mesa-web.localhost";
+const RESOURCE_SOURCES = "mesa-web: http://mesa-web.localhost https://mesa-web.localhost";
 
 /** Resolve static assets through the native broker; never send page URLs to the webview. */
 export async function prepareReaderResources(rawHtml: string, baseUrl: string, options: ReaderResources): Promise<string> {

@@ -1,5 +1,6 @@
 // Report Pi file-tool activity to the authenticated loopback bridge.
-// Mirror the binary text-write guard in src/lib/agent.ts; shell writes are outside this guard.
+// Blocks text writes to binary files; shell writes are outside this guard.
+// src/lib/piBinaryWrite.test.ts executes this file.
 // Without bridge configuration the extension is inactive; reporting failures do not block tools.
 
 import { resolve } from "node:path";
@@ -16,8 +17,7 @@ interface PiExtensionApi {
   on(event: string, handler: (event: PiToolCallEvent) => PiToolCallResult): void;
 }
 
-/** Mirrors `PI_BLOCKED_BINARY_EXTENSIONS` in `src/lib/agent.ts` (the tested
- *  reference). Keep the two in lockstep — this file cannot import it. */
+/** File extensions whose bytes a text write cannot round-trip. */
 const BLOCKED_BINARY_EXTENSIONS = [
   "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
   "odt", "ods", "odp", "pages", "numbers", "key", "epub", "mobi",
@@ -35,7 +35,6 @@ const BLOCKED_BINARY_EXTENSIONS = [
  *  intentionally absent: it moves bytes with real tools, not a text encoder. */
 const CONTENT_WRITE_TOOLS = ["write", "edit", "apply_patch"];
 
-/** Mirrors `isPiBlockedBinaryPath` in `src/lib/agent.ts`. */
 function isBlockedBinaryPath(path: string): boolean {
   const base = path.slice(
     Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1
@@ -45,7 +44,7 @@ function isBlockedBinaryPath(path: string): boolean {
   return BLOCKED_BINARY_EXTENSIONS.includes(base.slice(dot + 1).toLowerCase());
 }
 
-/** Return the binary-write block payload or undefined; keep parity with src/lib/agent.ts. */
+/** Return the binary-write block payload or undefined. */
 function binaryWriteBlock(toolName: string, path: string): PiToolCallResult {
   if (!CONTENT_WRITE_TOOLS.includes(toolName.toLowerCase())) return undefined;
   if (!isBlockedBinaryPath(path)) return undefined;

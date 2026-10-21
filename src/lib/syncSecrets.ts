@@ -8,7 +8,7 @@ export interface SyncSecretStore {
   write: (value: string) => Promise<string>;
 }
 
-export const nativeSyncSecretStore: SyncSecretStore = {
+const nativeSyncSecretStore: SyncSecretStore = {
   read: async () => {
     return invoke<string | null>('sync_secrets_read');
   },
@@ -33,7 +33,7 @@ function parseSecrets(raw: string | null): SyncSecrets {
   return { syncToken: data.syncToken, peers };
 }
 
-export function syncSecretsFromSettings(settings: Settings): SyncSecrets {
+function syncSecretsFromSettings(settings: Settings): SyncSecrets {
   const peers: Record<string, string> = Object.create(null);
   for (const peer of settings.peers) if (peer.token) peers[peer.id] = peer.token;
   return { syncToken: settings.syncToken, peers };

@@ -1,9 +1,6 @@
 import { isIndexedCache } from "./documentWorkingSet";
 import type { VaultFile } from "../types";
 
-/** Compatibility text-cache admission plan. Preserve file order for deterministic budget selection.
- * Markdown is exempt here; the indexed working set applies its own decoded-text budget. */
-
 /** The predicate must match `isTextualVaultFile` — passed in to keep this
  *  module free of the vault's Tauri imports. */
 export type TextualPredicate = (file: {
@@ -11,17 +8,6 @@ export type TextualPredicate = (file: {
   isMarkdown?: boolean;
 }) => boolean;
 
-export interface TextCachePlan {
-  /** Non-markdown textual files whose content should be read at vault open. */
-  extra: VaultFile[];
-  /** Textual files left out because the budget was exhausted. */
-  skipped: number;
-  /** Bytes the planned extra reads account for (unknown sizes count as 0). */
-  bytes: number;
-}
-
-/** Byte budget for automatically cached non-Markdown text. */
-export const TEXT_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
 
 /**
  * One non-markdown text file may not consume the whole search cache or native
@@ -30,10 +16,9 @@ export const TEXT_CACHE_BUDGET_BYTES = 64 * 1024 * 1024;
  */
 export const MAX_TEXT_CACHE_FILE_BYTES = 8 * 1024 * 1024;
 
-/** Keep the lazy, non-markdown cache on the same character budget as startup
- * hydration. Markdown remains pinned because the note graph and the active
- * editor own that content. */
-export const TEXT_CACHE_BUDGET_CHARS = TEXT_CACHE_BUDGET_BYTES;
+/** Character budget for the lazy, non-markdown cache. Markdown remains pinned
+ * because the note graph and the active editor own that content. */
+export const TEXT_CACHE_BUDGET_CHARS = 64 * 1024 * 1024;
 
 /**
  * Bound text added by lazy viewers and previews without evicting markdown or
@@ -81,34 +66,4 @@ export function retainLazyTextCache(
     usedChars -= candidate.chars;
   }
   return next ?? cache;
-}
-
-export function planTextCache(
-  files: readonly VaultFile[],
-  isTextual: TextualPredicate,
-  budgetBytes: number = TEXT_CACHE_BUDGET_BYTES,
-  maxFileBytes: number = MAX_TEXT_CACHE_FILE_BYTES
-): TextCachePlan {
-  const extra: VaultFile[] = [];
-  let bytes = 0;
-  let skipped = 0;
-  for (const f of files) {
-    if (f.isMarkdown) continue; // always cached, never budgeted
-    if (!isTextual(f)) continue; // binaries never enter the text pipeline
-    // A file whose stat failed has no size; count it as 0 rather than guessing
-    // high and silently dropping it. Sizes come from the same scan, so the
-    // budget is evaluated against real bytes in every normal case.
-    const size = f.size ?? 0;
-    if (size > maxFileBytes) {
-      skipped++;
-      continue;
-    }
-    if (bytes + size > budgetBytes) {
-      skipped++;
-      continue;
-    }
-    bytes += size;
-    extra.push(f);
-  }
-  return { extra, skipped, bytes };
 }

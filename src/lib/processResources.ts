@@ -25,11 +25,6 @@ export async function sampleProcessTreeResources(): Promise<ProcessTreeRateSampl
   return requestProcessTreeSample(() => invoke<ProcessTreeSample>("diagnostics_process_tree"));
 }
 
-export function resetProcessTreeResourceSamples(): void {
-  lastSample = null;
-  pendingSample = null;
-}
-
 /** One diagnostics sample at a time prevents interval ticks from queuing IPC. */
 export function requestProcessTreeSample(
   request: () => Promise<ProcessTreeSample>

@@ -1054,9 +1054,9 @@ export function buildResearchContext(input: BuildContextInput): DeepResearchCont
 // Structured prompt
 // ---------------------------------------------------------------------------
 
-export const RESEARCH_PROGRESS_TOOL = "deep_research_progress";
-export const RESEARCH_FINISH_TOOL = "deep_research_finish";
-export const RESULT_ENVELOPE_TYPE = "mesa_deep_research";
+const RESEARCH_PROGRESS_TOOL = "deep_research_progress";
+const RESEARCH_FINISH_TOOL = "deep_research_finish";
+const RESULT_ENVELOPE_TYPE = "mesa_deep_research";
 
 /** Build the research instruction and structured-result protocol for the shared Pi session. */
 export function buildResearchPrompt(input: {

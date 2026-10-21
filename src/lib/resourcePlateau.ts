@@ -62,10 +62,6 @@ export function recordResourceSample(input: {
   return sample;
 }
 
-export function clearResourceSamples(): void {
-  samples.length = 0;
-}
-
 export function summarizeResourcePlateau(
   history: readonly ResourceSample[] = samples
 ): ResourcePlateau | null {

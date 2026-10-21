@@ -226,16 +226,10 @@ export function extractLinks(source: string, markdown = true): string[] {
   return out;
 }
 
-/** The first image a note references, used for the graph thumbnail. */
-export function extractFirstImage(source: string, markdown = true): string | null {
-  if (!source.includes("[")) return null;
-  source = proseText(source, markdown, LINK_SYNTAX);
-  return scanWikiRefs(source).firstImage ?? firstMarkdownImage(source);
-}
-
 /**
- * Both of the above from a SINGLE wiki scan — what `buildNotes` wants for every
- * note in the vault. Identical results to calling them separately.
+ * Links, references and the first image (the graph thumbnail) from a SINGLE
+ * wiki scan — what `buildNotes` wants for every note in the vault. Its links
+ * equal `extractLinks`.
  */
 export function extractLinksAndFirstImage(source: string, markdown = true): {
   links: string[];

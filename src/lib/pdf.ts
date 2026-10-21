@@ -11,13 +11,6 @@ import {
   PDFRadioGroup,
 } from "pdf-lib";
 
-export interface PdfPageInfo {
-  index: number;
-  width: number;
-  height: number;
-  rotation: number;
-}
-
 export interface RGB {
   r: number;
   g: number;
@@ -116,7 +109,7 @@ function describeChar(ch: string): string {
 }
 
 /** Validate text with the selected standard font before mutation; do not maintain a separate character table. */
-export async function assertTextEncodable(text: string): Promise<void> {
+async function assertTextEncodable(text: string): Promise<void> {
   const font = await standardFontProbe();
   const unsupported: string[] = [];
   const seen = new Set<string>();
@@ -163,15 +156,6 @@ export async function assertValidPdfBytes(bytes: Uint8Array): Promise<void> {
 function toRgb(c?: RGB) {
   const v = c ?? { r: 0, g: 0, b: 0 };
   return rgb(v.r, v.g, v.b);
-}
-
-/** Read page geometry without modifying the document. */
-export async function readPdfPages(bytes: Uint8Array): Promise<PdfPageInfo[]> {
-  const doc = await load(bytes);
-  return doc.getPages().map((p, index) => {
-    const { width, height } = p.getSize();
-    return { index, width, height, rotation: p.getRotation().angle };
-  });
 }
 
 /** Rotate one page by a multiple of 90°. */

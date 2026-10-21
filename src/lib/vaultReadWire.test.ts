@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { decodeTextChunk, decodeTextChunkOutcomes } from "./vault";
+import { decodeTextChunkOutcomes } from "./vault";
+
+/** Content per slot; null marks a skipped or failed read. */
+const decodeTextChunk = (body: ArrayBuffer | Uint8Array | number[]) =>
+  decodeTextChunkOutcomes(body).map((result) => (result.kind === "content" ? result.text : null));
 
 const READ_FAILED = 0xffffffff;
 

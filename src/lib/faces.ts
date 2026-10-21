@@ -170,9 +170,3 @@ export function statusLine(op: ActivityOp, seed = "", custom?: string): string {
   const phrase = custom && custom.trim() ? custom.trim() : phraseFor(op, seed);
   return `${faceFor(op, seed)} ${phrase}`;
 }
-
-/** Total number of distinct face/phrase combinations for an op. Useful for
- *  tests asserting variety is large. */
-export function varietyFor(op: ActivityOp): number {
-  return (FACES[op]?.length ?? 0) * (PHRASES[op]?.length ?? 0);
-}
