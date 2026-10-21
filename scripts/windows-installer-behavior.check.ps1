@@ -191,6 +191,34 @@ if ((Get-Content 'expanded/payload.txt' -Raw).Trim() -ne 'archive payload') { th
     & cmd.exe /d /c "`"$probe`"" | Out-Null
     Assert-True ($LASTEXITCODE -eq $case[1]) "WebView2 probe returned $LASTEXITCODE for $($case[0])"
   }
+  # An empty PATH has no Node, npm, Scoop or winget. The pinned download must
+  # run first; winget with the exact pinned version is only the fallback.
+  $ensureAt = $runScript.IndexOf("`n:ensure_node")
+  $ensureEnd = $runScript.IndexOf("`n:refresh_paths", $ensureAt + 1)
+  Assert-True ($ensureAt -ge 0 -and $ensureEnd -gt $ensureAt) 'Node acquisition subroutine is missing'
+  $nodeArch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+  $env:MESA_TEST_PINNED_DIR = Join-Path $temporary "Mesa\toolchains\node-v22.22.3-win-$nodeArch"
+  $env:MESA_TEST_NODE_LOG = Join-Path $temporary 'node-steps.log'
+  $fakeSteps = @(
+    ':install_pinned_node', '>>"%MESA_TEST_NODE_LOG%" echo pinned', 'if "%MESA_TEST_PINNED_FAIL%"=="1" exit /b 1',
+    'mkdir "%MESA_TEST_PINNED_DIR%" 2>nul', '>"%MESA_TEST_PINNED_DIR%\node.cmd" echo @echo v%MESA_NODE_VERSION%', 'exit /b 0',
+    ':install_winget', '>>"%MESA_TEST_NODE_LOG%" echo winget %~1 %~3', 'exit /b 1',
+    ':refresh_paths', 'exit /b 0') -join "`r`n"
+  $nodeSteps = Join-Path $temporary 'node-steps.cmd'
+  $nodeStepsBody = "@echo off`r`nsetlocal enabledelayedexpansion`r`nset `"MESA_NODE_VERSION=22.22.3`"`r`ncall :ensure_node`r`nexit /b %errorlevel%`r`n" + ($runScript.Substring($ensureAt + 1, $ensureEnd - $ensureAt - 1) -replace "`r?`n", "`r`n") + "`r`n" + $fakeSteps + "`r`n"
+  Set-Content -Path $nodeSteps -Value $nodeStepsBody
+  $env:Path = Join-Path $env:SystemRoot 'System32'
+  $env:LOCALAPPDATA = $temporary
+  foreach ($case in @(@('0', 0, 'pinned'), @('1', 1, "pinned`r`nwinget OpenJS.NodeJS.22 22.22.3"))) {
+    Remove-Item $env:MESA_TEST_NODE_LOG, $env:MESA_TEST_PINNED_DIR -Recurse -Force -ErrorAction SilentlyContinue
+    $env:MESA_TEST_PINNED_FAIL = $case[0]
+    & cmd.exe /d /c "`"$nodeSteps`"" | Out-Null
+    Assert-True ($LASTEXITCODE -eq $case[1]) "empty-PATH Node setup returned $LASTEXITCODE (pinned failure: $($case[0]))"
+    $steps = (Get-Content -Raw $env:MESA_TEST_NODE_LOG).Trim()
+    Assert-True ($steps -ceq $case[2]) "empty-PATH Node setup ran: $steps"
+  }
+  $env:Path = $priorPath
+
   # Failure cases intentionally leave a nonzero native command status.
   # Clear it only after every assertion passes so callers see the suite result.
   $global:LASTEXITCODE = 0
@@ -204,7 +232,7 @@ if ((Get-Content 'expanded/payload.txt' -Raw).Trim() -ne 'archive payload') { th
   ${env:ProgramFiles(x86)} = $priorProgramFilesX86
   $env:LOCALAPPDATA = $priorLocalAppData
   $env:PSModulePath = $priorModulePath
-  Remove-Item Env:\MESA_TEST_MODULE_PATH, Env:\MESA_TEST_NODE_HASH, Env:\MESA_TEST_NODE_FAIL -ErrorAction SilentlyContinue
+  Remove-Item Env:\MESA_TEST_MODULE_PATH, Env:\MESA_TEST_NODE_HASH, Env:\MESA_TEST_NODE_FAIL, Env:\MESA_TEST_PINNED_DIR, Env:\MESA_TEST_NODE_LOG, Env:\MESA_TEST_PINNED_FAIL -ErrorAction SilentlyContinue
   Remove-Item Function:\git -ErrorAction SilentlyContinue
   Remove-Variable -Name mesaGitCalls, mesaHasChanges, mesaMergeFails, mesaSignatureFails, mesaAhead, mesaSignatureOutput, mesaSigners, mesaPinnedSignature -Scope Global -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue

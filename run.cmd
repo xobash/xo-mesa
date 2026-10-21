@@ -16,41 +16,9 @@ echo ^> Mesa - setup ^& launch
 
 call :check_long_paths
 
-REM --- Node.js (+ Scoop bootstrap if we need to install anything) -------------
-where npm >nul 2>nul
-if errorlevel 1 (
-  call :ensure_scoop
-  if not errorlevel 1 (
-    echo   . Installing Node.js LTS via Scoop...
-    call scoop install nodejs-lts
-    call :refresh_paths
-  )
-  where npm >nul 2>nul
-  if errorlevel 1 (
-    echo   . Installing Node.js LTS via winget...
-    call :install_winget OpenJS.NodeJS.LTS "Node.js LTS"
-    call :refresh_paths
-  )
-)
-where npm >nul 2>nul
-if errorlevel 1 (
-  echo   x Node.js still not found after install.
-  echo     Install Node.js LTS, or open a new terminal if winget just installed it, then re-run run.cmd.
-  exit /b 1
-)
-for /f "delims=" %%V in ('node -v') do set "MESA_NODE_ACTUAL=%%V"
-if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
-  call :install_pinned_node
-  if errorlevel 1 exit /b 1
-  set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-x64;%PATH%"
-  if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-arm64;%PATH%"
-)
-for /f "delims=" %%V in ('node -v') do set "MESA_NODE_ACTUAL=%%V"
-if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
-  echo   x Pinned Node version could not be activated.
-  exit /b 1
-)
-echo   ok Pinned Node.js present
+REM --- Node.js (pinned, hash-verified download first) --------------------------
+call :ensure_node
+if errorlevel 1 exit /b 1
 
 REM --- Git (Scoop) ------------------------------------------------------------
 where git >nul 2>nul
@@ -243,6 +211,41 @@ echo       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPat
 echo     then sign out and back in.
 exit /b 0
 
+:ensure_node
+REM The pinned, hash-verified download is the primary Node.js source; winget
+REM with the same exact version is only the fallback.
+call :node_version
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  echo   . Installing pinned Node.js %MESA_NODE_VERSION%...
+  call :install_pinned_node
+  if not errorlevel 1 call :use_pinned_node
+  call :node_version
+)
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  echo   . The pinned Node.js download failed. Trying winget for Node.js %MESA_NODE_VERSION%...
+  call :install_winget OpenJS.NodeJS.22 "Node.js %MESA_NODE_VERSION%" %MESA_NODE_VERSION%
+  call :refresh_paths
+  call :node_version
+)
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  echo   x Node.js %MESA_NODE_VERSION% could not be installed or activated.
+  echo     Check the network error above, or open a new terminal if winget just installed it, then re-run run.cmd.
+  exit /b 1
+)
+echo   ok Pinned Node.js present
+exit /b 0
+
+:node_version
+set "MESA_NODE_ACTUAL="
+for /f "delims=" %%V in ('node -v 2^>nul') do set "MESA_NODE_ACTUAL=%%V"
+exit /b 0
+
+:use_pinned_node
+set "MESA_NODE_ARCH=x64"
+if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "MESA_NODE_ARCH=arm64"
+set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-%MESA_NODE_ARCH%;%PATH%"
+exit /b 0
+
 :refresh_paths
 if exist "%SCOOP_SHIMS%" set "PATH=%SCOOP_SHIMS%;%PATH%"
 if exist "%CARGO_BIN%" set "PATH=%CARGO_BIN%;%PATH%"
@@ -319,5 +322,9 @@ if errorlevel 1 (
   echo   ! winget not found; cannot install %~2 automatically.
   exit /b 1
 )
-winget install --id %~1 -e --accept-source-agreements --accept-package-agreements
+if "%~3"=="" (
+  winget install --id %~1 -e --accept-source-agreements --accept-package-agreements
+) else (
+  winget install --id %~1 -e --version %~3 --accept-source-agreements --accept-package-agreements
+)
 exit /b %errorlevel%
