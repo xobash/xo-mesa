@@ -62,12 +62,11 @@ function joinRelative(dir: string, rel: string): string {
   return (absolute ? "/" : "") + out.join("/");
 }
 
+const URL_ATTR_ENTITIES: Record<string, string> = { "&amp;": "&", "&#38;": "&", "&quot;": '"', "&#39;": "'" };
+
+/** Decode attribute entities in one pass, so `&amp;quot;` stays the text `&quot;`. */
 function decodeUrlAttr(value: string): string {
-  return value
-    .replace(/&amp;/g, "&")
-    .replace(/&#38;/g, "&")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+  return value.replace(/&(?:amp|#38|quot|#39);/g, (entity) => URL_ATTR_ENTITIES[entity]);
 }
 
 function escapeAttr(value: string): string {

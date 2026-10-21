@@ -33,4 +33,10 @@ describe("browser tool source boundary", () => {
     expect(data.links).toHaveLength(40);
     expect(result).toContain("native static fetch");
   });
+
+  it("decodes each HTML entity once", () => {
+    const result = format({ body: "<p>a &amp;lt;b&amp;gt; &amp;amp; &lt;c&gt; &quot;d&quot; &amp;quot;</p>" }, "https://example.org");
+    const data = JSON.parse(result.split("\n").pop()!);
+    expect(data.pageText).toBe('a &lt;b&gt; &amp; <c> "d" &quot;');
+  });
 });

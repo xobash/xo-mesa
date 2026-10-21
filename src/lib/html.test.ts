@@ -54,6 +54,13 @@ describe("saved webpage HTML rewriting", () => {
   });
 
   it("leaves hashes, data URLs, and existing protocol URLs alone", () => {
+    // Entities decode once: an escaped "&amp;" in the page is the text "&amp;".
+    expect(rewriteSavedHtmlUrl("https://example.com/a?x=1&amp;amp;y=2&amp;quot;", "/vault/Page.html", asset, null)).toBe(
+      "https://example.com/a?x=1&amp;y=2&quot;"
+    );
+    expect(rewriteSavedHtmlUrl("https://example.com/a?x=1&amp;y=&#39;2&#39;", "/vault/Page.html", asset, null)).toBe(
+      "https://example.com/a?x=1&y='2'"
+    );
     expect(rewriteSavedHtmlUrl("#main", "/vault/Page.html", asset, null)).toBe("#main");
     expect(rewriteSavedHtmlUrl("data:image/png;base64,abc", "/vault/Page.html", asset, null)).toBe(
       "data:image/png;base64,abc"

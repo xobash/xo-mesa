@@ -1,6 +1,7 @@
 .dockerignore
 .gitattributes
 .github/CODEOWNERS
+.github/codeql/codeql-config.yml
 .github/workflows/advisory-review.yml
 .github/workflows/build.yml
 .github/workflows/codeql.yml
