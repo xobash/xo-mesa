@@ -141,3 +141,48 @@ it('requires version-bound script/network consent and revokes stale and replaced
     expect(host.querySelector('iframe')?.getAttribute('sandbox')).toBe('');
   } finally { mocks.native = false; }
 });
+
+it('shows a focusable, labelled Source view whose copy actions yield exact source text', async () => {
+  const previous = mocks.text;
+  mocks.text = `${'a'.repeat(400)}\r\n<p>${'b'.repeat(20)}</p>\n${'line\n'.repeat(3000)}end`;
+  mocks.ensureContent.mockImplementation(async () => mocks.text);
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host); containers.push({ host, root });
+  const click = async (label: string) => act(async () => Array.from(host.querySelectorAll('button')).find(b => b.textContent === label)!.click());
+  const copy = () => {
+    const data: Record<string, string> = {};
+    const event = new Event('copy', { bubbles: true, cancelable: true }) as Event & { clipboardData: unknown };
+    event.clipboardData = { setData: (type: string, value: string) => { data[type] = value; } };
+    scroller().dispatchEvent(event);
+    return { prevented: event.defaultPrevented, text: data['text/plain'] };
+  };
+  const scroller = () => host.querySelector<HTMLElement>('.html-source')!;
+  try {
+    await act(async () => root.render(<HtmlView rel="page.html" />));
+    await click('Source');
+    expect(scroller().tabIndex).toBe(0);
+    expect(scroller().getAttribute('role')).toBe('document');
+    expect(scroller().getAttribute('aria-label')).toBe('Source of page');
+    const rows = scroller().querySelectorAll('.html-source-row');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.length).toBeLessThan(3000);
+
+    await click('Copy source');
+    expect(writeText).toHaveBeenCalledWith(mocks.text);
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('Source copied.');
+
+    // A selection across the wrapped rows of the first line keeps only its real CRLF line end.
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const range = document.createRange();
+    range.setStart(rows[0].firstChild!, 10);
+    range.setEnd(rows[3].firstChild!, 3);
+    selection.addRange(range);
+    expect(copy()).toEqual({ prevented: true, text: mocks.text.slice(10, mocks.text.indexOf('<p>') + 3) });
+
+    // Select-all copies every row, including rows that are not mounted.
+    await act(async () => { scroller().focus(); scroller().dispatchEvent(new KeyboardEvent('keydown', { key: 'a', metaKey: true, bubbles: true, cancelable: true })); });
+    expect(copy()).toEqual({ prevented: true, text: mocks.text });
+  } finally { mocks.text = previous; vi.unstubAllGlobals(); window.getSelection()?.removeAllRanges(); }
+});

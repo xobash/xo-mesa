@@ -54,3 +54,35 @@ export function visibleCodeLineRange(
     end: Math.min(lineCount, first + visible),
   };
 }
+
+/** Display rows wider than this are split so no single row forces huge text layout. */
+export const SOURCE_ROW_CHARS = 160;
+
+export interface WrappedRowIndex {
+  starts: Uint32Array;
+  ends: Uint32Array;
+  rowCount: number;
+}
+
+/** Splits text into display rows at newlines and every `width` UTF-16 units, keeping surrogate pairs whole. */
+export function buildWrappedRowIndex(text: string, width = SOURCE_ROW_CHARS): WrappedRowIndex {
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let lineStart = 0;
+  for (let i = 0; i <= text.length; i++) {
+    if (i < text.length && text.charCodeAt(i) !== 10) continue;
+    const lineEnd = i > lineStart && text.charCodeAt(i - 1) === 13 ? i - 1 : i;
+    let s = lineStart;
+    do {
+      let end = Math.min(lineEnd, s + width);
+      // Never end a row between the halves of a surrogate pair.
+      const last = text.charCodeAt(end - 1);
+      if (end < lineEnd && end - s > 1 && last >= 0xd800 && last <= 0xdbff) end--;
+      starts.push(s);
+      ends.push(end);
+      s = end;
+    } while (s < lineEnd);
+    lineStart = i + 1;
+  }
+  return { starts: Uint32Array.from(starts), ends: Uint32Array.from(ends), rowCount: starts.length };
+}

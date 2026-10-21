@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCodeLineIndex,
+  buildWrappedRowIndex,
   codeLineAt,
   shouldWindowCode,
   visibleCodeLineRange,
@@ -41,5 +42,29 @@ describe("code viewer windowing", () => {
       start: 0,
       end: 12,
     });
+  });
+});
+
+describe("buildWrappedRowIndex", () => {
+  it("splits long lines into fixed-width rows and keeps line breaks", () => {
+    const text = "abcdefg\r\n\nxy";
+    const index = buildWrappedRowIndex(text, 3);
+    const rows = Array.from(index.starts, (s, i) => text.slice(s, index.ends[i]));
+    expect(rows).toEqual(["abc", "def", "g", "", "xy"]);
+  });
+
+  it("bounds a megabyte single line to short rows", () => {
+    const index = buildWrappedRowIndex("x".repeat(1_000_000), 160);
+    expect(index.rowCount).toBe(6250);
+    expect(index.ends[0] - index.starts[0]).toBe(160);
+  });
+
+  it("keeps a surrogate pair in one row at the width boundary", () => {
+    const text = "a".repeat(159) + "\u{1F600}";
+    const index = buildWrappedRowIndex(text, 160);
+    const rows = Array.from(index.starts, (s, i) => text.slice(s, index.ends[i]));
+    expect(rows).toEqual(["a".repeat(159), "\u{1F600}"]);
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    for (const row of rows) expect(row).not.toMatch(loneSurrogate);
   });
 });

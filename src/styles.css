@@ -2268,12 +2268,21 @@ body.is-dragging iframe {
   margin: 0;
   overflow: auto;
   padding: 16px 18px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  contain: layout paint style;
   font-family: var(--mono);
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 20px;
   color: var(--text);
+}
+.html-source-spacer {
+  position: relative;
+  min-width: 100%;
+}
+.html-source-row {
+  position: absolute;
+  left: 0;
+  height: 20px;
+  white-space: pre;
 }
 .preview-html-frame {
   width: 100%;
@@ -3238,6 +3247,10 @@ input[type="range"] {
   flex: 1;
   overflow-y: auto;
   padding: 24px 30px 60px;
+}
+/* Saved HTML scrolls its own frame or windowed source, so it takes the body's full height. */
+.doc-window-body > .html-view {
+  height: 100%;
 }
 .doc-window-issue {
   padding: 8px 18px;
