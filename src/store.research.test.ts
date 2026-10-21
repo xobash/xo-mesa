@@ -81,8 +81,8 @@ describe('Actual store Research async lifecycle boundaries, mocked I/O', () => {
     });
     it('must not register an old archive when its text read finishes after a vault switch', async () => {
         const text = deferred<string>();
-        boundary.read.mockReturnValue(text.promise);
-        boundary.invoke.mockImplementation(async (name) => name === 'browse_fetch' ? { finalUrl: 'https://example.com/page', contentType: 'text/html', body: '<html><body>Evidence</body></html>' } : undefined);
+        boundary.invoke.mockImplementation(async (name) => name === 'browse_fetch' ? { finalUrl: 'https://example.com/page', contentType: 'text/html', body: '<html><body>Evidence</body></html>' }
+            : name === 'vault_read_bytes' ? new TextEncoder().encode(await text.promise).buffer : undefined);
         const start = useAppStore.getState().startDeepResearch('test question', { depth, piSurfaceAvailable: true });
         await vi.advanceTimersByTimeAsync(200);
         await start;
@@ -91,7 +91,7 @@ describe('Actual store Research async lifecycle boundaries, mocked I/O', () => {
         boundary.handlers.get('mesa://deep-research')!({ payload: { runId, kind: 'finish', requestId: 'register-proof', result: result() } });
         await vi.advanceTimersByTimeAsync(0);
         expect(boundary.writeArchive).toHaveBeenCalledOnce();
-        expect(boundary.read).toHaveBeenCalledOnce();
+        expect(boundary.invoke).toHaveBeenCalledWith('vault_read_bytes', expect.objectContaining({ maxBytes: 8 * 1024 * 1024 }));
         changeActiveVault();
         text.resolve('<html><body>Evidence</body></html>');
         await vi.advanceTimersByTimeAsync(0);

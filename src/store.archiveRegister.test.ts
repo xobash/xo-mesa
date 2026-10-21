@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 const io = vi.hoisted(() => ({ read: vi.fn(async () => '<p>archived</p>'), scan: vi.fn(async () => []) }));
-vi.mock('./lib/vault', async original => ({ ...await original<object>(), readNote: io.read, scanVault: io.scan }));
+vi.mock('./lib/vault', async original => ({ ...await original<object>(), readNoteResult: async () => ({ ok: true, text: await io.read() }), scanVault: io.scan }));
 import { useAppStore } from './store';
 const initial = useAppStore.getState();
 afterEach(() => { useAppStore.setState(initial, true); vi.clearAllMocks(); });

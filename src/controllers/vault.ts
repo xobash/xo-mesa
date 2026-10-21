@@ -101,13 +101,11 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     const file = vaultFileFor(root, rel);
     const { path, name } = file;
     if (isTextualVaultFile(file)) {
-      let content = "";
-      try {
-        content = await readNote(file);
-      } catch {
-        /* may not exist on disk yet (create announced before write) */
-      }
+      // A failed read may be a create announced before its write; the file
+      // stays catalogue-only until a watcher change or an open reads it.
+      const read = await readWatchedText(file);
       if (get().fileFor(rel) || !isCurrent()) return; // lost a race — already added
+      const content = read.ok ? read.text : "";
       set({
         files: [...get().files, file].sort((a, b) =>
           fileOrder(a.relPath, b.relPath)
@@ -123,7 +121,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             firstImagePath: undefined,
           },
         },
-        contentCache: forkContentCache(get().contentCache, { [rel]: content }),
+        ...(read.ok
+          ? { contentCache: forkContentCache(get().contentCache, { [rel]: content }) }
+          : unreadableUpdate({ [rel]: read.tooLarge ? "skipped" : "failed" })),
       });
     } else {
       // Binary file — add to the file list so the sidebar shows it, but no
@@ -160,6 +160,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
 
     const nextNotes = { ...latest.notes };
     const nextCache = forkContentCache(latest.contentCache);
+    const unreadable: Record<string, "skipped" | "failed"> = {};
     const textAdditions = additions.filter(isTextualVaultFile);
     // An external create storm can contain thousands of text files. Keep
     // the final state commit atomic, but bound the reads and decoded strings
@@ -169,9 +170,11 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       textAdditions,
       STARTUP_TEXT_READ_CONCURRENCY,
       async (f) => {
-        const text = await readNote(f);
+        const read = await readWatchedText(f);
         if (!isCurrent()) return;
-        nextCache[f.relPath] = text;
+        const text = read.ok ? read.text : "";
+        if (read.ok) nextCache[f.relPath] = text;
+        else unreadable[f.relPath] = read.tooLarge ? "skipped" : "failed";
         nextNotes[f.relPath] = {
           relPath: f.relPath,
           title: f.name,
@@ -189,14 +192,17 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     const remaining = additions.filter((file) => !present.has(file.relPath));
     const cache = forkContentCache(current.contentCache);
     const notes = { ...current.notes };
+    const skipped: Record<string, "skipped" | "failed"> = {};
     for (const file of remaining) {
       if (!(file.relPath in cache) && file.relPath in nextCache) cache[file.relPath] = nextCache[file.relPath];
       if (!(file.relPath in notes) && file.relPath in nextNotes) notes[file.relPath] = nextNotes[file.relPath];
+      if (file.relPath in unreadable && !(file.relPath in cache)) skipped[file.relPath] = unreadable[file.relPath];
     }
     set({
       files: [...current.files, ...remaining].sort((a, b) => fileOrder(a.relPath, b.relPath)),
       notes,
       contentCache: cache,
+      ...unreadableUpdate(skipped),
     });
   }
 
@@ -226,6 +232,19 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     } catch {
       return { ok: false, text: "" };
     }
+  }
+
+  // Catalogue-only text files: merge their reasons and recount the totals.
+  function unreadableUpdate(added: Record<string, "skipped" | "failed">): Partial<AppState> {
+    if (!Object.keys(added).length) return {};
+    const unreadableTextReasons = { ...get().unreadableTextReasons, ...added };
+    const reasons = Object.values(unreadableTextReasons);
+    return {
+      unreadableTextReasons,
+      unindexedTextFiles: reasons.length,
+      skippedTextFiles: reasons.filter((reason) => reason === "skipped").length,
+      failedTextFiles: reasons.filter((reason) => reason === "failed").length,
+    };
   }
 
   // Remove externally deleted files from all relevant state maps in one commit.
