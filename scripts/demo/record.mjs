@@ -27,7 +27,7 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
 const server = await startServer(PORT);
-const browser = await chromium.launch({ executablePath: BROWSER, args: ["--force-color-profile=srgb", "--font-render-hinting=none"] });
+const browser = await chromium.launch({ executablePath: BROWSER, args: ["--force-color-profile=srgb", "--font-render-hinting=none", "--disable-smooth-scrolling"] });
 const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 }, colorScheme: "dark", deviceScaleFactor: 1 });
 await ctx.addInitScript((k) => { if (window.top === window) window.__REC_K__ = 1 / k; }, SLOW);
 await ctx.addInitScript({ path: path.join(here, "timeshim.js") });
@@ -86,6 +86,18 @@ async function moveTo(x, y, ms) {
     await page.waitForTimeout(25);
   }
   cursor = { x, y };
+}
+// Wheel input spread over every page frame with easing. Separate wheel ticks
+// land as single-frame jumps; the browser's own smooth scrolling runs in real
+// time, which is SLOW x too fast in page time, so it is turned off at launch.
+async function wheel(dy, ms) {
+  const n = Math.max(1, Math.round((ms * FPS) / 1000));
+  let sent = 0;
+  for (let i = 1; i <= n; i++) {
+    const want = Math.round(dy * ease(i / n));
+    if (want !== sent) { await page.mouse.wheel(0, want - sent); sent = want; }
+    await wait(1000 / FPS);
+  }
 }
 async function smoothInto(loc, block) {
   await loc.evaluate((el, block) => new Promise((done) => {
@@ -242,7 +254,7 @@ const reader = app.frameLocator(".agent-browser-wing iframe").first();
 await click(reader.getByText("Kelp forest — overview").first());
 await wait(1800);
 await snap("article");
-for (let i = 0; i < 14; i++) { await page.mouse.wheel(0, 20); await wait(28); }
+await wheel(280, 500);
 await wait(700);
 await click(app.getByRole("button", { name: "Open Deep Research" }));
 await wait(900);
@@ -286,7 +298,7 @@ const gpos = async (id) => {
 {
   const r = await gpos("Research/Kelp recovery after marine heatwaves.md");
   await moveTo(r[0], r[1], 900);
-  for (let i = 0; i < 9; i++) { await page.mouse.wheel(0, -110); await wait(110); }
+  await wheel(-990, 1000);
   await wait(1800);
 }
 const hoverNode = async (id, hold) => {
@@ -337,7 +349,7 @@ await caption("", "", "");
 const tree = app.locator(".sidebar").first();
 const tb = await tree.boundingBox();
 await moveTo(tb.x + tb.width / 2, tb.y + tb.height / 2);
-for (let i = 0; i < 16; i++) { await page.mouse.wheel(0, -240); await wait(45); }
+await wheel(-3840, 1000);
 await wait(500);
 await click(app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first());
 await wait(1800);
