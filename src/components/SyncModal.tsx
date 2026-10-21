@@ -4,6 +4,7 @@ import { createSerialResource } from "../lib/serialResource";
 import { SyncConflictReview } from "./SyncConflictReview";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { MAX_AUTO_SYNC_MINUTES, normalizeAutoSyncMinutes } from "../lib/syncAutoSchedule";
 import { useAppStore } from "../store";
 import {
   syncServerRunning,
@@ -778,13 +779,14 @@ export function SyncModal() {
                     className="text-input"
                     type="number"
                     min={0}
+                    max={MAX_AUTO_SYNC_MINUTES}
                     aria-label="Auto-sync interval in minutes"
                     style={{ width: 90 }}
                     value={settings.syncAutoMinutes}
                     onChange={(e) =>
                       setSetting(
                         "syncAutoMinutes",
-                        Math.max(0, Number(e.target.value) || 0)
+                        normalizeAutoSyncMinutes(Number(e.target.value))
                       )
                     }
                   />

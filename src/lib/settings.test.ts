@@ -9,6 +9,12 @@ describe('settings upgrade and failure behavior', () => {
     const target = storage(); persistSettings(normalized, target);
     expect(loadSettings(target).settings.retiredSyncPeers).toEqual([fingerprint]);
   });
+  it('loads an overflowing auto-sync interval as a finite timer-safe value', () => {
+    expect(loadSettings(storage(JSON.stringify({ syncAutoMinutes: 1e300 }))).settings.syncAutoMinutes).toBe(35_791);
+    expect(normalizeSettings({ syncAutoMinutes: 43_200 }).syncAutoMinutes).toBe(35_791);
+    expect(normalizeSettings({ syncAutoMinutes: Infinity }).syncAutoMinutes).toBe(0);
+    expect(normalizeSettings({ syncAutoMinutes: -1 }).syncAutoMinutes).toBe(0);
+  });
   it('preserves every valid current setting', () => { expect(normalizeSettings(DEFAULT_SETTINGS)).toEqual(DEFAULT_SETTINGS); });
   it('loads a saved multi-pane layout as a split view', () => {
     const settings = normalizeSettings({ centerView: 'doc', rightStack: ['doc', 'agent', 'preview', 'graph'] });

@@ -87,7 +87,7 @@ import {
   SupersededTaskError,
 } from "./lib/latestWinsQueue";
 import { backgroundWork } from "./lib/backgroundWorkGovernor";
-import { nextAutoSyncDelayMs } from "./lib/syncAutoSchedule";
+import { autoSyncBaseDelayMs, nextAutoSyncDelayMs } from "./lib/syncAutoSchedule";
 
 // The CodeMirror editor stack (~590 kB min across codemirror + @lezer) is the
 // entry chunk's largest resident, and only the main window's DocPane ever
@@ -1528,7 +1528,7 @@ export default function App() {
       syncAutoMinutes <= 0
     )
       return;
-    const baseDelayMs = Math.max(1, syncAutoMinutes) * 60_000;
+    const baseDelayMs = autoSyncBaseDelayMs(syncAutoMinutes);
     let closed = false;
     let timeoutId: number | null = null;
     const schedule = (delayMs: number) => {

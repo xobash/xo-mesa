@@ -25,6 +25,7 @@ import type { KeyboardFocus } from "./lib/keyboardNav";
 import { extractAliases, extractLinks, extractLinksAndFirstImage, extractTags } from "./lib/markdownExtract";
 import { isMarkdownPath } from "./lib/markdownCode";
 import { normalizeSyncPort, parsePeerInput } from "./lib/pairing";
+import { normalizeAutoSyncMinutes } from "./lib/syncAutoSchedule";
 import { validSyncKey } from "./lib/syncKey";
 import {
   type PaneDrag
@@ -807,7 +808,9 @@ export const useAppStore = create<AppState>((set, get) => {
       const safeValue =
         key === "syncPort"
           ? normalizeSyncPort(value, get().settings.syncPort)
-          : value;
+          : key === "syncAutoMinutes"
+            ? normalizeAutoSyncMinutes(value)
+            : value;
       const settings = { ...get().settings, [key]: safeValue };
       commitSettings(settings);
       if (key === "syncEnabled" && safeValue === false) {

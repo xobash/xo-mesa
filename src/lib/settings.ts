@@ -1,4 +1,5 @@
 import type { Settings, SyncPeer } from "../types";
+import { normalizeAutoSyncMinutes } from "./syncAutoSchedule";
 import { generateDeviceName } from "./deviceName";
 import { normalizeSyncPort } from "./pairing";
 export const SETTINGS_KEY = "mesa:settings";
@@ -101,7 +102,7 @@ export function normalizeSettings(value: unknown): Settings {
   next.syncDiscovery = false;
   next.syncBindAddress = typeof value.syncBindAddress === "string" ? value.syncBindAddress : "127.0.0.1";
   next.syncPort = normalizeSyncPort(next.syncPort, DEFAULT_SETTINGS.syncPort);
-  if (next.syncAutoMinutes < 0) next.syncAutoMinutes = 0;
+  next.syncAutoMinutes = normalizeAutoSyncMinutes(next.syncAutoMinutes);
   return next;
 }
 
