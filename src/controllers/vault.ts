@@ -44,7 +44,7 @@ import type {
 
 import { invoke } from "@tauri-apps/api/core";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
-import { stat } from "@tauri-apps/plugin-fs";
+import { exists, stat } from "@tauri-apps/plugin-fs";
 import { forEachConcurrent } from "../lib/concurrency";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { invalidatePdfThumb } from "../lib/pdfThumbInvalidation";
@@ -234,6 +234,16 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     }
   }
 
+  // Only a definite "absent" counts; an exists() error keeps the entry.
+  async function vanishedFromDisk(path: string): Promise<boolean> {
+    if (path.startsWith(DEMO_ROOT)) return false;
+    try {
+      return !(await exists(path));
+    } catch {
+      return false;
+    }
+  }
+
   // Catalogue-only text files: merge their reasons and recount the totals.
   function unreadableUpdate(added: Record<string, "skipped" | "failed">): Partial<AppState> {
     if (!Object.keys(added).length) return {};
@@ -341,6 +351,17 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       removeExternalFiles(removals);
       removals.clear();
     };
+    // A dirty file deleted outside Mesa stays open so its local text survives.
+    const removeUnlessDirty = (rel: string) => {
+      const removedFile = get().fileFor(rel);
+      if (!removedFile) return;
+      if (textSaves.isDirty(removedFile.path)) {
+        watcherWarning = true;
+        set({ status: `File deleted outside Mesa; unsaved text was kept for ${rel}.` });
+      } else {
+        removals.add(rel);
+      }
+    };
     const flush = () => {
       if (!isCurrent()) return;
       if (!pendingContent.size && !pendingEditable.size && !pendingNotes.size && !filesDirty) return;
@@ -416,24 +437,29 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
 
           // --- Deletion ---
           if (evt.kind === "remove") {
-            const removedFile = get().fileFor(rel);
-            if (removedFile) {
-              if (textSaves.isDirty(removedFile.path)) {
-                watcherWarning = true;
-                set({
-                  status:
-                    `File deleted outside Mesa; unsaved text was kept for ${rel}.`,
-                });
-              } else {
-                removals.add(rel);
-              }
-            }
+            removeUnlessDirty(rel);
             continue;
           }
 
           // --- Create or Modify ---
           const file = get().fileFor(rel);
           if (!file) {
+            // Renames, moves out and recursive folder deletes can arrive as one
+            // modify event for the folder path. Never catalogue a folder as a
+            // file; drop its known subtree when it is gone from disk.
+            const prefix = `${rel}/`;
+            if (knownRels().some((known) => known.startsWith(prefix))) {
+              const gone = await vanishedFromDisk(vaultFileFor(rootRaw, rel).path);
+              if (!isCurrent()) return;
+              if (gone) {
+                for (const known of knownRels()) {
+                  if (!known.startsWith(prefix) || seen.has(known)) continue;
+                  seen.add(known);
+                  removeUnlessDirty(known);
+                }
+              }
+              continue;
+            }
             created.set(rel, vaultFileFor(rootRaw, rel));
             continue;
           }
@@ -454,6 +480,14 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               continue;
             }
             if (!read.ok) {
+              // The old name of a rename arrives as a modify; a file that is
+              // gone from disk is a removal, not an unreadable change.
+              const gone = await vanishedFromDisk(file.path);
+              if (!isCurrent()) return;
+              if (gone) {
+                removeUnlessDirty(rel);
+                continue;
+              }
               watcherWarning = true;
               set({ status: `External change could not be read; keeping cached content for ${rel}.` });
               continue;

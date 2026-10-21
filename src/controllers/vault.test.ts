@@ -5,7 +5,7 @@ import { useAppStore, type AppState } from '../store';
 import { TextSaveCoordinator } from '../lib/textSaveCoordinator';
 import type { VaultFile } from '../types';
 import { createVaultController, mergeWatchEvents } from './vault';
-const io = vi.hoisted(() => ({ watch: vi.fn(), valid: vi.fn(async () => true), read: vi.fn(), scan: vi.fn(async () => []) }));
+const io = vi.hoisted(() => ({ watch: vi.fn(), valid: vi.fn(async () => true), read: vi.fn(), scan: vi.fn(async () => []), exists: vi.fn(async (_path: string) => true) }));
 vi.mock('../lib/vault', async original => ({ ...await original<object>(), authorizeVaultRoot: async () => { }, assertVaultRootAvailable: async () => { }, scanVault: io.scan, recoverWriteArtifacts: async () => ({ restored: [], removed: [] }), watchVault: io.watch, readNoteResult: io.read, isValidUtf8Text: io.valid, readNote: async () => (await io.read()).text }));
 vi.mock('../lib/vaultIndex', async original => ({ ...await original<object>(), loadIndexedNotes: async () => ({ notes: {}, cache: {}, read: 0, reused: 0, skipped: [], failed: [] }) }));
 it('releases a watcher that finishes registration after controller disposal', async () => {
@@ -50,16 +50,17 @@ it('stops the old vault listener before publishing a new vault and resumes it on
 });
 
 vi.mock('../lib/textRevisionHistory', async original => ({ ...await original<object>(), recordTextRevisionAsync: async () => true }));
-vi.mock('@tauri-apps/plugin-fs', async original => ({ ...await original<object>(), stat: async () => ({ size: 1, mtime: null }) }));
+vi.mock('@tauri-apps/plugin-fs', async original => ({ ...await original<object>(), stat: async () => ({ size: 1, mtime: null }), exists: io.exists }));
 function watcherFixture() {
   let onChange!: (events: { paths: string[]; kind: string }[]) => void;
   io.watch.mockImplementation(async (_root: string, callback: typeof onChange) => { onChange = callback; return () => {}; });
   const state = createStore<AppState>(() => ({ ...useAppStore.getInitialState(), vaultPath: null, files: [], notes: {}, contentCache: {} }));
+  const textSaves = new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: async () => {} });
   const controller = createVaultController({ get: state.getState, set: state.setState,
-    textSaves: new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: async () => {} }), resetDocuments: vi.fn(),
+    textSaves, resetDocuments: vi.fn(),
     stopResearch: async () => {}, setupActivityBridge: async () => {}, ensureSyncEventBridge: async () => {},
     stopListening: async () => false, startListening: async () => {} });
-  return { state, controller, change: (events: Parameters<typeof onChange>[0]) => onChange(events) };
+  return { state, controller, textSaves, change: (events: Parameters<typeof onChange>[0]) => onChange(events) };
 }
 const file = (rel: string): VaultFile => ({ path: `/v/${rel}`, relPath: rel, name: rel.replace(/\.md$/, ''), ext: 'md', isMarkdown: true });
 it('a slower older watcher batch never overwrites newer disk content', async () => {
@@ -144,4 +145,36 @@ it('removes 300 external deletes with one catalogue commit and clears their tabs
   expect(removed.some(rel => rel in state.notes || state.contentCache[rel] !== undefined)).toBe(false);
   expect(state.contentCache['Old-1999.md']).toBe('text');
   stop(); f.controller.dispose();
+});
+
+it('removes the old name of an external rename reported as one modify event', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const old = file('old.md'); const kept = file('kept.md');
+  f.state.setState({ files: [kept, old], openTabs: ['old.md'], contentCache: { 'old.md': 'moved', 'kept.md': 'dirty' },
+    notes: { 'old.md': { relPath: 'old.md', title: 'old', rawLinks: [], tags: [], aliases: [] } },
+    fileFor: rel => f.state.getState().files.find(entry => entry.relPath === rel) });
+  f.textSaves.markDirty(kept.path, kept, 'dirty local text', 'dirty');
+  io.read.mockReset().mockImplementation(async (entry: VaultFile) =>
+    entry.relPath === 'new.md' ? { ok: true, text: 'moved' } : { ok: false, text: '' });
+  io.exists.mockReset().mockImplementation(async (path: string) => path === '/v/new.md');
+  f.change([{ kind: 'modify', paths: ['/v/old.md', '/v/new.md', '/v/kept.md'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files.map(entry => entry.relPath)).toEqual(['kept.md', 'new.md']));
+  const state = f.state.getState();
+  expect(state.openTabs).toEqual([]);
+  expect('old.md' in state.notes || 'old.md' in state.contentCache).toBe(false);
+  expect(state.status).not.toContain('could not be read');
+  expect(state.status).toContain('unsaved text was kept for kept.md');
+  f.controller.dispose();
+});
+
+it('removes every known file under a folder that vanished in a modify event', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const files = [file('notes/a.md'), file('notes/deep/b.md'), file('notesy.md')];
+  f.state.setState({ files, fileFor: rel => f.state.getState().files.find(entry => entry.relPath === rel) });
+  io.read.mockReset().mockResolvedValue({ ok: false, text: '' });
+  io.exists.mockReset().mockResolvedValue(false);
+  f.change([{ kind: 'modify', paths: ['/v/notes'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files.map(entry => entry.relPath)).toEqual(['notesy.md']));
+  expect(f.state.getState().status).not.toContain('could not be read');
+  f.controller.dispose();
 });
