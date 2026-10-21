@@ -4,8 +4,8 @@ Mesa has a lightweight Vim-style navigation layer for workspace chrome. It is
 active only when the user is not typing in an input, textarea, contenteditable
 area, or CodeMirror editor.
 
-Plain Shift+Tab opens the overlay only from a workspace region. Inside a
-dialog, text input, editor, or terminal, normal backward focus navigation owns
+Plain Shift+Tab opens the overlay from a workspace region or the Pi terminal.
+Inside a dialog, text input, or editor, normal backward focus navigation owns
 the key. The existing transfer shortcut remains available for movable
 surfaces.
 
@@ -83,7 +83,7 @@ labels to assistive technology.
 
 Dialog Tab navigation skips unavailable controls and includes disclosure summaries
 such as **Advanced**, excluding controls inside collapsed sections. Plain
-Shift+Tab retains its global overlay shortcut. Empty dialogs retain focus. Escape closes only the topmost
+Shift+Tab moves focus backward inside a dialog and does not open the overlay. Empty dialogs retain focus. Escape closes only the topmost
 dialog and respects an already-handled event; closing restores a connected trigger.
 Sync comparison focuses **Reviewed text** after reading both copies, and returns
 to **Compare** after save or **Keep both**. All review actions have keyboard buttons.

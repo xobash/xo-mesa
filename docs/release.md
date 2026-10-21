@@ -43,22 +43,30 @@ Unsigned CI bundles remain development artifacts.
 
 ## Build Gates
 
-Before publishing, run or confirm:
+Before publishing, run or confirm the same commands as the required CI jobs:
 
 ```bash
+npm ci
 npm run typecheck
 npm run lint
-npm test
-npm run test:bootstrap
+npm run test:coverage
+npm run test:assets
+npm run audit:assets
+npm run test:toolchains
+npm run test:documents
+npm run test:capabilities
 npm run test:release
+npm run test:bootstrap
 npm run test:index
+npm run test:activity-api
 npm run test:markdown
 npm run test:notices
 npm run build
 npm run audit:public
+npm run audit:independent
 npm audit --audit-level=moderate
-cargo test --locked --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo test --locked --manifest-path src-tauri/Cargo.toml
 cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 node scripts/native-advisory-check.mjs
 node scripts/third-party-notices.mjs --check-native

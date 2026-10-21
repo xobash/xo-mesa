@@ -108,18 +108,24 @@ external inputs, so this does not establish bit-for-bit reproducibility.
 
 `.github/workflows/build.yml` runs on every push/PR:
 
-1. **frontend** — `typecheck` + `test` + web `build` + `npm audit` on Linux
-   (fast gate).
-2. **rust** — `cargo test` + `cargo clippy -D warnings` on `ubuntu-latest`,
+1. **frontend** — on Linux: typecheck, lint, tests with coverage floors, asset,
+   toolchain, document, capability, release, bootstrap, index, activity-API,
+   Markdown and notice checks, the web `build`, the public and independent
+   privacy audits, and `npm audit` (the full list is in `CONTRIBUTING.md`).
+2. **rust** — `cargo fmt --check`, `cargo test` and `cargo clippy -D warnings` on `ubuntu-latest`,
    `windows-latest`, and `macos-latest`. Windows is in the matrix because the
    PTY resolver's PATHEXT lookup, the Node-shebang launch path, and the
    `cmd.exe` wrapper fallback are all `#[cfg(target_os = "windows")]` — a
    Linux-only run never compiles them. macOS is in the matrix so Rust tests and
    lints exercise the same platform family that ships the WKWebView desktop
    bundle, rather than only building it.
-3. **rust-advisory** — `cargo audit --file src-tauri/Cargo.lock` on Linux, so
-   RustSec vulnerabilities gate the Rust dependency tree just as `npm audit`
-   gates the web dependency tree.
+   The Windows job also runs `scripts/windows-installer-behavior.check.ps1`.
+3. **rust-advisory** — `node scripts/native-advisory-check.mjs` (registry-backed
+   `cargo audit` with the tracked exceptions) and the native notice check on
+   Linux, so RustSec vulnerabilities gate the Rust dependency tree just as
+   `npm audit` gates the web dependency tree. The weekly `advisory-review`
+   workflow repeats the audit and fails seven days before the tracked
+   exceptions expire.
 4. **desktop** — needs all gates above, then a matrix of `windows-latest`,
    `macos-latest`, `ubuntu-latest` using [`tauri-action`], uploading each
    platform's bundle as an artifact. `fail-fast: false` so one OS failing

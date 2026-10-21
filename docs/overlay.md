@@ -19,8 +19,10 @@ The floating Research header keeps its transfer shortcut after docking. Dragging
 it to a workspace edge and releasing also separates it into a native window;
 an ordinary move or cancelled drag leaves it in the overlay.
 
-Shift+Tab toggles immediately on the first keydown of each physical Tab press,
-from any focused Mesa surface, including editors, search fields, and Pi. The
+Shift+Tab toggles immediately on the first keydown of each physical Tab press
+when focus is in a workspace region or the Pi terminal. Inside a dialog
+(including the open overlay itself), a text input, a search field, or an
+editor, Shift+Tab moves focus backward instead; Escape closes the overlay. The
 shortcut stays claimed until Tab is released, so a held Tab cannot immediately
 close the overlay when Shift is released first. If the webview misses that Tab
 release, the next non-repeat physical Tab press recovers instead of leaving the

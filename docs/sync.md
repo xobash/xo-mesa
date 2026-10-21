@@ -3,9 +3,9 @@
 Mesa syncs your own devices over LAN or Tailscale. Every transfer is
 encrypted in transit with TLS (LocalSend-style), so vault contents and your
 sync key are never sent in the clear.
-The receiver listens on all attached IPv4 and IPv6 networks, including
-Tailscale interfaces when available. The sync key and TLS checks apply to
-every incoming connection.
+The receiver listens only on the address you select: `127.0.0.1` by default,
+or a chosen LAN or Tailscale IP (see Defaults and exposure below). The sync
+key and TLS checks apply to every incoming connection.
 Discovery advertises protocol version 2.0; both devices need a build that
 supports the key-proof handshake.
 

@@ -21,13 +21,16 @@ npm run mesa
   existing suites; avoid tests that only repeat the implementation or require
   exact helper names. Tests added with code are regression coverage, not
   independent validation.
-- Run the frontend CI checks: `npm ci`, `npm run typecheck`, `npm run lint`,
-  `npm run test:coverage` (the test suite plus one global set of coverage
-  floors over `src/lib`, `src/controllers`, `src/components`, `src/store.ts`
-  and `src/App.tsx` together; there are no per-directory floors), `npm run test:release`, `npm run test:bootstrap`, `npm run test:index`,
-  `npm run test:markdown`, `npm run test:notices`, `npm run test:toolchains`,
-  `npm run test:assets`, `npm run audit:assets`, `npm run test:documents`, `npm run build`,
-  `npm run audit:public`, `npm run audit:independent`, and `npm audit --audit-level=moderate`.
+- Run the frontend CI checks in the order CI runs them: `npm ci`,
+  `npm run typecheck`, `npm run lint`, `npm run test:coverage` (the test suite
+  plus one global set of coverage floors over `src/lib`, `src/controllers`,
+  `src/components`, `src/store.ts` and `src/App.tsx` together; there are no
+  per-directory floors), `npm run test:assets`, `npm run audit:assets`,
+  `npm run test:toolchains`, `npm run test:documents`, `npm run test:capabilities`,
+  `npm run test:release`, `npm run test:bootstrap`, `npm run test:index`,
+  `npm run test:activity-api`, `npm run test:markdown`, `npm run test:notices`,
+  `npm run build`, `npm run audit:public`, `npm run audit:independent`, and
+  `npm audit --audit-level=moderate`.
 - Native CI runs `cargo test --locked --manifest-path src-tauri/Cargo.toml`
   and `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`
   on Linux, macOS, and Windows. It also runs `cargo audit --file src-tauri/Cargo.lock`
