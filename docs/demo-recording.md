@@ -30,6 +30,8 @@ frontend so it follows the current interface (Studio by default).
   over every page frame. Separate wheel ticks show up as jumps every few frames, and the browser's
   own smooth scrolling runs in real time (`SLOW` times too fast in page time), so the recorder
   launches with `--disable-smooth-scrolling`.
+- On a slower machine, raise `SLOW` (for example `SLOW=12`) if the graph updates only every few
+  frames. Script timeouts stretch with it.
 - `encode.mjs` maps the frames back to page time at the recorded rate, crossfades the end into
   the first frame, and encodes lossless WebP with libwebp's `img2webp` in parallel segments. Lossy WebP
   (`--quality`) stores colour at quarter resolution and blocks dark gradients and small text;

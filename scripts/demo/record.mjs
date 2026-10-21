@@ -18,6 +18,8 @@ const CAPTURE = !process.argv.includes("--no-capture");
 const SHOTS = process.argv.includes("--shots");
 // Page time runs SLOW x slower than real time so CPU-only Chromium keeps up.
 const SLOW = Number(process.env.SLOW || 6);
+// Real-time timeouts below are tuned for SLOW=6 and stretch with it.
+const T = (ms) => ms * Math.max(1, SLOW / 6);
 // Frames are kept per 1/FPS slot of page time; encode.mjs uses the same rate.
 const FPS = Number(process.env.FPS || 60);
 // An installed Chromium-based browser; never Playwright's Chrome for Testing.
@@ -91,12 +93,15 @@ async function moveTo(x, y, ms) {
 // land as single-frame jumps; the browser's own smooth scrolling runs in real
 // time, which is SLOW x too fast in page time, so it is turned off at launch.
 async function wheel(dy, ms) {
-  const n = Math.max(1, Math.round((ms * FPS) / 1000));
+  // Paced by the clock like moveTo, so a slow round trip never skips a frame.
+  const dur = ms * SLOW, t0 = Date.now();
   let sent = 0;
-  for (let i = 1; i <= n; i++) {
-    const want = Math.round(dy * ease(i / n));
+  for (;;) {
+    const u = Math.min(1, (Date.now() - t0) / dur);
+    const want = Math.round(dy * ease(u));
     if (want !== sent) { await page.mouse.wheel(0, want - sent); sent = want; }
-    await wait(1000 / FPS);
+    if (u >= 1) break;
+    await page.waitForTimeout(25);
   }
 }
 async function smoothInto(loc, block) {
@@ -113,7 +118,7 @@ async function smoothInto(loc, block) {
   }), block);
 }
 const center = async (loc) => {
-  await loc.waitFor({ state: "visible", timeout: 20000 });
+  await loc.waitFor({ state: "visible", timeout: T(20000) });
   const b = await loc.boundingBox();
   return [b.x + b.width / 2, b.y + b.height / 2];
 };
@@ -194,7 +199,7 @@ const marks = [];
 const mark = (label) => marks.push([label, Date.now() / 1000]);
 
 // --- setup (not recorded) ------------------------------------------------------------
-await app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first().waitFor({ timeout: 30000 });
+await app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first().waitFor({ timeout: T(30000) });
 await wait(1200);
 await app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first().click();
 await wait(600);
@@ -230,7 +235,7 @@ await moveTo(600, 560);
 await type("What's left for today?");
 await wait(300);
 await page.keyboard.press("Enter");
-await page.waitForFunction(() => window.__REC_SHARED__.pi.current?.status?.[1] === "● ready" && window.__REC_SHARED__.pi.current.lines.length > 8, null, { timeout: 30000, polling: 200 });
+await page.waitForFunction(() => window.__REC_SHARED__.pi.current?.status?.[1] === "● ready" && window.__REC_SHARED__.pi.current.lines.length > 8, null, { timeout: T(30000), polling: 200 });
 await snap("pi-answer");
 await wait(1800);
 
@@ -263,7 +268,7 @@ await type("How fast do kelp forests recover after marine heatwaves?", { min: 35
 await wait(400);
 await S(() => { window.__REC_SHARED__.research.pace = 0.6; });
 await click(app.getByRole("button", { name: /Start research/ }));
-await page.waitForFunction(() => !!window.__REC_SHARED__.research.lastReply, null, { timeout: 90000, polling: 250 });
+await page.waitForFunction(() => !!window.__REC_SHARED__.research.lastReply, null, { timeout: T(90000), polling: 250 });
 await wait(1200);
 await snap("research-done");
 const apply = app.getByRole("button", { name: /Apply 3 changes/ });
@@ -313,7 +318,7 @@ await snap("hover");
 await hoverNode("Topics/Kelp Forests.md", 700);
 await hoverNode("Projects/Chapter 3 - Canopy Recovery.md", 700);
 await page.mouse.down(); await wait(80); await page.mouse.up();
-await page.waitForSelector(".popout", { timeout: 15000 });
+await page.waitForSelector(".popout", { timeout: T(15000) });
 await wait(1400);
 await snap("popout");
 await click(app.getByRole("button", { name: "Exit full graph" }));

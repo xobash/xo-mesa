@@ -3,12 +3,12 @@
   "assets": [
     {
       "path": "docs/mesa-demo.webp",
-      "bytes": 47728066,
-      "sha256": "00d3d441c8aa984e02dae13d3a7e82ba87597aadc0d5c475a6c17e2705c05d65",
+      "bytes": 62825506,
+      "sha256": "6f62d32adb4c199a2136f245dbb936250a3b956911e0d66ecafa2f23f7025c21",
       "status": "pending",
       "reviewerType": "human",
       "reviewedOn": null,
-      "evidence": "Re-recorded with scripts/demo from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles). Lossless PNG capture and lossless WebP at 60 fps (102.7 s, 2781 frames) replace the earlier 30 fps lossy encode. The project owner approved this replacement for README publication on 2026-10-15. All frames decode in Brave with an infinite loop; 323 sampled frames match the captured source exactly; the loop crossfade was checked. Exact derivative human pixel review remains pending."
+      "evidence": "Re-recorded on 2026-10-21 with scripts/demo from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles), in Chromium on Linux at SLOW=12. Scrolling and graph zoom are now eased per frame instead of separate wheel jumps. Lossless WebP at 60 fps (101.1 s, 2967 frames). Human pixel review pending."
     },
     {
       "path": "docs/mesa-hero-themes.png",
