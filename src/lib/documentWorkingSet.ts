@@ -5,7 +5,8 @@ import type { TaskItem } from "./taskParsing";
 export type { IndexedDocument } from "./documentCodec";
 
 /** `markdown` is false for other text files, whose tasks follow plain-text code rules. */
-interface Entry { value?: string; indexed?: IndexedDocument; markdown?: boolean }
+/** `superseded` marks a revision replaced in a newer fork; older forks still read it, but it is not worth compacting. */
+interface Entry { value?: string; indexed?: IndexedDocument; markdown?: boolean; superseded?: boolean }
 interface State { buckets: Map<string, Entry>[]; shared: Set<number>; pool: WorkingSet }
 const states = new WeakMap<object, State>();
 const cacheLineage = new WeakMap<object, { parent: WeakRef<object>; changed: Set<string>; taskStable: Set<string> }>();
@@ -41,7 +42,7 @@ async function drainCompactions(): Promise<void> {
       let chars = 0;
       while (compactions.length && entries.length < 64 && chars < 2 * 1024 * 1024) {
         const entry = compactions.shift()!.deref();
-        if (entry?.value !== undefined) { entries.push(entry); chars += entry.value.length; }
+        if (entry?.value !== undefined && !entry.superseded) { entries.push(entry); chars += entry.value.length; }
       }
       const texts = entries.map(entry => entry.value!);
       const docs = await codec.encode(texts, entries.map(entry => entry.markdown ?? true));
@@ -108,6 +109,8 @@ function wrap(s: State): Record<string, string> {
       cacheLineage.get(proxy)?.changed.add(key);
       const bucket = hash(key) % BUCKETS;
       if (s.shared.has(bucket)) { s.buckets[bucket] = new Map(s.buckets[bucket]); s.shared.delete(bucket); }
+      const previous = s.buckets[bucket].get(key);
+      if (previous) previous.superseded = true;
       const entry = { value, markdown: isMarkdownPath(key) };
       s.buckets[bucket].set(key, entry); scheduleCompaction(entry); return true;
     },
@@ -156,6 +159,8 @@ export function putIndexedDocument(cache: Record<string, string>, key: string, i
   cacheLineage.get(cache)?.changed.add(key);
   const bucket = hash(key) % BUCKETS;
   if (state.shared.has(bucket)) { state.buckets[bucket] = new Map(state.buckets[bucket]); state.shared.delete(bucket); }
+  const previous = state.buckets[bucket].get(key);
+  if (previous) previous.superseded = true;
   state.buckets[bucket].set(key, { indexed });
 }
 

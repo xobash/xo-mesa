@@ -305,6 +305,7 @@ src/lib/docSplit.ts
 src/lib/documentCodec.test.ts
 src/lib/documentCodec.ts
 src/lib/documentDelta.test.ts
+src/lib/documentWorkingSet.compaction.test.ts
 src/lib/documentWorkingSet.test.ts
 src/lib/documentWorkingSet.ts
 src/lib/faces.test.ts
