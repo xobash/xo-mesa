@@ -224,6 +224,7 @@ src/components/SettingsModal.test.tsx
 src/components/SettingsModal.tsx
 src/components/StatusBar.test.tsx
 src/components/StatusBar.tsx
+src/components/SyncConflictReview.test.tsx
 src/components/SyncConflictReview.tsx
 src/components/SyncModal.test.tsx
 src/components/SyncModal.tsx
@@ -441,6 +442,7 @@ src/lib/sort.test.ts
 src/lib/sort.ts
 src/lib/startupTextCache.ts
 src/lib/supplyChainContract.test.ts
+src/lib/sync.ipc.test.ts
 src/lib/sync.test.ts
 src/lib/sync.ts
 src/lib/syncAutoSchedule.test.ts

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import App from "./App";
 import { useAppStore } from "./store";
 
@@ -170,4 +170,73 @@ it("changes file-tree sort order, direction and type filter from the sort menu",
   await act(async () => { button("Name (A").click(); });
   await act(async () => { document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
   expect(host.querySelector(".sort-pop")).toBeNull();
+});
+
+/** Renders a fresh App module graph for a detached-window URL; App reads the route at load. */
+async function renderRoute(search: string) {
+  history.replaceState(null, "", `/${search}`);
+  vi.resetModules();
+  const [{ default: RouteApp }, { useAppStore: routeStore }] = await Promise.all([import("./App"), import("./store")]);
+  const routeHost = document.createElement("div");
+  document.body.appendChild(routeHost);
+  const routeRoot = createRoot(routeHost);
+  await act(async () => routeRoot.render(<RouteApp />));
+  return {
+    routeHost,
+    routeStore,
+    cleanup: () => {
+      act(() => routeRoot.unmount());
+      routeHost.remove();
+      history.replaceState(null, "", "/");
+    },
+  };
+}
+
+it("renders a detached graph panel window from its bootstrap snapshot without the workspace shell", async () => {
+  const { vaultPath, vaultName, files, notes } = useAppStore.getState();
+  // The main window hands the graph a relative-path snapshot; the URL carries the root.
+  localStorage.setItem("mesa:graph-window:route-test", JSON.stringify({
+    vaultPath: "", vaultName, settings: {}, notes,
+    files: files.map((file) => ({ ...file, path: file.relPath })),
+  }));
+  const { routeHost, routeStore, cleanup } = await renderRoute(`?panel=graph&graphBootstrap=route-test&vault=${encodeURIComponent(vaultPath!)}`);
+  try {
+    expect(await settle(() => routeHost.querySelector(".panel-window-chromeless") !== null)).toBe(true);
+    // The OS title bar is the drag handle: no Mesa header, sidebar or status bar.
+    expect(routeHost.querySelector(".panel-window-chromeless .doc-window-bar")).toBeNull();
+    expect(routeHost.querySelector(".status-bar")).toBeNull();
+    expect(routeStore.getState().vaultPath).toBe(vaultPath);
+    expect(Object.keys(routeStore.getState().notes)).toHaveLength(Object.keys(notes).length);
+    expect(localStorage.getItem("mesa:graph-window:route-test")).toBeNull();
+    expect(await settle(() => routeHost.querySelector(".panel-window-body .graph-wrap") !== null)).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+
+it("renders a detached Tasks panel window with dock and close controls", async () => {
+  const { routeHost, cleanup } = await renderRoute("?panel=tasks");
+  try {
+    expect(await settle(() => routeHost.querySelector(".panel-window .doc-window-bar") !== null)).toBe(true);
+    expect(routeHost.querySelector(".doc-window-bar span")?.textContent).toBe("Tasks");
+    expect(routeHost.querySelector(".dock-btn")?.textContent).toBe("Dock");
+    expect(routeHost.querySelector('[aria-label="Close Tasks window"]')).not.toBeNull();
+  } finally {
+    cleanup();
+  }
+});
+
+it("renders the detached Deep Research window waiting for the active run", async () => {
+  const { routeHost, cleanup } = await renderRoute("?research&researchLabel=research-1");
+  try {
+    expect(await settle(() => routeHost.querySelector(".research-window") !== null)).toBe(true);
+    const header = routeHost.querySelector<HTMLElement>(".research-window .doc-window-bar")!;
+    expect(header.getAttribute("aria-label")).toContain("press Control or Command plus Shift plus Enter to dock");
+    expect(header.tabIndex).toBe(0);
+    expect(routeHost.querySelector(".research-window-body")?.textContent).toBe("Waiting for the active Deep Research run…");
+    expect(routeHost.querySelector('[aria-label="Close Deep Research window"]')).not.toBeNull();
+    expect(routeHost.querySelector(".sidebar, .status-bar")).toBeNull();
+  } finally {
+    cleanup();
+  }
 });
