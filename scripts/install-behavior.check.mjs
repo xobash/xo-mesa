@@ -7,15 +7,20 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 const folders = [];
+// Synthetic `git verify-tag --raw` lines; fingerprints are joined from fragments.
+const pinnedFingerprint = ['SHA256', 'JTK3hA6m0Hr2/77nrt0wTl0n38Lrl8HuraqKbvZd3so'].join(':');
+const foreignFingerprint = ['SHA256', 'heOwUFRozvdEk4SCyDUZHIS3van9fJdZ+aTvrWbROUk'].join(':');
+const sshGood = (principal, fingerprint) => ['Good "git" signature for', principal, 'with ED25519', 'key', fingerprint].join(' ');
+const pinnedSignature = sshGood('xobash@users.noreply.github.com', pinnedFingerprint);
 afterEach(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); });
 function fixture(existing = true) {
   const root = mkdtempSync(join(tmpdir(), 'mesa-installer-test-')); folders.push(root);
-  const bin = join(root, 'bin'), install = join(root, 'folder with spaces'); mkdirSync(bin); mkdirSync(install);
-  if (existing) mkdirSync(join(install, '.git'));
-  writeFileSync(join(bin, 'git'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_LOG"\nif [[ "$*" == *"remote get-url origin"* ]]; then printf "%s\\n" "https://github.com/xobash/xo-mesa.git"; fi\nif [[ "$*" == *"verify-tag"* && "$TEST_SIGNATURE_FAIL" == "1" ]]; then exit 1; fi\nif [[ "$*" == *"merge --ff-only"* && "$TEST_MERGE_FAIL" == "1" ]]; then exit 1; fi\nif [[ "$*" == *"rev-parse"* ]]; then if [[ "$*" == *" HEAD" && "$TEST_AHEAD" == "1" ]]; then printf "ahead\\n"; else printf "release\\n"; fi; fi\nexit "${TEST_GIT_EXIT:-0}"\n', { mode: 0o755 });
-  writeFileSync(join(install, 'run.sh'), '#!/bin/bash\nprintf "launched\\n" >> "$TEST_LOG"\n');
-  writeFileSync(join(install, 'user-note.md'), 'keep me');
-  return { root, install, run: (code = 0, overrides = {}) => spawnSync('/bin/bash', [resolve('install.sh')], { cwd: root, env: { ...process.env, MESA_DIR: install, PATH: `${bin}:${process.env.PATH}`, TEST_LOG: join(root, 'calls'), TEST_GIT_EXIT: String(code), ...overrides }, encoding: 'utf8' }), log: () => { try { return readFileSync(join(root, 'calls'), 'utf8'); } catch { return ''; } } };
+  const bin = join(root, 'bin'), install = join(root, 'folder with spaces'); mkdirSync(bin);
+  if (existing !== 'clone') mkdirSync(install);
+  if (existing === true) mkdirSync(join(install, '.git'));
+  writeFileSync(join(bin, 'git'), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_LOG"\nif [[ "$1" == "clone" ]]; then mkdir -p "${@: -1}" && printf "#!/bin/bash\\nprintf \\"launched\\\\n\\" >> \\"\\$TEST_LOG\\"\\n" > "${@: -1}/run.sh"; fi\nif [[ "$*" == *"remote get-url origin"* ]]; then printf "%s\\n" "https://github.com/xobash/xo-mesa.git"; fi\nif [[ "$*" == *"verify-tag"* ]]; then for a in "$@"; do if [[ "$a" == gpg.ssh.allowedSignersFile=* ]]; then cat "${a#*=}" >> "$TEST_LOG"; fi; done; printf "%s\\n" "${TEST_SIGNATURE_OUTPUT-$PINNED_SIGNATURE}" >&2; if [[ "$TEST_SIGNATURE_FAIL" == "1" ]]; then exit 1; fi; fi\nif [[ "$*" == *"merge --ff-only"* && "$TEST_MERGE_FAIL" == "1" ]]; then exit 1; fi\nif [[ "$*" == *"rev-parse"* ]]; then if [[ "$*" == *" HEAD" && "$TEST_AHEAD" == "1" ]]; then printf "ahead\\n"; else printf "release\\n"; fi; fi\nexit "${TEST_GIT_EXIT:-0}"\n', { mode: 0o755 });
+  if (existing !== 'clone') { writeFileSync(join(install, 'run.sh'), '#!/bin/bash\nprintf "launched\\n" >> "$TEST_LOG"\n'); writeFileSync(join(install, 'user-note.md'), 'keep me'); }
+  return { root, install, run: (code = 0, overrides = {}) => spawnSync('/bin/bash', [resolve('install.sh')], { cwd: root, env: { ...process.env, MESA_DIR: install, PATH: `${bin}:${process.env.PATH}`, TEST_LOG: join(root, 'calls'), TEST_GIT_EXIT: String(code), PINNED_SIGNATURE: pinnedSignature, ...overrides }, encoding: 'utf8' }), log: () => { try { return readFileSync(join(root, 'calls'), 'utf8'); } catch { return ''; } } };
 }
 describe('one-command installer behavior', { skip: process.platform === 'win32' }, () => {
   it('updates then launches a folder containing spaces, and is repeatable', () => {
@@ -36,6 +41,27 @@ describe('one-command installer behavior', { skip: process.platform === 'win32' 
       const f = fixture(); assert.notEqual(f.run(0, environment).status, 0);
       assert.doesNotMatch(f.log(), /launched/);
       assert.equal(readFileSync(join(f.install, 'user-note.md'), 'utf8'), 'keep me');
+    }
+  });
+  it('verifies the tag only against the pinned release identity', () => {
+    const clone = fixture('clone'); assert.equal(clone.run().status, 0); assert.match(clone.log(), /launched/);
+    const f = fixture(); assert.equal(f.run().status, 0);
+    assert.match(f.log(), /^xobash@users\.noreply\.github\.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFD4Ut8iLVnnB4ps75Fmr5gwgnHfmf\+Jm\+ZKZtVTr8Di$/m);
+    assert.match(f.log(), /verify-tag --raw v0\.1\.0/);
+  });
+  it('never launches a tag signed by another key that Git accepts', () => {
+    const foreign = [
+      sshGood('xobash@users.noreply.github.com', foreignFingerprint),
+      sshGood('someone@example.com', pinnedFingerprint),
+      '[GNUPG:] GOODSIG 0123456789ABCDEF Someone <someone@example.com>\n[GNUPG:] VALIDSIG 0123456789ABCDEF0123456789ABCDEF01234567 2026-10-20 1792540800 0 4 0 22 10 00 0123456789ABCDEF0123456789ABCDEF01234567\n[GNUPG:] TRUST_ULTIMATE 0 pgp',
+      '',
+    ];
+    for (const output of foreign) {
+      for (const existing of [true, 'clone']) {
+        const f = fixture(existing); const result = f.run(0, { TEST_SIGNATURE_OUTPUT: output });
+        assert.notEqual(result.status, 0); assert.doesNotMatch(f.log(), /launched/);
+        assert.match(result.stderr, /not signed by the Mesa release identity/);
+      }
     }
   });
   it('refuses an occupied non-checkout folder', () => {

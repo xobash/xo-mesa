@@ -8,6 +8,13 @@ repo_url="https://github.com/xobash/xo-mesa.git"
 release_version="${MESA_VERSION:-v0.1.0}"
 [[ "$release_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { printf "Invalid Mesa release version\n" >&2; exit 1; }
 current_dir="$(pwd -P)"
+# Release tags must carry a signature from this maintainer identity. See
+# "Release signing identity" in docs/release.md before changing these values.
+release_signer="xobash@users.noreply.github.com"
+release_ssh_key="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFD4Ut8iLVnnB4ps75Fmr5gwgnHfmf+Jm+ZKZtVTr8Di"
+release_ssh_fingerprint="SHA256:JTK3hA6m0Hr2/77nrt0wTl0n38Lrl8HuraqKbvZd3so"
+# OpenPGP fingerprints (40 uppercase hex characters, space-separated); none yet.
+release_openpgp_fingerprints=""
 
 if [[ -n "${MESA_DIR:-}" ]]; then
   install_dir="$(cd "${MESA_DIR}" 2>/dev/null && pwd -P || printf '%s\n' "${MESA_DIR}")"
@@ -62,6 +69,37 @@ ensure_git() {
   fi
 }
 
+# Accept only `git verify-tag --raw` output from the pinned identity: an SSH
+# "Good" line for the pinned principal and key, or an OpenPGP VALIDSIG line
+# whose signing or primary fingerprint is pinned.
+release_signature_pinned() {
+  local line fields fingerprint
+  while IFS= read -r line; do
+    if [[ "$line" == "Good \"git\" signature for ${release_signer} with "*" key ${release_ssh_fingerprint}" ]]; then
+      return 0
+    fi
+    if [[ "$line" == "[GNUPG:] VALIDSIG "* ]]; then
+      read -r -a fields <<< "$line"
+      for fingerprint in $release_openpgp_fingerprints; do
+        [[ "${fields[2]:-}" == "$fingerprint" || "${fields[11]:-}" == "$fingerprint" ]] && return 0
+      done
+    fi
+  done <<< "$1"
+  return 1
+}
+
+verify_release_tag() {
+  local signers raw
+  signers="$(mktemp)" || fail "Could not prepare release signature verification. No code was executed."
+  printf '%s namespaces="git" %s\n' "$release_signer" "$release_ssh_key" > "$signers"
+  if raw="$(git -C "${install_dir}" -c gpg.ssh.allowedSignersFile="$signers" verify-tag --raw "$release_version" 2>&1)" && release_signature_pinned "$raw"; then
+    rm -f "$signers"
+    return 0
+  fi
+  rm -f "$signers"
+  fail "The release tag is not signed by the Mesa release identity in docs/release.md. No code was executed."
+}
+
 ensure_git
 
 if [[ -d "${install_dir}/.git" ]]; then
@@ -69,7 +107,7 @@ if [[ -d "${install_dir}/.git" ]]; then
   origin_url="$(git -C "${install_dir}" remote get-url origin)" || fail "Could not inspect origin. No update applied; use MESA_DIR to a new empty folder if recovery is needed."
   [[ "$origin_url" == "$repo_url" || "$origin_url" == "git@github.com:xobash/xo-mesa.git" ]] || fail "Unexpected origin. No code was executed."
   git -C "${install_dir}" fetch --no-tags origin "refs/tags/$release_version:refs/tags/$release_version"
-  git -C "${install_dir}" verify-tag "$release_version" || fail "The release tag signature cannot be verified with your trusted signing keys. No code was executed."
+  verify_release_tag
   if ! git -C "${install_dir}" merge --ff-only "refs/tags/$release_version"; then
     fail "Mesa could not fast-forward this checkout. Your local files remain in ${install_dir}. If this checkout predates the public repository reset, set MESA_DIR to a new empty folder and rerun the installer; copy any work you want to keep from the old folder after reviewing it."
   fi
@@ -78,7 +116,7 @@ elif [[ -e "${install_dir}" ]]; then
 else
   info "Cloning Mesa into ${install_dir}..."
   git clone --branch "$release_version" --single-branch "${repo_url}" "${install_dir}"
-  git -C "${install_dir}" verify-tag "$release_version" || fail "The release tag signature cannot be verified with your trusted signing keys. No code was executed."
+  verify_release_tag
 fi
 
 installed_commit="$(git -C "$install_dir" rev-parse HEAD)" || fail "Could not inspect installed commit."

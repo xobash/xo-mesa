@@ -80,7 +80,7 @@ execute the Bash wrapper; opening `.\run.sh` through a file association may
 return without launching the app.
 
 Versioned source bootstrap requires a published signed tag, the [release guide's](release.md#versioned-source-bootstrap)
-reviewed installer checksum, and configured release-signing trust. The commands
+reviewed installer checksum, and a tag signature from the pinned [release signing identity](release.md#release-signing-identity). The commands
 remain pending until that release exists. Never substitute mutable main or an
 unchecked `irm ... | iex` / `curl ... | bash` download. `install.sh` installs Git when needed, clones or fast-forwards the
 checkout, and then hands off to `run.sh`; `install.ps1` does the same before

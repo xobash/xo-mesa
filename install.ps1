@@ -17,6 +17,13 @@
   $repoUrl = "https://github.com/xobash/xo-mesa.git"
   $releaseVersion = if ($env:MESA_VERSION) { $env:MESA_VERSION } else { "v0.1.0" }
   if ($releaseVersion -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$') { throw "Invalid Mesa release version." }
+  # Release tags must carry a signature from this maintainer identity. See
+  # "Release signing identity" in docs/release.md before changing these values.
+  $releaseSigner = "xobash@users.noreply.github.com"
+  $releaseSshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFD4Ut8iLVnnB4ps75Fmr5gwgnHfmf+Jm+ZKZtVTr8Di"
+  $releaseSshFingerprint = "SHA256:JTK3hA6m0Hr2/77nrt0wTl0n38Lrl8HuraqKbvZd3so"
+  # OpenPGP fingerprints (40 uppercase hex characters); none yet.
+  $releaseOpenPgpFingerprints = @()
   $currentDir = Get-Location
   $installDir = if ($env:MESA_DIR) {
     [System.IO.Path]::GetFullPath($env:MESA_DIR)
@@ -56,6 +63,45 @@
 
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
       throw "Git was installed, but this PowerShell session cannot find it yet. Open a new PowerShell window and rerun the Mesa install command."
+    }
+  }
+
+  # Accept only `git verify-tag --raw` output from the pinned identity: an SSH
+  # "Good" line for the pinned principal and key, or an OpenPGP VALIDSIG line
+  # whose signing or primary fingerprint is pinned.
+  function Test-PinnedReleaseSignature {
+    param([string[]]$Lines)
+    $ordinal = [System.StringComparison]::Ordinal
+    foreach ($line in ($Lines -split "\r?\n")) {
+      if ($line.StartsWith("Good `"git`" signature for $releaseSigner with ", $ordinal) -and $line.EndsWith(" key $releaseSshFingerprint", $ordinal)) { return $true }
+      if ($line.StartsWith('[GNUPG:] VALIDSIG ', $ordinal)) {
+        $fields = $line -split ' '
+        if (($releaseOpenPgpFingerprints -ccontains $fields[2]) -or ($fields.Count -gt 11 -and $releaseOpenPgpFingerprints -ccontains $fields[11])) { return $true }
+      }
+    }
+    return $false
+  }
+
+  function Assert-ReleaseTagSigned {
+    $signers = [System.IO.Path]::GetTempFileName()
+    $status = 1
+    $raw = @()
+    try {
+      [System.IO.File]::WriteAllText($signers, "$releaseSigner namespaces=`"git`" $releaseSshKey`n")
+      # Windows PowerShell 5.1 turns redirected native stderr into errors.
+      $previousPreference = $ErrorActionPreference
+      $ErrorActionPreference = "Continue"
+      try {
+        $raw = @(& git @gitLongPaths -C $installDir -c "gpg.ssh.allowedSignersFile=$signers" verify-tag --raw $releaseVersion 2>&1 | ForEach-Object { "$_" })
+        $status = $LASTEXITCODE
+      } finally {
+        $ErrorActionPreference = $previousPreference
+      }
+    } finally {
+      Remove-Item -LiteralPath $signers -Force -ErrorAction SilentlyContinue
+    }
+    if ($status -ne 0 -or -not (Test-PinnedReleaseSignature $raw)) {
+      throw "The release tag is not signed by the Mesa release identity in docs/release.md. No code was executed."
     }
   }
 
@@ -110,8 +156,7 @@
       if ($LASTEXITCODE -ne 0) {
         throw "Could not download Mesa updates."
       }
-      & git @gitLongPaths -C $installDir verify-tag $releaseVersion
-      if ($LASTEXITCODE -ne 0) { throw "Release signature verification failed. Configure the trusted release signing key before retrying." }
+      Assert-ReleaseTagSigned
       & git @gitLongPaths -C $installDir merge --ff-only "refs/tags/$releaseVersion"
       if ($LASTEXITCODE -ne 0) {
         throw "Mesa has local commits or old checkout history that cannot fast-forward from GitHub. No source update was applied, and nothing was pushed."
@@ -135,8 +180,7 @@
     Write-Host "Cloning Mesa into $installDir..."
     git @gitLongPaths clone --branch $releaseVersion --single-branch $repoUrl $installDir
     if ($LASTEXITCODE -ne 0) { throw "Could not clone the Mesa release." }
-    & git @gitLongPaths -C $installDir verify-tag $releaseVersion
-    if ($LASTEXITCODE -ne 0) { throw "Release signature verification failed. No code was executed." }
+    Assert-ReleaseTagSigned
   }
 
   $installedCommit = & git @gitLongPaths -C $installDir rev-parse HEAD

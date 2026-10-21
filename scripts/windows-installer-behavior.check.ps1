@@ -12,6 +12,11 @@ $priorProgramFiles = $env:ProgramFiles
 $priorProgramFilesX86 = ${env:ProgramFiles(x86)}
 $priorLocalAppData = $env:LOCALAPPDATA
 $priorModulePath = $env:PSModulePath
+# Synthetic `git verify-tag --raw` lines; fingerprints are joined from fragments.
+$pinnedFingerprint = @('SHA256', 'JTK3hA6m0Hr2/77nrt0wTl0n38Lrl8HuraqKbvZd3so') -join ':'
+$foreignFingerprint = @('SHA256', 'heOwUFRozvdEk4SCyDUZHIS3van9fJdZ+aTvrWbROUk') -join ':'
+function Get-SshGoodLine([string]$principal, [string]$fingerprint) { @('Good "git" signature for', $principal, 'with ED25519', 'key', $fingerprint) -join ' ' }
+$global:mesaPinnedSignature = Get-SshGoodLine 'xobash@users.noreply.github.com' $pinnedFingerprint
 
 function Assert-True([bool]$condition, [string]$message) {
   if (-not $condition) { throw $message }
@@ -24,8 +29,12 @@ function global:git {
   if ($call -match 'remote get-url origin') { Write-Output 'https://github.com/xobash/xo-mesa.git'
   } elseif ($call -match '\bstatus\b') {
     if ($global:mesaHasChanges) { Write-Output ' M note.md' }
-  } elseif ($call -match 'verify-tag' -and $global:mesaSignatureFails) {
-    $global:LASTEXITCODE = 1
+  } elseif ($call -match 'verify-tag') {
+    foreach ($argument in $args) {
+      if ([string]$argument -like 'gpg.ssh.allowedSignersFile=*') { $global:mesaSigners = Get-Content -Raw ([string]$argument).Substring(27) }
+    }
+    if ($null -ne $global:mesaSignatureOutput) { Write-Output $global:mesaSignatureOutput } else { Write-Output $global:mesaPinnedSignature }
+    if ($global:mesaSignatureFails) { $global:LASTEXITCODE = 1 }
   } elseif ($call -match 'rev-parse HEAD' -and $global:mesaAhead) {
     Write-Output 'ahead'
   } elseif ($call -match '\brev-parse\b') {
@@ -55,6 +64,8 @@ try {
   Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1'))
   Assert-True (Test-Path $launchLog) 'fresh clone did not launch Mesa'
   Assert-True (($global:mesaGitCalls -join "`n") -match '\bclone\b') 'fresh checkout was not cloned'
+  Assert-True (($global:mesaGitCalls -join "`n") -match 'verify-tag --raw v0\.1\.0') 'release tag was not verified with raw output'
+  Assert-True ($global:mesaSigners -ceq "xobash@users.noreply.github.com namespaces=`"git`" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFD4Ut8iLVnnB4ps75Fmr5gwgnHfmf+Jm+ZKZtVTr8Di`n") 'release tag was not verified against the pinned key only'
 
   Set-Location $temporary
   Remove-Item $launchLog
@@ -100,6 +111,27 @@ try {
     Assert-True $failed "untrusted $failure checkout was accepted"
     Assert-True (-not (Test-Path $launchLog)) "untrusted $failure checkout launched Mesa"
   }
+
+  # Git accepts any key in the caller's keyring; only the pinned identity may launch.
+  $global:mesaAhead = $false
+  $global:mesaSignatureFails = $false
+  foreach ($foreign in @(
+    (Get-SshGoodLine 'xobash@users.noreply.github.com' $foreignFingerprint),
+    (Get-SshGoodLine 'someone@example.com' $pinnedFingerprint),
+    "[GNUPG:] GOODSIG 0123456789ABCDEF Someone <someone@example.com>`n[GNUPG:] VALIDSIG 0123456789ABCDEF0123456789ABCDEF01234567 2026-10-20 1792540800 0 4 0 22 10 00 0123456789ABCDEF0123456789ABCDEF01234567",
+    '')) {
+    $global:mesaSignatureOutput = $foreign
+    foreach ($fresh in @($false, $true)) {
+      if ($fresh) { Remove-Item -Recurse -Force $checkout -ErrorAction SilentlyContinue }
+      if (Test-Path $launchLog) { Remove-Item $launchLog }
+      Set-Location $temporary
+      $failed = $false
+      try { Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1')) } catch { $failed = $true; Assert-True ("$_" -match 'not signed by the Mesa release identity') "foreign signature failed for another reason: $_" }
+      Assert-True $failed "foreign signature was accepted: $foreign"
+      Assert-True (-not (Test-Path $launchLog)) "foreign signature launched Mesa: $foreign"
+    }
+  }
+  $global:mesaSignatureOutput = $null
 
   $runScript = Get-Content -Raw (Join-Path $project 'run.cmd')
   # Exercise the actual launch subroutine with a module path that excludes
@@ -174,6 +206,6 @@ if ((Get-Content 'expanded/payload.txt' -Raw).Trim() -ne 'archive payload') { th
   $env:PSModulePath = $priorModulePath
   Remove-Item Env:\MESA_TEST_MODULE_PATH, Env:\MESA_TEST_NODE_HASH, Env:\MESA_TEST_NODE_FAIL -ErrorAction SilentlyContinue
   Remove-Item Function:\git -ErrorAction SilentlyContinue
-  Remove-Variable -Name mesaGitCalls, mesaHasChanges, mesaMergeFails, mesaSignatureFails, mesaAhead -Scope Global -ErrorAction SilentlyContinue
+  Remove-Variable -Name mesaGitCalls, mesaHasChanges, mesaMergeFails, mesaSignatureFails, mesaAhead, mesaSignatureOutput, mesaSigners, mesaPinnedSignature -Scope Global -ErrorAction SilentlyContinue
   Remove-Item -Recurse -Force $temporary -ErrorAction SilentlyContinue
 }
