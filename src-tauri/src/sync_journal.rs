@@ -293,12 +293,27 @@ pub(super) fn is_valid_hash(hash: &str) -> bool {
 /// is destructive intent, so accepting a syntactically valid but inconsistent
 /// operation is not a compatibility fallback.
 pub fn validate_journal(journal: &SyncJournal, label: &str) -> std::io::Result<()> {
-    if journal.version != JOURNAL_VERSION || journal.device.is_empty() {
+    if journal.version != JOURNAL_VERSION || !is_valid_device(&journal.device) {
         return Err(invalid_data(format!("unsupported {label}")));
     }
+    // Counts bound memory and merge time before any list is trusted.
+    if journal.operations.len() > MAX_JOURNAL_OPERATIONS
+        || journal.peers_seen.len() > MAX_JOURNAL_PEERS
+        || journal.acked_by.len() > MAX_JOURNAL_PEERS
+        || journal.applied.len() > MAX_JOURNAL_ACK_IDS
+        || journal
+            .acked_by
+            .values()
+            .any(|ids| ids.len() > MAX_JOURNAL_ACK_IDS)
+        || !journal.peers_seen.iter().all(|peer| is_valid_device(peer))
+        || !journal.acked_by.keys().all(|peer| is_valid_device(peer))
+    {
+        return Err(invalid_data(format!("{label} exceeds the journal limits")));
+    }
+    let mut devices = HashSet::new();
     let mut ids = HashSet::new();
     for op in &journal.operations {
-        if op.device.is_empty()
+        if !is_valid_device(&op.device)
             || op.sequence == 0
             || op.id != format!("{}:{}", op.device, op.sequence)
             || !ids.insert(op.id.clone())
@@ -306,6 +321,10 @@ pub fn validate_journal(journal: &SyncJournal, label: &str) -> std::io::Result<(
             || !is_valid_hash(&op.hash)
         {
             return Err(invalid_data(format!("invalid {label} operation")));
+        }
+        devices.insert(op.device.as_str());
+        if devices.len() > MAX_JOURNAL_PEERS {
+            return Err(invalid_data(format!("{label} exceeds the journal limits")));
         }
         match op.kind {
             JournalOperationKind::Delete | JournalOperationKind::Restore if op.to.is_some() => {
@@ -447,6 +466,16 @@ pub(super) fn retire_journal_peer(root: &Path, fingerprint: &str) -> std::io::Re
 
 const MAX_APPLIED_IDS: usize = 8192;
 const MAX_ACKED_IDS_PER_PEER: usize = 8192;
+/// Upper bounds for a stored or received journal. Retained acknowledgement
+/// lists hold the recent IDs plus every live operation ID.
+pub(super) const MAX_JOURNAL_OPERATIONS: usize = 131_072;
+pub(super) const MAX_JOURNAL_PEERS: usize = 256;
+pub(super) const MAX_JOURNAL_ACK_IDS: usize = MAX_ACKED_IDS_PER_PEER + MAX_JOURNAL_OPERATIONS;
+const MAX_DEVICE_ID_BYTES: usize = 128;
+
+fn is_valid_device(device: &str) -> bool {
+    !device.is_empty() && device.len() <= MAX_DEVICE_ID_BYTES
+}
 
 pub(super) fn push_unique(list: &mut Vec<String>, value: impl Into<String>) {
     let value = value.into();
@@ -508,13 +537,24 @@ pub(super) fn merge_remote_into(
 ) -> std::io::Result<()> {
     validate_journal(remote, "peer sync journal")?;
 
+    // Only the exchanging peer and devices that carry an actual operation may
+    // become participants. A gossiped name with no operation could never ack,
+    // so admitting it would stop compaction for good.
+    let mut admissible: HashSet<String> = local.peers_seen.iter().cloned().collect();
+    admissible.insert(remote.device.clone());
+    admissible.extend(local.operations.iter().map(|op| op.device.clone()));
+    admissible.extend(remote.operations.iter().map(|op| op.device.clone()));
+
     note_peer_seen(local, &remote.device);
     for peer in &remote.peers_seen {
-        note_peer_seen(local, peer);
+        if admissible.contains(peer) {
+            note_peer_seen(local, peer);
+        }
     }
+    let mut known_ids: HashSet<String> = local.operations.iter().map(|op| op.id.clone()).collect();
     for op in &remote.operations {
         note_peer_seen(local, &op.device);
-        if !local.operations.iter().any(|existing| existing.id == op.id) {
+        if known_ids.insert(op.id.clone()) {
             local.operations.push(op.clone());
         }
     }
@@ -524,29 +564,44 @@ pub(super) fn merge_remote_into(
         if let Some(gossiped) = remote.acked_by.get(&remote.device) {
             remote_applied.extend(gossiped.iter().cloned());
         }
-        let entry = local.acked_by.entry(remote.device.clone()).or_default();
-        for id in remote_applied {
-            push_unique(entry, id);
-        }
+        extend_unique(
+            local.acked_by.entry(remote.device.clone()).or_default(),
+            remote_applied,
+        );
     }
     for (peer, ids) in &remote.acked_by {
-        if peer.is_empty() || peer == &local.device {
+        if peer.is_empty() || peer == &local.device || !admissible.contains(peer) {
             continue;
         }
         note_peer_seen(local, peer);
-        let entry = local.acked_by.entry(peer.clone()).or_default();
-        for id in ids {
-            push_unique(entry, id.clone());
+        if local.peers_seen.contains(peer) {
+            extend_unique(
+                local.acked_by.entry(peer.clone()).or_default(),
+                ids.iter().cloned(),
+            );
         }
     }
+    if local.peers_seen.len() > MAX_JOURNAL_PEERS {
+        return Err(invalid_data("Sync journal has too many participants"));
+    }
     Ok(())
+}
+
+/// Appends values not yet present, in order, with one hash set per call.
+pub(super) fn extend_unique(list: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
+    let mut seen: HashSet<String> = list.iter().cloned().collect();
+    for value in values {
+        if !value.is_empty() && seen.insert(value.clone()) {
+            list.push(value);
+        }
+    }
 }
 
 pub(super) fn operation_acked_by(
     participant: &str,
     local_device: &str,
     local_applied: &HashSet<String>,
-    acked_by: &HashMap<String, Vec<String>>,
+    acked_by: &HashMap<String, HashSet<String>>,
     op: &JournalOperation,
 ) -> bool {
     if participant == op.device {
@@ -557,7 +612,7 @@ pub(super) fn operation_acked_by(
     }
     acked_by
         .get(participant)
-        .is_some_and(|ids| ids.iter().any(|id| id == &op.id))
+        .is_some_and(|ids| ids.contains(&op.id))
 }
 
 pub(super) fn compact_journal(journal: &mut SyncJournal) {
@@ -581,7 +636,11 @@ pub(super) fn compact_journal(journal: &mut SyncJournal) {
     push_unique(&mut participants, local_device.clone());
     if participants.len() > 1 {
         let local_applied: HashSet<String> = journal.applied.iter().cloned().collect();
-        let acked_by = journal.acked_by.clone();
+        let acked_by: HashMap<String, HashSet<String>> = journal
+            .acked_by
+            .iter()
+            .map(|(peer, ids)| (peer.clone(), ids.iter().cloned().collect()))
+            .collect();
         journal.operations.retain(|op| {
             !participants.iter().all(|participant| {
                 operation_acked_by(participant, &local_device, &local_applied, &acked_by, op)
@@ -802,10 +861,11 @@ pub fn apply_incoming_journal(
     let _guard = journal_guard()?;
     let mut local = load_journal_unlocked(root)?;
     merge_remote_into(&mut local, incoming)?;
+    let applied: HashSet<&str> = local.applied.iter().map(String::as_str).collect();
     let mut pending: Vec<_> = incoming
         .operations
         .iter()
-        .filter(|op| op.device != local.device && !local.applied.iter().any(|id| id == &op.id))
+        .filter(|op| op.device != local.device && !applied.contains(op.id.as_str()))
         .cloned()
         .collect();
     // Peers may serialize a valid journal in any array order.  Apply each
@@ -818,16 +878,18 @@ pub fn apply_incoming_journal(
             .then_with(|| a.id.cmp(&b.id))
     });
     let mut outcomes = Vec::with_capacity(pending.len());
+    let mut acknowledged = Vec::new();
     for operation in pending {
         let result = apply_journal_operation(root, &operation).map_err(|error| error.to_string());
         if matches!(
             result,
             Ok(JournalApply::Applied | JournalApply::AlreadyApplied)
         ) {
-            push_unique(&mut local.applied, operation.id.clone());
+            acknowledged.push(operation.id.clone());
         }
         outcomes.push(JournalOperationOutcome { operation, result });
     }
+    extend_unique(&mut local.applied, acknowledged);
     let saved = save_journal_unlocked(root, &local)?;
     Ok((saved, outcomes))
 }

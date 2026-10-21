@@ -282,7 +282,12 @@ Mesa serializes journal mutation, incoming application, and durable save for a
 vault. Each journal shares direct and gossiped acknowledgements with known
 peers. Mesa compacts an operation only after every known participant has
 acknowledged it, so an offline device still receives the operation when it
-returns. The receiver also bounds concurrent TLS connections and aborts a
+returns. A participant is the exchanging peer or a device that originated an
+operation in an exchanged journal; a name that is only gossiped, with no
+operation, is not admitted, because it could never acknowledge and would stop
+compaction. A journal is refused when it holds more than 131,072 operations,
+more than 256 participants or operation origins, a device name over 128 bytes,
+or an acknowledgement list longer than 139,264 IDs. The receiver also bounds concurrent TLS connections and aborts a
 handshake that does not finish promptly; a slow or hostile peer cannot create
 unbounded server work.
 

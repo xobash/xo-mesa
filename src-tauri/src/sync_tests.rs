@@ -1669,6 +1669,124 @@ fn compaction_waits_for_offline_known_peer_ack() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn delete_op(device: &str, sequence: u64) -> JournalOperation {
+    JournalOperation {
+        id: format!("{device}:{sequence}"),
+        device: device.to_string(),
+        sequence,
+        at_ms: 0,
+        kind: JournalOperationKind::Delete,
+        from: format!("gone-{sequence}.md"),
+        to: None,
+        size: 4,
+        hash: content_hash_hex(b"gone"),
+    }
+}
+
+#[test]
+fn gossiped_names_without_operations_never_block_compaction() {
+    let op = delete_op("local", 1);
+    let mut local = SyncJournal::empty("local".into());
+    local.operations.push(op.clone());
+    local.next_sequence = 2;
+    // An authenticated peer gossips names that carry no operation. Such a
+    // participant could never acknowledge, so the delete would stay forever.
+    let mut remote = SyncJournal::empty("peer-a".into());
+    remote.applied.push(op.id.clone());
+    remote.peers_seen = vec!["phantom-1".into(), "phantom-2".into()];
+    remote
+        .acked_by
+        .insert("phantom-3".into(), vec!["peer-a:9".into()]);
+    merge_remote_into(&mut local, &remote).unwrap();
+    compact_journal(&mut local);
+    assert_eq!(local.peers_seen, vec!["peer-a".to_string()]);
+    assert!(!local
+        .acked_by
+        .keys()
+        .any(|peer| peer.starts_with("phantom")));
+    assert!(local.operations.is_empty());
+}
+
+#[test]
+fn gossiped_peer_with_an_operation_still_gates_compaction() {
+    let local_op = delete_op("local", 1);
+    let mut local = SyncJournal::empty("local".into());
+    local.operations.push(local_op.clone());
+    local.next_sequence = 2;
+    let mut remote = SyncJournal::empty("peer-a".into());
+    remote.applied.push(local_op.id.clone());
+    remote.peers_seen = vec!["peer-c".into()];
+    remote.operations.push(delete_op("peer-c", 1));
+    merge_remote_into(&mut local, &remote).unwrap();
+    compact_journal(&mut local);
+    assert_eq!(
+        local.peers_seen,
+        vec!["peer-a".to_string(), "peer-c".to_string()]
+    );
+    assert!(local.operations.iter().any(|op| op.id == local_op.id));
+
+    let mut gossip = SyncJournal::empty("peer-a".into());
+    gossip
+        .acked_by
+        .insert("peer-c".into(), vec![local_op.id.clone()]);
+    gossip.applied.push(local_op.id.clone());
+    gossip.applied.push("peer-c:1".into());
+    local.applied.push("peer-c:1".into());
+    merge_remote_into(&mut local, &gossip).unwrap();
+    compact_journal(&mut local);
+    assert!(local.operations.is_empty());
+}
+
+#[test]
+fn journal_validation_bounds_participant_and_acknowledgement_counts() {
+    let base = || SyncJournal::empty("peer".into());
+    assert!(validate_journal(&base(), "j").is_ok());
+
+    let mut peers = base();
+    peers.peers_seen = (0..=MAX_JOURNAL_PEERS).map(|n| format!("p{n}")).collect();
+    assert!(validate_journal(&peers, "j").is_err());
+    peers.peers_seen.pop();
+    assert!(validate_journal(&peers, "j").is_ok());
+
+    let mut ack_peers = base();
+    ack_peers.acked_by = (0..=MAX_JOURNAL_PEERS)
+        .map(|n| (format!("p{n}"), Vec::new()))
+        .collect();
+    assert!(validate_journal(&ack_peers, "j").is_err());
+
+    let mut ack_ids = base();
+    ack_ids.acked_by.insert(
+        "p".into(),
+        (0..=MAX_JOURNAL_ACK_IDS)
+            .map(|n| format!("p:{n}"))
+            .collect(),
+    );
+    assert!(validate_journal(&ack_ids, "j").is_err());
+    let mut applied = base();
+    applied.applied = (0..=MAX_JOURNAL_ACK_IDS)
+        .map(|n| format!("p:{n}"))
+        .collect();
+    assert!(validate_journal(&applied, "j").is_err());
+
+    let mut long_name = base();
+    long_name.peers_seen.push("x".repeat(129));
+    assert!(validate_journal(&long_name, "j").is_err());
+
+    let mut devices = base();
+    devices.operations = (0..=MAX_JOURNAL_PEERS)
+        .map(|n| delete_op(&format!("d{n}"), 1))
+        .collect();
+    assert!(validate_journal(&devices, "j").is_err());
+    devices.operations.pop();
+    assert!(validate_journal(&devices, "j").is_ok());
+
+    let mut operations = base();
+    operations.operations = (1..=MAX_JOURNAL_OPERATIONS as u64 + 1)
+        .map(|n| delete_op("d", n))
+        .collect();
+    assert!(validate_journal(&operations, "j").is_err());
+}
+
 #[test]
 fn journal_restore_emits_an_explicit_operation_after_local_delete() {
     let dir = std::env::temp_dir().join(format!("mesa-journal-restore-{}", std::process::id()));
