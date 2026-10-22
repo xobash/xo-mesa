@@ -3,12 +3,12 @@
   "assets": [
     {
       "path": "docs/mesa-demo.webp",
-      "bytes": 62825506,
-      "sha256": "6f62d32adb4c199a2136f245dbb936250a3b956911e0d66ecafa2f23f7025c21",
+      "bytes": 59718322,
+      "sha256": "c8d6a7847cdda06be1a6b4b4d1232f5d373ec8474408be32fab26f631b5352eb",
       "status": "pending",
       "reviewerType": "human",
       "reviewedOn": null,
-      "evidence": "Re-recorded on 2026-10-21 with scripts/demo from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles), in Chromium on Linux at SLOW=12. Scrolling and graph zoom are now eased per frame instead of separate wheel jumps. Lossless WebP at 60 fps (101.1 s, 2967 frames). Human pixel review pending."
+      "evidence": "Re-recorded on 2026-10-21 with scripts/demo from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles), in Chromium on Linux at SLOW=12. Scrolling, graph zoom and the theme wipes now move on every frame. Lossless WebP at 60 fps (105.0 s, 3083 frames). Human pixel review pending."
     },
     {
       "path": "docs/mesa-hero-themes.png",
