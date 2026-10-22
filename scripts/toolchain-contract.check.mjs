@@ -1,13 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const read = file => readFileSync(file, 'utf8');
 test('development, CI and release use the exact reviewed toolchains', () => {
   const node = read('.node-version').trim();
   const rust = /channel = "([^"]+)"/.exec(read('rust-toolchain.toml'))?.[1];
   assert.equal(node, '22.22.3');
   assert.equal(rust, '1.96.0');
-  const nodePin = node.replace(/\./g, '\\.'), rustPin = rust.replace(/\./g, '\\.');
+  const nodePin = escapeRegExp(node), rustPin = escapeRegExp(rust);
   assert.match(read('Dockerfile'), new RegExp(`node:${nodePin}-bookworm-slim@sha256:[a-f0-9]{64}`));
   for (const file of readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).map(name => `.github/workflows/${name}`)) {
     const workflow = read(file);
@@ -16,7 +17,7 @@ test('development, CI and release use the exact reviewed toolchains', () => {
     for (const [, toolchain] of workflow.matchAll(/\bcargo \+(\S+)/g)) assert.ok(toolchain === rust || /^nightly-\d{4}-\d{2}-\d{2}$/.test(toolchain), `${file} uses unpinned toolchain ${toolchain}`);
     for (const [, tool, version] of workflow.matchAll(/cargo (?:\+\S+ )?install (\S+)(?: --version (\S+))?/g)) {
       assert.match(version ?? '', /^\d+\.\d+\.\d+$/, `${file} installs ${tool} without an exact version`);
-      assert.match(workflow, new RegExp(`install ${tool} --version ${version.replace(/\./g, '\\.')} --locked`), `${file} installs ${tool} without --locked`);
+      assert.match(workflow, new RegExp(`install ${escapeRegExp(tool)} --version ${escapeRegExp(version)} --locked`), `${file} installs ${tool} without --locked`);
     }
   }
   for (const file of ['.github/workflows/build.yml', '.github/workflows/release-candidate.yml', '.github/workflows/release.yml']) {

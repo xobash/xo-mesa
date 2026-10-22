@@ -2,6 +2,7 @@
 // from .github/release-notes/TEMPLATE.md and completed before publication.
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export const requiredSections = ['Known limitations', 'OS and runtime requirements', 'Test matrix', 'Security notes', 'SBOM scope'];
 export function releaseNotesPath(tag) {
@@ -9,7 +10,7 @@ export function releaseNotesPath(tag) {
   return `.github/release-notes/${tag}.md`;
 }
 export function validateReleaseNotes(text, tag) {
-  if (!new RegExp(`^# Mesa ${tag.replace(/\./g, '\\.')}\\s*$`, 'm').test(text)) throw new Error(`Release notes must start with "# Mesa ${tag}".`);
+  if (!new RegExp(`^# Mesa ${escapeRegExp(tag)}\\s*$`, 'm').test(text)) throw new Error(`Release notes must start with "# Mesa ${tag}".`);
   const sections = text.split(/^## +/m).slice(1).map(part => {
     const [heading, ...body] = part.split('\n');
     return { heading: heading.trim(), body: body.join('\n').trim() };

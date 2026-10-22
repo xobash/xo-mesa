@@ -123,7 +123,7 @@ it('prints cargo audit diagnostics when the audit exits without a usable report'
   } finally { rmSync(bin, { recursive: true, force: true }); }
 });
 it('fails the scheduled review seven days before the advisory exception expires', { skip: process.platform === 'win32' && 'uses a POSIX fake cargo' }, () => {
-  const due7 = reviewDate(-7), by = nativeAdvisoryReview.reviewBy.replace(/-/g, '\\-');
+  const due7 = reviewDate(-7), by = escapeRegExp(nativeAdvisoryReview.reviewBy);
   assert.equal(reviewExpiryWarning(new Date(`${reviewDate(-8)}T23:59:00Z`)), null);
   assert.match(reviewExpiryWarning(new Date(`${due7}T00:00:00Z`)), new RegExp(`expires on ${by} \\(7 days\\)`));
   const clean = { vulnerabilities: { found: false, count: 0, list: [] }, warnings: {} };
@@ -149,6 +149,7 @@ it('publishes only completed reviewed release notes for the exact tag', () => {
 });
 
 import { labelSbom } from './release-source.mjs';
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 it('builds the source archive and scope-labeled SBOMs from the clean release commit only', { skip: process.platform === 'win32' && 'uses POSIX fake npm and cargo' }, () => {
   const root = mkdtempSync(join(tmpdir(), 'mesa-release-source-'));
   const bin = mkdtempSync(join(tmpdir(), 'mesa-release-tools-'));
