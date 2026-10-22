@@ -25,11 +25,11 @@ function installedName(key: string): string {
 }
 
 describe("JavaScript supply-chain contract", () => {
-  it("keeps Vitest and its mocker above GHSA-82fw-gwwq-j7x9", () => {
-    for (const name of ["vitest", "@vitest/mocker"]) {
+  it("keeps Vitest, its mocker and V8 coverage above GHSA-qxg6-89mg-rqv8 and GHSA-xp26-3454-mjgp", () => {
+    for (const name of ["vitest", "@vitest/mocker", "@vitest/coverage-v8"]) {
       const version = packageLock.packages[`node_modules/${name}`]?.version;
       expect(version).toBeDefined();
-      expect(isAtLeast(version!, [4, 1, 11])).toBe(true);
+      expect(isAtLeast(version!, [4, 1, 12])).toBe(true);
     }
   });
 
