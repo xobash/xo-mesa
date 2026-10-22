@@ -1,5 +1,5 @@
 import { VaultImage } from "./VaultImage";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useCallback } from "react";
 import { useAppStore } from "../store";
 import { urlForPath, fileKind } from "../lib/vault";
 import { RtfView } from "./RtfView";
@@ -15,6 +15,10 @@ const PdfView = lazy(() =>
 export function MediaView({ rel }: { rel: string }) {
   const fileFor = useAppStore((s) => s.fileFor);
   const openDocWindow = useAppStore((s) => s.openDocWindow);
+  const setBinaryDirty = useAppStore((s) => s.setBinaryDirty);
+  // Unsaved PDF edits exist only in the editor; the store guards close,
+  // navigation and vault actions with this flag. PdfView clears it on unmount.
+  const onPdfDirtyChange = useCallback((dirty: boolean) => setBinaryDirty(rel, dirty), [rel, setBinaryDirty]);
   const file = fileFor(rel);
   if (!file) return <div className="editor-empty">File not found.</div>;
 
@@ -29,7 +33,7 @@ export function MediaView({ rel }: { rel: string }) {
         <video className="media-el" src={src} controls />
       ) : kind === "pdf" ? (
         <Suspense fallback={<div className="editor-empty">Loading PDF editor…</div>}>
-          <PdfView rel={rel} />
+          <PdfView rel={rel} onDirtyChange={onPdfDirtyChange} />
         </Suspense>
       ) : kind === "rtf" ? (
         <RtfView rel={rel} />

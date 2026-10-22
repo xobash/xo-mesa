@@ -2,6 +2,7 @@ import type { VaultFile, NoteMeta, GraphNode, GraphLink } from "../types";
 import { extractLinksAndFirstImage, extractTags, extractAliases } from "./markdownExtract";
 import { isMarkdownPath } from "./markdownCode";
 import { isTextualVaultFile } from "./vault";
+import { linkKey } from "./fsnames";
 
 /** Shared lazy image lookup for parsed and persisted note metadata. */
 export function createImageResolver(files: readonly VaultFile[]): (target: string) => string | undefined {
@@ -12,10 +13,10 @@ export function createImageResolver(files: readonly VaultFile[]): (target: strin
     byName = new Map<string, VaultFile>();
     byRel = new Map<string, VaultFile>();
     for (const f of files) {
-      byRel.set(f.relPath.toLowerCase(), f);
-      const nameKey = f.name.toLowerCase();
+      byRel.set(linkKey(f.relPath), f);
+      const nameKey = linkKey(f.name);
       if (!byName.has(nameKey)) byName.set(nameKey, f);
-      byName.set(`${f.name}.${f.ext}`.toLowerCase(), f);
+      byName.set(linkKey(`${f.name}.${f.ext}`), f);
     }
   };
 
@@ -84,7 +85,7 @@ function resolveFile(
   byName: Map<string, VaultFile>,
   byRel: Map<string, VaultFile>
 ): VaultFile | undefined {
-  const t = target.trim().replace(/\\/g, "/").toLowerCase();
+  const t = linkKey(target.trim().replace(/\\/g, "/"));
   const base = t.split("/").pop() ?? t;
   return (
     byRel.get(t) ||
@@ -103,18 +104,19 @@ export function makeResolver(
   const byTitle = new Map<string, string>();
   const byRel = new Map<string, string>();
   for (const id of Object.keys(notes)) {
-    byRel.set(id.toLowerCase(), id);
-    if (/\.md$/i.test(id)) byRel.set(id.toLowerCase().replace(/\.md$/i, ""), id);
-    const tl = notes[id].title.toLowerCase();
+    const idKey = linkKey(id);
+    byRel.set(idKey, id);
+    if (/\.md$/i.test(id)) byRel.set(idKey.replace(/\.md$/i, ""), id);
+    const tl = linkKey(notes[id].title);
     if (!byTitle.has(tl)) byTitle.set(tl, id);
     for (const alias of notes[id].aliases) {
-      const al = alias.toLowerCase();
+      const al = linkKey(alias);
       if (!byTitle.has(al)) byTitle.set(al, id);
     }
   }
   return (target: string): string | null => {
     // A leading "/" names a path from the vault root.
-    const t = target.trim().replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase().replace(/\.md$/, "");
+    const t = linkKey(target.trim().replace(/\\/g, "/").replace(/^\/+/, "")).replace(/\.md$/, "");
     const base = t.split("/").pop() ?? t;
     return byTitle.get(t) ?? byRel.get(t) ?? byTitle.get(base) ?? byRel.get(base) ?? null;
   };
@@ -158,10 +160,10 @@ const DEFAULT_GRAPH_FILTERS: GraphFilterOptions = {
  *  nodes are keyed by relPath; tag/phantom ids carry a NUL-delimited prefix that
  *  can never appear in a filesystem path. */
 function tagNodeId(tag: string): string {
-  return `\0tag\0${tag.toLowerCase()}`;
+  return `\0tag\0${linkKey(tag)}`;
 }
 function phantomNodeId(name: string): string {
-  return `\0phantom\0${name.toLowerCase()}`;
+  return `\0phantom\0${linkKey(name)}`;
 }
 /** The display name for an unresolved [[link]] target (drop any #heading). */
 function phantomName(rawLink: string): string {
@@ -220,13 +222,13 @@ export function buildGraph(
   for (const f of files) {
     if (notes[f.relPath]) continue;
     attachmentFiles.push(f);
-    const rel = f.relPath.toLowerCase();
+    const rel = linkKey(f.relPath);
     if (!attachmentByKey.has(rel)) attachmentByKey.set(rel, f.relPath);
-    const full = `${f.name}.${f.ext}`.toLowerCase();
+    const full = linkKey(`${f.name}.${f.ext}`);
     if (!attachmentByKey.has(full)) attachmentByKey.set(full, f.relPath);
   }
   const resolveAttachment = (target: string): string | null => {
-    const t = target.trim().replace(/\\/g, "/").toLowerCase();
+    const t = linkKey(target.trim().replace(/\\/g, "/"));
     const base = t.split("/").pop() ?? t;
     return attachmentByKey.get(t) ?? attachmentByKey.get(base) ?? null;
   };
@@ -394,11 +396,11 @@ function assetIndex(files: VaultFile[]) {
   const byRel = new Map<string, string>();
   const byBase = new Map<string, string>();
   for (const f of files) {
-    const rel = f.relPath.toLowerCase();
+    const rel = linkKey(f.relPath);
     byRel.set(rel, f.path);
-    const full = `${f.name}.${f.ext}`.toLowerCase();
+    const full = linkKey(`${f.name}.${f.ext}`);
     if (!byBase.has(full)) byBase.set(full, f.path);
-    const name = f.name.toLowerCase();
+    const name = linkKey(f.name);
     if (!byBase.has(name)) byBase.set(name, f.path);
   }
   idx = { byRel, byBase };
@@ -408,7 +410,7 @@ function assetIndex(files: VaultFile[]) {
 
 /** Resolve an embedded asset name (e.g. `spark.svg`) to an absolute path. */
 export function resolveAssetPath(files: VaultFile[], target: string): string | null {
-  const t = target.trim().replace(/\\/g, "/").toLowerCase();
+  const t = linkKey(target.trim().replace(/\\/g, "/"));
   const idx = assetIndex(files);
   const hit = idx.byRel.get(t);
   if (hit) return hit;

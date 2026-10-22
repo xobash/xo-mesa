@@ -10,6 +10,19 @@ export function localISO(d: Date = new Date()): string {
   return `${y}-${m}-${day}`;
 }
 
+/** Shift a YYYY-MM-DD date. Month and year shifts clamp the day to the
+ *  target month's length (Jan 31 + 1 month = Feb 28/29), never overflowing. */
+export function shiftISO(iso: string, days = 0, months = 0, years = 0): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const monthIndex = (m - 1) + months + years * 12;
+  const ty = y + Math.floor(monthIndex / 12);
+  const tm = ((monthIndex % 12) + 12) % 12;
+  const lastDay = new Date(ty, tm + 1, 0).getDate();
+  const dt = new Date(ty, tm, Math.min(d, lastDay));
+  if (days) dt.setDate(dt.getDate() + days);
+  return localISO(dt);
+}
+
 /** Local time as HH:MM. */
 export function localTime(d: Date = new Date()): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(
@@ -118,6 +131,18 @@ export function parseEvents(json: string): CalEvent[] {
   } catch {
     return [];
   }
+}
+
+/** Events from the current `calendar.json` text before an edit; null when the
+ *  text is not a JSON array, so an edit cannot replace unreadable content. */
+export function eventsForEdit(json: string): CalEvent[] | null {
+  if (!json.trim()) return [];
+  try {
+    if (!Array.isArray(JSON.parse(json))) return null;
+  } catch {
+    return null;
+  }
+  return parseEvents(json);
 }
 
 /** Serialize events to stable, date-sorted JSON for `calendar.json`. */

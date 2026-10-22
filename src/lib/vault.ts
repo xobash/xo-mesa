@@ -33,7 +33,7 @@ import {
 export type { FoundArtifact };
 import { forEachConcurrent } from "./concurrency";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "./textCachePlan";
-import { safeBaseName } from "./fsnames";
+import { linkKey, safeBaseName } from "./fsnames";
 
 /** Are we running inside the Tauri shell (vs. a plain browser preview)? */
 export const IN_TAURI =
@@ -142,14 +142,14 @@ export function resolveTextVaultLink(
     // Keep a malformed percent escape literal. It can still be a real name.
   }
   if (!normalized) return undefined;
-  const lower = normalized.toLowerCase();
+  const lower = linkKey(normalized);
   const exact = files.find(
-    (file) => isTextualVaultFile(file) && file.relPath.toLowerCase() === lower
+    (file) => isTextualVaultFile(file) && linkKey(file.relPath) === lower
   );
   if (exact) return exact;
   const base = lower.split("/").pop() ?? lower;
   const matches = files.filter(
-    (file) => isTextualVaultFile(file) && file.name.toLowerCase() === base
+    (file) => isTextualVaultFile(file) && linkKey(file.name) === base
   );
   return matches.find((file) => file.isMarkdown) ?? matches[0];
 }

@@ -56,11 +56,12 @@ export function ancestorFolders(rel: string): string[] {
 }
 
 /**
- * Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9). A file
+ * Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9, CONIN$,
+ * CONOUT$, CLOCK$). A file
  * named `con.md` is unwritable on Windows, so a vault containing one could
  * never sync to or open on a Windows device.
  */
-const RESERVED_DEVICE_RE = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])$/i;
+const RESERVED_DEVICE_RE = /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$|clock\$)$/i;
 
 /** Remove separators, Windows-invalid/control characters, trailing dots/spaces, and reserved names.
  * Apply on every OS; return an empty string when no usable base name remains. */
@@ -85,4 +86,12 @@ export function childRelPath(
 ): string {
   const dir = folderRel ? folderRel.replace(/\/+$/, "") + "/" : "";
   return uniqueRelPath(taken, ext ? `${dir}${name}.${ext}` : `${dir}${name}`);
+}
+
+/** Case- and Unicode-normalization-insensitive key for matching link targets
+ *  to vault names (macOS may store NFD names; typed links are usually NFC).
+ *  Lookup only: never use it to build an on-disk path. */
+export function linkKey(text: string): string {
+  // eslint-disable-next-line no-control-regex -- ASCII fast path.
+  return /[^\x00-\x7f]/.test(text) ? text.normalize("NFC").toLowerCase() : text.toLowerCase();
 }

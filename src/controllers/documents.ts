@@ -11,6 +11,7 @@ import {
   openViewInWorkspace,
   placeInCenter
 } from "../lib/panes";
+import { safeBaseName } from "../lib/fsnames";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
 import {
   IN_TAURI,
@@ -92,6 +93,11 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
 
   const actions: Pick<AppState, 'selectFile' | 'loadActiveContent' | 'openFile' | 'openTarget' | 'setContentFromEditor' | 'ensureContent' | 'ensurePeek' | 'closeTab'> = {
     selectFile: async (relPath) => {
+      if (!get().fileFor(relPath)) return;
+      // An open PDF editor's unsaved edits live only in its view.
+      const leaving = get().activePath;
+      if (leaving && leaving !== relPath && get().dirtyBinaryPaths.includes(leaving) &&
+        !(await get().confirmDiscardBinaryEdits([leaving], "Opening another file"))) return;
       const file = get().fileFor(relPath);
       if (!file) return;
       const settings = get().settings;
@@ -212,16 +218,25 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
         await get().selectFile(linkedFile.relPath);
         return;
       }
-      const id = resolveTarget(get().notes, target);
+      // `[[Note#Heading]]` and `[[Note#^block]]` name the note before the fragment.
+      const name = target.split("|")[0].split("#")[0].trim().replace(/\\/g, "/").replace(/^\/+/, "");
+      if (!name) return;
+      const id = resolveTarget(get().notes, name);
       if (id) {
         await get().selectFile(id);
         return;
       }
       const root = get().vaultPath;
       if (!root) return;
+      const segments = name.split("/");
+      if (segments.some((segment) => segment.startsWith(".") || safeBaseName(segment) !== segment)) {
+        set({ status: `Cannot create "${name}": use a vault-relative name without hidden, parent, or invalid path parts.` });
+        return;
+      }
       const generation = getGeneration();
-      const rel = target.toLowerCase().endsWith(".md") ? target : `${target}.md`;
-      const content = `# ${target}\n\n`;
+      const rel = name.toLowerCase().endsWith(".md") ? name : `${name}.md`;
+      const title = segments[segments.length - 1].replace(/\.md$/i, "");
+      const content = `# ${title}\n\n`;
       let file: VaultFile | undefined;
       await reportingFailure("Create linked note", async () => {
         file = await createNote(root, rel, content);
@@ -364,6 +379,15 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
     },
 
     closeTab: (relPath) => {
+      if (get().dirtyBinaryPaths.includes(relPath)) {
+        void get().confirmDiscardBinaryEdits([relPath], "Closing it").then((discard) => {
+          if (discard && get().openTabs.includes(relPath)) {
+            get().setBinaryDirty(relPath, false);
+            get().closeTab(relPath);
+          }
+        });
+        return;
+      }
       const closingFile = get().fileFor(relPath);
       // The dirty record is independent of tab state. Start its drain now; a
       // later window close or vault switch will await the same promise.

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { installCloseGuard, type CloseRequest } from './closeGuard';
+import { installCloseGuard, pendingEditGuard, type CloseRequest } from './closeGuard';
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => resolve = r); return { promise, resolve }; };
 function setup(flush = vi.fn(async () => {}), onBlocked?: (reason: unknown) => Promise<"keep" | "discard">) {
   let callback!: (event: CloseRequest) => Promise<void>;
@@ -83,4 +83,22 @@ it('offers recovery after 15 seconds and cannot close from a late flush', async 
     expect(s.window.close).not.toHaveBeenCalled();
     s.dispose();
   } finally { vi.useRealTimers(); }
+});
+
+describe('pending edit guard', () => {
+  it('blocks close while a PDF editor is dirty even when text is saved', async () => {
+    const state = { flushSave: vi.fn(async () => {}), textSaveState: { pending: 0 }, dirtyBinaryPaths: ['docs/Scan.pdf'] as string[] };
+    const guard = pendingEditGuard(() => state);
+    expect(guard.pending()).toBe(true);
+    await expect(guard.flush()).rejects.toThrow('docs/Scan.pdf');
+    expect(state.flushSave).toHaveBeenCalledOnce();
+    const blocked = vi.fn(async () => 'keep' as const);
+    const window = { onCloseRequested: vi.fn(async (cb: (event: CloseRequest) => Promise<void>) => { await cb({ preventDefault: vi.fn() }); return () => {}; }), close: vi.fn(async () => {}) };
+    installCloseGuard(window, guard.flush, guard.pending, vi.fn(), blocked);
+    await vi.waitFor(() => expect(blocked).toHaveBeenCalledOnce());
+    expect(window.close).not.toHaveBeenCalled();
+    state.dirtyBinaryPaths = [];
+    expect(guard.pending()).toBe(false);
+    await expect(guard.flush()).resolves.toBeUndefined();
+  });
 });

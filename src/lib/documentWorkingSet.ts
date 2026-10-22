@@ -25,31 +25,60 @@ export function cacheTaskStableSince(cache: Record<string, string>, parent: Reco
 
 const compactions: WeakRef<Entry>[] = [];
 const scheduled = new WeakSet<Entry>();
-let compacting = false;
+/** Compaction waits for this much quiet, so a typing burst encodes once. */
+const COMPACTION_QUIET_MS = 2000;
+/** The shared codec worker is released after this long without compaction. */
+const CODEC_IDLE_MS = 30_000;
+let compactTimer: ReturnType<typeof setTimeout> | null = null;
+let draining = false;
+type IndexCodec = ReturnType<typeof import('./indexCodec').createIndexCodec>;
+let codec: IndexCodec | null = null;
+let codecIdleTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleDrain(): void {
+  if (compactTimer) clearTimeout(compactTimer);
+  compactTimer = setTimeout(() => { compactTimer = null; void drainCompactions(); }, COMPACTION_QUIET_MS);
+}
 function scheduleCompaction(entry: Entry): void {
   if (scheduled.has(entry)) return;
   scheduled.add(entry); compactions.push(new WeakRef(entry));
-  if (compacting) return;
-  compacting = true;
-  setTimeout(() => { void drainCompactions().catch(() => { compacting = false; }); }, 500);
+  scheduleDrain();
+}
+async function sharedCodec(): Promise<IndexCodec> {
+  if (codecIdleTimer) { clearTimeout(codecIdleTimer); codecIdleTimer = null; }
+  if (codec && !codec.available) { codec.dispose(); codec = null; }
+  if (!codec) {
+    const { createIndexCodec } = await import('./indexCodec');
+    codec ??= createIndexCodec();
+  }
+  return codec;
 }
 async function drainCompactions(): Promise<void> {
-  const { createIndexCodec } = await import('./indexCodec');
-  const codec = createIndexCodec();
+  if (draining) return;
+  draining = true;
+  // Entries queued during this drain wait for their own quiet period.
+  const queue = compactions.splice(0);
   try {
-    while (compactions.length) {
+    const active = await sharedCodec();
+    while (queue.length) {
       const entries: Entry[] = [];
       let chars = 0;
-      while (compactions.length && entries.length < 64 && chars < 2 * 1024 * 1024) {
-        const entry = compactions.shift()!.deref();
+      while (queue.length && entries.length < 64 && chars < 2 * 1024 * 1024) {
+        const entry = queue.shift()!.deref();
         if (entry?.value !== undefined && !entry.superseded) { entries.push(entry); chars += entry.value.length; }
       }
       const texts = entries.map(entry => entry.value!);
-      const docs = await codec.encode(texts, entries.map(entry => entry.markdown ?? true));
+      const docs = await active.encode(texts, entries.map(entry => entry.markdown ?? true));
       entries.forEach((entry, i) => { entry.indexed = docs[i]; delete entry.value; });
-      if (compactions.length) await new Promise(resolve => setTimeout(resolve, 0));
+      if (queue.length) await new Promise(resolve => setTimeout(resolve, 0));
     }
-  } finally { codec.dispose(); compacting = false; }
+  } catch {
+    // Compaction is optional; uncompacted entries keep their exact text.
+  } finally {
+    draining = false;
+    if (compactions.length && !compactTimer) scheduleDrain();
+    if (codecIdleTimer) clearTimeout(codecIdleTimer);
+    codecIdleTimer = setTimeout(() => { codecIdleTimer = null; if (!draining) { codec?.dispose(); codec = null; } }, CODEC_IDLE_MS);
+  }
 }
 
 const BUCKETS = 256;
@@ -139,6 +168,27 @@ export function forkContentCache(cache: Record<string, string>, changes: Record<
   cacheLineage.set(copy, { parent: new WeakRef(cache), changed: new Set(), taskStable: new Set() });
   for (const [key, value] of Object.entries(changes)) copy[key] = value;
   return copy;
+}
+/** Move one entry of a cache fork the caller owns to a new key without decoding it. */
+export function moveCacheEntry(cache: Record<string, string>, from: string, to: string): boolean {
+  if (from === to) return from in cache;
+  const state = states.get(cache);
+  if (!state) {
+    if (!(from in cache)) return false;
+    cache[to] = cache[from];
+    delete cache[from];
+    return true;
+  }
+  const entry = entryOf(cache, from);
+  if (!entry) return false;
+  delete cache[from];
+  cacheLineage.get(cache)?.changed.add(to);
+  const bucket = hash(to) % BUCKETS;
+  if (state.shared.has(bucket)) { state.buckets[bucket] = new Map(state.buckets[bucket]); state.shared.delete(bucket); }
+  const previous = state.buckets[bucket].get(to);
+  if (previous) previous.superseded = true;
+  state.buckets[bucket].set(to, entry);
+  return true;
 }
 /** Re-encode only clean, unchanged revisions; representation changes preserve value. */
 export function compactDocument(cache: Record<string, string>, key: string, expected: string): void {

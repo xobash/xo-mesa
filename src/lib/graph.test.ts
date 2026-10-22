@@ -449,3 +449,17 @@ describe("resolveAssetPath", () => {
     expect(resolveAssetPath(files, "missing.png")).toBeNull();
   });
 });
+
+describe("Unicode normalization in link resolution", () => {
+  const nfd = "Café"; // as macOS Finder may store it
+  const nfc = "Café"; // as typed
+  it("resolves an NFC link to an NFD-named note and back without renaming either", () => {
+    const { notes, files } = makeVault({ [`${nfd}.md`]: "body", "Index.md": `[[${nfc}]] ![[${nfc} photo.png]]`, [`${nfd} photo.png`]: "" });
+    expect(resolveTarget(notes, nfc)).toBe(`${nfd}.md`);
+    expect(resolveAssetPath(files, `${nfc} photo.png`)).toBe(`/vault/${nfd} photo.png`);
+    const { links } = buildGraph(notes, files);
+    expect(links.some((link) => link.source === "Index.md" && link.target === `${nfd}.md`)).toBe(true);
+    const back = makeVault({ [`${nfc}.md`]: "body" });
+    expect(resolveTarget(back.notes, nfd)).toBe(`${nfc}.md`);
+  });
+});

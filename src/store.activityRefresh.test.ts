@@ -2,9 +2,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { useAppStore } from './store';
 import type { VaultFile } from './types';
-const boundary = vi.hoisted(() => ({ handlers: new Map<string, (event: {payload:unknown})=>Promise<void>>(), scan: vi.fn(), read: vi.fn() }));
+const boundary = vi.hoisted(() => ({ handlers: new Map<string, (event: {payload:unknown})=>Promise<void>>(), scan: vi.fn(), read: vi.fn(), invoke: vi.fn(async (_name: string, _args?: unknown): Promise<unknown> => undefined) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async (name:string, callback:(event:{payload:unknown})=>Promise<void>) => { boundary.handlers.set(name,callback);return ()=>boundary.handlers.delete(name); } }));
-vi.mock('@tauri-apps/api/core', async original => ({...await original<object>(), invoke: async()=>undefined}));
+vi.mock('@tauri-apps/api/core', async original => ({...await original<object>(), invoke: (name:string,args?:unknown)=>boundary.invoke(name,args)}));
 vi.mock('@tauri-apps/plugin-fs', async original => ({...await original<object>(),stat:async()=>({size:1,mtime:null})}));
 vi.mock('./lib/vault', async original => ({...await original<object>(), IN_TAURI:true,authorizeVaultRoot:async()=>{},assertVaultRootAvailable:async()=>{},scanVault:boundary.scan,readNote:boundary.read,readNoteResult:async()=>({ok:true,text:'text'}),recoverWriteArtifacts:async()=>({restored:[],removed:[]}),watchVault:async()=>()=>{}}));
 vi.mock('./lib/vaultIndex',async original=>({...await original<object>(),loadIndexedNotes:async()=>({notes:{},cache:{},read:0,reused:0,skipped:[],failed:[]})}));
@@ -21,4 +21,18 @@ it('50 activity writes to known paths in a 5000-file vault cause no full scan',a
     await vi.advanceTimersByTimeAsync(200);
   }
   expect(boundary.scan).not.toHaveBeenCalled();
+});
+
+it('drops an activity registration whose read finishes after the vault changed', async () => {
+  boundary.scan.mockResolvedValue([]);
+  await useAppStore.getState().openVault('/v');
+  let finish!: (value: ArrayBuffer) => void;
+  boundary.invoke.mockImplementation(async (name: string) => name === 'vault_read_bytes' ? new Promise(resolve => { finish = resolve; }) : undefined);
+  const event = boundary.handlers.get('activity')!({ payload: { path: '/v/New.md', op: 'create', status: 'ok' } });
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  useAppStore.setState({ vaultPath: '/other', files: [], notes: {} });
+  finish(new TextEncoder().encode('old vault text').buffer);
+  await event;
+  expect(useAppStore.getState().files).toEqual([]);
+  expect(useAppStore.getState().notes).toEqual({});
 });

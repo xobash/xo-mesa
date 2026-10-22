@@ -8,6 +8,7 @@ import {
   type CalEvent
 } from "../lib/daily";
 import { documentEntries, forkContentCache } from "../lib/documentWorkingSet";
+import { refreshedNoteMeta } from "../lib/graph";
 import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
 import { isMarkdownPath } from "../lib/markdownCode";
 import {
@@ -524,14 +525,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                 historyItems.push({ relPath: rel, content: old, source: "external" });
               }
               const cur = get().notes[rel];
-              if (cur) {
-                pendingNotes.set(rel, {
-                  ...cur,
-                  rawLinks: extractLinks(text, isMarkdownPath(rel)),
-                  tags: extractTags(text, isMarkdownPath(rel)),
-                  aliases: extractAliases(text),
-                });
-              }
+              if (cur) pendingNotes.set(rel, refreshedNoteMeta(cur, text) ?? cur);
               pendingContent.set(rel, text);
             } else {
               watcherWarning = true;
@@ -698,6 +692,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       // two forms of one folder and the switcher can't remove it (Windows).
       const root = picked === DEMO_ROOT ? DEMO_ROOT : canonicalRoot(picked);
       if (!root) return;
+      if (get().dirtyBinaryPaths.length && !(await get().confirmDiscardBinaryEdits(null, "Opening a vault"))) return;
       const request = ++vaultOpenRequest;
       const requestIsCurrent = () => request === vaultOpenRequest;
       const pendingName =

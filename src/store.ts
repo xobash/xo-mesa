@@ -15,11 +15,13 @@ import {
   applyTemplate,
   localISO,
   localTime,
+  eventsForEdit,
   serializeEvents,
   type CalEvent
 } from "./lib/daily";
-import { forkContentCache } from "./lib/documentWorkingSet";
-import { ancestorFolders, childRelPath, duplicateRelPath, safeBaseName } from "./lib/fsnames";
+import { forkContentCache, moveCacheEntry } from "./lib/documentWorkingSet";
+import { confirmAction } from "./lib/confirmAction";
+import { ancestorFolders, childRelPath, duplicateRelPath, linkKey, safeBaseName } from "./lib/fsnames";
 import { makeResolver } from "./lib/graph";
 import type { KeyboardFocus } from "./lib/keyboardNav";
 import { extractAliases, extractLinks, extractLinksAndFirstImage, extractTags } from "./lib/markdownExtract";
@@ -71,7 +73,7 @@ import type {
   ResearchContextScope,
   ResearchDepth,
 } from "./lib/deepResearch";
-import { createFileIndex } from "./lib/fileIndex";
+import { createFileIndex, relPathsOf } from "./lib/fileIndex";
 import { normalizeRelativeTarget, referenceMayTarget, rewriteInboundLinks } from "./lib/linkRewrite";
 import {
   THEME_KEY,
@@ -88,6 +90,7 @@ import {
 import { createSyncEventBridge } from "./lib/syncEventBridge";
 import {
   updateTaskLine,
+  taskLineHasText,
   type TaskLinePatch
 } from "./lib/tasks";
 import {
@@ -234,6 +237,8 @@ export interface AppState {
   /** Every dirty text path whose verified write failed. */
   textSaveIssues: Record<string, TextSaveIssue>;
   textSaveState: import("./lib/textSaveCoordinator").TextSaveState;
+  /** Vault paths whose open PDF editor holds unsaved edits (not in the text pipeline). */
+  dirtyBinaryPaths: readonly string[];
   theme: ThemeId;
   uiStyle: UiStyleId;
   settings: Settings;
@@ -363,7 +368,8 @@ export interface AppState {
   removeCalendarEvent: (date: string, title: string) => Promise<void>;
   /** Resolves true once the task is in the vault or its pending save; false when it was not added. */
   addPersonalTask: (text: string) => Promise<boolean>;
-  updateTask: (relPath: string, line: number, patch: TaskLinePatch) => Promise<void>;
+  /** `expectedText` (the listed task text) refuses a line that has since changed. */
+  updateTask: (relPath: string, line: number, patch: TaskLinePatch, expectedText?: string) => Promise<void>;
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   loadSyncSecrets: () => Promise<void>;
   setPalette: (open: boolean) => void;
@@ -420,6 +426,10 @@ export interface AppState {
   registerVaultFile: (relPath: string) => Promise<void>;
   removeRecentVault: (id: string) => Promise<void>;
   selectFile: (relPath: string) => Promise<void>;
+  setBinaryDirty: (relPath: string, dirty: boolean) => void;
+  /** Resolves true when no listed path (or path under a listed folder; null = all)
+   *  has unsaved PDF edits, or when the user confirms discarding them. */
+  confirmDiscardBinaryEdits: (relPaths: readonly string[] | null, action: string) => Promise<boolean>;
   loadActiveContent: () => Promise<void>;
   openFile: (relPath: string) => Promise<void>;
   openTarget: (target: string) => Promise<void>;
@@ -594,25 +604,29 @@ export const useAppStore = create<AppState>((set, get) => {
               ? data.removed
               : Number(data.removed ?? 0);
           const rootRaw = get().vaultPath;
-          let rel = normalizeVaultRelPath(
-            String(data.path ?? ""),
-            rootRaw,
-            get().files.map((f) => f.relPath)
-          );
-          if (!rel && rootRaw) {
-            await vault.refreshMissingExternalFiles(rootRaw);
-            rel = normalizeVaultRelPath(
-              String(data.path ?? ""),
-              rootRaw,
-              get().files.map((f) => f.relPath)
-            );
+          if (!rootRaw) return;
+          const generation = vault.generation;
+          const isCurrent = () => get().vaultPath === rootRaw && vault.generation === generation;
+          // Known-file lookup first; the catalog list is only for aliased roots.
+          const resolveRel = () => {
+            const rawPath = String(data.path ?? "");
+            return normalizeVaultRelPath(rawPath, rootRaw) ||
+              normalizeVaultRelPath(rawPath, rootRaw, relPathsOf(get().files));
+          };
+          let rel = resolveRel();
+          if (!rel) {
+            await vault.refreshMissingExternalFiles(rootRaw, isCurrent);
+            if (!isCurrent()) return;
+            rel = resolveRel();
           }
           if (!rel) return;
           // an agent may reference a file we haven't scanned yet (e.g. one it
           // just created) — register it so it gets a node and can flicker.
-          if (!get().fileFor(rel)) await vault.registerExternalFile(rel);
+          if (!get().fileFor(rel)) await vault.registerExternalFile(rel, isCurrent);
+          if (!isCurrent()) return;
           if (!get().fileFor(rel)) {
-            if (rootRaw) await vault.refreshMissingExternalFiles(rootRaw);
+            await vault.refreshMissingExternalFiles(rootRaw, isCurrent);
+            if (!isCurrent()) return;
           }
           if (!get().fileFor(rel)) return; // still unknown (non-md / no vault)
           const amount = op === "read" ? 0.7 : op === "create" ? 1.3 : 1.0;
@@ -625,7 +639,7 @@ export const useAppStore = create<AppState>((set, get) => {
           // retain every touched text file for the whole session.
           const activityFile = get().fileFor(rel);
           if (activityFile && isTextualVaultFile(activityFile)) {
-            void get().ensurePeek(rel);
+            void get().ensurePeek(rel).catch(() => undefined);
           }
         } catch {
           /* ignore malformed activity payloads */
@@ -674,6 +688,7 @@ export const useAppStore = create<AppState>((set, get) => {
     get, set, getGeneration: () => vault.generation,
     registerExternalFile: (...args) => vault.registerExternalFile(...args),
     refreshMissingExternalFiles: (...args) => vault.refreshMissingExternalFiles(...args),
+    textSaves,
   });
   const vault = createVaultController({
     get, set, textSaves, resetDocuments: documents.reset,
@@ -701,6 +716,7 @@ export const useAppStore = create<AppState>((set, get) => {
     importInProgress: false,
     textSaveIssues: {},
     textSaveState: { pending: 0, saving: 0, failed: 0 },
+    dirtyBinaryPaths: [],
     theme: initialTheme(),
     uiStyle: initialUiStyle(),
     docSplit: NO_DOC_SPLIT,
@@ -1061,13 +1077,12 @@ export const useAppStore = create<AppState>((set, get) => {
         if (copy) {
           const reviewedCopy = await renameVaultFile(root, copyRel, reviewedConflictPath(copyRel, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`));
           reviewedRel = reviewedCopy.relPath;
-          const files = get().files.map((candidate) => candidate.relPath === copyRel ? reviewedCopy : candidate).sort((a, b) => a.relPath.localeCompare(b.relPath));
-          const contentCache = { ...get().contentCache };
-          if (contentCache[copyRel] !== undefined) {
-            contentCache[reviewedCopy.relPath] = contentCache[copyRel];
-            delete contentCache[copyRel];
+          if (current()) {
+            const files = get().files.map((candidate) => candidate.relPath === copyRel ? reviewedCopy : candidate).sort((a, b) => a.relPath.localeCompare(b.relPath));
+            const contentCache = forkContentCache(get().contentCache);
+            moveCacheEntry(contentCache, copyRel, reviewedCopy.relPath);
+            set({ files, contentCache });
           }
-          set({ files, contentCache });
         }
       }
       return `Saved ${rel}. Previous text is in ${backupRel}; ${reviewedRel ? `the reviewed conflict copy is ${reviewedRel}.` : "the conflict copy was kept."}`;
@@ -1355,7 +1370,9 @@ export const useAppStore = create<AppState>((set, get) => {
           const file = get().fileFor(CALENDAR_FILE);
           if (!file) throw new Error(`${CALENDAR_FILE} is no longer available.`);
           const prev = get().contentCache[CALENDAR_FILE] ?? loaded;
-          const events = [...get().calendarEvents, { date, title: t }];
+          const existing = eventsForEdit(prev);
+          if (!existing) throw new Error(`${CALENDAR_FILE} is not a valid event list; fix it before adding events.`);
+          const events = [...existing, { date, title: t }];
           const content = serializeEvents(events);
           set({
             calendarEvents: events,
@@ -1395,7 +1412,9 @@ export const useAppStore = create<AppState>((set, get) => {
         const file = get().fileFor(CALENDAR_FILE);
         if (!file) throw new Error(`${CALENDAR_FILE} is no longer available.`);
         const prev = get().contentCache[CALENDAR_FILE] ?? loaded;
-        const events = get().calendarEvents.filter(
+        const existing = eventsForEdit(prev);
+        if (!existing) throw new Error(`${CALENDAR_FILE} is not a valid event list; fix it before removing events.`);
+        const events = existing.filter(
           (e) => !(e.date === date && e.title === title)
         );
         const content = serializeEvents(events);
@@ -1461,7 +1480,7 @@ export const useAppStore = create<AppState>((set, get) => {
       return added;
     },
 
-    updateTask: async (relPath, line, patch) => {
+    updateTask: async (relPath, line, patch, expectedText) => {
       const root = get().vaultPath;
       if (!root || !get().fileFor(relPath)) return;
       const generation = vault.generation;
@@ -1475,7 +1494,11 @@ export const useAppStore = create<AppState>((set, get) => {
           return;
         }
         const prev = get().contentCache[relPath] ?? loaded;
-        const next = updateTaskLine(prev, line, patch);
+        if (expectedText !== undefined && !taskLineHasText(prev, line, expectedText)) {
+          set({ status: `Task in ${relPath} changed since the list was shown; nothing was updated.` });
+          return;
+        }
+        const next = updateTaskLine(prev, line, patch, expectedText);
         if (next === prev) return;
         set({
           content: get().activePath === relPath ? next : get().content,
@@ -1606,6 +1629,7 @@ export const useAppStore = create<AppState>((set, get) => {
     cancelImport: () => activeImportAbort?.abort(),
 
     deleteEntry: async (relPath) => {
+      if (!(await get().confirmDiscardBinaryEdits([relPath], "Deleting it"))) return;
       const root = get().vaultPath;
       const file = get().fileFor(relPath);
       const prefix = relPath.replace(/\/+$/g, "") + "/";
@@ -1664,9 +1688,12 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // Rename without changing extension or file bytes. Refresh note metadata and report failures through status.
     renameNote: async (relPath, newBaseName) => {
+      if (!(await get().confirmDiscardBinaryEdits([relPath], "Renaming it"))) return;
       const file = get().fileFor(relPath);
       const root = get().vaultPath;
       if (!file || !root) return;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
       const slash = relPath.lastIndexOf("/");
       const dir = slash >= 0 ? relPath.slice(0, slash + 1) : "";
       const base = relPath.slice(slash + 1);
@@ -1696,7 +1723,7 @@ export const useAppStore = create<AppState>((set, get) => {
       // Inspect all Markdown references for explicit rename repair; rawLinks omits embeds.
       // Verify each source update against concurrent edits.
       const bareNameUnambiguous = get().files.filter(
-        (candidate) => `${candidate.name}.${candidate.ext}`.toLowerCase() === base.toLowerCase()
+        (candidate) => linkKey(`${candidate.name}.${candidate.ext}`) === linkKey(base)
       ).length === 1;
       const noteResolver = makeResolver(get().notes);
       const inboundFiles = get().files.filter((candidate) => {
@@ -1750,17 +1777,58 @@ export const useAppStore = create<AppState>((set, get) => {
         }
         newFile = await renameVaultFile(root, relPath, newRel);
         saveHold.move(file.path, newFile.path, newFile);
-        // Revision history is independent from the verified filesystem rename.
-        // A storage failure must not undo the completed rename, but the user
-        // must not lose the identity silently.
-        if (!(await migrateTextRevisionsAsync(root, relPath, newRel))) {
-          historyMigrationFailed = true;
-        }
       } catch (e) {
         saveHold?.release();
         linkHold?.release();
-        set({ status: `Rename failed: ${String(e)}` });
+        if (current()) set({ status: `Rename failed: ${String(e)}` });
         return;
+      }
+      if (!current()) {
+        linkHold?.release();
+        return;
+      }
+
+      // Publish the new identity in the same task as the save-entry move, so
+      // edits typed during history migration or link writes reach the new path.
+      {
+        const notes = { ...get().notes };
+        const meta = notes[relPath];
+        delete notes[relPath];
+        const contentCache = forkContentCache(get().contentCache);
+        moveCacheEntry(contentCache, relPath, newRel);
+        if (newFile.isMarkdown) {
+          const text = meta ? "" : contentCache[newRel] ?? "";
+          notes[newRel] = {
+            relPath: newRel,
+            title: newFile.name,
+            rawLinks: meta?.rawLinks ?? extractLinks(text),
+            ...(meta?.rawReferences ? { rawReferences: meta.rawReferences } : {}),
+            tags: meta?.tags ?? extractTags(text),
+            aliases: meta?.aliases ?? extractAliases(text),
+            firstImagePath: meta?.firstImagePath,
+          };
+        }
+        const files = get()
+          .files.filter((f) => f.relPath !== relPath)
+          .concat(newFile)
+          .sort((a, b) => a.relPath.localeCompare(b.relPath));
+        const openTabs = get().openTabs.map((t) => (t === relPath ? newRel : t));
+        const activePath = get().activePath === relPath ? newRel : get().activePath;
+        const docSplit = get().docSplit.other === relPath ? { ...get().docSplit, other: newRel } : get().docSplit;
+        set({ files, notes, contentCache, openTabs, activePath, docSplit, status: `Renaming ${relPath}…` });
+        const bookmarks = get().settings.bookmarks;
+        if (bookmarks.includes(relPath)) {
+          get().setSetting("bookmarks", bookmarks.map((b) => (b === relPath ? newRel : b)));
+        }
+      }
+
+      // Revision history is independent from the verified filesystem rename.
+      // A storage failure must not undo the completed rename, but the user
+      // must not lose the identity silently.
+      try {
+        if (!(await migrateTextRevisionsAsync(root, relPath, newRel))) historyMigrationFailed = true;
+      } catch {
+        historyMigrationFailed = true;
       }
 
       const appliedLinkUpdates: typeof linkUpdates = [];
@@ -1773,6 +1841,7 @@ export const useAppStore = create<AppState>((set, get) => {
       let linkUpdateError: string | null = null;
       try {
         for (const update of linkUpdates) {
+          if (!current()) break;
           if (editedSince(update)) {
             editedDuringRename.push(update.file.relPath);
             continue;
@@ -1785,31 +1854,16 @@ export const useAppStore = create<AppState>((set, get) => {
       } finally {
         linkHold?.release();
       }
+      if (!current()) return;
 
       const notes = { ...get().notes };
-      const meta = notes[relPath];
-      delete notes[relPath];
       const contentCache = forkContentCache(get().contentCache);
-      const cachedText = contentCache[relPath];
-      if (cachedText !== undefined) {
-        contentCache[newRel] = cachedText;
-        delete contentCache[relPath];
-      }
-      if (newFile.isMarkdown) {
-        const text = cachedText ?? "";
-        notes[newRel] = {
-          relPath: newRel,
-          title: newFile.name,
-          rawLinks: meta?.rawLinks ?? extractLinks(text),
-          tags: meta?.tags ?? extractTags(text),
-          aliases: meta?.aliases ?? extractAliases(text),
-          firstImagePath: meta?.firstImagePath,
-        };
-      }
+      let activeContent: string | undefined;
       for (const update of appliedLinkUpdates) {
         // Edits typed during the write keep their text; their save then reports the changed disk copy.
         if (editedSince(update)) continue;
         contentCache[update.file.relPath] = update.after;
+        if (get().activePath === update.file.relPath) activeContent = update.after;
         notes[update.file.relPath] = {
           relPath: update.file.relPath,
           title: update.file.name,
@@ -1819,25 +1873,9 @@ export const useAppStore = create<AppState>((set, get) => {
           aliases: extractAliases(update.after),
         };
       }
-      const files = get()
-        .files.filter((f) => f.relPath !== relPath)
-        .concat(newFile)
-        .sort((a, b) => a.relPath.localeCompare(b.relPath));
-      const openTabs = get().openTabs.map((t) => (t === relPath ? newRel : t));
-      const activePath = get().activePath === relPath ? newRel : get().activePath;
-      const docSplit = get().docSplit.other === relPath ? { ...get().docSplit, other: newRel } : get().docSplit;
-      const activeContent =
-        activePath && contentCache[activePath] !== undefined
-          ? contentCache[activePath]
-          : get().content;
       set({
-        files,
-        notes,
-        contentCache,
-        openTabs,
-        activePath,
-        docSplit,
-        content: activeContent,
+        ...(appliedLinkUpdates.length ? { notes, contentCache } : {}),
+        ...(activeContent !== undefined ? { content: activeContent } : {}),
         status: historyMigrationFailed
           ? `Renamed ${relPath}, but local revision history could not move.`
           : linkUpdateError
@@ -1848,10 +1886,6 @@ export const useAppStore = create<AppState>((set, get) => {
                 ? `Renamed ${relPath} and updated ${appliedLinkUpdates.length} inbound ${appliedLinkUpdates.length === 1 ? "link" : "links"}`
                 : `Renamed ${relPath}`,
       });
-      const bookmarks = get().settings.bookmarks;
-      if (bookmarks.includes(relPath)) {
-        get().setSetting("bookmarks", bookmarks.map((b) => (b === relPath ? newRel : b)));
-      }
     },
 
     ...persistence.actions,
@@ -1868,6 +1902,20 @@ export const useAppStore = create<AppState>((set, get) => {
     },
     ...windows.actions,
     fileFor: (relPath) => fileIndexFor(get().files).get(relPath),
+    setBinaryDirty: (relPath, dirty) => {
+      const paths = get().dirtyBinaryPaths;
+      if (paths.includes(relPath) === dirty) return;
+      set({ dirtyBinaryPaths: dirty ? [...paths, relPath] : paths.filter((path) => path !== relPath) });
+    },
+    confirmDiscardBinaryEdits: async (relPaths, action) => {
+      const dirty = get().dirtyBinaryPaths.filter((path) => !relPaths ||
+        relPaths.some((rel) => path === rel || path.startsWith(`${rel.replace(/\/+$/, "")}/`)));
+      if (!dirty.length) return true;
+      return confirmAction(
+        `${dirty.join(", ")} ${dirty.length === 1 ? "has" : "have"} unsaved PDF edits. ${action} will discard them.`,
+        { title: "Discard PDF edits?", okLabel: "Discard edits", cancelLabel: "Keep editing", kind: "warning" }
+      );
+    },
   };
 });
 

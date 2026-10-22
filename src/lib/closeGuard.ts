@@ -48,3 +48,20 @@ export function installCloseGuard(window: CloseWindow, flush: () => Promise<void
     .catch(reason => { if (!disposed) error(`Close safety failed to start: ${String(reason)}`); });
   return () => { disposed = true; unlisten?.(); };
 }
+
+export interface PendingEditState {
+  flushSave(): Promise<void>;
+  textSaveState: { pending: number };
+  dirtyBinaryPaths: readonly string[];
+}
+/** Close/Quit checks: flush text saves, then refuse while a PDF editor holds unsaved edits. */
+export function pendingEditGuard(state: () => PendingEditState) {
+  return {
+    flush: async (): Promise<void> => {
+      await state().flushSave();
+      const pdfs = state().dirtyBinaryPaths;
+      if (pdfs.length) throw new Error(`Save the PDF edits in ${pdfs.join(", ")} first`);
+    },
+    pending: (): boolean => state().textSaveState.pending > 0 || state().dirtyBinaryPaths.length > 0,
+  };
+}

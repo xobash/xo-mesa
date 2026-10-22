@@ -26,7 +26,7 @@ describe("safeBaseName", () => {
   });
 
   it("refuses Windows reserved device names in any case", () => {
-    for (const name of ["CON", "con", "PRN", "aux", "NUL", "COM1", "lpt9", "COM¹", "LPT²"]) {
+    for (const name of ["CON", "con", "PRN", "aux", "NUL", "COM1", "lpt9", "COM¹", "LPT²", "CONIN$", "conout$", "CLOCK$"]) {
       expect(safeBaseName(name)).toBe("");
     }
     // …but not names that merely contain them

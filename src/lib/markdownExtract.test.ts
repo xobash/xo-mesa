@@ -100,3 +100,11 @@ it("links and indexes a Markdown link whose label is an image", () => {
   expect(references).toEqual(["Note.md", "My N.md", "x.png", "y.png"]);
   expect(extractLinks("[![b](x.png)](no destination [a](A.md)")).toEqual(["A.md"]);
 });
+
+it("extracts tags in any script without matching numbers or URL fragments", async () => {
+  const { extractTags } = await import("./markdownExtract");
+  expect(extractTags("#café #日本語 #straße/sub-1 #über_x")).toEqual(["café", "日本語", "straße/sub-1", "über_x"]);
+  expect(extractTags("#cafe\u0301 tag")).toEqual(["cafe\u0301"]);
+  expect(extractTags("#123 #1st https://example.com/#anchor a#b")).toEqual([]);
+  expect(extractTags("# Heading\n## Sub")).toEqual([]);
+});

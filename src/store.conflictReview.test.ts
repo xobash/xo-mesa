@@ -4,6 +4,8 @@ import { useAppStore } from './store';
 import { createNote, DEMO_ROOT, readNote } from './lib/vault';
 import { findSyncConflicts } from './lib/syncConflicts';
 import { clearTextRevisionsForTests, listTextRevisionsAsync } from './lib/textRevisionHistory';
+import { indexedContentCache, isIndexedCache, workingSetStats } from './lib/documentWorkingSet';
+import { encodeDocument } from './lib/documentCodec';
 const initial = useAppStore.getState();
 afterEach(() => { clearTextRevisionsForTests(); useAppStore.setState(initial); });
 it('saves reviewed text through the real store and preserves both source versions', async () => {
@@ -44,4 +46,22 @@ it('keeps a verified save successful when local revision storage is full', async
   } finally {
     Storage.prototype.setItem = original;
   }
+});
+it('keeps an indexed content cache indexed and undecoded when the reviewed copy moves', async () => {
+  const original = await createNote(DEMO_ROOT, 'Indexed review.md', 'local version');
+  const copy = await createNote(DEMO_ROOT, 'Indexed review (conflict from device 2026-09-08).md', 'remote version');
+  const cache = indexedContentCache([
+    [original.relPath, encodeDocument('local version')],
+    [copy.relPath, encodeDocument('remote version')],
+    ['Other.md', encodeDocument('unrelated text')],
+  ]);
+  useAppStore.setState({ vaultPath: DEMO_ROOT, files: [original, copy], notes: {}, contentCache: cache, activePath: original.relPath, content: 'local version' });
+  await useAppStore.getState().saveConflictReview(DEMO_ROOT, original.relPath, 'local version', 'reviewed version', copy.relPath);
+  const next = useAppStore.getState().contentCache;
+  const reviewed = useAppStore.getState().files.find(file => file.relPath.includes('(reviewed '))!;
+  expect(isIndexedCache(next)).toBe(true);
+  expect(workingSetStats(next).decodedDocuments).toBe(0);
+  expect(copy.relPath in next).toBe(false);
+  expect(next[reviewed.relPath]).toBe('remote version');
+  expect(next['Other.md']).toBe('unrelated text');
 });

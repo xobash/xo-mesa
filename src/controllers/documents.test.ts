@@ -95,3 +95,26 @@ it('opens lossy UTF-8 read-only through lazy reads, cached selection and deliber
   io.valid.mockResolvedValue(true);
   await controller.actions.loadActiveContent(); expect(state.getState().activeContentState).toBe('ready');
 });
+
+function linkFixture() {
+  io.create.mockReset().mockImplementation(async (root: string, rel: string) => ({ path: `${root}/${rel}`, relPath: rel, name: rel.split('/').pop()!.replace(/\.md$/, ''), ext: 'md', isMarkdown: true }));
+  io.valid.mockResolvedValue(true);
+  const state = createStore<AppState>(() => ({ ...useAppStore.getInitialState(), vaultPath: '/vault', files: [], notes: {}, contentCache: {} }));
+  state.setState({ fileFor: rel => state.getState().files.find(file => file.relPath === rel) });
+  const controller = createDocumentController({ get: state.getState, set: state.setState, getGeneration: () => 1,
+    textSaves: new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: async () => { } }), commitSettings: vi.fn(), reportingFailure: async (_, run) => run() });
+  state.setState(controller.actions);
+  return { state, controller };
+}
+it.each([['Note#Heading', 'Note.md', '# Note\n\n'], ['Folder/Note#^block', 'Folder/Note.md', '# Note\n\n'], ['Note|Alias', 'Note.md', '# Note\n\n']])(
+  'creates the note named before the link fragment for %s', async (target, rel, content) => {
+    const { state, controller } = linkFixture();
+    await controller.actions.openTarget(target);
+    expect(io.create).toHaveBeenCalledWith('/vault', rel, content);
+    expect(state.getState().activePath).toBe(rel);
+  });
+it.each(['../outside', 'a/../../b', '.hidden/x', 'bad:name', '#Heading'])('refuses to create a linked note for %s', async (target) => {
+  const { controller } = linkFixture();
+  await controller.actions.openTarget(target);
+  expect(io.create).not.toHaveBeenCalled();
+});

@@ -19,7 +19,20 @@ const renamed = vi.hoisted(() => ({
   fail: null as string | null,
   writeFail: null as string | null,
   onRename: null as null | (() => void),
+  onMigrate: null as null | (() => void),
 }));
+
+vi.mock("./textRevisionHistory", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    migrateTextRevisionsAsync: async () => {
+      await Promise.resolve();
+      renamed.onMigrate?.();
+      return true;
+    },
+  };
+});
 
 vi.mock("./vault", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -78,6 +91,7 @@ beforeEach(() => {
   renamed.fail = null;
   renamed.writeFail = null;
   renamed.onRename = null;
+  renamed.onMigrate = null;
   useAppStore.setState(initial, true);
   useAppStore.setState({
     vaultPath: "/vault",
@@ -510,5 +524,32 @@ describe("renameNote type preservation", () => {
     expect(renamed.calls).toEqual([]);
     expect(useAppStore.getState().status).toContain("Rename failed: Error: pending edits in a note that links here could not be saved first");
     expect(useAppStore.getState().status).toContain("disk full");
+  });
+
+  it("saves keystrokes typed during revision migration to the renamed path", async () => {
+    useAppStore.setState({ activePath: "a.md", content: "# a [[b]]", activeContentState: "ready", openTabs: ["a.md"] });
+    let pathDuringMigration: string | null = null;
+    renamed.onMigrate = () => {
+      pathDuringMigration = useAppStore.getState().activePath;
+      useAppStore.getState().setContentFromEditor("# a [[b]] typed during migration");
+    };
+    await useAppStore.getState().renameNote("a.md", "alpha");
+    expect(pathDuringMigration).toBe("alpha.md");
+    await useAppStore.getState().flushSave();
+    const s = useAppStore.getState();
+    expect(renamed.writes.filter((w) => w.rel === "alpha.md").at(-1)?.content).toBe("# a [[b]] typed during migration");
+    expect(renamed.writes.some((w) => w.rel === "a.md")).toBe(false);
+    expect(s.textSaveState.pending).toBe(0);
+    expect(s.content).toBe("# a [[b]] typed during migration");
+    expect(s.openTabs).toEqual(["alpha.md"]);
+  });
+
+  it("publishes nothing into a vault opened while the rename was running", async () => {
+    renamed.onMigrate = () => useAppStore.setState({ vaultPath: "/other", files: [], notes: {}, contentCache: {} });
+    await useAppStore.getState().renameNote("a.md", "alpha");
+    const s = useAppStore.getState();
+    expect(s.files).toEqual([]);
+    expect(s.contentCache).toEqual({});
+    expect(renamed.writes).toEqual([]);
   });
 });

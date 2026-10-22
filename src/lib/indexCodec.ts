@@ -1,6 +1,6 @@
 import { encodeDocument, type IndexedDocument } from './documentCodec';
 
-/** One worker per build, bounded batches; terminate on completion/cancellation. */
+/** One worker per owner, bounded batches; owners terminate it on completion, cancellation or idle. */
 export function createIndexCodec() {
   let worker: Worker | null = null;
   let nextId = 0;
@@ -39,6 +39,8 @@ export function createIndexCodec() {
   }
 
   return {
+    /** False once the worker is unavailable or stopped; `encode` then runs locally. */
+    get available(): boolean { return worker !== null; },
     /** `markdown[i]` is false when `texts[i]` is another text file, not a Markdown note. */
     async encode(texts: string[], markdown: readonly boolean[] = []): Promise<IndexedDocument[]> {
       if (!texts.length) return [];

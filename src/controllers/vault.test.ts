@@ -178,3 +178,16 @@ it('removes every known file under a folder that vanished in a modify event', as
   expect(f.state.getState().status).not.toContain('could not be read');
   f.controller.dispose();
 });
+
+it('refreshes reference metadata from an external edit so a later rename can repair the new embed', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const files = [file('a.md')];
+  f.state.setState({ files, contentCache: { 'a.md': 'plain' },
+    fileFor: rel => f.state.getState().files.find(file => file.relPath === rel),
+    notes: { 'a.md': { relPath: 'a.md', title: 'a', rawLinks: [], rawReferences: [], tags: [], aliases: [] } } });
+  io.read.mockReset().mockImplementationOnce(async () => ({ ok: true, text: 'plain ![[pic.png]] [ref]: docs/spec.pdf' }));
+  f.change([{ kind: 'modify', paths: ['/v/a.md'] }]);
+  await vi.waitFor(() => expect(f.state.getState().contentCache['a.md']).toContain('pic.png'));
+  expect(f.state.getState().notes['a.md'].rawReferences).toEqual(expect.arrayContaining(['pic.png']));
+  f.controller.dispose();
+});

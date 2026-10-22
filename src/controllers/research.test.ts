@@ -4,6 +4,8 @@ import { createStore } from 'zustand';
 import { useAppStore } from '../store';
 import { backgroundWork } from '../lib/backgroundWorkGovernor';
 import { createResearchController } from './research';
+import { TextSaveCoordinator } from '../lib/textSaveCoordinator';
+import type { VaultFile } from '../types';
 const io = vi.hoisted(() => ({ listen: vi.fn(), send: vi.fn(), interrupt: vi.fn(), nav: vi.fn() }));
 vi.mock('../lib/vault', async original => ({ ...await original<object>(), IN_TAURI: true }));
 vi.mock('../lib/piSessionBridge', () => ({ getPiSessionSnapshot: () => ({ sessionId: 'test-session' }), requestSharedPiRestart: async () => { } }));
@@ -14,7 +16,8 @@ function fixture() {
   const state = createStore(() => ({ ...useAppStore.getInitialState(), vaultPath: '/synthetic', files: [], notes: {}, contentCache: {} }));
   const controller = createResearchController({
     get: state.getState, set: state.setState, getGeneration: () => 0,
-    registerExternalFile: async () => { }, refreshMissingExternalFiles: async () => { }
+    registerExternalFile: async () => { }, refreshMissingExternalFiles: async () => { },
+    textSaves: new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: async () => { } })
   });
   state.setState(controller.actions);
   return { state, controller, start: () => controller.actions.startDeepResearch('test', { piSurfaceAvailable: true }) };

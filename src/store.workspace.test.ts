@@ -140,6 +140,25 @@ describe('calendar events', () => {
   });
 });
 
+describe('calendar edits from current text', () => {
+  const calendar = { relPath: 'calendar.json', path: '/v/calendar.json', name: 'calendar', ext: 'json', isMarkdown: false } as unknown as VaultFile;
+  const typed = JSON.stringify([{ date: '2026-10-20', title: 'Typed in editor' }]);
+  it('keeps events typed into calendar.json when adding and removing', async () => {
+    useAppStore.setState({ vaultPath: '/v', files: [calendar], fileFor: (rel) => rel === 'calendar.json' ? calendar : undefined, calendarEvents: [], contentCache: { 'calendar.json': typed } });
+    await store().addCalendarEvent('2026-10-21', 'Added');
+    expect(store().calendarEvents.map((event) => event.title)).toEqual(['Typed in editor', 'Added']);
+    expect(store().contentCache['calendar.json']).toContain('Typed in editor');
+    await store().removeCalendarEvent('2026-10-21', 'Added');
+    expect(store().calendarEvents.map((event) => event.title)).toEqual(['Typed in editor']);
+  });
+  it('refuses to replace calendar.json text that is not an event list', async () => {
+    useAppStore.setState({ vaultPath: '/v', files: [calendar], fileFor: (rel) => rel === 'calendar.json' ? calendar : undefined, calendarEvents: [], contentCache: { 'calendar.json': '[{"date": "2026-' } });
+    await store().addCalendarEvent('2026-10-21', 'Added');
+    expect(store().contentCache['calendar.json']).toBe('[{"date": "2026-');
+    expect(store().status).toContain('not a valid event list');
+  });
+});
+
 describe('peer removal', () => {
   it('forgets an unpaired peer and ignores unknown ids', async () => {
     const id = store().addPeer('192.0.2.11', 'Phone')!;

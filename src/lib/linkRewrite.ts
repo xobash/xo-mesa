@@ -1,5 +1,6 @@
 import { forEachSegment, inlineCodeSpans, isMarkdownPath } from "./markdownCode";
 import { extOf, stripExt } from "./vault";
+import { linkKey } from "./fsnames";
 
 const WIKI_LINK_RE = /(!?)\[\[([^\]\n]+?)\]\]/g;
 // Destination: `<with spaces>` or a bare run with balanced parentheses; optional CommonMark title.
@@ -57,11 +58,11 @@ export function rewriteInboundLinks(
   bareNameUnambiguous: boolean
 ): { text: string; changed: boolean } {
   const sourceDir = sourceRel.includes("/") ? sourceRel.slice(0, sourceRel.lastIndexOf("/")) : "";
-  const oldBase = oldRel.slice(oldRel.lastIndexOf("/") + 1).toLowerCase();
+  const oldBase = linkKey(oldRel.slice(oldRel.lastIndexOf("/") + 1));
   const oldExt = `.${extOf(oldRel)}`;
   // A wikilink that names the file (not a frontmatter alias) breaks on rename.
   const namesOldFile = (target: string) => {
-    const path = normalizeRelativeTarget(sourceDir, target).replace(/^\/+/, "").toLowerCase();
+    const path = linkKey(normalizeRelativeTarget(sourceDir, target).replace(/^\/+/, ""));
     const bare = path.endsWith(oldExt) ? path.slice(0, -oldExt.length) : path;
     return bare.slice(bare.lastIndexOf("/") + 1) === stripExt(oldBase);
   };
@@ -74,26 +75,27 @@ export function rewriteInboundLinks(
     // Attachments do not participate in the note resolver. Match an exact
     // vault-relative path, or an exact filename where the reference was bare;
     // never guess among duplicate basenames in different folders.
-    const targetLower = target.replace(/\\/g, "/").toLowerCase();
-    const normalizedLower = normalized.toLowerCase();
-    return normalizedLower === oldRel.toLowerCase() ||
+    const targetLower = linkKey(target.replace(/\\/g, "/"));
+    const normalizedLower = linkKey(normalized);
+    return normalizedLower === linkKey(oldRel) ||
       (bareNameUnambiguous && !targetLower.includes("/") && targetLower === oldBase);
   };
   const replacementTarget = (rawTarget: string): string => {
     const slashy = rawTarget.replace(/\\/g, "/");
     // Only the renamed note's own extension counts: `v1.2 notes` has none.
     const hadExt = renamedIsMarkdown
-      ? slashy.toLowerCase().endsWith(oldExt)
+      ? linkKey(slashy).endsWith(oldExt)
       : /\.[^/]+$/.test(slashy);
     const hadDir = slashy.includes("/");
     // Mesa resolves a path from the vault root before a relative one, and
     // never resolves `../`; keep the form that actually matched.
-    const lower = slashy.toLowerCase();
-    const vaultPath = lower === oldRel.toLowerCase() ||
-      (renamedIsMarkdown && !hadExt && lower === stripExt(oldRel).toLowerCase());
+    const lower = linkKey(slashy);
+    const vaultPath = lower === linkKey(oldRel) ||
+      (renamedIsMarkdown && !hadExt && lower === linkKey(stripExt(oldRel)));
+    const relative = hadDir && !vaultPath ? relativeTargetFrom(sourceDir, newRel) : "";
     const nextRel =
       slashy.startsWith("/") ? `/${newRel}`
-        : hadDir && !vaultPath ? relativeTargetFrom(sourceDir, newRel)
+        : relative ? (slashy.startsWith("./") && !relative.startsWith("../") ? `./${relative}` : relative)
           : newRel;
     if (hadDir) return hadExt || !renamedIsMarkdown ? nextRel : stripExt(nextRel);
     const base = nextRel.slice(nextRel.lastIndexOf("/") + 1);
@@ -187,10 +189,10 @@ export function referenceMayTarget(
   let target = rawReference.split("|")[0]?.split("#")[0]?.trim() ?? "";
   try { target = decodeURIComponent(target); } catch { /* malformed escapes stay literal */ }
   if (!target) return false;
-  const normalized = normalizeRelativeTarget(sourceDir, target).toLowerCase();
-  if (normalized === oldRel.toLowerCase()) return true;
-  const oldBase = oldRel.slice(oldRel.lastIndexOf("/") + 1).toLowerCase();
-  return bareNameUnambiguous && !target.includes("/") && target.toLowerCase() === oldBase;
+  const normalized = linkKey(normalizeRelativeTarget(sourceDir, target));
+  if (normalized === linkKey(oldRel)) return true;
+  const oldBase = linkKey(oldRel.slice(oldRel.lastIndexOf("/") + 1));
+  return bareNameUnambiguous && !target.includes("/") && linkKey(target) === oldBase;
 }
 
 function relativeTargetFrom(sourceDir: string, targetRel: string): string {

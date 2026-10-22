@@ -4,14 +4,22 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
-  fileFor: (rel: string) => ({ path: `/vault/${rel}`, name: rel, ext: "png" }),
+  fileFor: (rel: string) => ({ path: `/vault/${rel}`, name: rel, ext: rel.endsWith(".pdf") ? "pdf" : "png" }),
   openDocWindow: vi.fn(),
+  setBinaryDirty: vi.fn(),
 }));
 vi.mock("../store", () => ({ useAppStore: (select: (value: typeof state) => unknown) => select(state) }));
 vi.mock("../lib/vault", () => ({
   urlForPath: (path: string) => `asset://localhost${encodeURIComponent(path)}`,
-  fileKind: () => "image",
+  fileKind: (ext: string) => ext === "pdf" ? "pdf" : "image",
 }));
+vi.mock("./PdfView", async () => {
+  const { useEffect } = await import("react");
+  return { PdfView: ({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) => {
+    useEffect(() => { onDirtyChange?.(true); return () => onDirtyChange?.(false); }, [onDirtyChange]);
+    return <div>PDF editor</div>;
+  } };
+});
 vi.mock("./HtmlView", () => ({ HtmlView: () => null }));
 vi.mock("./RtfView", () => ({ RtfView: () => null }));
 import { MediaView } from "./MediaView";
@@ -58,4 +66,13 @@ it("keeps keyboard focus on Retry when the image fails again", () => {
   act(() => host.querySelector("img")!.dispatchEvent(new Event("error")));
   expect(document.activeElement).toBe(host.querySelector("button"));
   host.remove();
+});
+
+it("reports main-pane PDF edits to the store so close and navigation can guard them", async () => {
+  root = createRoot(host);
+  await act(async () => root.render(<MediaView rel="docs/Scan.pdf" />));
+  await vi.waitFor(() => expect(state.setBinaryDirty).toHaveBeenCalledWith("docs/Scan.pdf", true));
+  await act(async () => root.render(<MediaView rel="docs/Other.pdf" />));
+  expect(state.setBinaryDirty).toHaveBeenCalledWith("docs/Scan.pdf", false);
+  expect(state.setBinaryDirty).toHaveBeenLastCalledWith("docs/Other.pdf", true);
 });

@@ -166,7 +166,10 @@ perfectly.
   Keep editing is the default. Save copies opens a native picker for each pending
   text snapshot, writing a new verified file outside the current vault without
   discarding edits. An existing destination is refused. Close without saving
-  requires confirmation and explicitly permits exit. A timed-out write is not
+  requires confirmation and explicitly permits exit. Close and Quit also refuse
+  while a PDF open in the main workspace has unsaved edits, as detached document
+  windows already do; switching, closing, renaming or deleting that PDF asks
+  first. A timed-out write is not
   cancelled and may still finish; a late completion cannot close the window. `flushableNoteText`
   still refuses a non-text file.
 - `ensureContent` never pulls a non-text file through the text pipeline.
@@ -392,6 +395,14 @@ operations. Verified native saves require expected SHA-256/length or a missing
 target. Callers without a baseline read one before submitting; IPC rejects an
 unconditional overwrite. Trusted internal recovery remains stricter per operation.
 Ordinary saves and renames reject hidden recovery/control directories.
+Saves, renames, folder creation, delete, restore and Deep Research targets check
+the path again after the operating system resolves it, so a Windows 8.3 short
+name such as `GIT~1` cannot reach `.git`. On Windows, a save also refuses a file
+name with `:` (alternate data streams), a device name such as `CON`, `CONIN$`
+or `CLOCK$`, or a trailing dot or space. Bulk text reads accept at most 128
+visible paths per request, never hidden or `node_modules` paths, and never
+above the 8 MiB automatic text limit. The media (`asset`) scope also requires a
+literal leading dot, and Mesa windows cannot navigate to `asset` URLs.
 Visible directories use native creation. Delete and restore use recoverable,
 no-replace moves. Recovery catalogue reads need no recursive hidden-path grant.
 Artifact restoration accepts stale recognized originals, retains rescue copies,

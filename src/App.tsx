@@ -2,7 +2,7 @@ import { syncSecretsNeededAtStartup } from "./lib/syncSecrets";
 import { Modal } from "./components/Modal";
 import { confirmAction } from "./lib/confirmAction";
 import { loadRecentVaults, resolveRecentVault } from "./lib/persistedUi";
-import { flushBeforeClose, installCloseGuard, type BlockedClose } from "./lib/closeGuard";
+import { flushBeforeClose, installCloseGuard, pendingEditGuard, type BlockedClose } from "./lib/closeGuard";
 const QUIT_REQUESTED_EVENT = "mesa://quit-requested";
 import {
   Fragment,
@@ -1154,6 +1154,8 @@ function Welcome({
   );
 }
 
+const { flush: flushAllEdits, pending: hasPendingEdits } = pendingEditGuard(getStore);
+
 export default function App() {
   const [blockedClose, setBlockedClose] = useState<{ reason: unknown; resolve: (choice: "keep" | "discard") => void } | null>(null);
   const blockedCloseRef = useRef<Promise<"keep" | "discard"> | null>(null);
@@ -1412,8 +1414,8 @@ export default function App() {
       if (disposed) return;
       stop = installCloseGuard(
         getCurrentWindow(),
-        () => getStore().flushSave(),
-        () => getStore().textSaveState.pending > 0,
+        flushAllEdits,
+        hasPendingEdits,
         (status) => useAppStore.setState({ status }),
         onBlocked
       );
@@ -1435,10 +1437,10 @@ export default function App() {
       flushingQuit = true;
       useAppStore.setState({ status: "Saving text before Quit…" });
       try {
-        await flushBeforeClose(() => getStore().flushSave());
+        await flushBeforeClose(flushAllEdits);
         if (disposed) return;
-        if (getStore().textSaveState.pending > 0) {
-          throw new Error("text changes still need attention");
+        if (hasPendingEdits()) {
+          throw new Error("changes still need attention");
         }
         useAppStore.setState({ status: "Text saved. Closing Mesa…" });
         await invoke("quit_after_save");
@@ -1989,13 +1991,13 @@ export default function App() {
 
   return (
     <div ref={appRootRef} className="app" tabIndex={-1}>
-      {blockedClose && <Modal title="Unsaved text" onClose={() => { if (!copying) finishBlockedClose("keep"); }}>
-        <h2>Text could not be saved</h2>
+      {blockedClose && <Modal title="Unsaved changes" onClose={() => { if (!copying) finishBlockedClose("keep"); }}>
+        <h2>Changes could not be saved</h2>
         <p>{String(blockedClose.reason)}</p>
-        <p>Your text is still open. Save copies outside this vault before closing.</p>
+        <p>Your work is still open. Save PDFs from their editor, or save text copies outside this vault before closing.</p>
         <button className="btn" disabled={copying} onClick={() => finishBlockedClose("keep")}>Keep editing</button>
         <button className="btn" disabled={copying} onClick={() => { void savePendingCopies(); }}>Save copies…</button>
-        <button className="btn" disabled={copying} onClick={() => { void confirmAction("Close without saving pending text? Any write already in progress may still finish.", { okLabel: "Close without saving", cancelLabel: "Keep editing" }).then(confirmed => { if (confirmed) finishBlockedClose("discard"); }); }}>Close without saving</button>
+        <button className="btn" disabled={copying} onClick={() => { void confirmAction("Close without saving pending changes? Any write already in progress may still finish.", { okLabel: "Close without saving", cancelLabel: "Keep editing" }).then(confirmed => { if (confirmed) finishBlockedClose("discard"); }); }}>Close without saving</button>
       </Modal>}
       <TopBar />
       {graphFull ? (

@@ -247,7 +247,8 @@ export function extractLinksAndFirstImage(source: string, markdown = true): {
 
 // #tags — a hash directly followed by a word (no space), not a Markdown heading
 // (headings have a space after the hashes) and not code.
-const TAG_RE = /(?:^|\s)#([A-Za-z][\w/-]*)/g;
+/** A tag starts with a letter in any script; digits, marks, `_`, `/`, `-` may follow. */
+const TAG_RE = /(?:^|\s)#(\p{L}[\p{L}\p{M}\p{N}_/-]*)/gu;
 
 export function extractTags(source: string, markdown = true): string[] {
   if (!source.includes("#")) return [];

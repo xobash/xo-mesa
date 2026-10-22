@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import { useAppStore, THEMES, UI_STYLES } from "../store";
 import {
   localISO,
+  shiftISO,
   monthMatrix,
   calendarGridKeyTarget,
   weekMatrix,
@@ -102,14 +103,6 @@ function loadWins(): Wins {
 function dateParts(iso: string): [number, number, number] {
   const [y, m, d] = iso.split("-").map(Number);
   return [y, m, d];
-}
-function shiftISO(iso: string, days = 0, months = 0, years = 0): string {
-  const [y, m, d] = dateParts(iso);
-  const dt = new Date(y, m - 1, d);
-  if (days) dt.setDate(dt.getDate() + days);
-  if (months) dt.setMonth(dt.getMonth() + months);
-  if (years) dt.setFullYear(dt.getFullYear() + years);
-  return localISO(dt);
 }
 
 /** Live clock for the overlay header. */

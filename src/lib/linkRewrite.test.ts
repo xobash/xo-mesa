@@ -93,3 +93,13 @@ it("repairs a badge link and its image independently", () => {
   expect(rewriteInboundLinks("src.md", "[![b](x.png)](https://example.test)", "x.png", "y.png", resolver, false, true).text)
     .toBe("[![b](y.png)](https://example.test)");
 });
+
+it("matches NFD and NFC spellings of the renamed file and keeps a leading ./", () => {
+  const nfd = "Café.png";
+  const nfc = "Café.png";
+  expect(rewriteInboundLinks("Index.md", `![[${nfc}]]`, nfd, "Menu.png", () => null, false, true))
+    .toEqual({ text: "![[Menu.png]]", changed: true });
+  expect(referenceMayTarget("Index.md", nfc, nfd, true)).toBe(true);
+  expect(rewriteInboundLinks("docs/Index.md", "[a](./Note.md) [c](../docs/Note.md)", "docs/Note.md", "docs/Renamed.md", () => null, true, false).text)
+    .toBe("[a](./Renamed.md) [c](Renamed.md)");
+});

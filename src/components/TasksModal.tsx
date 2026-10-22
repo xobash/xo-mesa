@@ -148,25 +148,25 @@ export function TasksPanel({ onPick }: { onPick?: () => void }) {
       <div className="kanban-card-actions">
         <button
           className="mini-btn"
-          onClick={() => void updateTask(t.rel, t.line, { checked: !t.checked })}
+          onClick={() => void updateTask(t.rel, t.line, { checked: !t.checked }, t.text)}
         >
           {t.checked ? "Reopen" : "Done"}
         </button>
         <button
           className="mini-btn"
-          onClick={() => void updateTask(t.rel, t.line, { checked: false, due: today })}
+          onClick={() => void updateTask(t.rel, t.line, { checked: false, due: today }, t.text)}
         >
           Today
         </button>
         <button
           className="mini-btn"
-          onClick={() => void updateTask(t.rel, t.line, { checked: false, due: next })}
+          onClick={() => void updateTask(t.rel, t.line, { checked: false, due: next }, t.text)}
         >
           Next
         </button>
         <button
           className="mini-btn"
-          onClick={() => void updateTask(t.rel, t.line, { checked: false, due: null })}
+          onClick={() => void updateTask(t.rel, t.line, { checked: false, due: null }, t.text)}
         >
           No date
         </button>

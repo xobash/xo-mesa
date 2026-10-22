@@ -8,6 +8,7 @@ import {
   resetVaultTaskMemo,
   taskProject,
   updateTaskLine,
+  taskLineHasText,
   type TaskItem,
 } from "./tasks";
 import { indexedContentCache, forkContentCache, markCacheTaskStable } from "./documentWorkingSet";
@@ -95,6 +96,14 @@ describe("groupTasks", () => {
 });
 
 describe("updateTaskLine", () => {
+  it("leaves a line unchanged when it no longer holds the listed task", () => {
+    const src = "- [ ] inserted above\n- [ ] pay rent";
+    expect(updateTaskLine(src, 0, { checked: true }, "pay rent")).toBe(src);
+    expect(taskLineHasText(src, 0, "pay rent")).toBe(false);
+    expect(taskLineHasText(src, 1, "pay rent")).toBe(true);
+    expect(updateTaskLine(src, 1, { checked: true }, "pay rent")).toBe("- [ ] inserted above\n- [x] pay rent");
+  });
+
   it("updates checked state and due date in the original markdown line", () => {
     const src = "- [ ] write report due: 2026-07-01\n- [x] old";
     expect(updateTaskLine(src, 0, { checked: true, due: "2026-07-10" })).toBe(

@@ -42,7 +42,9 @@ Links, tags and tasks come from prose only. In Markdown notes Mesa skips what
 the preview shows as code: fenced and indented code blocks (also inside lists
 and block quotes) and inline code. Other text files are not rendered as
 Markdown, so only their fenced blocks count as code; indentation never does.
-Index version 8 rebuilds caches written with the older code rules once.
+Tags start with a letter in any script and may continue with letters,
+combining marks, digits, `_`, `/` and `-`; `#123` is not a tag. Index version 9
+rebuilds caches written with the older ASCII-only tag rule once.
 Cached image targets are resolved against the current file listing, so image
 additions and moves remain visible after indexing.
 
@@ -73,8 +75,9 @@ binary document engines retain their own lifecycle and budgets. The automatic
 8 MiB text read limit remains separate.
 
 Edits use copy-on-write buckets instead of copying or decoding the entire cache.
-Older search snapshots retain their values. Compaction runs in bounded worker
-batches after a short coalescing delay. Task collection consumes pre-parsed task
+Older search snapshots retain their values. Compaction waits for two seconds without
+new edits, then runs in bounded batches on one shared codec worker that is
+released after 30 idle seconds. Only the latest revision of a burst is encoded. Task collection consumes pre-parsed task
 records for unchanged indexed notes and reparses live edits by revision.
 
 ## Search

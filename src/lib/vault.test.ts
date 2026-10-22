@@ -193,6 +193,12 @@ describe("resolveTextVaultLink", () => {
     { ...demoFile("assets/Log.png", "png"), name: "Log" },
   ];
 
+  it("matches NFC link text to an NFD file name", () => {
+    const decomposed = [{ ...demoFile("Notes/Cafe\u0301.md", "md", true), name: "Cafe\u0301" }];
+    expect(resolveTextVaultLink(decomposed, "Caf\u00e9")?.relPath).toBe("Notes/Cafe\u0301.md");
+    expect(resolveTextVaultLink(decomposed, "Notes/Caf\u00e9.md")?.relPath).toBe("Notes/Cafe\u0301.md");
+  });
+
   it("opens an exact text-file target without changing its extension", () => {
     expect(resolveTextVaultLink(files, "Notes/Log.txt")?.relPath).toBe("Notes/Log.txt");
   });

@@ -7,7 +7,9 @@ import {
   type BackgroundWorkHandle,
 } from "../lib/backgroundWorkGovernor";
 import { forkContentCache } from "../lib/documentWorkingSet";
-import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
+import { extractAliases, extractLinks, extractLinksAndFirstImage, extractTags } from "../lib/markdownExtract";
+import type { TextSaveCoordinator, TextSaveHold } from "../lib/textSaveCoordinator";
+import type { VaultFile } from "../types";
 import {
   IN_TAURI,
   writeVaultTextFile
@@ -56,8 +58,9 @@ interface Dependencies extends Port {
   getGeneration: () => number;
   registerExternalFile: (path: string, isCurrent?: () => boolean) => Promise<void>;
   refreshMissingExternalFiles: (root: string, isCurrent?: () => boolean) => Promise<void>;
+  textSaves: TextSaveCoordinator<VaultFile>;
 }
-export function createResearchController({ get, set, getGeneration, registerExternalFile, refreshMissingExternalFiles }: Dependencies) {
+export function createResearchController({ get, set, getGeneration, registerExternalFile, refreshMissingExternalFiles, textSaves }: Dependencies) {
   // --- Deep Research run bookkeeping (controller-owned, not React state). -------
   let drSeq = 0;
   let listenerGeneration = 0;
@@ -918,57 +921,86 @@ export function createResearchController({ get, set, getGeneration, registerExte
       }
       const isCurrent = () =>
         researchRunIsCurrent(cur.runId, root, cur.vaultGeneration);
-      // Version-check the change set against the CURRENT vault before writing.
-      const plan = (await loadDeepResearchRun()).resolveApplyPlan({
-        ops: cur.changeSet.ops,
-        existingContent: get().contentCache,
-        files: get().files,
-        notes: get().notes,
-      });
-      if (!plan.ok) {
-        drPatch({ phase: "error", launchStage: "error", error: plan.error, changeSet: null });
+      const changeSet = cur.changeSet;
+      // Pause autosave for existing targets so no editor write races the
+      // transaction. Pending edits are saved first and then fail the version check.
+      const targetPaths = changeSet.ops.flatMap((op) => get().fileFor(op.relPath)?.path ?? []);
+      let hold: TextSaveHold<VaultFile>;
+      try {
+        hold = await textSaves.hold(targetPaths, true);
+      } catch (error) {
+        // Keep the reviewed change set: the save or a rename may finish, and Apply can be retried.
+        if (isCurrent()) drPatch({ phase: "review", launchStage: "review", error: `Unsaved edits in a target note could not be saved first: ${String(error)}. Resolve it, then apply again.` });
         return;
       }
-      drPatch({ phase: "applying", launchStage: "applying" });
-      const outcome = await (await loadDeepResearchRun()).applyChangeSet({ root, plan });
-      if (!isCurrent()) return;
-      if (!outcome.ok) {
-        drPatch({ phase: "error", launchStage: "error", error: outcome.error ?? "Apply failed.", changeSet: null });
-        return;
-      }
-      drPatch({ phase: "done", launchStage: "done", appliedRelPaths: outcome.appliedRelPaths });
-      // Refresh the vault scan, content cache, backlinks, and graph so the new
-      // notes and links appear (and the graph lights up) immediately.
-      await refreshMissingExternalFiles(root, isCurrent);
-      if (!isCurrent()) return;
-      const latest = get();
-      const notes = { ...latest.notes };
-      const contentCache = forkContentCache(latest.contentCache);
-      for (const op of cur.changeSet.ops) {
-        contentCache[op.relPath] = op.content;
-        const file = latest.fileFor(op.relPath);
-        if (file?.isMarkdown) {
-          const existing = notes[op.relPath];
-          notes[op.relPath] = {
-            relPath: op.relPath,
-            title: existing?.title ?? file.name,
-            rawLinks: extractLinks(op.content),
-            tags: extractTags(op.content),
-            aliases: extractAliases(op.content),
-            firstImagePath: existing?.firstImagePath,
-          };
+      try {
+        if (!isCurrent() || get().deepResearch?.changeSet !== changeSet) return;
+        // Version-check the change set against the CURRENT vault before writing.
+        const plan = (await loadDeepResearchRun()).resolveApplyPlan({
+          ops: changeSet.ops,
+          existingContent: get().contentCache,
+          files: get().files,
+          notes: get().notes,
+        });
+        if (!plan.ok) {
+          drPatch({ phase: "error", launchStage: "error", error: plan.error, changeSet: null });
+          return;
         }
-        bumpActivityAmount(op.relPath, 1.3, op.kind === "create" ? "create" : "write");
+        const cachedBefore = new Map(changeSet.ops.map((op) => [op.relPath, get().contentCache[op.relPath]]));
+        drPatch({ phase: "applying", launchStage: "applying", error: null });
+        const outcome = await (await loadDeepResearchRun()).applyChangeSet({ root, plan });
+        if (!isCurrent()) return;
+        if (!outcome.ok) {
+          drPatch({ phase: "error", launchStage: "error", error: outcome.error ?? "Apply failed.", changeSet: null });
+          return;
+        }
+        drPatch({ phase: "done", launchStage: "done", appliedRelPaths: outcome.appliedRelPaths });
+        // Refresh the vault scan, content cache, backlinks, and graph so the new
+        // notes and links appear (and the graph lights up) immediately.
+        await refreshMissingExternalFiles(root, isCurrent);
+        if (!isCurrent()) return;
+        const latest = get();
+        const notes = { ...latest.notes };
+        const contentCache = forkContentCache(latest.contentCache);
+        const keptEdits: string[] = [];
+        for (const op of changeSet.ops) {
+          const file = latest.fileFor(op.relPath);
+          // Text typed during the apply stays in the editor; its save then
+          // reports the changed disk copy instead of overwriting it.
+          // The refresh or the watcher may already hold the applied text; that is not an edit.
+          const now = latest.contentCache[op.relPath];
+          if ((file && textSaves.isDirty(file.path)) || (now !== cachedBefore.get(op.relPath) && now !== op.content)) {
+            keptEdits.push(op.relPath);
+            continue;
+          }
+          contentCache[op.relPath] = op.content;
+          if (file?.isMarkdown) {
+            const existing = notes[op.relPath];
+            notes[op.relPath] = {
+              relPath: op.relPath,
+              title: existing?.title ?? file.name,
+              rawLinks: extractLinks(op.content),
+              rawReferences: extractLinksAndFirstImage(op.content).references,
+              tags: extractTags(op.content),
+              aliases: extractAliases(op.content),
+              firstImagePath: existing?.firstImagePath,
+            };
+          }
+          bumpActivityAmount(op.relPath, 1.3, op.kind === "create" ? "create" : "write");
+        }
+        set({
+          notes,
+          contentCache,
+          ...(latest.activePath && !keptEdits.includes(latest.activePath) && changeSet.ops.some((op) => op.relPath === latest.activePath)
+            ? { content: contentCache[latest.activePath] ?? latest.content }
+            : {}),
+          ...(keptEdits.length ? { status: `Research applied; unsaved edits were kept in ${keptEdits.join(", ")}.` } : {}),
+        });
+      } finally {
+        hold.release();
       }
-      set({
-        notes,
-        contentCache,
-        ...(latest.activePath && cur.changeSet.ops.some((op) => op.relPath === latest.activePath)
-          ? { content: contentCache[latest.activePath] ?? latest.content }
-          : {}),
-      });
       // Surface the report note for the user.
-      const reportRel = cur.changeSet.reportRelPath;
+      const reportRel = changeSet.reportRelPath;
       if (isCurrent() && get().fileFor(reportRel)) await get().openFile(reportRel);
     },
 

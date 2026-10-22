@@ -98,16 +98,27 @@ function stripDue(text: string): string {
     .trim();
 }
 
+const TASK_LINE_RE = /^(\s*[-*]\s+\[)([ xX])(\]\s+)(\S(?:.*\S)?)(\s*)$/;
+
+/** True when `lineIndex` still holds a task whose text is `expectedText`. */
+export function taskLineHasText(content: string, lineIndex: number, expectedText: string): boolean {
+  const current = content.split("\n")[lineIndex];
+  return current != null && TASK_LINE_RE.exec(current)?.[4] === expectedText;
+}
+
+/** Patch one task line. With `expectedText`, a line that no longer holds that
+ *  task (the note changed since the task list was built) is left unchanged. */
 export function updateTaskLine(
   content: string,
   lineIndex: number,
-  patch: TaskLinePatch
+  patch: TaskLinePatch,
+  expectedText?: string
 ): string {
   const lines = content.split("\n");
   const current = lines[lineIndex];
   if (current == null) return content;
-  const m = /^(\s*[-*]\s+\[)([ xX])(\]\s+)(\S(?:.*\S)?)(\s*)$/.exec(current);
-  if (!m) return content;
+  const m = TASK_LINE_RE.exec(current);
+  if (!m || (expectedText !== undefined && m[4] !== expectedText)) return content;
   const existingDue = DUE_RE.exec(m[4])?.[1] ?? null;
   const checked = patch.checked ?? m[2].toLowerCase() === "x";
   const due = patch.due === undefined ? existingDue : patch.due;

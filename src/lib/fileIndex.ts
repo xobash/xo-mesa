@@ -14,3 +14,14 @@ export function createFileIndex() {
     return index;
   };
 }
+
+const relPathLists = new WeakMap<readonly VaultFile[], string[]>();
+/** Relative paths of a `files` array, cached by array identity. Treat as read-only. */
+export function relPathsOf(files: readonly VaultFile[]): string[] {
+  let list = relPathLists.get(files);
+  if (!list) {
+    list = files.map((file) => file.relPath);
+    relPathLists.set(files, list);
+  }
+  return list;
+}

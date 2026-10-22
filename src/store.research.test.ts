@@ -14,13 +14,18 @@ const boundary = vi.hoisted(() => ({
     read: vi.fn(async () => ''),
     restart: vi.fn(async () => undefined),
     stat: vi.fn(async (_path: string): Promise<unknown> => ({ size: 1 })),
+    writeNote: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', async (original) => ({ ...await original<object>(), invoke: boundary.invoke }));
 vi.mock('@tauri-apps/plugin-fs', async (original) => ({ ...await original<object>(), stat: boundary.stat }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async (name: string, fn: (event: {
         payload: unknown;
     }) => void) => { boundary.handlers.set(name, fn); return () => boundary.handlers.delete(name); }) }));
-vi.mock('./lib/vault', async (original) => ({ ...await original<object>(), IN_TAURI: true, scanVault: boundary.scan, createNote: boundary.create, writeVaultTextFile: boundary.writeArchive, readNote: boundary.read }));
+vi.mock('./lib/vault', async (original) => {
+    const actual = await original<typeof import('./lib/vault')>();
+    return { ...actual, IN_TAURI: true, scanVault: boundary.scan, createNote: boundary.create, writeVaultTextFile: boundary.writeArchive, readNote: boundary.read,
+        writeNote: (...args: Parameters<typeof actual.writeNote>) => boundary.writeNote.getMockImplementation() ? boundary.writeNote(...args) : actual.writeNote(...args) };
+});
 vi.mock('./lib/piSessionBridge', () => ({ getPiSessionSnapshot: () => ({ sessionId: 'pi-proof' }), requestSharedPiRestart: boundary.restart }));
 const initial = useAppStore.getState();
 const depth = { rounds: 1, subQuestions: 2, maxSources: 8, maxGeneratedNotes: 2 };
@@ -28,7 +33,7 @@ const file = (root: string, relPath: string) => ({ path: `${root}/${relPath}`, r
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => resolve = r); return { promise, resolve }; }
 function result() { const context = buildResearchContext({ query: 'test', activePath: null, selectedPaths: [], files: [], notes: {}, content: {}, limits: DEFAULT_DEEP_RESEARCH_LIMITS }); return JSON.parse(buildResearchPrompt({ runId: 'proof', query: 'test', folder: 'Research', context, depth }).match(/```json\n([\s\S]+?)\n```/)![1]); }
 function changeActiveVault() { const run = useAppStore.getState().deepResearch; useAppStore.setState({ vaultPath: '/new-vault', deepResearch: run ? { ...run, phase: 'cancelled', changeSet: null } : null, files: [file('/new-vault', 'Research/Report.md')], notes: {}, contentCache: { 'Research/Report.md': 'new vault content' }, activePath: 'Research/Report.md', content: 'new vault content', openFile: vi.fn(async () => undefined) }); }
-beforeEach(() => { vi.useFakeTimers(); backgroundWork.resetForTests(); boundary.handlers.clear(); boundary.invoke.mockReset(); boundary.invoke.mockImplementation(async (name) => name === "vault_apply_research" ? ["Research/Report.md"] : undefined); boundary.scan.mockReset(); boundary.create.mockReset(); boundary.writeArchive.mockReset(); boundary.read.mockReset(); boundary.stat.mockReset(); useAppStore.setState({ ...initial, vaultPath: '/old-vault', files: [], notes: {}, contentCache: {}, deepResearch: null }); });
+beforeEach(() => { vi.useFakeTimers(); backgroundWork.resetForTests(); boundary.handlers.clear(); boundary.invoke.mockReset(); boundary.invoke.mockImplementation(async (name) => name === "vault_apply_research" ? ["Research/Report.md"] : undefined); boundary.scan.mockReset(); boundary.create.mockReset(); boundary.writeArchive.mockReset(); boundary.read.mockReset(); boundary.stat.mockReset(); boundary.writeNote.mockReset(); useAppStore.setState({ ...initial, vaultPath: '/old-vault', files: [], notes: {}, contentCache: {}, deepResearch: null }); });
 afterEach(async () => { await useAppStore.getState().cancelDeepResearch(); useAppStore.getState().discardDeepResearch(); useAppStore.setState(initial); backgroundWork.resetForTests(); vi.clearAllTimers(); vi.useRealTimers(); });
 describe('Actual store Research async lifecycle boundaries, mocked I/O', () => {
     it('cancels a queued research context build before it can submit to Pi', async () => {
@@ -61,6 +66,69 @@ describe('Actual store Research async lifecycle boundaries, mocked I/O', () => {
         await apply;
         expect(useAppStore.getState().contentCache['Research/Report.md']).toBe('new vault content');
         expect(useAppStore.getState().openFile).not.toHaveBeenCalled();
+    });
+    it('keeps text typed into a target note while the reviewed apply is writing', async () => {
+        const target = file('/old-vault', 'Notes/Topic.md');
+        boundary.scan.mockResolvedValue([target]);
+        const typed = deferred<void>();
+        boundary.invoke.mockImplementation(async (name) => {
+            if (name !== 'vault_apply_research') return undefined;
+            useAppStore.getState().setContentFromEditor('original text typed during apply');
+            typed.resolve();
+            return ['Notes/Topic.md'];
+        });
+        const op = { kind: 'update' as const, relPath: 'Notes/Topic.md', title: 'Topic', content: 'original text\n\nresearch addition', expectedBytes: 'original text' };
+        useAppStore.setState({
+            files: [target], notes: { 'Notes/Topic.md': { relPath: 'Notes/Topic.md', title: 'Topic', rawLinks: [], tags: [], aliases: [] } }, contentCache: { 'Notes/Topic.md': 'original text' }, activePath: 'Notes/Topic.md', content: 'original text', activeContentState: 'ready',
+            openFile: vi.fn(async () => undefined),
+            deepResearch: { runId: 'proof-run', vaultRoot: '/old-vault', vaultGeneration: 0, phase: 'review', changeSet: { ops: [op], folder: 'Research', reportRelPath: 'Research/Report.md', createdRelPaths: [], updatedRelPaths: [op.relPath], skippedDuplicates: [] } } as never,
+        });
+        const apply = useAppStore.getState().applyDeepResearch();
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.dynamicImportSettled();
+        await apply;
+        await typed.promise;
+        const state = useAppStore.getState();
+        expect(state.content).toBe('original text typed during apply');
+        expect(state.contentCache['Notes/Topic.md']).toBe('original text typed during apply');
+        expect(state.textSaveState.pending).toBe(1);
+        expect(state.status).toContain('unsaved edits were kept in Notes/Topic.md');
+    });
+    it('does not report the notes it just created as kept unsaved edits', async () => {
+        const op = { kind: 'create' as const, relPath: 'Research/Report.md', title: 'Report', content: 'fresh research content' };
+        boundary.scan.mockResolvedValue([file('/old-vault', op.relPath)]);
+        boundary.invoke.mockImplementation(async (name) => name === 'vault_apply_research' ? [op.relPath]
+            : name === 'vault_read_bytes' ? new TextEncoder().encode(op.content).buffer : undefined);
+        useAppStore.setState({ openFile: vi.fn(async () => undefined), deepResearch: { runId: 'proof-run', vaultRoot: '/old-vault', vaultGeneration: 0, phase: 'review', changeSet: { ops: [op], folder: 'Research', reportRelPath: op.relPath, createdRelPaths: [op.relPath], updatedRelPaths: [], skippedDuplicates: [] } } as never });
+        const apply = useAppStore.getState().applyDeepResearch();
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.dynamicImportSettled();
+        await apply;
+        const state = useAppStore.getState();
+        expect(state.contentCache[op.relPath]).toBe(op.content);
+        expect(state.status ?? '').not.toContain('unsaved edits were kept');
+        expect(state.notes[op.relPath]).toBeDefined();
+    });
+    it('keeps the reviewed change set when a pending target edit cannot be saved first', async () => {
+        const target = file('/old-vault', 'Notes/Topic.md');
+        boundary.writeNote.mockImplementation(async () => { throw new Error('disk is busy'); });
+        const op = { kind: 'update' as const, relPath: 'Notes/Topic.md', title: 'Topic', content: 'original text\n\nresearch addition', expectedBytes: 'original text' };
+        const changeSet = { ops: [op], folder: 'Research', reportRelPath: 'Research/Report.md', createdRelPaths: [], updatedRelPaths: [op.relPath], skippedDuplicates: [] };
+        useAppStore.setState({
+            files: [target], notes: { 'Notes/Topic.md': { relPath: 'Notes/Topic.md', title: 'Topic', rawLinks: [], tags: [], aliases: [] } }, contentCache: { 'Notes/Topic.md': 'original text' }, activePath: 'Notes/Topic.md', content: 'original text', activeContentState: 'ready',
+            openFile: vi.fn(async () => undefined),
+            deepResearch: { runId: 'proof-run', vaultRoot: '/old-vault', vaultGeneration: 0, phase: 'review', changeSet } as never,
+        });
+        useAppStore.getState().setContentFromEditor('original text, edited');
+        const apply = useAppStore.getState().applyDeepResearch();
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.dynamicImportSettled();
+        await apply;
+        const run = useAppStore.getState().deepResearch!;
+        expect(run.phase).toBe('review');
+        expect(run.changeSet).toBe(changeSet);
+        expect(run.error).toContain('could not be saved first');
+        expect(boundary.invoke.mock.calls.some(([name]) => name === 'vault_apply_research')).toBe(false);
     });
     it('must not start an archive write when its page fetch finishes after a vault switch', async () => {
         const fetch = deferred<unknown>();

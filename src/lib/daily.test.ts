@@ -8,6 +8,7 @@ import {
   parseEvents,
   serializeEvents,
   holidaysForYear,
+  shiftISO,
 } from "./daily";
 
 describe("localISO", () => {
@@ -123,5 +124,25 @@ describe("holidaysForYear", () => {
     expect(h["2026-11-26"]).toBe("Thanksgiving"); // 4th Thursday of Nov 2026
     expect(h["2026-05-25"]).toBe("Memorial Day"); // last Monday of May 2026
     expect(h["2026-01-19"]).toBe("Martin Luther King Jr. Day"); // 3rd Mon Jan
+  });
+});
+
+describe("shiftISO", () => {
+  it("shifts days across month and year boundaries", () => {
+    expect(shiftISO("2026-01-31", 1)).toBe("2026-02-01");
+    expect(shiftISO("2026-12-31", 7)).toBe("2027-01-07");
+    expect(shiftISO("2026-03-01", -1)).toBe("2026-02-28");
+  });
+  it("clamps the day when a month shift lands in a shorter month", () => {
+    expect(shiftISO("2026-01-31", 0, 1)).toBe("2026-02-28");
+    expect(shiftISO("2024-01-31", 0, 1)).toBe("2024-02-29");
+    expect(shiftISO("2026-03-31", 0, -1)).toBe("2026-02-28");
+    expect(shiftISO("2026-05-31", 0, -1)).toBe("2026-04-30");
+    expect(shiftISO("2026-12-15", 0, 1)).toBe("2027-01-15");
+    expect(shiftISO("2026-01-15", 0, -1)).toBe("2025-12-15");
+  });
+  it("clamps Feb 29 on a year shift", () => {
+    expect(shiftISO("2024-02-29", 0, 0, 1)).toBe("2025-02-28");
+    expect(shiftISO("2024-02-29", 0, 0, -4)).toBe("2020-02-29");
   });
 });
