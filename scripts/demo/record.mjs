@@ -169,8 +169,25 @@ async function wipeTheme(theme, ms = 1100) {
     document.documentElement.style.setProperty("--rec-dur", `${dur}ms`);
     const vt = document.startViewTransition(async () => {
       useAppStore.getState().setTheme(t);
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // Let React commit the theme. Rendering is held during this callback,
+      // so waiting on animation frames here can stall until the browser aborts.
+      await new Promise((r) => setTimeout(r, 120));
     });
+    await vt.ready;
+    // View transitions run on the browser's real clock, so under SLOW the wipe
+    // would finish in a few frames. Pause it and step it in page time instead.
+    const anims = document.getAnimations().filter((a) => a.effect?.pseudoElement?.startsWith("::view-transition"));
+    anims.forEach((a) => a.pause());
+    const t0 = performance.now();
+    await new Promise((done) => {
+      const step = () => {
+        const el = Math.min(dur, performance.now() - t0);
+        anims.forEach((a) => { a.currentTime = el; });
+        if (el < dur) requestAnimationFrame(step); else done();
+      };
+      requestAnimationFrame(step);
+    });
+    anims.forEach((a) => a.finish());
     await vt.finished;
   }, [theme, ms]);
 }
