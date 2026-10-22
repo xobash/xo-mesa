@@ -120,7 +120,7 @@ fn storage(app: &AppHandle) -> Result<std::path::PathBuf, String> {
         .app_data_dir()
         .map_err(|_| "Cannot locate private app storage")?
         .join("vault-state");
-    crate::sync::protect_private_directory(
+    crate::sync::protect_private_directory_once(
         &dir,
         &[
             "recent-vaults.json",

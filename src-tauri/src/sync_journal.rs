@@ -363,8 +363,42 @@ pub fn save_peer_baseline(
     fingerprint: &str,
     common: Vec<JournalEntry>,
 ) -> std::io::Result<()> {
+    store_peer_baseline(root, fingerprint, common, false)
+}
+
+/// Incoming `/sync/base`: the fingerprint is self-reported, so only a peer
+/// that already exchanged a journal under it, and is not retired, may store a
+/// baseline.
+pub fn save_bound_peer_baseline(
+    root: &Path,
+    fingerprint: &str,
+    common: Vec<JournalEntry>,
+) -> std::io::Result<()> {
+    store_peer_baseline(root, fingerprint, common, true)
+}
+
+fn store_peer_baseline(
+    root: &Path,
+    fingerprint: &str,
+    common: Vec<JournalEntry>,
+    require_binding: bool,
+) -> std::io::Result<()> {
     let _guard = journal_guard()?;
     let mut journal = load_journal_unlocked(root)?;
+    if require_binding
+        && (!journal.peer_bindings.contains_key(fingerprint)
+            || journal
+                .retired_fingerprints
+                .iter()
+                .any(|peer| peer == fingerprint))
+    {
+        return Err(invalid_data("sync base requires a journal exchange first"));
+    }
+    if !journal.peer_bases.contains_key(fingerprint)
+        && journal.peer_bases.len() >= MAX_JOURNAL_PEERS
+    {
+        return Err(invalid_data("too many peer sync bases"));
+    }
     journal.peer_bases.insert(fingerprint.to_string(), common);
     save_journal_unlocked(root, &journal)?;
     Ok(())

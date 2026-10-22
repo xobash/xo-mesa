@@ -52,6 +52,6 @@ describe("native commands that block stay off the main thread", () => {
 describe("watcher shutdown lock lifetime", () => {
   it("removes the watcher before dropping it outside the registry lock", () => {
     const { body } = commandBody(vaultwatch, "vault_unwatch");
-    expect(body).toMatch(/let removed = [^;]*map\.remove\(&id\)[^;]*;\s*drop\(removed\)/s);
+    expect(body).toMatch(/let removed = [^;]*\.remove\(id\b[^;]*;\s*drop\(removed\)/s);
   });
 });

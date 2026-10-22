@@ -109,7 +109,13 @@ fn summarize_tree(pid: u32, sampled_at_ms: u64, rows: &[ProcessRow]) -> ProcessT
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn process_rows() -> Result<Vec<ProcessRow>, String> {
-    let output = Command::new("ps")
+    // A fixed system path keeps a PATH entry (such as a vault tool folder)
+    // from substituting another program.
+    let ps = ["/bin/ps", "/usr/bin/ps"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).is_file())
+        .ok_or("Could not find the system ps tool")?;
+    let output = Command::new(ps)
         .args(["-axo", "pid=,ppid=,rss=,time="])
         .output()
         .map_err(|err| format!("Could not run ps: {err}"))?;

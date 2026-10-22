@@ -529,6 +529,19 @@ fn pi_command(pi: &Path) -> Result<CommandBuilder, String> {
     Ok(CommandBuilder::new(pi.to_string_lossy().to_string()))
 }
 
+/// `cmd.exe` fallback for a `.cmd`/`.bat` shim. `call` keeps the first
+/// character after `/c` from being a quote, so cmd preserves the quoted shim
+/// path and quoted extension arguments (paths with spaces). The shim must not
+/// find `node` or other helpers in the vault working directory.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn cmd_shim_command(comspec: &str, shim: &Path) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new(comspec);
+    cmd.args(["/d", "/c", "call"]);
+    cmd.arg(shim.as_os_str());
+    cmd.env("NoDefaultCurrentDirectoryInExePath", "1");
+    cmd
+}
+
 #[cfg(target_os = "windows")]
 fn pi_command(pi: &Path) -> Result<CommandBuilder, String> {
     if windows_launches_directly(pi) {
@@ -550,12 +563,7 @@ fn pi_command(pi: &Path) -> Result<CommandBuilder, String> {
                 return node_script_command(&script);
             }
 
-            let mut cmd = CommandBuilder::new(comspec());
-            cmd.arg("/d");
-            cmd.arg("/s");
-            cmd.arg("/c");
-            cmd.arg(pi.to_string_lossy().to_string());
-            return Ok(cmd);
+            return Ok(cmd_shim_command(&comspec(), pi));
         }
     }
 
@@ -1466,6 +1474,31 @@ pub fn stop_all_sessions(state: &TerminalState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cmd_shim_fallback_keeps_quoted_paths_and_skips_the_vault_folder() {
+        let shim = Path::new(r"C:\Program Files\nodejs\pi.cmd");
+        let cmd = cmd_shim_command(r"C:\Windows\System32\cmd.exe", shim);
+        let argv: Vec<_> = cmd
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            argv,
+            [
+                r"C:\Windows\System32\cmd.exe",
+                "/d",
+                "/c",
+                "call",
+                r"C:\Program Files\nodejs\pi.cmd"
+            ]
+        );
+        assert_eq!(
+            cmd.get_env("NoDefaultCurrentDirectoryInExePath"),
+            Some(std::ffi::OsStr::new("1"))
+        );
+    }
 
     #[test]
     fn deleted_cached_pi_is_resolved_again_and_failed_lookup_clears_cache() {

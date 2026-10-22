@@ -105,12 +105,72 @@ fn build_batch(root: &Path, events: &[(EventKind, Vec<PathBuf>)]) -> Vec<WatchEv
 
 type FsDebouncer = Debouncer<RecommendedWatcher, RecommendedCache>;
 
-/// Live watchers, keyed by the id `vault_watch` returns. Dropping a debouncer
-/// stops its watch and joins its thread, so `vault_unwatch` is just a `remove`.
+/// Live watchers, keyed by the id `vault_watch` returns and owned by the
+/// window that started them. Dropping a debouncer stops its watch and joins
+/// its thread, so removal is a `remove` followed by a drop outside the lock.
 #[derive(Default)]
 pub struct WatchState {
-    inner: Mutex<HashMap<u32, FsDebouncer>>,
+    inner: Registry<FsDebouncer>,
+}
+
+struct Registry<T> {
+    entries: Mutex<HashMap<u32, (String, T)>>,
     next: AtomicU32,
+}
+
+impl<T> Default for Registry<T> {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            next: AtomicU32::new(0),
+        }
+    }
+}
+
+impl<T> Registry<T> {
+    fn insert(&self, owner: &str, value: T) -> Result<u32, String> {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        self.entries
+            .lock()
+            .map_err(|_| "watch registry poisoned".to_string())?
+            .insert(id, (owner.to_string(), value));
+        Ok(id)
+    }
+
+    /// Unknown ids are a no-op; another window's watcher is refused.
+    fn remove(&self, id: u32, owner: &str) -> Result<Option<T>, String> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "watch registry poisoned".to_string())?;
+        match entries.get(&id) {
+            None => Ok(None),
+            Some((label, _)) if label != owner => {
+                Err("vault watcher belongs to another window".into())
+            }
+            Some(_) => Ok(entries.remove(&id).map(|(_, value)| value)),
+        }
+    }
+
+    fn remove_owner(&self, owner: &str) -> Vec<T> {
+        let Ok(mut entries) = self.entries.lock() else {
+            return Vec::new();
+        };
+        let ids: Vec<u32> = entries
+            .iter()
+            .filter(|(_, (label, _))| label == owner)
+            .map(|(id, _)| *id)
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| entries.remove(&id).map(|(_, value)| value))
+            .collect()
+    }
+}
+
+/// Stop every watcher a destroyed window started.
+pub fn revoke_window(state: &WatchState, label: &str) {
+    let removed = state.inner.remove_owner(label);
+    drop(removed);
 }
 
 /// Start watching `root` recursively. Returns an id for `vault_unwatch`.
@@ -122,6 +182,7 @@ pub struct WatchState {
 #[tauri::command(async)]
 pub fn vault_watch(
     app: tauri::AppHandle,
+    window: tauri::Window,
     state: tauri::State<'_, WatchState>,
     root: String,
     on_event: Channel<Vec<WatchEvent>>,
@@ -157,26 +218,42 @@ pub fn vault_watch(
         .watch(&root_path, RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
 
-    let id = state.next.fetch_add(1, Ordering::Relaxed);
-    state
-        .inner
-        .lock()
-        .map_err(|_| "watch registry poisoned".to_string())?
-        .insert(id, debouncer);
-    Ok(id)
+    state.inner.insert(window.label(), debouncer)
 }
 
-/// Stop a watcher started by `vault_watch`. Idempotent: an unknown id is a
-/// no-op, so a double-unwatch (e.g. React strict-mode remount) is harmless.
+/// Stop a watcher started by `vault_watch` in the same window. Idempotent: an
+/// unknown id is a no-op, so a double-unwatch (e.g. React strict-mode remount)
+/// is harmless.
 #[tauri::command(async)]
-pub fn vault_unwatch(state: tauri::State<'_, WatchState>, id: u32) {
-    let removed = state.inner.lock().ok().and_then(|mut map| map.remove(&id));
+pub fn vault_unwatch(
+    window: tauri::Window,
+    state: tauri::State<'_, WatchState>,
+    id: u32,
+) -> Result<(), String> {
+    let removed = state.inner.remove(id, window.label())?;
     drop(removed);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watchers_belong_to_their_window() {
+        let registry = Registry::default();
+        let main = registry.insert("main", 1).unwrap();
+        let doc = registry.insert("doc-1", 2).unwrap();
+        let doc_again = registry.insert("doc-1", 3).unwrap();
+        assert!(registry.remove(main, "doc-1").is_err());
+        assert_eq!(registry.remove(main, "main").unwrap(), Some(1));
+        assert_eq!(registry.remove(main, "main").unwrap(), None);
+        let mut destroyed = registry.remove_owner("doc-1");
+        destroyed.sort();
+        assert_eq!(destroyed, vec![2, 3]);
+        assert_eq!(registry.remove(doc, "doc-1").unwrap(), None);
+        assert_eq!(registry.remove(doc_again, "doc-1").unwrap(), None);
+    }
     use notify_debouncer_full::notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
 
     fn p(s: &str) -> PathBuf {

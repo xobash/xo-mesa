@@ -642,20 +642,19 @@ pub(super) async fn handle_hyper(
     }
 
     if path == "/sync/journal" && method == HyperMethod::GET {
-        return match sync_core::load_journal(&root) {
-            Ok(journal) => match sync_core::journal_wire_bytes(&journal)
+        let journal_root = root.as_ref().clone();
+        let loaded = tokio::task::spawn_blocking(move || {
+            let journal = sync_core::load_journal(&journal_root)
+                .map_err(|error| format!("journal unavailable: {error}"))?;
+            sync_core::journal_wire_bytes(&journal)
                 .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
-            {
-                Ok(body) => hyper_json(body),
-                Err(error) => hyper_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("journal encode failed: {error}"),
-                ),
-            },
-            Err(error) => hyper_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("journal unavailable: {error}"),
-            ),
+                .map_err(|error| format!("journal encode failed: {error}"))
+        })
+        .await;
+        return match loaded {
+            Ok(Ok(body)) => hyper_json(body),
+            Ok(Err(error)) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+            Err(error) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         };
     }
 
@@ -785,7 +784,7 @@ pub(super) async fn handle_hyper(
                 })
                 .collect();
             let common = sync_core::common_baseline(&current, &offered);
-            sync_core::save_peer_baseline(&base_root, &sender, common)
+            sync_core::save_bound_peer_baseline(&base_root, &sender, common)
                 .map_err(|error| error.to_string())
         })
         .await;
@@ -1244,6 +1243,7 @@ pub fn sync_start(
                 });
             }
         });
+        finish_server_runtime(runtime);
     });
     *guard = Some(ServerState {
         running,
@@ -1256,9 +1256,21 @@ pub fn sync_start(
     Ok(())
 }
 
+/// Bound server shutdown. Dropping a runtime waits for every blocking task
+/// (a manifest walk, a staged receive) without limit; abandoned tasks finish
+/// on their own threads and still release their vault locks.
+pub(super) const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub(super) fn finish_server_runtime(runtime: tokio::runtime::Runtime) {
+    runtime.shutdown_timeout(SERVER_SHUTDOWN_TIMEOUT);
+}
+
 // Blocking work: run off the main (UI) thread.
 #[tauri::command(async)]
 pub fn sync_stop() -> Result<(), String> {
+    // Hold the state lock until the old threads exit, so a concurrent start
+    // cannot bind the port while the old listener still owns it. The join is
+    // bounded by the server runtime shutdown timeout.
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(st) = guard.take() {
         st.running.store(false, Ordering::Relaxed);

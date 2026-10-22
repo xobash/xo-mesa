@@ -10,6 +10,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const READ_FAILED: u32 = u32::MAX;
 const READ_SKIPPED: u32 = u32::MAX - 1;
 const DEFAULT_MAX_TEXT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// Requests above this are refused; the frontend sends at most 64 paths.
+const MAX_TEXT_READ_BATCH: usize = 128;
+
+/// A renderer may lower the automatic text limit but never raise it.
+fn text_file_limit(requested: Option<u64>) -> u64 {
+    requested.map_or(DEFAULT_MAX_TEXT_FILE_BYTES, |limit| {
+        limit.min(DEFAULT_MAX_TEXT_FILE_BYTES)
+    })
+}
 /// A bulk read is background work.  Eight concurrent filesystem reads retain
 /// capacity for the WebView2 UI thread and active editor work on high-core PCs.
 const DEFAULT_BULK_READ_WORKERS: usize = 8;
@@ -27,7 +36,9 @@ fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
     }
     let mut p = root.to_path_buf();
     for seg in rel.replace('\\', "/").split('/') {
-        if seg.is_empty() || seg == "." || seg == ".." {
+        // Hidden entries (`.git`, `.env`, recovery folders) and `node_modules`
+        // are not vault documents; `vault_scan` never lists them.
+        if seg.is_empty() || seg.starts_with('.') || seg == "node_modules" {
             return None;
         }
         // Only plain names: a Windows drive prefix such as `D:x` would make
@@ -44,10 +55,19 @@ fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(p)
 }
 
-/// The joined path must still resolve inside the vault once symlinked
-/// directories are followed.
+/// The joined path must still resolve to a visible vault entry once links and
+/// Windows 8.3 short names (`GIT~1`) are resolved.
 fn confined(canonical_root: &Path, path: &Path) -> bool {
-    std::fs::canonicalize(path).is_ok_and(|resolved| resolved.starts_with(canonical_root))
+    std::fs::canonicalize(path).is_ok_and(|resolved| visible_under(canonical_root, &resolved))
+}
+
+fn visible_under(canonical_root: &Path, resolved: &Path) -> bool {
+    resolved.strip_prefix(canonical_root).is_ok_and(|rel| {
+        rel.components().all(|part| {
+            matches!(part, std::path::Component::Normal(name)
+                if name.to_str().is_some_and(|name| !name.starts_with('.') && name != "node_modules"))
+        })
+    })
 }
 
 /// Workers pull paths from a shared cursor and store results in request order.
@@ -180,11 +200,14 @@ pub async fn vault_read_text(
     max_text_file_bytes: Option<u64>,
     worker_limit: Option<usize>,
 ) -> Result<tauri::ipc::Response, String> {
+    if rels.len() > MAX_TEXT_READ_BATCH {
+        return Err("Text read batch exceeds 128 files".into());
+    }
     let path = crate::vaultscope::require_approved(&app, &root)?;
     // Blocking syscall work: keep it off the async runtime's worker so other
     // IPC (the editor's own saves, terminal traffic) stays responsive while a
     // batch is in flight.
-    let max_text_file_bytes = max_text_file_bytes.unwrap_or(DEFAULT_MAX_TEXT_FILE_BYTES);
+    let max_text_file_bytes = text_file_limit(max_text_file_bytes);
     let body = tauri::async_runtime::spawn_blocking(move || {
         encode(&read_all(&path, &rels, max_text_file_bytes, worker_limit))
     })
@@ -350,6 +373,49 @@ mod tests {
         assert_eq!(got[3], None, "empty");
         assert_eq!(got[4], Some(b"inside".to_vec()));
         let _ = fs::remove_file(v.0.parent().unwrap().join("mesa-outside.md"));
+    }
+
+    #[test]
+    fn hidden_and_dependency_paths_are_not_vault_text() {
+        let v = TempVault::new("hidden");
+        v.file(".git/config", b"[core]");
+        v.file(".env", b"TOKEN=x");
+        v.file(".mesa-trash/1/a.md", b"deleted");
+        v.file("node_modules/pkg/readme.md", b"dependency");
+        v.file("in.md", b"inside");
+        let rels = [
+            ".git/config",
+            ".env",
+            ".mesa-trash/1/a.md",
+            "node_modules/pkg/readme.md",
+            "in.md",
+        ];
+        let got = round_trip(&v.0, &rels);
+        assert_eq!(got, vec![None, None, None, None, Some(b"inside".to_vec())]);
+        let owned: Vec<String> = rels.iter().map(|rel| rel.to_string()).collect();
+        let hashes = fingerprint_all(&v.0, &owned);
+        assert!(hashes[..4].iter().all(Option::is_none));
+        assert!(hashes[4].is_some());
+    }
+
+    // Unix stands in for a Windows 8.3 alias with a link: both spell a hidden
+    // folder under a visible name that the OS resolves.
+    #[cfg(unix)]
+    #[test]
+    fn short_name_aliases_of_hidden_folders_are_not_read() {
+        let v = TempVault::new("alias");
+        v.file(".git/config", b"[core]");
+        std::os::unix::fs::symlink(".git", v.0.join("GIT~1")).unwrap();
+        assert_eq!(round_trip(&v.0, &["GIT~1/config"]), vec![None]);
+        let hashes = fingerprint_all(&v.0, &["GIT~1/config".to_string()]);
+        assert_eq!(hashes, vec![None]);
+    }
+
+    #[test]
+    fn renderer_text_limit_cannot_exceed_the_default() {
+        assert_eq!(text_file_limit(None), DEFAULT_MAX_TEXT_FILE_BYTES);
+        assert_eq!(text_file_limit(Some(u64::MAX)), DEFAULT_MAX_TEXT_FILE_BYTES);
+        assert_eq!(text_file_limit(Some(4)), 4);
     }
 
     #[cfg(unix)]
@@ -617,7 +683,7 @@ fn fingerprint_all(root: &Path, rels: &[String]) -> Vec<Option<String>> {
     rels.iter()
         .map(|rel| {
             let path = safe_join(&canonical_root, rel)?.canonicalize().ok()?;
-            if !path.starts_with(&canonical_root) {
+            if !visible_under(&canonical_root, &path) {
                 return None;
             }
             let mut file = std::fs::File::open(path).ok()?;

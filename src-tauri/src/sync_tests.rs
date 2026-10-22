@@ -113,6 +113,33 @@ fn peer_removal_persists_and_rejoining_reactivates_identity() {
 }
 
 #[test]
+fn incoming_sync_bases_need_a_bound_unretired_peer_and_stay_bounded() {
+    let dir = std::env::temp_dir().join(format!("mesa-bound-base-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = || {
+        vec![JournalEntry {
+            rel: "note.md".into(),
+            size: 1,
+            hash: "a".into(),
+        }]
+    };
+    assert!(save_bound_peer_baseline(&dir, "unknown", base()).is_err());
+    assert!(load_journal(&dir).unwrap().peer_bases.is_empty());
+    bind_journal_peer(&dir, "known", "peer", false).unwrap();
+    save_bound_peer_baseline(&dir, "known", base()).unwrap();
+    assert_eq!(peer_baseline(&dir, "known").unwrap(), base());
+    retire_journal_peer(&dir, "known").unwrap();
+    assert!(save_bound_peer_baseline(&dir, "known", base()).is_err());
+    for index in 1..MAX_JOURNAL_PEERS {
+        save_peer_baseline(&dir, &format!("peer-{index}"), base()).unwrap();
+    }
+    assert!(save_peer_baseline(&dir, "one-more", base()).is_err());
+    save_peer_baseline(&dir, "peer-1", Vec::new()).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn retired_identity_stays_retired_when_first_seen_incoming() {
     let dir = std::env::temp_dir().join(format!("mesa-retired-incoming-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

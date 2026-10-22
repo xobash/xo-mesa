@@ -25,7 +25,7 @@ describe("native filesystem and remote-browser scopes", () => {
       (permission) => typeof permission === "object" && permission.identifier === "fs:scope",
     );
     expect(fsScope).toEqual({ identifier: "fs:scope", allow: [] });
-    expect(tauriConfig.app.security.assetProtocol).toEqual({ enable: true, scope: [] });
+    expect(tauriConfig.app.security.assetProtocol).toEqual({ enable: true, scope: { allow: [], deny: [], requireLiteralLeadingDot: true } });
     expect(tauriConfig.plugins.fs.requireLiteralLeadingDot).toBe(true);
   });
 

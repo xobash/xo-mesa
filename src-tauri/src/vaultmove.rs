@@ -83,6 +83,12 @@ fn rename_no_replace(
     }) {
         return Err("rename accepts visible vault files only".into());
     }
+    if [from_rel, to_rel]
+        .iter()
+        .any(|rel| !crate::vaultscope::resolves_visible(root, &rel.replace('\\', "/")))
+    {
+        return Err("rename accepts visible vault files only".into());
+    }
     let from = safe_relative_path(from_rel).ok_or("invalid rename source")?;
     let to = safe_relative_path(to_rel).ok_or("invalid rename destination")?;
     if from == to {
@@ -177,6 +183,22 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    // Unix stands in for a Windows 8.3 alias with a link: both spell a hidden
+    // folder under a visible name that resolves to it.
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_short_name_alias_of_a_hidden_folder() {
+        let vault = TempVault::new("short-name");
+        vault.write("a.md", "note");
+        vault.write(".git/hooks/README", "hooks");
+        std::os::unix::fs::symlink(".git", vault.0.join("GIT~1")).unwrap();
+        let error =
+            rename_no_replace(&vault.0, "a.md", "GIT~1/hooks/post-checkout", false).unwrap_err();
+        assert_eq!(error, "rename accepts visible vault files only");
+        assert!(vault.0.join("a.md").exists());
+        assert!(!vault.0.join(".git/hooks/post-checkout").exists());
     }
 
     #[test]

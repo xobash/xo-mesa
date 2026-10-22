@@ -31,7 +31,7 @@ fn create_directory(root: &Path, rel: &str) -> Result<(), String> {
     if rel.is_empty() {
         return Ok(());
     }
-    if !visible(rel) {
+    if !visible(rel) || !crate::vaultscope::resolves_visible(root, rel) {
         return Err("invalid vault directory".into());
     }
     #[cfg(unix)]
@@ -90,7 +90,7 @@ pub async fn vault_move_to_recovery(
 ) -> Result<(), String> {
     main_only(&window)?;
     let (root, rel) = crate::vaultscope::approved_path(&app, &path)?;
-    if !visible(&rel) {
+    if !visible(&rel) || !crate::vaultscope::resolves_visible(&root, &rel) {
         return Err("select a visible vault entry".into());
     }
     let access = crate::vaulttransaction::access(&root).await?;
@@ -118,7 +118,10 @@ pub async fn vault_restore_recovery(
 ) -> Result<(), String> {
     main_only(&window)?;
     let root = crate::vaultscope::require_approved(&app, &root)?;
-    if !recovery(&trash_rel_path) || !visible(&target_rel_path) {
+    if !recovery(&trash_rel_path)
+        || !visible(&target_rel_path)
+        || !crate::vaultscope::resolves_visible(&root, &target_rel_path)
+    {
         return Err("invalid recovery restore".into());
     }
     let access = crate::vaulttransaction::access(&root).await?;
@@ -385,6 +388,20 @@ mod tests {
         assert!(recovery(".mesa-trash/123/notes/a.md"));
         assert!(artifact(".note.md.mesa-rescue-123-ab.tmp").is_some());
         assert!(artifact(".note.md.mesa-other-123-ab.tmp").is_none());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn directory_creation_rejects_a_short_name_alias_of_a_hidden_folder() {
+        let root = std::env::temp_dir().join(format!("mesa-ops-alias-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::os::unix::fs::symlink(".git", root.join("GIT~1")).unwrap();
+        assert_eq!(
+            create_directory(&root, "GIT~1/hooks/new").unwrap_err(),
+            "invalid vault directory"
+        );
+        assert!(!root.join(".git/hooks/new").exists());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn creates_folders_moves_directories_and_preserves_destination_collisions() {

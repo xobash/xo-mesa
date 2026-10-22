@@ -43,7 +43,9 @@ does not modify the vault.
 Receive serves the currently open vault. Switching vaults stops the old
 listener before the new vault becomes active, then starts a listener for the
 new vault if Receive was on. Changing the key, port or bind address while receiving also
-restarts the listener with the new setting.
+restarts the listener with the new setting. Stopping waits at most two seconds
+for in-flight server work; unfinished file work completes in the background and
+keeps its own vault locks.
 Conflict copies use the saved peer name when available; an address-safe label
 is used for unnamed peers.
 
@@ -154,7 +156,10 @@ Closing the menu stops discovery and clears consent; restart never restores it.
 Merely opening Sync or enabling Receive does not broadcast. It never broadcasts the
 vault path, sync key, or file contents. A discovery packet is unauthenticated,
 so the advertised fingerprint is a convenience for first contact — verify it
-out-of-band for certainty.
+out-of-band for certainty. Mesa lists a nearby device at the packet's source
+address, not at an address written inside the packet. It reports each device at
+most once every five seconds unless its details change, and at most 16 devices
+per second.
 
 ## Default Flow
 
@@ -409,7 +414,9 @@ If the final save fails, the reviewed buffer remains in save recovery. Reopen a
 stale comparison instead of overriding newer disk content. This is an explicit
 local text review, not an automatic three-way merge or permission to overwrite
 another device. Later syncs use the recorded common version for conditional
-one-sided updates and keep divergent changes as conflict copies.
+one-sided updates and keep divergent changes as conflict copies. A receiver
+records a common version only for a device that already exchanged a journal
+under that certificate fingerprint and is not removed, and keeps at most 256.
 
 Outgoing sync reserves one operation before setup, saves pending text first,
 and owns one cancellable background-queue admission. Cancelling while the job is

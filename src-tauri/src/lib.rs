@@ -68,12 +68,13 @@ fn quit_after_save(app: tauri::AppHandle, state: tauri::State<'_, QuitGuard>) {
 /// access, so everything else is refused.
 fn navigation_allowed(url: &tauri::Url) -> bool {
     match url.scheme() {
-        // `asset` serves approved vault files to PDF/media frames.
-        "tauri" | "asset" => true,
+        // Vault files load as `asset` subresources (images, media, fetch),
+        // never as documents; PDF frames use registered blob URLs.
+        "tauri" => true,
         "about" => url.as_str() == "about:blank" || url.as_str() == "about:srcdoc",
         "http" | "https" => {
             let host = url.host_str();
-            matches!(host, Some("tauri.localhost" | "asset.localhost"))
+            matches!(host, Some("tauri.localhost"))
                 || (cfg!(debug_assertions) && matches!(host, Some("localhost" | "127.0.0.1")))
         }
         _ => false,
@@ -366,6 +367,7 @@ pub fn run() {
                 terminal::revoke_window(&app.state::<terminal::TerminalState>(), label);
                 browse::revoke_resource_window(label);
                 htmlrun::revoke_window(label);
+                vaultwatch::revoke_window(&app.state::<vaultwatch::WatchState>(), label);
             }
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
                 use tauri::{Emitter, Manager};
@@ -443,9 +445,10 @@ mod navigation_tests {
         assert!(allowed("tauri://localhost/index.html"));
         assert!(allowed("http://tauri.localhost/index.html"));
         assert!(allowed("about:blank"));
-        assert!(allowed("asset://localhost/vault/a.pdf"));
-        assert!(allowed("http://asset.localhost/vault/a.pdf"));
         for url in [
+            "asset://localhost/vault/a.pdf",
+            "http://asset.localhost/vault/.git/config",
+            "https://asset.localhost/vault/page.html",
             "data:text/html,<h1>untrusted</h1>",
             "blob:tauri://localhost/00000000-0000-0000-0000-000000000000",
             "about:config",

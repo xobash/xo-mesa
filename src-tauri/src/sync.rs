@@ -1,6 +1,6 @@
 #[path = "sync_identity.rs"]
 mod identity;
-pub(crate) use identity::protect_private_directory;
+pub(crate) use identity::protect_private_directory_once;
 pub use identity::*;
 #[path = "sync_server.rs"]
 mod server;
@@ -1958,6 +1958,7 @@ pub fn sync_discovery_start(
         };
         let mut last_announce = Instant::now() - Duration::from_secs(10);
         let mut buf = [0u8; 4096];
+        let mut filter = DiscoveryFilter::new(fingerprint);
         while running_thread.load(Ordering::Relaxed) {
             if last_announce.elapsed() >= Duration::from_secs(2) {
                 let _ = socket.send_to(&payload, &dest);
@@ -1966,17 +1967,12 @@ pub fn sync_discovery_start(
 
             match socket.recv_from(&mut buf) {
                 Ok((n, from)) => {
-                    let Ok(mut packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..n])
-                    else {
+                    let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..n]) else {
                         continue;
                     };
-                    if !packet.mesa_discovery || packet.fingerprint == fingerprint {
-                        continue;
+                    if let Some(packet) = filter.admit(packet, from.ip(), Instant::now()) {
+                        let _ = app.emit(DISCOVERY_EVENT, packet);
                     }
-                    if packet.host.trim().is_empty() || packet.host == "0.0.0.0" {
-                        packet.host = from.ip().to_string();
-                    }
-                    let _ = app.emit(DISCOVERY_EVENT, packet);
                 }
                 Err(e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
@@ -1990,6 +1986,84 @@ pub fn sync_discovery_start(
         handle: Some(handle),
     });
     Ok(())
+}
+
+/// Received announcements become at most one event per device per refresh
+/// interval, plus changes. The reply address is the packet source, never the
+/// advertised host, so a LAN sender cannot point Mesa at another machine.
+struct DiscoveryFilter {
+    own_fingerprint: String,
+    seen: HashMap<String, (Instant, DiscoveryPacket)>,
+    window_start: Option<Instant>,
+    window_emits: usize,
+}
+
+const DISCOVERY_REFRESH: Duration = Duration::from_secs(5);
+const DISCOVERY_FORGET: Duration = Duration::from_secs(20);
+const DISCOVERY_MAX_DEVICES: usize = 64;
+const DISCOVERY_MAX_EMITS_PER_SECOND: usize = 16;
+
+impl DiscoveryFilter {
+    fn new(own_fingerprint: String) -> Self {
+        Self {
+            own_fingerprint,
+            seen: HashMap::new(),
+            window_start: None,
+            window_emits: 0,
+        }
+    }
+
+    fn admit(
+        &mut self,
+        mut packet: DiscoveryPacket,
+        from: IpAddr,
+        now: Instant,
+    ) -> Option<DiscoveryPacket> {
+        if !packet.mesa_discovery
+            || packet.fingerprint == self.own_fingerprint
+            || packet.fingerprint.len() != 64
+            || !packet
+                .fingerprint
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || packet.name.len() > 256
+        {
+            return None;
+        }
+        packet.host = from.to_string();
+        if let Some((at, previous)) = self.seen.get(&packet.fingerprint) {
+            let unchanged = previous.host == packet.host
+                && previous.port == packet.port
+                && previous.name == packet.name
+                && previous.listening == packet.listening
+                && previous.protocol == packet.protocol
+                && previous.version == packet.version;
+            if unchanged && now.duration_since(*at) < DISCOVERY_REFRESH {
+                return None;
+            }
+        } else if self.seen.len() >= DISCOVERY_MAX_DEVICES {
+            self.seen
+                .retain(|_, (at, _)| now.duration_since(*at) < DISCOVERY_FORGET);
+            if self.seen.len() >= DISCOVERY_MAX_DEVICES {
+                return None;
+            }
+        }
+        match self.window_start {
+            Some(start) if now.duration_since(start) < Duration::from_secs(1) => {
+                if self.window_emits >= DISCOVERY_MAX_EMITS_PER_SECOND {
+                    return None;
+                }
+            }
+            _ => {
+                self.window_start = Some(now);
+                self.window_emits = 0;
+            }
+        }
+        self.window_emits += 1;
+        self.seen
+            .insert(packet.fingerprint.clone(), (now, packet.clone()));
+        Some(packet)
+    }
 }
 
 // Blocking work: run off the main (UI) thread.

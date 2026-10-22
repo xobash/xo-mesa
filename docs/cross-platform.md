@@ -185,7 +185,9 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   commands under the user npm bin directory can launch. On Windows Mesa now
   prefers those real `PATHEXT` launchers before a same-name extensionless file,
   launches Node shebang scripts through `node.exe`, and only falls back to
-  `cmd.exe /d /s /c` for `.cmd`/`.bat` wrappers when necessary. That avoids
+  `cmd.exe /d /c call` (with
+  `NoDefaultCurrentDirectoryInExePath=1`) for `.cmd`/`.bat` wrappers when
+  necessary. That avoids
   `CreateProcessW ... %1 is not a valid Win32 application` from Unix-style
   shims. When Mesa is launched from the desktop (not a terminal) it may inherit
   a minimal PATH, so the resolver also checks the standard Windows install

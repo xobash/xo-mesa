@@ -1211,3 +1211,110 @@ fn private_directory_clears_inherited_acl_grants_before_storage() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn hot_private_directory_is_protected_once_until_it_disappears() {
+    let dir = identity_test_dir("protect-once");
+    let protected = Default::default();
+    let calls = std::cell::Cell::new(0);
+    let count = |_: &std::path::Path, _: &[&str]| {
+        calls.set(calls.get() + 1);
+        Ok(())
+    };
+    for _ in 0..100 {
+        super::identity::protect_once_with(&protected, &dir, &["b.json", "a.json"], count).unwrap();
+    }
+    assert_eq!(calls.get(), 1);
+    // A different file list is a separate protection contract.
+    super::identity::protect_once_with(&protected, &dir, &["a.json"], count).unwrap();
+    assert_eq!(calls.get(), 2);
+    // A failed protection is not remembered.
+    let other = dir.join("nested");
+    std::fs::create_dir_all(&other).unwrap();
+    let failed = super::identity::protect_once_with(&protected, &other, &["a.json"], |_, _| {
+        Err("denied".into())
+    });
+    assert!(failed.is_err());
+    super::identity::protect_once_with(&protected, &other, &["a.json"], count).unwrap();
+    assert_eq!(calls.get(), 3);
+    // A removed directory is protected again when it is next used.
+    std::fs::remove_dir_all(&dir).unwrap();
+    super::identity::protect_once_with(&protected, &dir, &["a.json", "b.json"], |path, _| {
+        std::fs::create_dir_all(path).unwrap();
+        calls.set(calls.get() + 1);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(calls.get(), 4);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn discovery_uses_the_sender_address_and_limits_repeated_events() {
+    let packet = |fingerprint: &str, host: &str| DiscoveryPacket {
+        mesa_discovery: true,
+        version: "2.0".into(),
+        name: "Laptop".into(),
+        host: host.into(),
+        port: 47888,
+        protocol: "https".into(),
+        listening: true,
+        fingerprint: fingerprint.into(),
+    };
+    let own = "a".repeat(64);
+    let peer = "b".repeat(64);
+    let sender: IpAddr = "192.0.2.7".parse().unwrap();
+    let mut filter = DiscoveryFilter::new(own.clone());
+    let start = Instant::now();
+    assert!(filter.admit(packet(&own, "x"), sender, start).is_none());
+    assert!(filter
+        .admit(packet("not-a-fingerprint", "x"), sender, start)
+        .is_none());
+    let first = filter
+        .admit(packet(&peer, "198.51.100.9"), sender, start)
+        .unwrap();
+    assert_eq!(first.host, "192.0.2.7");
+    // Repeated announcements inside the refresh interval are dropped.
+    for step in 1..10 {
+        let at = start + Duration::from_millis(step * 200);
+        assert!(filter.admit(packet(&peer, "x"), sender, at).is_none());
+    }
+    // A changed source address is reported at once.
+    let moved: IpAddr = "192.0.2.8".parse().unwrap();
+    assert!(filter
+        .admit(packet(&peer, "x"), moved, start + Duration::from_secs(2))
+        .is_some());
+    assert!(filter
+        .admit(packet(&peer, "x"), moved, start + Duration::from_secs(8))
+        .is_some());
+    // Many distinct identities in one second are capped.
+    let later = start + Duration::from_secs(30);
+    let admitted = (0..100)
+        .filter(|n| {
+            filter
+                .admit(packet(&format!("{n:064x}"), "x"), sender, later)
+                .is_some()
+        })
+        .count();
+    assert_eq!(admitted, DISCOVERY_MAX_EMITS_PER_SECOND);
+}
+
+#[test]
+fn server_runtime_shutdown_does_not_wait_for_long_blocking_work() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let worker_release = release.clone();
+    runtime.spawn_blocking(move || {
+        while !worker_release.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    });
+    let started = Instant::now();
+    finish_server_runtime(runtime);
+    assert!(started.elapsed() < SERVER_SHUTDOWN_TIMEOUT + Duration::from_secs(1));
+    release.store(true, Ordering::Relaxed);
+}

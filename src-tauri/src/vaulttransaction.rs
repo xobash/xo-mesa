@@ -143,6 +143,9 @@ fn target(root: &Path, rel: &str) -> Result<PathBuf, String> {
     {
         return Err("unsafe research path".into());
     }
+    if !crate::vaultscope::resolves_visible(root, rel) {
+        return Err("unsafe research path".into());
+    }
     let path = crate::sync_core::safe_join_confined(root, rel).ok_or("unsafe research path")?;
     if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file() || m.file_type().is_symlink()) {
         return Err("research target is not a regular file".into());
@@ -443,6 +446,16 @@ mod tests {
                 expected_content: Some("original".into()),
             },
         ]
+    }
+    #[cfg(unix)]
+    #[test]
+    fn research_targets_reject_a_short_name_alias_of_a_hidden_folder() {
+        let root = folder("short-name");
+        fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::os::unix::fs::symlink(".git", root.join("GIT~1")).unwrap();
+        assert!(target(&root, "GIT~1/hooks/post-checkout").is_err());
+        assert!(target(&root, "notes/new.md").is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn crash_after_each_publication_recovers_originals() {

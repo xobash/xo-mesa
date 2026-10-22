@@ -52,6 +52,48 @@ pub(super) const PRIVATE_DIRECTORY_ACL_SCRIPT: &str = r#"$ErrorActionPreference=
 pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
     protect_private_directory(dir, &["cert.pem", "key.pem", "identity.json"])
 }
+
+type ProtectedDirectories = Mutex<std::collections::HashSet<(PathBuf, Vec<String>)>>;
+
+/// Protect a hot private directory once per process. Mesa creates its files
+/// there through private stages, so later writes keep the protection. A
+/// missing, replaced or symlinked directory is protected again.
+pub(crate) fn protect_private_directory_once(
+    dir: &std::path::Path,
+    names: &[&str],
+) -> Result<(), String> {
+    static PROTECTED: OnceLock<ProtectedDirectories> = OnceLock::new();
+    protect_once_with(
+        PROTECTED.get_or_init(Default::default),
+        dir,
+        names,
+        protect_private_directory,
+    )
+}
+
+pub(super) fn protect_once_with(
+    protected: &ProtectedDirectories,
+    dir: &std::path::Path,
+    names: &[&str],
+    protect: impl FnOnce(&std::path::Path, &[&str]) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut key_names: Vec<String> = names.iter().map(|name| (*name).to_string()).collect();
+    key_names.sort();
+    let key = (dir.to_path_buf(), key_names);
+    let mut protected = protected
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let present = std::fs::symlink_metadata(dir)
+        .map(|meta| meta.is_dir() && !meta.file_type().is_symlink())
+        .unwrap_or(false);
+    if present && protected.contains(&key) {
+        return Ok(());
+    }
+    protected.remove(&key);
+    protect(dir, names)?;
+    protected.insert(key);
+    Ok(())
+}
 pub(crate) fn protect_private_directory(
     dir: &std::path::Path,
     names: &[&str],

@@ -51,7 +51,10 @@ fn approved_roots_path(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|_| "Cannot locate private vault storage")?;
     let dir = app_data.join("vault-state");
-    crate::sync::protect_private_directory(&dir, &[APPROVED_ROOTS_FILE, "recent-vaults.json"])?;
+    crate::sync::protect_private_directory_once(
+        &dir,
+        &[APPROVED_ROOTS_FILE, "recent-vaults.json"],
+    )?;
     let path = dir.join(APPROVED_ROOTS_FILE);
     let legacy = app_data.join(APPROVED_ROOTS_FILE);
     if !path.exists() && legacy.exists() {
@@ -172,15 +175,52 @@ fn visible_vault_path(path: &Path) -> bool {
     })
 }
 
+/// True when `rel` names only visible entries under `root`, both as spelled
+/// and after the OS resolves its existing components. Windows 8.3 short names
+/// (`GIT~1`) open hidden entries under a visible spelling.
+pub(crate) fn resolves_visible(root: &Path, rel: &str) -> bool {
+    let Some(mut existing) = crate::sync_core::safe_join(root, rel) else {
+        return false;
+    };
+    if !visible_vault_path(Path::new(rel)) {
+        return false;
+    }
+    let Ok(canonical_root) = fs::canonicalize(root) else {
+        return false;
+    };
+    loop {
+        match fs::canonicalize(&existing) {
+            Ok(canonical) => {
+                return canonical
+                    .strip_prefix(&canonical_root)
+                    .is_ok_and(visible_vault_path)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if existing == root || !existing.pop() {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+/// Windows leaf-name rules shared with sync paths: no stream syntax, device
+/// names or trailing dots/spaces, which Windows strips or redirects.
+fn windows_leaf_name_allowed(name: &str) -> bool {
+    !crate::sync_core::windows_reserved_segment(name)
+}
+
 fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Result<PathBuf, String> {
     normalized_root(path)?;
     let input = Path::new(path);
     let parent = input.parent().ok_or("vault file has no parent")?;
     let name = input.file_name().ok_or("vault file has no name")?;
-    if name
-        .to_str()
-        .is_none_or(|name| name.is_empty() || !visible_vault_path(Path::new(name)))
-    {
+    if name.to_str().is_none_or(|name| {
+        name.is_empty()
+            || !visible_vault_path(Path::new(name))
+            || (cfg!(windows) && !windows_leaf_name_allowed(name))
+    }) {
         return Err("invalid vault file name".into());
     }
     let canonical_parent = fs::canonicalize(parent)
@@ -198,7 +238,18 @@ fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Resul
     }
     let target = canonical_parent.join(name);
     match fs::symlink_metadata(&target) {
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            // A short-name leaf such as `ENV~1` can resolve to a hidden file.
+            let resolved = fs::canonicalize(&target)
+                .map_err(|error| format!("vault file is unavailable: {error}"))?;
+            if resolved.parent() != Some(canonical_parent.as_path())
+                || !resolved
+                    .file_name()
+                    .is_some_and(|name| visible_vault_path(Path::new(name)))
+            {
+                return Err("invalid vault file name".into());
+            }
+        }
         Ok(_) => return Err("vault write requires a regular file or missing target".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("vault file is unavailable: {error}")),
@@ -927,6 +978,44 @@ mod tests {
             .is_err());
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn windows_write_leaf_rejects_streams_devices_and_trailing_dots() {
+        for name in [
+            "note.md:secret",
+            "CON",
+            "conin$.md",
+            "CONOUT$",
+            "clock$.txt",
+            "COM1.md",
+            "note.md.",
+            "note.md ",
+        ] {
+            assert!(!windows_leaf_name_allowed(name), "{name}");
+        }
+        for name in ["note.md", "console.md", "COM10.md", "clock.md"] {
+            assert!(windows_leaf_name_allowed(name), "{name}");
+        }
+    }
+
+    // Unix stands in for a Windows 8.3 alias with a link: both give a hidden
+    // folder a visible spelling that the OS resolves.
+    #[cfg(unix)]
+    #[test]
+    fn visible_paths_are_rechecked_after_the_os_resolves_them() {
+        let root = std::env::temp_dir().join(format!("mesa-visible-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        fs::create_dir_all(root.join("notes")).unwrap();
+        std::os::unix::fs::symlink(".git", root.join("GIT~1")).unwrap();
+        assert!(!resolves_visible(&root, "GIT~1/hooks/post-checkout"));
+        assert!(!resolves_visible(&root, "GIT~1"));
+        assert!(!resolves_visible(&root, ".git/config"));
+        assert!(!resolves_visible(&root, "node_modules/a.md"));
+        assert!(resolves_visible(&root, "notes/new/a.md"));
+        assert!(resolves_visible(&root, "notes"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
