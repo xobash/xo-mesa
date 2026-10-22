@@ -123,6 +123,25 @@ describe("graph drag physics session", () => {
   });
 });
 
+describe("graph physics session node indexes", () => {
+  it("ignores grab, move and release messages that do not name an in-range node", () => {
+    const { sim } = graphSim();
+    const session = new GraphPhysicsSession(
+      snapshotGraphPhysics(sim, { collideIterations: 3, velocityCap: 5, doubleTickBelow: 650, grab: null }),
+    );
+    const invalid = ["__proto__", "constructor", -1, 1.5, session.nodes.length] as unknown as number[];
+    for (const index of invalid) {
+      session.grab(index, 1, 2);
+      session.move(index, 3, 4);
+      session.release(index);
+    }
+    expect(session.grabbing).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(Array.prototype, "fx")).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(Array, "fx")).toBe(false);
+    expect(session.nodes.every((node) => node.fx == null)).toBe(true);
+  });
+});
+
 describe("graph settle session with idle overlap cleanup", () => {
   it("matches GraphView's frame order: tick while hot, resolve overlaps below 0.02, settle when nothing moves", () => {
     const { sim, nodes } = graphSim();

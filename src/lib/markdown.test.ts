@@ -118,8 +118,8 @@ describe("renderMarkdown", () => {
   });
 
   it("passes benign raw HTML through (quotes normalized by the sanitizer)", () => {
-    const html = renderMarkdown("<div class='x'>hi</div>");
-    expect(html).toContain('class="x"');
+    const html = renderMarkdown("<div title='x'>hi</div>");
+    expect(html).toContain('title="x"');
     expect(html).toContain(">hi</div>");
   });
 });
@@ -205,6 +205,37 @@ describe("sanitizeHtml / renderMarkdown XSS defense", () => {
     expect(out).toContain('data-remote-poster');
   });
 
+  it("keeps only renderer classes, so notes cannot borrow app overlay styling", () => {
+    const template = document.createElement("template");
+    template.innerHTML = renderMarkdown(
+      '<div class="modal-overlay callout" popover="manual" id="fake">Mesa needs your password</div>\n\n' +
+        '<button popovertarget="fake" popovertargetaction="show" commandfor="d" command="show-modal">Continue</button>\n\n' +
+        '<dialog id="d" open>fake dialog</dialog>\n\n<p class="modal">plain</p>'
+    );
+    const div = template.content.querySelector("div")!;
+    expect(div.getAttribute("class")).toBe("callout");
+    expect(div.hasAttribute("popover")).toBe(false);
+    const button = template.content.querySelector("button")!;
+    for (const name of ["popovertarget", "popovertargetaction", "commandfor", "command"]) {
+      expect(button.hasAttribute(name)).toBe(false);
+    }
+    expect(template.content.querySelector("dialog")).toBeNull();
+    expect(template.content.querySelector("p")!.hasAttribute("class")).toBe(false);
+    expect(template.content.textContent).toContain("plain");
+  });
+
+  it("keeps every class the Markdown renderer emits", () => {
+    const template = document.createElement("template");
+    template.innerHTML = renderMarkdown(
+      "---\ntitle: T\n---\n> [!note] Title\n> body\n\n[[Target]] ![[Other]] ![[img.png]]\n\n- [x] done\n\n```ts\nconst a = 1;\n```"
+    );
+    const classes = new Set([...template.content.querySelectorAll("[class]")].flatMap((node) => [...node.classList]));
+    expect([...classes].sort()).toEqual([
+      "callout", "callout-title", "embed", "language-ts", "md-embed", "prop", "prop-key", "prop-val",
+      "properties", "task-list", "wikilink",
+    ]);
+  });
+
   it("removes inline styles that could overlay the app", () => {
     const out = sanitizeHtml(
       '<a href="https://evil.example/x" style="position:fixed;inset:0;opacity:0">x</a><div style="z-index:9">y</div>'
@@ -245,6 +276,10 @@ describe('remote media privacy boundary', () => {
     ['image input', '<input type="image" src="https://tracker.example/d.png">', 'src'],
     ['obfuscated srcset', '<img srcset="local.png 1x, ht&#9;tps://tracker.example/2.png 2x">', 'srcset'],
     ['SVG xlink', '<svg><image xlink:href="https://tracker.example/e.png"/></svg>', 'xlink:href'],
+    ['backslash host', '<img src="\\\\tracker.example/f.png">', 'src'],
+    ['slash-backslash host', '<img src="/\\tracker.example/g.png">', 'src'],
+    ['backslash scheme', '<img src="https:\\\\tracker.example/h.png">', 'src'],
+    ['backslash srcset', '<img srcset="local.png 1x, \\\\tracker.example/i.png 2x">', 'srcset'],
   ];
   it.each(vectors)('parks %s through the actual renderer', (_label, source, name) => {
     const template = document.createElement('template');
@@ -262,7 +297,7 @@ describe('remote media privacy boundary', () => {
   it('covers tag, attribute, scheme and control-character combinations with an independent URL oracle', () => {
     const tags = ['img', 'input', 'source', 'video', 'audio', 'track', 'table', 'td', 'div', 'body', 'image', 'feImage', 'use', 'a', 'link', 'object', 'embed', 'iframe', 'script'];
     const attrs = ['src', 'poster', 'background', 'data', 'href', 'xlink:href', 'srcset'];
-    const urls = ['https://tracker.example/p', 'http://tracker.example/p', '//tracker.example/p', ' ht\ntps://tracker.example/p', 'ht\ttps://tracker.example/p', '\r\n//tracker.example/p', 'HTTPS://tracker.example/p', 'https:&#9;//tracker.example/p'];
+    const urls = ['https://tracker.example/p', 'http://tracker.example/p', '//tracker.example/p', '\\\\tracker.example/p', '/\\tracker.example/p', ' ht\ntps://tracker.example/p', 'ht\ttps://tracker.example/p', '\r\n//tracker.example/p', 'HTTPS://tracker.example/p', 'https:&#9;//tracker.example/p'];
     for (const tag of tags) for (const attr of attrs) for (const url of urls) {
       const element = `<${tag} ${attr}="${attr === 'srcset' ? `local.png 1x, ${url} 2x` : url}">content</${tag}>`;
       const template = document.createElement('template');

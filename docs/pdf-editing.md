@@ -2,9 +2,10 @@
 
 Mesa opens PDFs in viewer mode first. Press `Edit PDF` to enable editing tools.
 Viewer mode and edit mode now share Mesa's pdf.js canvas renderer, so PDFs that
-paint blank inside the system webview still display in Mesa. The native vault
-PDF URL remains available as a warm-start/fallback path for files pdf.js cannot
-paint reliably.
+paint blank inside the system webview still display in Mesa. The webview's native
+PDF viewer remains available as a warm-start/fallback path for files pdf.js cannot
+paint reliably. It loads the same verified bytes Mesa has open, not a fresh
+disk read.
 
 ## Tools
 

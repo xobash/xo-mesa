@@ -18,6 +18,8 @@ const state = vi.hoisted(() => ({
   workersDestroyed: 0,
   /** The worker each getDocument call was handed. */
   workersUsed: [] as unknown[],
+  /** The isEvalSupported option each getDocument call passed. */
+  evalSupported: [] as unknown[],
   /** Paths whose parse should reject, standing in for a document pdf.js chokes on. */
   failParseFor: new Set<string>(),
   blockDestroy: false,
@@ -38,8 +40,9 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => ({
       state.workersDestroyed++;
     }
   },
-  getDocument: (params: { data?: Uint8Array; worker?: unknown }) => {
+  getDocument: (params: { data?: Uint8Array; worker?: unknown; isEvalSupported?: boolean }) => {
     state.workersUsed.push(params.worker ?? null);
+    state.evalSupported.push(params.isEvalSupported);
     const label = new TextDecoder().decode(params.data ?? new Uint8Array());
     if ([...state.failParseFor].some((needle) => label.includes(needle))) {
       return { promise: Promise.reject(new Error("pdf.js could not parse this")) };
@@ -84,6 +87,7 @@ beforeEach(() => {
   state.workersCreated = 0;
   state.workersDestroyed = 0;
   state.workersUsed.length = 0;
+  state.evalSupported.length = 0;
   state.failParseFor.clear();
   state.blockDestroy = false;
   state.destroyStarted = 0;
@@ -128,6 +132,8 @@ describe("pdf thumbnail worker reuse", () => {
     // one, which cost a full worker boot per hover card.
     expect(state.workersUsed).toHaveLength(5);
     expect(new Set(state.workersUsed).size).toBe(1);
+    // Untrusted fonts must never compile into functions with eval.
+    expect(state.evalSupported).toEqual([false, false, false, false, false]);
     // Documents are released, but the worker they shared must NOT be.
     expect(state.workersDestroyed).toBe(0);
   });

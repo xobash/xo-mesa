@@ -624,7 +624,7 @@ export function usePdfEditor(
         // This worker now owns document state and cannot return to the shared
         // spare slot.
         pdfWorkerUsedRef.current = true;
-        loadingTask = pdfjs.getDocument({ data: clean, worker });
+        loadingTask = pdfjs.getDocument({ data: clean, worker, isEvalSupported: false });
         loadingActive = true;
         const next = await loadingTask.promise;
         loadingActive = false;

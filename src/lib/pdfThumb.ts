@@ -76,7 +76,7 @@ async function openThumbAttempt(
   pdfjs: PdfJsModule,
   source: { url: string; disableAutoFetch: true } | { data: Uint8Array }
 ) {
-  const task = pdfjs.getDocument({ ...source, worker: thumbWorkerFor(pdfjs) });
+  const task = pdfjs.getDocument({ ...source, worker: thumbWorkerFor(pdfjs), isEvalSupported: false });
   try {
     return await task.promise;
   } catch (error) {

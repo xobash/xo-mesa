@@ -90,6 +90,8 @@ const pdfjsState = vi.hoisted(() => ({
   workersCreated: 0,
   workersDestroyed: 0,
   workersUsed: [] as unknown[],
+  /** The isEvalSupported option each getDocument call passed. */
+  evalSupported: [] as unknown[],
   /** When true, the next parse rejects, standing in for a corrupt document. */
   failNextParse: false,
   loadingTasksCreated: 0,
@@ -125,8 +127,9 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => {
         pdfjsState.workersDestroyed++;
       }
     },
-    getDocument: (params?: { worker?: unknown }) => {
+    getDocument: (params?: { worker?: unknown; isEvalSupported?: boolean }) => {
       pdfjsState.workersUsed.push(params?.worker ?? null);
+      pdfjsState.evalSupported.push(params?.isEvalSupported);
       const createLoadingTask = <T,>(promise: Promise<T>) => {
         let destroyed = false;
         pdfjsState.loadingTasksCreated++;
@@ -344,6 +347,7 @@ afterEach(async () => {
   pdfjsState.workersCreated = 0;
   pdfjsState.workersDestroyed = 0;
   pdfjsState.workersUsed.length = 0;
+  pdfjsState.evalSupported.length = 0;
 });
 
 describe("usePdfEditor document identity safety", () => {
@@ -367,6 +371,8 @@ describe("usePdfEditor document identity safety", () => {
     await waitFor(() => latest!.viewports.current.size === 1);
 
     expect(pdfjsState.getPageNumbers).toEqual([1]);
+    // Untrusted fonts must never compile into functions with eval.
+    expect(pdfjsState.evalSupported).toEqual([false]);
   });
 
   it("discards an edit that finishes after the user switches to another PDF", async () => {

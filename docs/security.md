@@ -60,16 +60,19 @@ Raw HTML spanning Markdown blocks is sanitized as one context. Rendering fails
 if the sanitizer is unavailable.
 
 The policy removes scripts, event handlers, executable URLs, embedded frames,
-forms, plugins, base elements and `style` attributes (a note cannot overlay or
-hide Mesa's interface). It keeps Mesa's links, callouts, tasks and benign
-formatting. `markdown.test.ts` tests both rejection and retained markup;
+forms, plugins, base elements, dialogs, `style` attributes, popover and invoker
+command attributes, and every class the Markdown renderer does not emit itself
+(fenced-code `language-*` classes remain). A note therefore cannot borrow Mesa's
+own classes or open top-layer UI to overlay or hide Mesa's interface. It keeps
+Mesa's links, callouts, tasks and benign formatting. `markdown.test.ts` tests both rejection and retained markup;
 `markdownNode.test.ts` checks the missing-DOM path.
 
 Remote images and media (`http:`, `https:`, `//` sources) are not requested when a
 note renders or a hover preview opens, because the request would tell a third
 party that you opened the note. All sanitized tags are checked for URL carriers,
 including SVG images/filters, image inputs and legacy backgrounds. URL
-classification strips browser-ignored whitespace/control characters. Authored
+classification strips browser-ignored whitespace/control characters and reads
+`\` as `/`, so `\\host` and `/\host` count as remote. Authored
 `data-remote-*` attributes are removed so they cannot bypass URL sanitization.
 The tag/attribute/scheme regression matrix checks surviving live attributes
 with an independent URL parser. The sanitizer parks each URL in `data-remote-*`
@@ -86,12 +89,17 @@ consented media unloaded and say so. Sanitizer-produced URL markers remain on ap
 source change can revoke live URLs before paint, even on unchanged reused blocks. Links in a note never navigate
 Mesa's own window: `http(s)` links
 ask before opening in Mesa's read-only reader (it needs a mounted Pi surface),
-vault-relative links open the note, and every other scheme is ignored. A native
+vault-relative links open the note, and every other scheme is ignored. Pi
+terminal hyperlinks (OSC 8) follow the same rule: `http(s)` targets ask before
+opening in the reader, and other schemes are ignored. A native
 navigation guard (`navigation_allowed` in `src-tauri/src/lib.rs`) also refuses
 data and unregistered blob navigation as well as non-app origins. Local executable frames additionally require a
 valid window-owned `mesa-html` session route; their sandbox denies top navigation. PDF
-fallbacks register exact app-origin blobs for their own window and revoke them
-on replacement, unmount or destruction. Wry does not expose frame identity on
+fallbacks and the native first-paint cover load blobs of the verified in-memory
+bytes, never a fresh disk read. They register exact app-origin blobs for their
+own window and revoke them on replacement, unmount or destruction. These frames
+are not sandboxed: sandboxing blocks the PDF viewer in Chromium-based WebView2.
+pdf.js runs with `isEvalSupported: false`. Wry does not expose frame identity on
 every platform. The guard is unit-tested; its behavior in a packaged webview is not yet accepted on each platform.
 
 Bounded linkification prevents covered repeated-input parser failures.
@@ -102,7 +110,9 @@ Their success is not a timing guarantee for arbitrary documents.
 
 `src-tauri/tauri.conf.json` defines the app policy. It allows the local bundle,
 IPC, scoped assets, viewer data/blob URLs and workers; it denies plugins, hostile
-base URLs and framing of Mesa. Inline styles support React. Arbitrary inline scripts are blocked. The privileged renderer's connection policy
+base URLs, form submission (`form-action 'none'`) and framing of Mesa. Top-level
+navigation to `asset:` URLs is refused; asset URLs load only as images, media
+and fetches. Inline styles support React. Arbitrary inline scripts are blocked. The privileged renderer's connection policy
 permits local IPC and asset endpoints only; arbitrary HTTPS connections are blocked. The read-only browser navigation bridge
 is allowed by its exact SHA-256 hash; the test recomputes that hash from the
 executed script. Saved markup enables scripts only through separate, exact-version

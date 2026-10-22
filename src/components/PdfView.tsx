@@ -13,7 +13,7 @@ import {
   undoRedoShortcutAction,
 } from "../lib/shortcuts";
 import { invoke } from "@tauri-apps/api/core";
-import { IN_TAURI, urlForPath } from "../lib/vault";
+import { IN_TAURI } from "../lib/vault";
 import { groupPdfTextRunsByPage } from "../lib/pdfTextRuns";
 import { usePdfEditor } from "./usePdfEditor";
 import { findPdfHeader, sniffFileType, sanitizePdfBytes } from "../lib/pdfBytes";
@@ -182,34 +182,6 @@ export function PdfView({
     );
   }
   useEffect(() => () => inkDraftPublisherRef.current?.cancel(), []);
-  // When pdf.js cannot render, fall back to the native embed fed from the
-  // bytes already verified in memory — not a fresh disk path load — so the
-  // fallback always shows exactly the document Mesa has open (including
-  // unsaved edits) and cannot diverge from it.
-  const renderFallbackUrl = useMemo(() => {
-    if (!renderError || !bytes) return null;
-    const data = new Uint8Array(bytes).buffer;
-    return URL.createObjectURL(new Blob([data], { type: "application/pdf" }));
-  }, [bytes, renderError]);
-  const [fallbackAdmission, setFallbackAdmission] = useState<{ url: string; error?: string } | null>(null);
-  useEffect(() => {
-    if (!renderFallbackUrl) return;
-    let alive = true;
-    const approve = IN_TAURI
-      ? invoke("navigation_pdf_preview", { url: renderFallbackUrl, allow: true })
-      : Promise.resolve();
-    void approve.then(() => {
-      if (alive) setFallbackAdmission({ url: renderFallbackUrl });
-    }).catch(reason => {
-      if (alive) setFallbackAdmission({ url: renderFallbackUrl, error: `PDF fallback unavailable: ${String(reason)}` });
-    });
-    return () => {
-      alive = false;
-      void approve.then(() => {
-        if (IN_TAURI) return invoke("navigation_pdf_preview", { url: renderFallbackUrl, allow: false });
-      }).catch(() => { /* Window destruction also revokes grants. */ });
-    };
-  }, [renderFallbackUrl]);
   const invalidPdfType = useMemo(() => {
     if (!bytes) return null;
     try {
@@ -243,11 +215,40 @@ export function PdfView({
     );
     return () => window.clearTimeout(id);
   }, [file?.path, firstPagePainted, loadFailed, renderError]);
-  // The native frame loads the disk file, typed by its leading bytes. Only a
-  // file that starts with "%PDF-" cannot be served as active HTML.
+  // The native cover opens only bytes that start with "%PDF-".
   const nativeFirstPaintSafe = !!bytes && findPdfHeader(bytes, 0) === 0;
   const showNativeFirstPaint =
     !loadFailed && !renderError && !firstPagePainted && warmStartDue && nativeFirstPaintSafe;
+  // Both native frames (render fallback and first-paint cover) are fed from the
+  // bytes already verified in memory — never a fresh disk path load — so they
+  // always show exactly the document Mesa has open (including unsaved edits).
+  const nativeFrameWanted = !!renderError || showNativeFirstPaint;
+  const nativePdfUrl = useMemo(() => {
+    if (!nativeFrameWanted || !bytes) return null;
+    const data = new Uint8Array(bytes).buffer;
+    return URL.createObjectURL(new Blob([data], { type: "application/pdf" }));
+  }, [bytes, nativeFrameWanted]);
+  const [nativeAdmission, setNativeAdmission] = useState<{ url: string; error?: string } | null>(null);
+  useEffect(() => {
+    if (!nativePdfUrl) return;
+    let alive = true;
+    const approve = IN_TAURI
+      ? invoke("navigation_pdf_preview", { url: nativePdfUrl, allow: true })
+      : Promise.resolve();
+    void approve.then(() => {
+      if (alive) setNativeAdmission({ url: nativePdfUrl });
+    }).catch(reason => {
+      if (alive) setNativeAdmission({ url: nativePdfUrl, error: `PDF fallback unavailable: ${String(reason)}` });
+    });
+    return () => {
+      alive = false;
+      void approve.then(() => {
+        if (IN_TAURI) return invoke("navigation_pdf_preview", { url: nativePdfUrl, allow: false });
+      }).catch(() => { /* Window destruction also revokes grants. */ });
+    };
+  }, [nativePdfUrl]);
+  const nativeFrameReady = !!nativePdfUrl && nativeAdmission?.url === nativePdfUrl && !nativeAdmission.error;
+  const nativeCoverVisible = showNativeFirstPaint && nativeFrameReady;
 
   // Mount page 1 in the commit that receives page count. Reset shells by path, not page count.
   if (mountedForPath !== (file?.path ?? null)) {
@@ -287,9 +288,9 @@ export function PdfView({
 
   useEffect(() => {
     return () => {
-      if (renderFallbackUrl) URL.revokeObjectURL(renderFallbackUrl);
+      if (nativePdfUrl) URL.revokeObjectURL(nativePdfUrl);
     };
-  }, [renderFallbackUrl]);
+  }, [nativePdfUrl]);
 
   useEffect(() => {
     return () => {
@@ -938,32 +939,32 @@ export function PdfView({
               </div>
             </div>
           ) : renderError && bytes ? (
-            fallbackAdmission?.url === renderFallbackUrl && !fallbackAdmission.error ? (
-              <iframe className="media-pdf" src={renderFallbackUrl ?? undefined} title={file.name} />
+            nativeFrameReady ? (
+              <iframe className="media-pdf" src={nativePdfUrl ?? undefined} title={file.name} />
             ) : (
-              <div className="pdf-error" role={fallbackAdmission?.error ? "alert" : "status"}>
-                {fallbackAdmission?.url === renderFallbackUrl && fallbackAdmission.error
-                  ? fallbackAdmission.error : "Preparing PDF fallback…"}
+              <div className="pdf-error" role={nativeAdmission?.error ? "alert" : "status"}>
+                {nativeAdmission?.url === nativePdfUrl && nativeAdmission.error
+                  ? nativeAdmission.error : "Preparing PDF fallback…"}
               </div>
             )
           ) : (
             <>
-              {showNativeFirstPaint && (
+              {nativeCoverVisible && (
                 <iframe
                   className="media-pdf pdf-native-first-paint"
                   data-testid="pdf-native-first-paint"
-                  src={urlForPath(file.path)}
+                  src={nativePdfUrl ?? undefined}
                   title={file.name}
                   onLoad={() => markPdfPerf(perfRunId, "native-iframe-loaded")}
                 />
               )}
               <div
                 className={
-                  "pdf-pages-inner" + (showNativeFirstPaint ? " warming" : "")
+                  "pdf-pages-inner" + (nativeCoverVisible ? " warming" : "")
                 }
                 data-testid="pdf-pages"
                 ref={bindPagesInner}
-                aria-hidden={showNativeFirstPaint ? true : undefined}
+                aria-hidden={nativeCoverVisible ? true : undefined}
               >
                 {Array.from({ length: shellCount }, (_, i) => (
                   <div className="pdf-page-wrap" key={i} data-page-index={i}>

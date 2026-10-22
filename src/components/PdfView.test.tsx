@@ -148,14 +148,29 @@ it('commits text replacement through the editor byte queue', async () => {
 it.each([
   ['a PDF that starts with its header', '%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF', true],
   ['a polyglot whose header follows HTML', `<!--${' '.repeat(1100)}-->\n<script>parent</script>%PDF-1.7\n%%EOF`, false],
-])('loads the native first-paint frame from disk only for %s', async (_label, text, expected) => {
+])('feeds the native first-paint frame verified bytes only for %s', async (_label, text, expected) => {
   vi.useFakeTimers();
+  const blob = 'blob:http://tauri.localhost/11111111-1111-1111-1111-111111111111';
+  const create = vi.fn((_blob: Blob) => blob);
+  vi.stubGlobal('URL', class extends URL { static createObjectURL = create; static revokeObjectURL = vi.fn(); });
+  mock.invoke.mockResolvedValue(undefined);
   mock.renderError = ''; mock.bytes = new TextEncoder().encode(text);
   const host = document.createElement('div'); document.body.append(host);
   const root = createRoot(host);
   try {
     await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
     await act(async () => { vi.advanceTimersByTime(200); });
-    expect(host.querySelector('[data-testid=pdf-native-first-paint]') !== null).toBe(expected);
+    const frame = host.querySelector('[data-testid=pdf-native-first-paint]');
+    expect(frame !== null).toBe(expected);
+    for (const iframe of host.querySelectorAll('iframe')) expect(iframe.getAttribute('src')).not.toContain('asset://');
+    if (expected) {
+      expect(frame!.getAttribute('src')).toBe(blob);
+      expect(mock.invoke).toHaveBeenCalledWith('navigation_pdf_preview', { url: blob, allow: true });
+      const made = create.mock.calls[0][0];
+      expect(made.type).toBe('application/pdf');
+      expect([...new Uint8Array(await made.arrayBuffer())]).toEqual([...mock.bytes]);
+    } else {
+      expect(create).not.toHaveBeenCalled();
+    }
   } finally { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); }
 });

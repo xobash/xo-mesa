@@ -319,9 +319,14 @@ export class GraphPhysicsSession {
     return this.grabbed < 0 && this.sim.alpha() <= GRAPH_SETTLED_ALPHA && (!this.overlap || this.overlapsResolved);
   }
 
+  /** Only an in-range array index from the worker message selects a node. */
+  private nodeAt(index: number): SimulationNodeDatum | undefined {
+    return Number.isInteger(index) && index >= 0 && index < this.nodes.length ? this.nodes[index] : undefined;
+  }
+
   /** Pin a node and reheat exactly as GraphView's first drag move does. */
   grab(index: number, fx: number, fy: number): void {
-    const node = this.nodes[index];
+    const node = this.nodeAt(index);
     if (!node) return;
     node.fx = fx;
     node.fy = fy;
@@ -331,7 +336,7 @@ export class GraphPhysicsSession {
   }
 
   move(index: number, fx: number, fy: number): void {
-    const node = this.nodes[index];
+    const node = this.nodeAt(index);
     if (!node) return;
     node.fx = fx;
     node.fy = fy;
@@ -339,7 +344,7 @@ export class GraphPhysicsSession {
 
   /** Unpin and let existing energy decay, as GraphView's release does. */
   release(index: number): void {
-    const node = this.nodes[index];
+    const node = this.nodeAt(index);
     if (node) {
       node.fx = null;
       node.fy = null;

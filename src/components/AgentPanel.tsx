@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FitAddon } from "@xterm/addon-fit";
-import type { Terminal } from "@xterm/xterm";
+import type { ILinkHandler, Terminal } from "@xterm/xterm";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { type UnlistenFn } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
@@ -10,6 +10,7 @@ import {
   type AgentContext,
 } from "../lib/agent";
 import { IN_TAURI } from "../lib/vault";
+import { confirmAction } from "../lib/confirmAction";
 import {
   claimKeyboardShortcut,
   claimPlainShiftTabToggle,
@@ -198,6 +199,25 @@ function setSharedPiFontSize(next: number): void {
   SHARED_PI_SESSION.fit?.fit();
 }
 
+/**
+ * OSC 8 terminal links open only http(s) pages, in Mesa's reader after confirmation;
+ * xterm's default would open any target in a new webview window.
+ */
+export const PI_TERMINAL_LINK_HANDLER: ILinkHandler = {
+  allowNonHttpProtocols: false,
+  activate(event, uri) {
+    event?.preventDefault?.();
+    let url: URL;
+    try { url = new URL(uri); } catch { return; }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return;
+    const href = url.href;
+    void confirmAction(`Open ${href} in Mesa's reader? This contacts that website.`, { okLabel: "Read page" })
+      .then((ok) => {
+        if (ok) useAppStore.setState((s) => ({ piBrowse: { url: href, seq: (s.piBrowse?.seq ?? 0) + 1 } }));
+      });
+  },
+};
+
 // Load xterm on demand and share its in-flight promise across concurrent Pi surfaces.
 let sharedPiTerminalPromise: Promise<Terminal> | null = null;
 
@@ -228,6 +248,7 @@ async function createSharedPiTerminal(): Promise<Terminal> {
       'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
     fontSize: sharedPiFontSize,
     lineHeight: 1.18,
+    linkHandler: PI_TERMINAL_LINK_HANDLER,
     macOptionIsMeta: true,
     scrollback: 10000,
     tabStopWidth: 8,
