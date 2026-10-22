@@ -18,6 +18,8 @@ const CAPTURE = !process.argv.includes("--no-capture");
 const SHOTS = process.argv.includes("--shots");
 // Page time runs SLOW x slower than real time so CPU-only Chromium keeps up.
 const SLOW = Number(process.env.SLOW || 6);
+// Real-time timeouts below are tuned for SLOW=6 and stretch with it.
+const T = (ms) => ms * Math.max(1, SLOW / 6);
 // Frames are kept per 1/FPS slot of page time; encode.mjs uses the same rate.
 const FPS = Number(process.env.FPS || 60);
 // An installed Chromium-based browser; never Playwright's Chrome for Testing.
@@ -27,7 +29,7 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
 const server = await startServer(PORT);
-const browser = await chromium.launch({ executablePath: BROWSER, args: ["--force-color-profile=srgb", "--font-render-hinting=none"] });
+const browser = await chromium.launch({ executablePath: BROWSER, args: ["--force-color-profile=srgb", "--font-render-hinting=none", "--disable-smooth-scrolling"] });
 const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 }, colorScheme: "dark", deviceScaleFactor: 1 });
 await ctx.addInitScript((k) => { if (window.top === window) window.__REC_K__ = 1 / k; }, SLOW);
 await ctx.addInitScript({ path: path.join(here, "timeshim.js") });
@@ -87,6 +89,21 @@ async function moveTo(x, y, ms) {
   }
   cursor = { x, y };
 }
+// Wheel input spread over every page frame with easing. Separate wheel ticks
+// land as single-frame jumps; the browser's own smooth scrolling runs in real
+// time, which is SLOW x too fast in page time, so it is turned off at launch.
+async function wheel(dy, ms) {
+  // Paced by the clock like moveTo, so a slow round trip never skips a frame.
+  const dur = ms * SLOW, t0 = Date.now();
+  let sent = 0;
+  for (;;) {
+    const u = Math.min(1, (Date.now() - t0) / dur);
+    const want = Math.round(dy * ease(u));
+    if (want !== sent) { await page.mouse.wheel(0, want - sent); sent = want; }
+    if (u >= 1) break;
+    await page.waitForTimeout(25);
+  }
+}
 async function smoothInto(loc, block) {
   await loc.evaluate((el, block) => new Promise((done) => {
     let sc = el.parentElement;
@@ -101,7 +118,7 @@ async function smoothInto(loc, block) {
   }), block);
 }
 const center = async (loc) => {
-  await loc.waitFor({ state: "visible", timeout: 20000 });
+  await loc.waitFor({ state: "visible", timeout: T(20000) });
   const b = await loc.boundingBox();
   return [b.x + b.width / 2, b.y + b.height / 2];
 };
@@ -152,8 +169,25 @@ async function wipeTheme(theme, ms = 1100) {
     document.documentElement.style.setProperty("--rec-dur", `${dur}ms`);
     const vt = document.startViewTransition(async () => {
       useAppStore.getState().setTheme(t);
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // Let React commit the theme. Rendering is held during this callback,
+      // so waiting on animation frames here can stall until the browser aborts.
+      await new Promise((r) => setTimeout(r, 120));
     });
+    await vt.ready;
+    // View transitions run on the browser's real clock, so under SLOW the wipe
+    // would finish in a few frames. Pause it and step it in page time instead.
+    const anims = document.getAnimations().filter((a) => a.effect?.pseudoElement?.startsWith("::view-transition"));
+    anims.forEach((a) => a.pause());
+    const t0 = performance.now();
+    await new Promise((done) => {
+      const step = () => {
+        const el = Math.min(dur, performance.now() - t0);
+        anims.forEach((a) => { a.currentTime = el; });
+        if (el < dur) requestAnimationFrame(step); else done();
+      };
+      requestAnimationFrame(step);
+    });
+    anims.forEach((a) => a.finish());
     await vt.finished;
   }, [theme, ms]);
 }
@@ -182,7 +216,7 @@ const marks = [];
 const mark = (label) => marks.push([label, Date.now() / 1000]);
 
 // --- setup (not recorded) ------------------------------------------------------------
-await app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first().waitFor({ timeout: 30000 });
+await app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first().waitFor({ timeout: T(30000) });
 await wait(1200);
 await app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first().click();
 await wait(600);
@@ -218,7 +252,7 @@ await moveTo(600, 560);
 await type("What's left for today?");
 await wait(300);
 await page.keyboard.press("Enter");
-await page.waitForFunction(() => window.__REC_SHARED__.pi.current?.status?.[1] === "● ready" && window.__REC_SHARED__.pi.current.lines.length > 8, null, { timeout: 30000, polling: 200 });
+await page.waitForFunction(() => window.__REC_SHARED__.pi.current?.status?.[1] === "● ready" && window.__REC_SHARED__.pi.current.lines.length > 8, null, { timeout: T(30000), polling: 200 });
 await snap("pi-answer");
 await wait(1800);
 
@@ -242,7 +276,7 @@ const reader = app.frameLocator(".agent-browser-wing iframe").first();
 await click(reader.getByText("Kelp forest — overview").first());
 await wait(1800);
 await snap("article");
-for (let i = 0; i < 14; i++) { await page.mouse.wheel(0, 20); await wait(28); }
+await wheel(280, 500);
 await wait(700);
 await click(app.getByRole("button", { name: "Open Deep Research" }));
 await wait(900);
@@ -251,7 +285,7 @@ await type("How fast do kelp forests recover after marine heatwaves?", { min: 35
 await wait(400);
 await S(() => { window.__REC_SHARED__.research.pace = 0.6; });
 await click(app.getByRole("button", { name: /Start research/ }));
-await page.waitForFunction(() => !!window.__REC_SHARED__.research.lastReply, null, { timeout: 90000, polling: 250 });
+await page.waitForFunction(() => !!window.__REC_SHARED__.research.lastReply, null, { timeout: T(90000), polling: 250 });
 await wait(1200);
 await snap("research-done");
 const apply = app.getByRole("button", { name: /Apply 3 changes/ });
@@ -286,7 +320,7 @@ const gpos = async (id) => {
 {
   const r = await gpos("Research/Kelp recovery after marine heatwaves.md");
   await moveTo(r[0], r[1], 900);
-  for (let i = 0; i < 9; i++) { await page.mouse.wheel(0, -110); await wait(110); }
+  await wheel(-990, 1000);
   await wait(1800);
 }
 const hoverNode = async (id, hold) => {
@@ -301,7 +335,7 @@ await snap("hover");
 await hoverNode("Topics/Kelp Forests.md", 700);
 await hoverNode("Projects/Chapter 3 - Canopy Recovery.md", 700);
 await page.mouse.down(); await wait(80); await page.mouse.up();
-await page.waitForSelector(".popout", { timeout: 15000 });
+await page.waitForSelector(".popout", { timeout: T(15000) });
 await wait(1400);
 await snap("popout");
 await click(app.getByRole("button", { name: "Exit full graph" }));
@@ -337,7 +371,7 @@ await caption("", "", "");
 const tree = app.locator(".sidebar").first();
 const tb = await tree.boundingBox();
 await moveTo(tb.x + tb.width / 2, tb.y + tb.height / 2);
-for (let i = 0; i < 16; i++) { await page.mouse.wheel(0, -240); await wait(45); }
+await wheel(-3840, 1000);
 await wait(500);
 await click(app.locator(".tree-file").filter({ hasText: /^2026-10-14$/ }).first());
 await wait(1800);
