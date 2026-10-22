@@ -48,7 +48,7 @@ names the executing test; it is not a source-string assertion.
 | CONTROL-012 | Detect obsolete project identifiers in public content | PREVENTIVE; branding/privacy requirement, not an exploit defense | `rejects local hostnames and legacy project names` |
 | CONTROL-013 | Check Markdown file-link targets against the staged public tree | AUDIT; no published navigation failure recorded | `checks staged Markdown file links and admits anchors, external URLs and fenced examples` |
 | CONTROL-014 | Reject root/nested native crate modules and explicit path modules omitted from the public tree | FINDING-001 | `rejects omitted native modules and accepts file or directory module layouts`; `checks nested native modules and path overrides against staged files` |
-| CONTROL-015 | Restrict reachable commit author identity to approved no-reply forms and UTC dates | Preventive privacy/provenance requirement; FINDING-002 explains an allowed exception | `audits staged trees with both approved owner no-reply identities`; `rejects unrelated authors, personal-address forms and non-UTC history` |
+| CONTROL-015 | Restrict reachable commit author and committer identity to approved no-reply forms and UTC dates; reject assistant trailers, generated-by footers and assistant names in commit messages and local ref names | Preventive privacy/provenance requirement; FINDING-002 explains an allowed exception | `audits staged trees with both approved owner no-reply identities`; `rejects unrelated authors, personal-address forms and non-UTC history`; `rejects unrelated committers, committer addresses and non-UTC committer dates`; `rejects assistant trailers, generated-by footers, session links and identities in commit messages`; `rejects ref names that name an assistant` |
 
 `audits staged bytes rather than the later working-file contents` verifies the
 shared input contract for CONTROL-001 through CONTROL-014. A clean working file
@@ -123,13 +123,13 @@ source CI checks binary metadata without `--review`; display in the README
 does not establish the separate human pixel-review record required for release.
 
 CONTROL-029 (AUDIT; enforced): the five exact native advisory exceptions
-(two GTK-chain warnings reviewed 2026-10-11 and three `zbus` 5 unmaintained
-warnings reviewed 2026-10-18) expire after 2026-11-10 (UTC). The expiry
+(two GTK-chain warnings and three `zbus` 5 unmaintained warnings, all
+re-reviewed 2026-10-22) expire after 2026-12-21 (UTC). The expiry
 regression in `release-gate.check.mjs` rejects the same warnings after that
 date. Removal requires compatible upstream Linux GTK and D-Bus chain upgrades
 and Linux acceptance; the exception does not fix the upstream advisories.
 The weekly `advisory-review` workflow runs the same registry check with
-`--fail-days-before-expiry 7`, so it fails from 2026-11-03 and names the date.
+`--fail-days-before-expiry 7`, so it fails from 2026-12-14 and names the date.
 Re-review before that date: run `cargo audit --file src-tauri/Cargo.lock --json`,
 confirm that each tracked warning still has no compatible upstream fix, then
 either remove the exception through the upgrade or record the new review date
@@ -159,7 +159,7 @@ checks both clean large histories and private text retained beside those binarie
 
 ## CodeQL alert triage (2026-10-20)
 
-`codeql.yml` scans JavaScript and TypeScript with
+`codeql.yml` scans JavaScript, TypeScript and GitHub Actions workflows with
 `.github/codeql/codeql-config.yml`, which excludes the unshipped `scripts/demo`
 recorder. This table records the review of the 19 open alerts on `main`. It is
 a code review, not an independent assessment. Dismiss each alert in GitHub's
@@ -170,9 +170,9 @@ of `main` no longer reports them.
 | --- | --- | --- | --- |
 | 8, 9 | `js/double-escaping`, `src/lib/html.ts` `decodeUrlAttr` | True positive without security impact: `&amp;quot;` decoded twice; every consumer escapes again | Fixed: one-pass decode; `html.test.ts` covers `&amp;amp;` and `&amp;quot;` |
 | 10 | `js/double-escaping`, `src-tauri/resources/mesa-browser.ts` `htmlToText` | True positive without security impact: a text extractor turned `&amp;lt;` into `<` | Fixed: `&amp;` decodes last; `browserExtension.test.ts` covers it |
-| 11 | `js/bad-code-sanitization`, `scripts/demo/serve.mjs` | False positive: a development-only transform embeds a checked-in fixture through `JSON.stringify` | Excluded by the CodeQL configuration; otherwise dismiss as "Used in tests" |
-| 19 | `js/incomplete-url-substring-sanitization`, `scripts/demo/stage/pages.js` | False positive: a mocked fetch in the demo recorder makes no network request | Excluded by the CodeQL configuration; otherwise dismiss as "Used in tests" |
-| 13–18 | `js/prototype-polluting-assignment`, `src/lib/graphPhysics.ts` | False positive: `this.nodes[index]` uses a numeric index from Mesa's own typed worker message, never a property name | Dismiss as "False positive" |
+| 11 | `js/bad-code-sanitization`, `scripts/demo/serve.mjs` | False positive: a development-only transform embeds a checked-in fixture through `JSON.stringify`; the embed now also escapes `<`, `>`, U+2028 and U+2029 | Excluded by the CodeQL configuration; otherwise dismiss as "Used in tests" |
+| 19 | `js/incomplete-url-substring-sanitization`, `scripts/demo/stage/pages.js` | False positive: a mocked fetch in the demo recorder makes no network request; the mocked page title is now escaped | Excluded by the CodeQL configuration; otherwise dismiss as "Used in tests" |
+| 13–18 | `js/prototype-polluting-assignment`, `src/lib/graphPhysics.ts` | Low-risk true positive: the index came from Mesa's own worker message, but a non-integer key could reach `Array.prototype` | Fixed: grab, move and release accept only an integer in-range index; `graphPhysics.test.ts` covers `"__proto__"` |
 | 12 | `js/disabling-certificate-validation`, `scripts/activity-client.mjs` | Accepted by design: the client replaces chain validation with a SHA-256 leaf pin compared by `timingSafeEqual` and destroys the socket before any HTTP on mismatch (CONTROL-032) | Dismiss as "Won't fix": the pin replaces chain validation for the self-signed sync certificate |
 | 1, 4, 5, 6, 7 | `js/bad-tag-filter` and `js/incomplete-multi-character-sanitization`, `src/lib/html.ts` `stripSavedHtmlPreviewCode` | Accepted by design: the function is a documented preview optimization, not a sanitizer. Output renders only in `sandbox=""` frames whose policy sets `script-src 'none'`; `html.test.ts` pins that contract | Dismiss as "Won't fix": not a sanitizer; the sandboxed frame policy is the boundary |
 | 3 | `js/bad-tag-filter`, `src-tauri/resources/mesa-browser.ts` | False positive: the `<style>` removal feeds a plain-text extractor, never HTML output | Dismiss as "False positive" |

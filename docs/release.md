@@ -30,6 +30,22 @@ Each published version, including alpha and beta prereleases, contains:
 - Release notes listing known limitations, OS/runtime floors, the tested
   architectures, automated and native test results, and security notes.
 
+The candidate `source` job produces the source archive and the SBOMs:
+`Mesa-<tag>-source.tar.gz` is `git archive` of the exact release commit, so it
+holds only tracked files. `Mesa-<tag>-sbom-npm.cdx.json` (`npm sbom`, CycloneDX)
+and `Mesa-<tag>-sbom-cargo.cdx.json` (`cargo cyclonedx` 0.5.9, all targets) are
+lockfile inventories. Each SBOM carries a `mesa:sbom-scope` metadata property
+that states its scope, and the runner checkout path is replaced with
+`/xo-mesa`. `scripts/release-source.mjs` refuses a checkout that is not the
+release commit or that has uncommitted files, before and after generation.
+
+Release notes are a reviewed file on main, `.github/release-notes/<tag>.md`,
+copied from `.github/release-notes/TEMPLATE.md`. `scripts/release-notes.mjs`
+requires the `# Mesa <tag>` title and one non-empty section each for known
+limitations, OS and runtime requirements, test matrix, security notes and SBOM
+scope, and rejects `TBD`, `TODO` and comments left from the template. Write the
+notes after native acceptance, so the test matrix can state the actual results.
+
 Distinguish intended OS/runtime floors from versions exercised on the exact
 packages. Link the exact CI run and native artifact acceptance summary. State
 whether independent security assessment, fuzzing, and reproducibility evidence
@@ -151,9 +167,11 @@ repository refs before publishing:
 1. Audit and sign the sanitized changes; pass the required checks, then push
    directly to protected main and verify all CI jobs for that exact commit.
 2. Create a signed annotated immutable version tag for that exact commit.
-3. Dispatch Release candidate and verify its platform signatures and provenance.
+3. While main is at the release commit, dispatch Release candidate from main
+   with that commit and tag, then verify its platform signatures and provenance.
 4. Complete native acceptance against those exact downloaded packages.
-5. Generate the sanitized release attestation and dispatch Publish verified release.
+5. Generate the sanitized release attestation, commit the reviewed release
+   notes, and dispatch Publish verified release.
 6. Review the protected publication request and re-audit the public assets.
 
 Do not ship automatic updates as a substitute for this process. Mesa can offer
@@ -162,10 +180,14 @@ manual, user-initiated update instructions while keeping the app local-first.
 ## Protected release pipeline
 
 `Release candidate` is dispatched from protected main with an exact commit and
-signed annotated version tag. Its gate verifies the tag signature and target,
-main ancestry, and the complete successful CI run for that commit. Lightweight
-or unsigned tags, stale CI, failed jobs, or unprotected main stop the build.
-No signing credentials are available to pull-request jobs.
+signed annotated version tag. The requested commit must equal the dispatched
+main commit (`github.sha`): the gate stops otherwise. The verifier therefore
+runs from protected main, every job checks out that same commit, and build
+provenance names it. The gate verifies the tag signature and target, main
+ancestry, and the complete successful CI run for that commit. Lightweight or
+unsigned tags, stale CI, failed jobs, or unprotected main stop the build. No
+signing credentials are available to pull-request jobs. Candidate and publish
+runs are serialized and never cancelled part-way; every job has a time limit.
 
 Candidate jobs use the reviewed `release` environment and produce:
 
@@ -173,7 +195,8 @@ Candidate jobs use the reviewed `release` environment and produce:
 - Windows: SHA-256 Authenticode-signed, timestamped MSI and NSIS installers,
   plus verification of the bundled app executable against the configured signer;
 - Linux: one AppImage and one Debian package, with SHA-256 checksums and
-  authenticated build provenance.
+  authenticated build provenance;
+- source: the source archive and the two lockfile SBOMs described above.
 
 Every uploaded package, checksum inventory and candidate manifest has GitHub
 artifact provenance. All products include the locked third-party notices.
@@ -182,7 +205,8 @@ and temporary keys are removed even after failure. These jobs build candidates;
 a successful build still does not establish native acceptance.
 
 Candidate builds pin Node 22.22.3 and Rust 1.96.0 with locked dependency
-inventories. Hosted OS images and signing timestamps can still change bytes;
+inventories; each build job runs `cargo fetch --locked` first, so a stale
+`Cargo.lock` stops the build. Hosted OS images and signing timestamps can still change bytes;
 these pins do not claim reproducible bit-for-bit packages.
 
 ### Workflow action pins
@@ -238,7 +262,8 @@ workflow's green state. Repository administrators retain control of settings.
 After installing the exact signed candidate packages on every target in
 `docs/native-acceptance.md`, complete each native record. Record the exact
 commit and installed package's Artifact SHA-256. Then download the candidate
-artifacts into one directory and generate a sanitized summary:
+artifacts, including `release-source`, into one directory and generate a
+sanitized summary:
 
 ```bash
 MESA_RELEASE_TAG=v0.1.0 MESA_RELEASE_SHA=$(git rev-parse HEAD) node scripts/release-acceptance.mjs create output/products record-windows-current.local.md record-windows-oldest.local.md record-macos-current.local.md record-macos-oldest.local.md record-linux.local.md
@@ -255,9 +280,13 @@ Environment approval is the accountable human verification step.
 
 `Publish verified release` takes the successful candidate run ID, exact tag and
 commit, and the generated JSON summary. It downloads those existing packages;
-it does not rebuild packages after acceptance. It verifies the run identity,
-all package hashes and provenance, and the complete sanitized acceptance
-matrix. Missing, failed, stale, duplicate, unexpected or private fields block
+it does not rebuild packages after acceptance. It verifies the run identity
+and its commit, all package hashes, and the complete sanitized acceptance
+matrix. `gh attestation verify` checks each product's provenance against the
+candidate workflow, `--source-ref refs/heads/main`, `--source-digest` of the
+release commit and `--deny-self-hosted-runners`. It also requires the reviewed
+release notes above, uses them as the release body (`--notes-file`), and marks
+a tag that contains `-` (for example `v0.1.0-alpha.1`) as a GitHub prerelease. Missing, failed, stale, duplicate, unexpected or private fields block
 publication. Owner approval in `release-publish` is required. The workflow
 uploads to a draft first, then publishes the immutable release only after all
 assets and the attested summary are attached. Do not bypass a failed gate.
@@ -269,7 +298,7 @@ Download its installer or package, compare SHA-256 with its published inventory,
 and verify authenticated provenance, for example:
 
 ```bash
-gh attestation verify Mesa_0.1.0_amd64.deb --repo xobash/xo-mesa --signer-workflow xobash/xo-mesa/.github/workflows/release-candidate.yml
+gh attestation verify Mesa_0.1.0_amd64.deb --repo xobash/xo-mesa --signer-workflow xobash/xo-mesa/.github/workflows/release-candidate.yml --source-ref refs/heads/main --deny-self-hosted-runners
 ```
 
 Use the actual filename in that release. Checksums detect changed bytes;
@@ -306,7 +335,7 @@ macOS and Linux:
 Windows 10 and Windows 11:
 
 ```powershell
-& { $ErrorActionPreference = 'Stop'; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne '2be8e336d94a6c8d56e092ed0d180d9856cb470e2661a75f1b48c3e4ef0b9582') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
+& { $ErrorActionPreference = 'Stop'; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne '249af11cc327554b79b072edb400248b8832e7a8a096d4e42b4c46a120f441dc') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
 ```
 
 The source installers preserve existing local files and refuse non-fast-forward
@@ -358,7 +387,11 @@ of the source toolchain trust. Development checkouts are a separate path.
 `node scripts/native-advisory-check.mjs` runs the current registry-backed Cargo
 audit. It rejects vulnerabilities and every unreviewed warning. Only the exact
 legacy GTK and `zbus` 5 warning/package/version combinations documented in
-`docs/security.md` are tracked. A version or advisory change requires review;
+`docs/security.md` are tracked. They were last reviewed on 2026-10-22 against
+`cargo audit --json`: no vulnerabilities, and the five warnings are
+informational (unmaintained or unsound) in Linux-only GTK and D-Bus chains.
+The exception expires after 2026-12-21; the weekly `advisory-review` workflow
+fails seven days earlier. A version or advisory change requires review;
 removal needs the supported upstream GTK and D-Bus binding transitions and
 fresh Linux acceptance, not a forced incompatible dependency override.
 

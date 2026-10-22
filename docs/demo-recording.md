@@ -20,7 +20,8 @@ frontend so it follows the current interface (Studio by default).
   graph node positions. It changes no app source on disk. It fails loudly if its anchors in
   `src/lib/vault.ts`, `src/controllers/vault.ts`, or `src/components/GraphView.tsx` move.
 - `mock.js` stands in for the Tauri IPC layer. `stage/pi.js` draws a scripted Pi TUI in Mesa's
-  real terminal surface, and `stage/research.js` sends the Deep Research events. Mesa's real
+  real terminal surface with a neutral `local/demo-model` label, and `stage/research.js` sends
+  the Deep Research events. Mesa's real
   research controller validates the finish payload, so the script must keep passing that gate.
 - `stage/` draws the desktop, window frame, pop-out windows, captions, keycaps, and cursor.
 - Recording runs page time 6× slower (`SLOW`; `timeshim.js` plus the CDP animation playback

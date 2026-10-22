@@ -17,7 +17,7 @@
       this.cols = cols || 80; this.rows = rows || 24;
       this.subs = []; this.seq = 0; this.input = ""; this.lines = [];
       this.status = ["ok", "● ready"]; this.tokens = "↑0 ↓0"; this.ctx = "2%";
-      this.model = "claude-sonnet-4-5"; this.cwd = "~/Research/Tidewater";
+      this.model = "demo-model"; this.cwd = "~/Research/Tidewater";
       this.running = false; this.alive = true;
       this.lines.push([["dim", "· Mesa context loaded · Tidewater · Daily/2026-10-14.md"]]);
       this.lines.push([["dim", "· Extensions: mesa-activity · mesa-browser · mesa-context"]]);
@@ -45,7 +45,7 @@
       const rule = sgr("mute") + "─".repeat(Math.max(0, C - 2));
       const rows = [];
       const wide = C > 90;
-      let right = wide ? `anthropic/${this.model} · thinking: medium` : this.model;
+      let right = wide ? `local/${this.model} · thinking: medium` : this.model;
       if (C - 2 < 14 + right.length + 2) right = "";
       const left = `${sgr("acc")}π ${sgr("b")}pi  ${sgr("mute")}v0.70.2`;
       const gap = Math.max(1, C - 2 - 14 - right.length);

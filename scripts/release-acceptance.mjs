@@ -35,9 +35,11 @@ export function validateAcceptance(summary, { commit, tag, products }) {
   }
   return clean;
 }
+// Platform packages plus the source archive and its lockfile SBOMs.
+const formats = { macos: ['.dmg'], windows: ['.msi', '.exe'], linux: ['.AppImage', '.deb'], source: ['-source.tar.gz', '-sbom-npm.cdx.json', '-sbom-cargo.cdx.json'] };
 export function candidateProducts(dir, commit, tag) {
   const products = [];
-  for (const platform of ['macos', 'windows', 'linux']) {
+  for (const platform of Object.keys(formats)) {
     const candidate = JSON.parse(readFileSync(join(dir, `candidate-${platform}.json`), 'utf8'));
     if (JSON.stringify(Object.keys(candidate).sort()) !== JSON.stringify(["commit", "platform", "schema", "tag"])) throw new Error("Unexpected candidate metadata fields.");
     if (candidate.schema !== 1 || candidate.commit !== commit || candidate.tag !== tag || candidate.platform !== platform) throw new Error('Mixed candidate revisions.');
@@ -49,13 +51,12 @@ export function candidateProducts(dir, commit, tag) {
     }
   }
   if (new Set(products.map(p => p.name)).size !== products.length) throw new Error('Duplicate artifact name.');
-  const formats = { macos: ['.dmg'], windows: ['.msi', '.exe'], linux: ['.AppImage', '.deb'] };
   for (const [platform, extensions] of Object.entries(formats)) {
     const platformProducts = products.filter(p => p.platform === platform);
     if (platformProducts.length !== extensions.length || platformProducts.some(p => !extensions.some(ext => p.name.endsWith(ext)))) throw new Error('Unexpected release product format.');
     for (const ext of extensions) if (platformProducts.filter(p => p.name.endsWith(ext)).length !== 1) throw new Error('Incomplete release product set.');
   }
-  const allowed = new Set([...products.map(p => p.name), ...['macos', 'windows', 'linux'].flatMap(p => [`candidate-${p}.json`, `checksums-${p}.txt`])]);
+  const allowed = new Set([...products.map(p => p.name), ...Object.keys(formats).flatMap(p => [`candidate-${p}.json`, `checksums-${p}.txt`])]);
   for (const name of readdirSync(dir)) if (!allowed.has(name)) throw new Error('Unexpected candidate file.');
   return products;
 }

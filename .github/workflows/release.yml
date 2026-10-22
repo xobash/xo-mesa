@@ -17,10 +17,15 @@ on:
 permissions:
   contents: read
   actions: read
+# Publication is never cancelled part-way.
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
 jobs:
   publish:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: release-publish
     permissions:
       contents: write
@@ -41,6 +46,8 @@ jobs:
         with:
           node-version-file: .node-version
       - run: node scripts/release-gate.mjs
+      - name: Verify reviewed release notes
+        run: node scripts/release-notes.mjs
       - name: Verify candidate run identity
         run: |
           node --input-type=module <<'JS'
@@ -48,7 +55,7 @@ jobs:
           const response = await fetch(`https://api.github.com/repos/xobash/xo-mesa/actions/runs/${process.env.MESA_CANDIDATE_RUN}`, { headers: { Authorization: `Bearer ${process.env.GH_TOKEN}` } });
           if (!response.ok) throw new Error('Candidate run unavailable');
           const run = await response.json();
-          if (run.path !== '.github/workflows/release-candidate.yml' || run.event !== 'workflow_dispatch' || run.head_branch !== 'main' || run.conclusion !== 'success') throw new Error('Not a successful protected candidate run');
+          if (run.path !== '.github/workflows/release-candidate.yml' || run.event !== 'workflow_dispatch' || run.head_branch !== 'main' || run.head_sha !== process.env.MESA_RELEASE_SHA || run.conclusion !== 'success') throw new Error('Not a successful protected candidate run for the release commit');
           JS
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
@@ -60,7 +67,8 @@ jobs:
       - name: Verify all product provenance
         run: |
           for product in output/products/*; do
-            gh attestation verify "$product" --repo xobash/xo-mesa --signer-workflow xobash/xo-mesa/.github/workflows/release-candidate.yml
+            gh attestation verify "$product" --repo xobash/xo-mesa --signer-workflow xobash/xo-mesa/.github/workflows/release-candidate.yml \
+              --source-ref refs/heads/main --source-digest "$MESA_RELEASE_SHA" --deny-self-hosted-runners
           done
       - run: node scripts/release-acceptance.mjs verify output/products
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
@@ -69,6 +77,8 @@ jobs:
       - name: Publish immutable products with acceptance summary
         run: |
           set -euo pipefail
-          gh release create "$MESA_RELEASE_TAG" --verify-tag --draft --title "Mesa $MESA_RELEASE_TAG" --notes "Signed desktop packages. Verify SHA-256 checksums and provenance before installation. Native acceptance is recorded in release-acceptance.json."
+          prerelease=()
+          if [[ "$MESA_RELEASE_TAG" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$MESA_RELEASE_TAG" --verify-tag --draft "${prerelease[@]}" --title "Mesa $MESA_RELEASE_TAG" --notes-file ".github/release-notes/$MESA_RELEASE_TAG.md"
           gh release upload "$MESA_RELEASE_TAG" output/products/* output/release-acceptance.json
           gh release edit "$MESA_RELEASE_TAG" --draft=false

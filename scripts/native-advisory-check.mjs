@@ -4,10 +4,12 @@ const trackedWarnings = new Set([
   'RUSTSEC-2024-0429:glib:0.18.5:unsound', 'RUSTSEC-2024-0370:proc-macro-error:1.0.4:unmaintained',
   'RUSTSEC-2026-0370:zvariant:5.15.0:unmaintained', 'RUSTSEC-2026-0371:zbus_names:4.3.4:unmaintained', 'RUSTSEC-2026-0372:zvariant_derive:5.15.0:unmaintained',
 ]);
-// Registry review: no vulnerabilities; locked Linux Tauri/wry still requires glib 0.18.5.
-// The zbus 5 crates moved into zbus 6 (2026-10-16). keyring's secret-service 5.2.0,
-// tauri-plugin-opener 2.7.2 and tauri-plugin-single-instance 2.5.4 all still require zbus 5.
-export const nativeAdvisoryReview = { reviewedOn: '2026-10-18', reviewBy: '2026-11-10', removal: 'Upgrade the complete Tauri/wry/GTK binding chain and repeat Linux native acceptance; move secret-service and the opener/single-instance plugins to zbus 6 once upstream releases them.' };
+// Registry review: no vulnerabilities; all five warnings are informational and
+// Linux-only. Locked Tauri/wry still requires glib 0.18.5. The zbus 5 crates moved
+// into zbus 6 (2026-10-16); secret-service 5.2.0 (keyring) and the latest
+// tauri-plugin-opener 2.7.2 and tauri-plugin-single-instance 2.5.4 still require zbus 5
+// (locked: 2.5.5 and 2.5.2).
+export const nativeAdvisoryReview = { reviewedOn: '2026-10-22', reviewBy: '2026-12-21', removal: 'Upgrade the complete Tauri/wry/GTK binding chain and repeat Linux native acceptance; move secret-service and the opener/single-instance plugins to zbus 6 once upstream releases them.' };
 export function validateNativeAudit(report, now = new Date()) {
   if (!report?.vulnerabilities || !report.warnings) throw new Error('Incomplete native audit output.');
   if (report.vulnerabilities.found || report.vulnerabilities.count || report.vulnerabilities.list?.length) throw new Error('Native dependency vulnerability found.');
@@ -43,7 +45,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     if (flag > 0 && !Number.isInteger(warnDays)) throw new Error('--fail-days-before-expiry needs a whole number of days.');
     if (run.error || !report) throw new Error(`Native registry audit failed.${run.error ? ` ${run.error.message}` : ''}${run.stderr ? `\n${run.stderr.trim()}` : ''}`);
-    if (run.status !== 0) throw new Error('Native registry audit failed.');
+    if (run.status !== 0) throw new Error(`Native registry audit failed (exit ${run.status ?? run.signal}).${run.stderr?.trim() ? `\n${run.stderr.trim()}` : ''}`);
     console.log(`Native audit: no vulnerabilities; ${validateNativeAudit(report)} specifically tracked upstream warnings.`);
     const warning = warnDays === null ? null : reviewExpiryWarning(new Date(), warnDays);
     if (warning) throw new Error(warning);

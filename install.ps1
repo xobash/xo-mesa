@@ -1,7 +1,7 @@
-# Mesa - one-command Windows bootstrap, designed to be run as:
-#   irm https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 | iex
-# Not available yet: no signed v0.1.0 release tag exists. The command works only
-# after the first signed release; see docs/release.md for the checksum-verified form.
+# Mesa - one-command Windows bootstrap for a signed release tag.
+# Run it only through the checksum-verified command in docs/release.md, which
+# checks this file's SHA-256 before it executes. Not available yet: no signed
+# v0.1.0 release tag exists.
 #
 # `iex` executes this text INSIDE the caller's PowerShell runspace (unlike
 # `curl | bash`, which forks a child shell). That has two consequences this

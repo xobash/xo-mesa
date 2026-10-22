@@ -45,8 +45,10 @@ npm run mesa
 
 ## Automation
 
-The `codeql` workflow scans the JavaScript and TypeScript sources on pushes,
-pull requests and weekly. `.github/CODEOWNERS` assigns review to the
+The `codeql` workflow scans the JavaScript and TypeScript sources and the
+GitHub Actions workflows on pushes, pull requests and weekly. Pull requests run
+the frontend and Rust checks but not the desktop bundle builds; pushes to main
+build them. `.github/CODEOWNERS` assigns review to the
 repository owner. Dependency updates are reviewed and landed by hand: the
 public audit admits only the owner's identity on reachable commits, so
 bot-authored update branches cannot pass CI.
@@ -55,3 +57,10 @@ bot-authored update branches cannot pass CI.
 
 Use a focused branch and a clear title. Keep unrelated changes out of the pull
 request. Explain any platform limits and the checks that you ran.
+
+Mesa does not merge external commits directly. The public audit admits only the
+owner's identity on reachable commits, so CI on a pull request from another
+author fails at `npm run audit:public`; this is expected. The owner reviews the
+change and, if accepted, lands it on main as a new owner-signed commit whose
+message credits the contributor's GitHub username and pull request. The audit
+also rejects `Co-Authored-By` trailers. The pull request is then closed.

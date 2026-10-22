@@ -9,10 +9,17 @@ on:
 permissions:
   contents: read
 
+# A newer pull-request run cancels the superseded one. Push, scheduled and
+# manual runs get their own group so every commit keeps its full check run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Fast gate: type-check, unit tests, and the web build on Linux.
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -58,6 +65,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -88,6 +96,7 @@ jobs:
 
   rust-advisory:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -106,9 +115,11 @@ jobs:
       - run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
       - run: node scripts/third-party-notices.mjs --check-native
 
-  # Native desktop bundles for each supported OS.
+  # Native desktop bundles for each supported OS. Branch rules do not require
+  # them and the release gate reads only main push runs, so pull requests skip them.
   desktop:
     needs: [frontend, rust, rust-advisory]
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +131,7 @@ jobs:
           - os: ubuntu-latest
             name: linux
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

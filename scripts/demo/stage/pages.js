@@ -57,8 +57,8 @@
       ["https://www.frontiersin.org/articles/10.3389/fmars.2019.00499", "Extreme marine heatwaves alter kelp forest community near its equatorward distribution limit", "www.frontiersin.org › articles › fmars.2019.00499", "Baja California sites differed in recovery after 2014–2016."],
     ],
   };
-  const searchPage = (q) => `<!doctype html><html><head><title>${q}</title><style>${css}</style></head><body><main>
-    <div class="q">Results for <b>${q.replace(/</g, "&lt;")}</b></div>
+  const searchPage = (q) => `<!doctype html><html><head><title>${q.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</title><style>${css}</style></head><body><main>
+    <div class="q">Results for <b>${q.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</b></div>
     ${results.default.map(([u, t, d, p]) => `<div class="r"><a href="${u}">${t}</a><div class="u">${d}</div><p>${p}</p></div>`).join("")}</main></body></html>`;
 
   S.pages = {

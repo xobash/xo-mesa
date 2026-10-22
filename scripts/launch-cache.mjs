@@ -64,7 +64,6 @@ if (rustc.status !== 0) {
 const source = digest([
   "src", "src-tauri", "public", "scripts", "package.json", "package-lock.json",
   "vite.config.ts", "tsconfig.json", "index.html", "run.sh", "run.cmd",
-  "DESIGN.md", "THIRD_PARTY_NOTICES.txt",
 ]);
 const build = createHash("sha256")
   .update(`${source}:${deps}:${rustc.stdout}:${process.platform}:${process.arch}`)

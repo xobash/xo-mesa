@@ -34,10 +34,10 @@ elif [ "$OS" = "Linux" ]; then
   # manager. This is the one step that needs sudo.
   need_libs() { ! pkg-config --exists webkit2gtk-4.1 2>/dev/null; }
   if need_libs; then
-    if command -v apt >/dev/null 2>&1; then
-      info "Installing Tauri's system libraries via apt (needs sudo)…"
-      sudo apt update
-      sudo apt install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+    if command -v apt-get >/dev/null 2>&1; then
+      info "Installing Tauri's system libraries via apt-get (needs sudo)…"
+      sudo apt-get update
+      sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
         libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev git
     elif command -v pacman >/dev/null 2>&1; then
       info "Installing Tauri's system libraries via pacman (needs sudo)…"
@@ -49,7 +49,7 @@ elif [ "$OS" = "Linux" ]; then
         libappindicator-gtk3-devel librsvg2-devel libxdo-devel git
       sudo dnf group install -y "c-development" || sudo dnf groupinstall -y "Development Tools" || true
     else
-      err "Couldn't detect apt, pacman, or dnf."
+      err "Couldn't detect apt-get, pacman, or dnf."
       info "Install these manually, then re-run: WebKitGTK 4.1 dev headers, a C"
       info "toolchain (gcc/make), git, curl, wget, openssl dev, librsvg, libxdo,"
       info "and libayatana-appindicator3 dev."
@@ -63,7 +63,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2) Node.js LTS — installed user-only via nvm if npm isn't already on PATH.
+# 2) Pinned Node.js (.node-version) — installed user-only via nvm if npm isn't already on PATH.
 # ─────────────────────────────────────────────────────────────────────────────
 # Load an existing nvm if the user has one, so we can see a node it manages.
 export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -75,7 +75,7 @@ if [ "$(node -v 2>/dev/null || true)" != "v$MESA_NODE_VERSION" ] && command -v n
   nvm use "$MESA_NODE_VERSION" >/dev/null 2>&1 || true
 fi
 if ! command -v npm >/dev/null 2>&1 || [ "$(node -v 2>/dev/null || true)" != "v$MESA_NODE_VERSION" ]; then
-  info "Node.js not found — installing the LTS locally via nvm (user-only)…"
+  info "Node.js not found — installing pinned Node.js $MESA_NODE_VERSION locally via nvm (user-only)…"
   mkdir -p "$NVM_DIR"
   bootstrap_download https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/nvm.sh cd6f374433a22ec01919a834cf59d03e0ba07c226bed460a50ef5eecc38c39ef "$NVM_DIR/nvm.sh"
   bootstrap_download https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/nvm-exec f3b7c71ac96ca4f2f75871af20070c3063d1e3fcdc44019af0635c95112e9e76 "$NVM_DIR/nvm-exec"

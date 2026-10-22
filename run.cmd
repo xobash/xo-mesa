@@ -77,10 +77,10 @@ if errorlevel 1 (
     echo     Install Rust from https://rustup.rs, then re-run run.cmd.
     exit /b 1
   )
-  echo   . Configuring the stable MSVC Rust toolchain...
+  echo   . Configuring the pinned Rust 1.96.0 MSVC toolchain...
   call rustup default 1.96.0-msvc
   if errorlevel 1 (
-    echo   x Rustup could not install or select the stable MSVC toolchain.
+    echo   x Rustup could not install or select the pinned Rust 1.96.0 MSVC toolchain.
     echo     Check the network error above, then re-run run.cmd.
     exit /b 1
   )

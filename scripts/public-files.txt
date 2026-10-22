@@ -2,6 +2,7 @@
 .gitattributes
 .github/CODEOWNERS
 .github/codeql/codeql-config.yml
+.github/release-notes/TEMPLATE.md
 .github/workflows/advisory-review.yml
 .github/workflows/build.yml
 .github/workflows/codeql.yml
@@ -99,7 +100,9 @@ scripts/release-acceptance.mjs
 scripts/release-gate.check.mjs
 scripts/release-gate.mjs
 scripts/release-macos.sh
+scripts/release-notes.mjs
 scripts/release-products.mjs
+scripts/release-source.mjs
 scripts/release-windows.ps1
 scripts/tauri-targets.mjs
 scripts/third-party-notices.check.mjs
@@ -173,6 +176,7 @@ src/App.rerender.test.tsx
 src/App.surfaces.test.tsx
 src/App.tsx
 src/a11y.test.tsx
+src/components/AgentPanel.links.test.ts
 src/components/AgentPanel.tsx
 src/components/Backlinks.tsx
 src/components/BookmarksList.test.tsx
@@ -528,6 +532,7 @@ src/store.activityRefresh.test.ts
 src/store.archiveRegister.test.ts
 src/store.conflictReview.test.ts
 src/store.lifecycle.test.ts
+src/store.pdfDirty.test.ts
 src/store.research.test.ts
 src/store.syncListener.test.ts
 src/store.textLifecycle.test.ts

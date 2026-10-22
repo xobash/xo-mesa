@@ -27,6 +27,10 @@ const GRAPH_HOOK = `
     ids: () => nodesRef.current.map((node) => node.id),
   };`;
 
+// JSON as a JavaScript source literal: escape characters that could end or
+// reinterpret the surrounding module text.
+const jsLiteral = (value) => JSON.stringify(value).replace(/[<>\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+
 function tidewater(fixture) {
   return {
     name: "tidewater-fixture",
@@ -43,7 +47,7 @@ function tidewater(fixture) {
       const end = out.indexOf("function demoFiles(): VaultFile[]");
       if (start < 0 || end < 0) throw new Error("vault.ts demo block moved; update scripts/demo/serve.mjs");
       // Pop-out windows are separate realms; they copy the main window's live vault.
-      const demo = `const DEMO: Record<string, string> = (() => { try { const v = (window.top as any).__REC_SHARED__?.vault?.(); if (v && Object.keys(v).length) return { ...v }; } catch { /* no stage */ } return ${JSON.stringify(fixture)}; })();\n(globalThis as any).__MESA_DEMO__ = DEMO;\n\n`;
+      const demo = `const DEMO: Record<string, string> = (() => { try { const v = (window.top as any).__REC_SHARED__?.vault?.(); if (v && Object.keys(v).length) return { ...v }; } catch { /* no stage */ } return ${jsLiteral(fixture)}; })();\n(globalThis as any).__MESA_DEMO__ = DEMO;\n\n`;
       return out.slice(0, start) + demo + out.slice(end);
     },
   };
