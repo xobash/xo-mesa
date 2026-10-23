@@ -370,6 +370,29 @@ not a page-controlled DOM snapshot or proof of what the user saw. User browsing
 and Pi browsing retain separate in-memory cookie jars. Page data is untrusted
 and is encoded as evidence rather than instructions or authorization.
 
+## Seeing the current view
+
+The per-turn context names the current document by path only. To see what the
+user sees, Pi calls the bundled `mesa_view` tool (in `mesa-context.ts`). It
+sends an authenticated `GET /view` to the loopback bridge. Rust asks the main
+renderer for one capture (`mesa://view-request`) and waits at most 10 seconds.
+The renderer composites the visible `<canvas>` and `<img>` layers of the live
+document pane (or the center view when no document is open, but never Pi
+itself) into one JPEG of at most 1568 px on the long side. It answers with
+`activity_view_respond`, with the image as the raw IPC body. The tool returns
+that image to the model as an image block, with the document path and notes.
+
+The image travels in Pi's normal request to the configured provider, so it
+works with local, LAN/Tailscale and hosted providers alike. Pi forwards it only
+when the model entry in Pi's own `models.json` lists `"image"` in `input`;
+otherwise Pi replaces it with a text placeholder.
+
+Captured: rendered PDF pages, images, whiteboards, the graph and other canvas
+views. Not captured: embedded frames (saved HTML, the native PDF fallback and
+first-paint frame, the browser reader) and video frames. The tool says so in
+its notes; for web pages Pi uses `browse_read`, and for text notes it reads the
+file. One capture runs at a time; a second concurrent call receives `409`.
+
 ## Session and bridge authority
 
 Every terminal operation checks native caller grants. A session ID is not a

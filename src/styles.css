@@ -1139,6 +1139,10 @@ button {
   flex-direction: column;
   overflow: hidden;
 }
+/* Marks the live document for view capture without adding a layout box. */
+.doc-live-view {
+  display: contents;
+}
 
 /* right region: a vertical stack of panels */
 .right-stack {

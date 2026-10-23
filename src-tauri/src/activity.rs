@@ -146,6 +146,132 @@ pub fn deep_research_respond(
     research_replies().respond(&run_id, &request_id, ResearchReply { status, message })
 }
 
+/// One rendered capture of the main workspace view, answered by the main renderer.
+struct ViewReply {
+    meta: String,
+    mime: String,
+    bytes: Vec<u8>,
+}
+
+struct ViewPending {
+    request_id: String,
+    sender: std::sync::mpsc::SyncSender<ViewReply>,
+}
+
+/// One admitted `/view` wait; no capture outlives its request.
+#[derive(Default)]
+struct ViewReplies(Mutex<Option<ViewPending>>);
+
+struct ViewWait<'a> {
+    replies: &'a ViewReplies,
+    receiver: std::sync::mpsc::Receiver<ViewReply>,
+}
+
+impl ViewReplies {
+    fn begin(&self, request_id: String) -> Result<ViewWait<'_>, String> {
+        let mut pending = self.0.lock().map_err(|e| e.to_string())?;
+        if pending.is_some() {
+            return Err("another view capture is in progress".into());
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        *pending = Some(ViewPending { request_id, sender });
+        Ok(ViewWait {
+            replies: self,
+            receiver,
+        })
+    }
+
+    fn respond(&self, request_id: &str, reply: ViewReply) -> Result<(), String> {
+        let pending = self.0.lock().map_err(|e| e.to_string())?;
+        let pending = pending
+            .as_ref()
+            .filter(|p| p.request_id == request_id)
+            .ok_or("no matching view capture is waiting")?;
+        pending
+            .sender
+            .try_send(reply)
+            .map_err(|_| "view capture already answered".to_string())
+    }
+}
+
+impl ViewWait<'_> {
+    fn wait(&self, running: &AtomicBool, timeout: Duration) -> Option<ViewReply> {
+        let start = std::time::Instant::now();
+        while running.load(Ordering::Acquire) && start.elapsed() < timeout {
+            match self
+                .receiver
+                .recv_timeout(ACTIVITY_STOP_POLL.min(timeout.saturating_sub(start.elapsed())))
+            {
+                Ok(reply) => return Some(reply),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        None
+    }
+}
+
+impl Drop for ViewWait<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.replies.0.lock() {
+            *pending = None;
+        }
+    }
+}
+
+fn view_replies() -> &'static ViewReplies {
+    static REPLIES: OnceLock<ViewReplies> = OnceLock::new();
+    REPLIES.get_or_init(ViewReplies::default)
+}
+
+const VIEW_IMAGE_CAP: usize = 8 * 1024 * 1024;
+const VIEW_META_CAP: usize = 8 * 1024;
+const VIEW_WAIT: Duration = Duration::from_secs(10);
+
+/// Validate a renderer capture reply. Metadata is URI-encoded JSON so it can
+/// travel in an ASCII response header; image bytes are the raw IPC body.
+fn parse_view_reply(
+    headers: &tauri::http::HeaderMap,
+    body: &tauri::ipc::InvokeBody,
+) -> Result<(String, ViewReply), String> {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| format!("missing {name} header"))
+    };
+    let request_id = header("x-mesa-view-request")?.to_string();
+    let meta = header("x-mesa-view-meta")?.to_string();
+    let mime = header("x-mesa-view-mime")?.to_string();
+    if meta.len() > VIEW_META_CAP || !meta.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err("invalid view metadata".into());
+    }
+    let bytes = match body {
+        tauri::ipc::InvokeBody::Raw(data) => data.clone(),
+        tauri::ipc::InvokeBody::Json(_) => Vec::new(),
+    };
+    if bytes.len() > VIEW_IMAGE_CAP {
+        return Err("view capture is too large".into());
+    }
+    match mime.as_str() {
+        "image/jpeg" | "image/png" if !bytes.is_empty() => {}
+        "none" if bytes.is_empty() => {}
+        _ => return Err("invalid view capture type".into()),
+    }
+    Ok((request_id, ViewReply { meta, mime, bytes }))
+}
+
+/// Only the main workspace answers view captures for Pi.
+#[tauri::command]
+pub fn activity_view_respond(
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    crate::require_main(window.label())?;
+    let (request_id, reply) = parse_view_reply(request.headers(), request.body())?;
+    view_replies().respond(&request_id, reply)
+}
+
 #[derive(Debug)]
 enum BodyError {
     TooLarge,
@@ -530,6 +656,52 @@ fn handle_request(
             .map(|context| context.clone())
             .unwrap_or_default();
         json_response(req, serde_json::json!({ "context": context }).to_string());
+        return;
+    }
+    // Rendered pixels of the main workspace view, captured by the main renderer
+    // on request so remote inference providers can see what the user sees.
+    if url == "/view" && method == Method::Get {
+        let request_id = match make_token() {
+            Ok(id) => id,
+            Err(error) => {
+                let _ = req.respond(Response::from_string(error).with_status_code(500));
+                return;
+            }
+        };
+        let wait = match view_replies().begin(request_id.clone()) {
+            Ok(wait) => wait,
+            Err(error) => {
+                let _ = req.respond(Response::from_string(error).with_status_code(409));
+                return;
+            }
+        };
+        if let Err(error) = app.emit_to("main", "mesa://view-request", &request_id) {
+            let _ = req.respond(Response::from_string(error.to_string()).with_status_code(503));
+            return;
+        }
+        let Some(reply) = wait.wait(running, VIEW_WAIT) else {
+            let _ = req.respond(
+                Response::from_string("Mesa did not return a view capture in time")
+                    .with_status_code(504),
+            );
+            return;
+        };
+        let content_type = if reply.mime == "none" {
+            "application/octet-stream"
+        } else {
+            reply.mime.as_str()
+        };
+        let headers = [
+            format!("Content-Type: {content_type}"),
+            format!("X-Mesa-View: {}", reply.meta),
+        ];
+        let mut response = Response::from_data(reply.bytes);
+        for header in headers {
+            if let Ok(header) = header.parse::<tiny_http::Header>() {
+                response = response.with_header(header);
+            }
+        }
+        let _ = req.respond(response);
         return;
     }
     // Fetch through the native broker without rendering website scripts.
@@ -960,6 +1132,54 @@ mod tests {
         };
         assert!(replies.respond("next", "next-call", reply).is_err());
         assert!(replies.begin("last".into(), "last-call".into()).is_ok());
+    }
+
+    fn view_headers(id: &str, meta: &str, mime: &str) -> tauri::http::HeaderMap {
+        let mut map = tauri::http::HeaderMap::new();
+        map.insert("x-mesa-view-request", id.parse().unwrap());
+        map.insert("x-mesa-view-meta", meta.parse().unwrap());
+        map.insert("x-mesa-view-mime", mime.parse().unwrap());
+        map
+    }
+
+    #[test]
+    fn view_replies_require_a_typed_bounded_capture() {
+        let image = tauri::ipc::InvokeBody::Raw(vec![0xff, 0xd8, 0xff]);
+        let empty = tauri::ipc::InvokeBody::Raw(Vec::new());
+        let (id, reply) =
+            parse_view_reply(&view_headers("id", "%7B%7D", "image/jpeg"), &image).unwrap();
+        assert_eq!((id.as_str(), reply.bytes.len()), ("id", 3));
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "none"), &empty).is_ok());
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "none"), &image).is_err());
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "image/jpeg"), &empty).is_err());
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "text/html"), &image).is_err());
+        assert!(parse_view_reply(&view_headers("id", "{ }", "image/jpeg"), &image).is_err());
+        let oversized = tauri::ipc::InvokeBody::Raw(vec![0; VIEW_IMAGE_CAP + 1]);
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "image/png"), &oversized).is_err());
+    }
+
+    #[test]
+    fn view_captures_are_correlated_single_admission_and_released() {
+        let replies = ViewReplies::default();
+        let reply = || ViewReply {
+            meta: "%7B%7D".into(),
+            mime: "none".into(),
+            bytes: Vec::new(),
+        };
+        let wait = replies.begin("first".into()).unwrap();
+        assert!(replies.begin("second".into()).is_err());
+        assert!(replies.respond("stale", reply()).is_err());
+        replies.respond("first", reply()).unwrap();
+        assert!(replies.respond("first", reply()).is_err());
+        assert!(wait
+            .wait(&AtomicBool::new(true), Duration::from_millis(100))
+            .is_some());
+        drop(wait);
+        let wait = replies.begin("next".into()).unwrap();
+        assert!(wait.wait(&AtomicBool::new(false), VIEW_WAIT).is_none());
+        drop(wait);
+        assert!(replies.respond("next", reply()).is_err());
+        assert!(replies.begin("last".into()).is_ok());
     }
 
     #[test]

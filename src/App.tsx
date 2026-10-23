@@ -250,7 +250,8 @@ function DocPane() {
   const editable = !activeFile || isEditableTextExt(activeFile.ext);
   const unavailableText = activeFile && isTextualVaultFile(activeFile) && !editable && activeContentState !== "ready";
   return (
-    <>
+    // Pi's mesa_view tool captures the live document from this marked region.
+    <div className="doc-live-view" data-mesa-view-root="live-doc">
       <Tabs />
       {unavailableText ? (
         <div className="doc-load-state" role="status">
@@ -275,7 +276,7 @@ function DocPane() {
       ) : (
         <div className="editor-empty">Open a note to begin.</div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -1337,6 +1338,28 @@ export default function App() {
     };
     publish(getStore());
     return useAppStore.subscribe(publish);
+  }, [docMode, panelMode, agentMode, researchMode]);
+
+  // Pi's mesa_view tool asks main for the rendered pixels of the current view.
+  useEffect(() => {
+    if (docMode || panelMode || agentMode || researchMode || !IN_TAURI) return;
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("mesa://view-request", (event) => {
+      const state = getStore();
+      void import("./lib/viewCapture").then(({ answerViewRequest }) =>
+        answerViewRequest(event.payload, state.activePath, state.settings.centerView)
+      ).catch((error) => {
+        console.warn("[mesa] Pi view capture failed:", error);
+      });
+    }).then((stop) => {
+      if (alive) unlisten = stop;
+      else stop();
+    });
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
   }, [docMode, panelMode, agentMode, researchMode]);
 
   // First-run guided tour, once the vault is open.

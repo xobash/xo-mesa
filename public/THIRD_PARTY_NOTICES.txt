@@ -1,8 +1,8 @@
 Mesa third-party notices
 Generated from installed, locked dependencies. Mesa's own MIT license is separate.
 package-lock-sha256: d06cc72697d98bba394e194c949efa5d65873c38ec887aef21211ee5f9068fbe
-Cargo-lock-sha256: e50e9df5288ff25b004e2c9b78e943631e79f75e4a4a0e6f90b8901fd439d5a7
-native-notices-sha256: e665f648fd51ff1d4ef22e9eb96c2397bef40cae157b45fc4e3734b98f2ded4c
+Cargo-lock-sha256: 171a6cab6a68ad854ea034718b08f435781f831130cce201cb2b1712424bf40a
+native-notices-sha256: 54f1644cf63b38b90d0e3da0f26145ab6d77cc763434f1a5684c81606d4b2219
 
 Frontend runtime dependencies (package-lock.json)
 
@@ -18387,7 +18387,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ========================================================================
-ctutils@0.4.2
+ctutils@0.4.4
 License: Apache-2.0 OR MIT
 Desktop targets: x86_64-unknown-linux-gnu
 

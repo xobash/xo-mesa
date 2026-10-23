@@ -18,6 +18,7 @@ fn main() {
             "activity_start",
             "activity_set_context",
             "deep_research_respond",
+            "activity_view_respond",
             "activity_stop",
             "html_run_session",
             "html_run_revoke",

@@ -509,6 +509,9 @@ src/lib/vaultWatchContract.test.ts
 src/lib/vaultWriteNative.test.ts
 src/lib/verifiedWrite.test.ts
 src/lib/verifiedWrite.ts
+src/lib/viewCapture.test.ts
+src/lib/viewCapture.ts
+src/lib/viewExtension.test.ts
 src/lib/webArchive.test.ts
 src/lib/webArchive.ts
 src/lib/windowChrome.ts

@@ -303,6 +303,7 @@ pub fn run() {
             activity::activity_start,
             activity::activity_set_context,
             activity::deep_research_respond,
+            activity::activity_view_respond,
             activity::activity_stop,
             htmlrun::html_run_session,
             htmlrun::html_run_revoke,
