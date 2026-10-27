@@ -26,7 +26,7 @@ independent security assessment.
 | Versioned model | TM-6; no external review recorded |
 | Automated rejection/recovery coverage | Markdown/HTML, archive bounds, sync proof/pin/path checks, native URL/reader isolation and sync parser, write interruption and stale-baseline tests |
 | Penetration testing | No independent report recorded |
-| Coverage-guided fuzzing, including native IPC | Bounded sync parser fuzz smoke only; broad campaigns and native IPC fuzzing are not established |
+| Coverage-guided fuzzing, including native IPC | Not established |
 | Malicious-vault, hostile-peer, corrupt-file, traversal, SSRF and hostile-HTML corpora | Synthetic regression cases exist; complete versioned native corpora are not established |
 | Native Windows/macOS/Linux acceptance | Incomplete; see [native acceptance](native-acceptance.md) |
 | Signed releases and independent reproducibility | Not established; see [release process](release.md) |
@@ -255,18 +255,9 @@ npm run test:release
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-The isolated `src-tauri/fuzz` crate tests production sync path/query parsing,
-manifest handling and journal validation/serialization with libFuzzer. Copy
-`seeds/sync_input` into its ignored `target/corpus/sync_input` directory, then run
-`cargo +nightly fuzz run sync_input target/corpus/sync_input -- -max_total_time=60 -max_len=65536 -artifact_prefix=target/artifacts/sync_input/`
-from that crate after creating the artifact directory. Pin cargo-fuzz 0.13.1.
-`parser-fuzz.yml` runs a 120-second production-parser smoke on pushes, pull
-requests and weekly, using `nightly-2026-10-06`. `npm run test:documents`
-executes deterministic hostile-document mutations in frontend CI. These are
-maintained bounded targets; native IPC and full document-format campaigns
-remain separate validation work.
-The Unicode percent-escape crash is retained as a synthetic seed and unit test;
-short runs do not establish broad parser or IPC fuzz acceptance.
+`npm run test:documents` executes deterministic hostile-document mutations in
+frontend CI. Native IPC and full document-format fuzzing remain separate
+validation work.
 
 PDF text replacement removes selected glyphs and unreachable original content streams, preserves surrounding selectable text, and refuses unsupported structures without output. It is not document-wide redaction: metadata, attachments, other pages, retained source copies and undo history are outside the selected text edit. See [PDF editing](pdf-editing.md).
 

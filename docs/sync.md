@@ -492,7 +492,7 @@ pinning, malformed-journal, ordering, conflict, retirement and transfer failures
 manifest/hash/diff contracts, `sync_journal.rs` durable operation reconciliation,
 `sync_paths.rs` lexical policy, `sync_wire.rs` serialization and `sync_fs.rs`
 held-parent filesystem primitives. The same production functions are exercised
-by `sync_tests.rs`, `sync_runtime_tests.rs` and the isolated parser fuzz target.
+by `sync_tests.rs` and `sync_runtime_tests.rs`.
 Keep cross-module invariants in this document and executable tests.
 
 ## Peer manifest admission

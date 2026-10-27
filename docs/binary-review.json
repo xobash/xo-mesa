@@ -8,7 +8,7 @@
       "status": "pending",
       "reviewerType": "human",
       "reviewedOn": null,
-      "evidence": "Re-recorded with scripts/demo from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles). Lossless PNG capture and lossless WebP at 60 fps (102.7 s, 2781 frames) replace the earlier 30 fps lossy encode. The project owner approved this replacement for README publication on 2026-10-15. All frames decode in Brave with an infinite loop; 323 sampled frames match the captured source exactly; the loop crossfade was checked. Exact derivative human pixel review remains pending."
+      "evidence": "Recorded from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles). Lossless PNG capture and lossless WebP at 60 fps (102.7 s, 2781 frames) replace the earlier 30 fps lossy encode. The project owner approved this replacement for README publication on 2026-10-15. All frames decode in Brave with an infinite loop; 323 sampled frames match the captured source exactly; the loop crossfade was checked. Exact derivative human pixel review remains pending."
     },
     {
       "path": "docs/mesa-hero-themes.png",

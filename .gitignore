@@ -37,4 +37,3 @@ Thumbs.db
 *.local
 *.local.*
 .backups/
-src-tauri/fuzz/target/

@@ -157,24 +157,20 @@ checks both clean large histories and private text retained beside those binarie
 | CONTROL-033 | Deny data and arbitrary blob navigation while preserving verified-byte PDF fallbacks | Navigation audit hypothesis; preventive restriction | `navigation_allowed`, window-scoped `navigation_pdf_preview` grants, native navigation tests and `PdfView.test.tsx` admission/revocation/error regressions | Trusted renderer code registers PDF MIME blobs; the native command does not independently inspect their bytes. Each packaged webview still needs acceptance |
 | CONTROL-034 | Bind executable local HTML to explicit file-version and network consent, with opaque frames and folder-only native reads | Local HTML rendering design request; no exploitation incident recorded | `htmlrun.rs` enforces exact entry bytes/digest, window token ownership, canonical paths, GET/type/size limits and expiry; `HtmlView.test.tsx` executes denied/stale consent and token replacement; `auditGuards.test.ts` pins the separate opaque execution frame | Online scripts can disclose supported folder files and contact private HTTPS services. Windows refuses execution because pinned initialization injects Tauri into subframes; macOS/Linux native isolation remains a separate acceptance requirement |
 
-## CodeQL alert triage (2026-10-20)
+## CodeQL findings
 
-`codeql.yml` scans JavaScript, TypeScript and GitHub Actions workflows with
-`.github/codeql/codeql-config.yml`, which excludes the unshipped `scripts/demo`
-recorder. This table records the review of the 19 open alerts on `main`. It is
-a code review, not an independent assessment. Dismiss each alert in GitHub's
-code scanning view with the reason given; fixed alerts close when the next scan
-of `main` no longer reports them.
+`codeql.yml` scans JavaScript, TypeScript and GitHub Actions workflows. This
+table records the review of each rule CodeQL has reported. It is a code review,
+not an independent assessment. When an accepted or false-positive result
+reappears, dismiss it in code scanning with the reason given.
 
-| Alerts | Rule and location | Verdict | GitHub action and reason |
-| --- | --- | --- | --- |
-| 8, 9 | `js/double-escaping`, `src/lib/html.ts` `decodeUrlAttr` | True positive without security impact: `&amp;quot;` decoded twice; every consumer escapes again | Fixed: one-pass decode; `html.test.ts` covers `&amp;amp;` and `&amp;quot;` |
-| 10 | `js/double-escaping`, `src-tauri/resources/mesa-browser.ts` `htmlToText` | True positive without security impact: a text extractor turned `&amp;lt;` into `<` | Fixed: `&amp;` decodes last; `browserExtension.test.ts` covers it |
-| 11 | `js/bad-code-sanitization`, `scripts/demo/serve.mjs` | False positive: a development-only transform embeds a checked-in fixture through `JSON.stringify`; the embed now also escapes `<`, `>`, U+2028 and U+2029 | Excluded by the CodeQL configuration; otherwise dismiss as "Used in tests" |
-| 19 | `js/incomplete-url-substring-sanitization`, `scripts/demo/stage/pages.js` | False positive: a mocked fetch in the demo recorder makes no network request; the mocked page title is now escaped | Excluded by the CodeQL configuration; otherwise dismiss as "Used in tests" |
-| 13–18 | `js/prototype-polluting-assignment`, `src/lib/graphPhysics.ts` | Low-risk true positive: the index came from Mesa's own worker message, but a non-integer key could reach `Array.prototype` | Fixed: grab, move and release accept only an integer in-range index; `graphPhysics.test.ts` covers `"__proto__"`. CodeQL does not model the guard, so dismiss as "False positive" |
-| 20–24 | `js/incomplete-sanitization`, `scripts/toolchain-contract.check.mjs`, `release-gate.check.mjs`, `release-notes.mjs` | True positive without security impact: version, date and tag values were escaped for `.` or `-` only before building a regular expression | Fixed: every value passes through a full `escapeRegExp` |
-| 12 | `js/disabling-certificate-validation`, `scripts/activity-client.mjs` | Accepted by design: the client replaces chain validation with a SHA-256 leaf pin compared by `timingSafeEqual` and destroys the socket before any HTTP on mismatch (CONTROL-032) | Dismiss as "Won't fix": the pin replaces chain validation for the self-signed sync certificate |
-| 1, 4, 5, 6, 7 | `js/bad-tag-filter` and `js/incomplete-multi-character-sanitization`, `src/lib/html.ts` `stripSavedHtmlPreviewCode` | Accepted by design: the function is a documented preview optimization, not a sanitizer. Output renders only in `sandbox=""` frames whose policy sets `script-src 'none'`; `html.test.ts` pins that contract | Dismiss as "Won't fix": not a sanitizer; the sandboxed frame policy is the boundary |
-| 3 | `js/bad-tag-filter`, `src-tauri/resources/mesa-browser.ts` | False positive: the `<style>` removal feeds a plain-text extractor, never HTML output | Dismiss as "False positive" |
-| 2 | `js/bad-tag-filter`, `src/lib/markdownCode.ts` | False positive: it is markdown-it's HTML-block end condition, checked against markdown-it by `markdownCode.test.ts` | Dismiss as "False positive" |
+| Rule and location | Verdict | Resolution |
+| --- | --- | --- |
+| `js/double-escaping`, `src/lib/html.ts` `decodeUrlAttr` | True positive without security impact: `&amp;quot;` decoded twice; every consumer escapes again | Fixed: one-pass decode; `html.test.ts` covers `&amp;amp;` and `&amp;quot;` |
+| `js/double-escaping`, `src-tauri/resources/mesa-browser.ts` `htmlToText` | True positive without security impact: a text extractor turned `&amp;lt;` into `<` | Fixed: `&amp;` decodes last; `browserExtension.test.ts` covers it |
+| `js/prototype-polluting-assignment`, `src/lib/graphPhysics.ts` | Low-risk true positive: the index came from Mesa's own worker message, but a non-integer key could reach `Array.prototype` | Fixed: grab, move and release accept only an integer in-range index; `graphPhysics.test.ts` covers `"__proto__"`. CodeQL does not model the guard, so dismiss as "False positive" |
+| `js/incomplete-sanitization`, `scripts/toolchain-contract.check.mjs`, `release-gate.check.mjs`, `release-notes.mjs` | True positive without security impact: version, date and tag values were escaped for `.` or `-` only before building a regular expression | Fixed: every value passes through a full `escapeRegExp` |
+| `js/disabling-certificate-validation`, `scripts/activity-client.mjs` | Accepted by design: the client replaces chain validation with a SHA-256 leaf pin compared by `timingSafeEqual` and destroys the socket before any HTTP on mismatch (CONTROL-032) | Dismiss as "Won't fix": the pin replaces chain validation for the self-signed sync certificate |
+| `js/bad-tag-filter` and `js/incomplete-multi-character-sanitization`, `src/lib/html.ts` `stripSavedHtmlPreviewCode` | Accepted by design: the function is a documented preview optimization, not a sanitizer. Output renders only in `sandbox=""` frames whose policy sets `script-src 'none'`; `html.test.ts` pins that contract | Dismiss as "Won't fix": not a sanitizer; the sandboxed frame policy is the boundary |
+| `js/bad-tag-filter`, `src-tauri/resources/mesa-browser.ts` | False positive: the `<style>` removal feeds a plain-text extractor, never HTML output | Dismiss as "False positive" |
+| `js/bad-tag-filter`, `src/lib/markdownCode.ts` | False positive: it is markdown-it's HTML-block end condition, checked against markdown-it by `markdownCode.test.ts` | Dismiss as "False positive" |
