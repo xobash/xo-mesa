@@ -1,0 +1,445 @@
+# Vault Safety
+
+Desktop saves use one native transaction. Mesa validates candidate bytes, keeps
+a verified rescue of an existing file, writes and flushes a sibling temporary
+file, then publishes it with an atomic move. It flushes the containing
+directory on macOS and Linux. Windows directory metadata durability and
+sudden-power-loss recovery still need native acceptance.
+
+## Enforced save behavior
+
+- Every vault write (note saves, PDF saves, file duplication, drag-and-drop
+  imports, zip extraction) goes through one verified-write primitive
+  (`src/lib/verifiedWrite.ts`).
+- ZIP import rejects an archive before decompression when its central directory
+  has unsafe paths, ZIP64 metadata, more than 10,000 entries, an archive above
+  256 MiB, an entry above 64 MiB, or more than 512 MiB expanded data. The
+  importer rejects symbolic-link members and normalizes every accepted path
+  component to Mesa's Windows-safe vault naming rules.
+  The bounded archive then decompresses asynchronously; each decoded entry must
+  match the preflight size before Mesa writes it. This prevents an archive bomb
+  from becoming a renderer freeze or an unbounded import. The status bar shows
+  each source and can cancel a queued or worker-backed decode; Mesa stops
+  before the next entry write. A cancelled run names the exact number of files
+  already copied (or says that none were copied), so those durable partial
+  results are never misreported as either a completed import or a failure.
+- For a desktop overwrite, the Rust command hashes the original, makes and
+  verifies a flushed `rescue` copy, writes and verifies a flushed sibling
+  candidate, checks the expected current hash again, then atomically replaces
+  the target. For a new file, publication refuses an existing destination.
+  The original stays intact if staging or publication fails. Mesa never falls
+  back to an in-place desktop rewrite when the atomic move fails. The
+  non-native verified-write adapter retains its JavaScript stages for tests
+  and browser-side compatibility.
+- PDF candidates require a `%PDF-` header, `%%EOF` marker and full pdf-lib
+  parse before commit. Backup, restore and rescue stages preserve existing bytes
+  by equality checks; candidate format rules do not apply to those copies.
+- The native command verifies the staged file before publication. If a later
+  directory flush fails, it restores the rescue when the target still has the
+  candidate bytes. If restoration fails or another writer changed the target,
+  Mesa retains the rescue and reports its path. The compatibility path retains
+  its final read-back and restore-or-rescue behavior.
+- In-flight artifacts are dot-prefixed siblings (`.name.ext.mesa-save-…tmp`,
+  `.name.ext.mesa-backup-…tmp`, `.name.ext.mesa-rescue-…tmp`), so the vault
+  scan, the file watcher, the sidebar, the graph, and device sync never see
+  Mesa's write machinery. The native command creates its own hidden siblings
+  after checking the approved vault. The compatibility and recovery paths grant
+  their filesystem plugin each exact hidden artifact path inside that vault.
+- Crash recovery runs when a vault opens. `src/lib/writeRecovery.ts` makes the
+  plan, and `recoverWriteArtifacts` in `src/lib/vault.ts` applies the plan:
+  - The vault scan finds the artifacts. `vault_scan` reads every directory to
+    make the file listing. The same operation collects the artifacts. Recovery
+    does not read the directories a second time.
+  - The scan reports "unknown" if it cannot supply a list. The browser demo and
+    a shell without the native command both cause this result. Recovery then
+    reads the directories itself. Mesa always examines a vault before Mesa
+    opens the vault.
+  - Recovery runs after the scan. The file listing is therefore older than a
+    file that recovery restores. Mesa reads the vault again when recovery
+    restores one or more files. A restored file gets an index entry, a search
+    entry, and a sidebar row, exactly like every other file.
+  - Recovery groups original-holding artifacts by directory and target. If the
+    target is missing, recovery selects one candidate. A `rescue` has priority
+    over a `backup`. The newest timestamp and ID in the artifact name break
+    ties. Recovery keeps all nonselected original-holding artifacts.
+  - The target create uses the filesystem create-new operation. This operation
+    atomically refuses an existing file, directory, or symbolic link. The
+    compatibility fallback also uses create-new. Thus, neither path can
+    overwrite a target that appears after discovery.
+  - Before recovery uses a backup, it makes and verifies a `rescue` sibling.
+    Recovery then creates the target and reads all target bytes back. It removes
+    the selected original-holding artifacts only after this final byte-for-byte
+    check succeeds. A failed or corrupt write keeps the original artifact and
+    the rescue.
+  - Recovery leaves a `rescue` in place while its target exists. A non-atomic
+    overwrite fallback creates this label before it touches an existing target.
+    Recovery removes stale backups with existing targets because no fallback
+    can enter its crash window while the original still has a backup label.
+    Recovery also removes stale disposable artifacts, including Rust-side
+    `.mesa-sync-tmp-…` files.
+  - Recovery leaves artifacts younger than 60 seconds in place. If one
+    original-holding artifact for a target is fresh, recovery leaves that full
+    group in place because another Mesa instance can be writing the target.
+    Recovery also preserves an artifact when its modification time cannot be
+    read; an unknown age is not proof that another save has finished.
+- Stale-overwrite protection: saving a PDF or text file that another tool has
+  rewritten since Mesa opened it is refused with an explanation instead of silently
+  destroying the newer on-disk version. The opened-byte expectation is checked
+  inside the verified-write transaction and checked again immediately before
+  commit, after backup/temp validation. A concurrent rewrite detected before
+  Mesa attempts the target commit is preserved exactly; rollback never writes
+  the old baseline over a target Mesa has not touched. The unsaved edits stay
+  in the editor.
+- `persistVerifiedBytes` supports an optimistic-concurrency precondition:
+  expected current bytes for an update, or an expected-missing target for a
+  create. The desktop bridge sends a SHA-256 digest and length of expected
+  bytes. Rust checks the disk state at the start and immediately before commit;
+  it never sends the full baseline across IPC. The compatibility path compares
+  exact bytes. PDF saves, editor text saves, and Deep Research pass this
+  precondition on their update/create paths.
+- Device sync writes on the Rust side are non-destructive verified creates
+  (`sync_core.rs::commit_verified_create`): incoming bytes are staged in a
+  unique sibling and read back, then published only if the manifest-expected
+  target is still missing. Publication uses each OS's atomic no-replace rename,
+  with a hard-link fallback only when the volume does not support that native
+  primitive; FAT/exFAT removable vaults therefore work without hard links. The
+  target is read back again. An identical target is an idempotent success; a
+  different target is preserved and the transfer fails (server `PUT` returns
+  `409`). If final read-back fails, Mesa preserves and reports the target rather
+  than risk deleting a concurrent replacement without portable file-identity
+  proof. Same-day conflict-name collisions use numbered siblings, and an
+  already-identical numbered copy is skipped before transfer.
+
+## Text writes never reach a non-text file
+
+The guarantees above are about writing bytes *correctly*. This one is about
+never deciding to write the wrong bytes in the first place — the failure mode
+they cannot catch, because a verified write of the wrong content verifies
+perfectly.
+
+- `isTextualVaultFile` (`src/lib/vault.ts`) is the one definition of "Mesa may
+  read and write this file as text": markdown, `isTextExt`, and rtf. The read
+  side (`selectFile` deciding whether to load a file's content) and every write
+  side ask that same question, so they cannot disagree about what a file is.
+- `writeNote` fails closed on anything else. It is the last checkpoint every
+  text write passes through, so no caller — present or future — can reach the
+  disk with a text-encoded overwrite of a PDF, image, or archive. Binary
+  editing has its own byte-level path (`pdfSave.ts` → `persistVerifiedBytes`).
+- `textSaveCoordinator` keeps one dirty record per absolute file path. Editing
+  one tab cannot cancel another tab's debounce. Writes are serialized, a newer
+  revision waits for the in-flight revision, and each successful write advances
+  the exact expected disk baseline used by the next verified write. A failure
+  stays dirty and retryable. After a verified text save succeeds, Mesa records its prior
+  disk text in bounded local revision history.
+  Desktop-capable runtimes use an asynchronous IndexedDB transaction store and
+  migrate prior local history on first use. History storage is best-effort and
+  runs after verified-save success: unavailable recovery storage cannot report
+  the on-disk save as failed or cause a
+  duplicate retry. Revisions are listed newest-first with a deterministic
+  tie-breaker, so rapid saves with the same clock timestamp still restore the
+  intended local snapshot.
+  History keeps at most 20 versions per file and 1,000,000 characters per
+  revision. It protects the newest eligible revision of the 500 most recently
+  revised files; that floor can exceed the shared 2,000,000-character budget,
+  up to 500,000,000 characters. Older versions fill only the remaining shared
+  budget. Oversized snapshots report history unavailable without affecting the
+  verified save. Autosave snapshots preserve the first baseline in a 60-second
+  window; external and explicit History restores are not coalesced across sources.
+  A failed restore keeps its source tag through an exact-baseline retry.
+  External watcher changes record their prior cached text in one batch before
+  publication. Listing history uses a readonly per-file index lookup. Each
+  IndexedDB record, retention decision, and write happens in one read/write
+  transaction; it reconciles individual records instead of clearing the store,
+  so separate Mesa windows cannot lose acknowledged revisions. IDs are
+  collision-resistant across windows, with transaction-local ordering for
+  equal timestamps. Legacy localStorage history is migrated once and marked in
+  the database before its old copy is removed, so a purged revision cannot
+  reappear after restart. Settings can
+  compare an earlier copy beside the open document, remove that
+  copy without changing the vault file, or restore through the same verified
+  save queue, so restoration still refuses stale disk baselines. The editor's
+  History action opens and focuses this current-document section directly.
+- Blur, hide, and close flush every dirty path and do no work when the window is
+  clean. Vault switch and rename wait for the relevant saves. The main native
+  window prevents close until all dirty writes succeed. A failed flush, or one
+  taking more than 15 seconds, opens the same recovery dialog for Close and Quit.
+  Keep editing is the default. Save copies opens a native picker for each pending
+  text snapshot, writing a new verified file outside the current vault without
+  discarding edits. An existing destination is refused. Close without saving
+  requires confirmation and explicitly permits exit. Close and Quit also refuse
+  while a PDF open in the main workspace has unsaved edits, as detached document
+  windows already do; switching, closing, renaming or deleting that PDF asks
+  first. A timed-out write is not
+  cancelled and may still finish; a late completion cannot close the window. `flushableNoteText`
+  still refuses a non-text file.
+- `ensureContent` never pulls a non-text file through the text pipeline.
+  `readNote` decodes bytes as UTF-8, so caching that for a PDF would hand every
+  text consumer a lossy "document"; the activity bridge calls `ensureContent`
+  for whatever path an agent touches, which is how a binary could get in.
+
+Regression net: `isTextualVaultFile` / `flushableNoteText` / `writeNote`
+fail-closed in `src/lib/vault.test.ts`; queue and lifecycle behavior in
+`src/lib/textSaveCoordinator.test.ts` and the vault recovery/write suites.
+
+Two operations that LOOK like text operations are held to the same rule:
+
+- **Rename** is a byte move, never a re-encode. `renameVaultFile`
+  (`src/lib/vault.ts`) calls Mesa's native no-replace move rather than doing a
+  destination-exists check before an overwrite-capable filesystem rename. A
+  concurrently created destination is preserved. Case-only renames use two
+  native no-replace hops so case-insensitive filesystems can still change
+  spelling without treating the destination as overwrite authority. The
+  intermediate name is a `rescue` artifact, so if Mesa stops between the hops,
+  crash recovery restores the original name. The store's `renameNote` uses it
+  for every file type and preserves the file's real extension. Markdown note renames
+  also update inbound wiki and Markdown links that resolve to the old note
+  through verified text writes, preserving aliases, headings, balanced
+  parenthesized Markdown destinations, URL-encoded spaces, and relative path
+  style where the existing link used one. Attachment renames repair exact
+  vault-relative and unambiguous bare-filename wiki links/embeds, inline and
+  reference-style Markdown links/images, including relative paths. External URLs, anchors, ambiguous
+  duplicate basenames, and code remain byte-for-byte unchanged. In Markdown
+  notes, code is what the preview shows as code: fenced and indented code
+  blocks (also inside lists and block quotes) and inline code, which may wrap
+  across lines. In other text files, code is fenced blocks and inline code on
+  one line. A link whose label holds inline code is still repaired. Each rename builds one note
+  resolver and uses metadata-indexed local reference candidates, so a large
+  vault does not open unrelated Markdown files during one rename. If an
+  inbound-link write sees a concurrent external edit, the rename remains
+  byte-safe and Mesa reports the partial link update instead of overwriting the
+  edited file. Regression coverage: `src/lib/renameNote.test.ts`; the code
+  boundary is checked against the Markdown renderer in `src/lib/markdownCode.test.ts`.
+- **Delete** is recoverable. Mesa moves files and folders into a hidden
+  `.mesa-trash/` recovery area on the same vault volume and removes them from
+  the workspace only after that move succeeds. A locked file, permission error,
+  unavailable volume, or occupied recovery destination fails closed and leaves
+  the workspace state unchanged. The recovery area is dot-prefixed, so normal
+  vault scan, watch, graph, and sync paths ignore it. The contextual Deleted files dialog includes a
+  recovery storage view that lists hidden files and whole deleted folders.
+  Folder deletions restore as one folder entry, not as a pile of individual
+  nested files. Restore moves the entry back to its original path, or to the
+  next unique sibling when that path is already occupied. Manual restore is
+  owned by the store: it flushes pending text saves first, then moves the
+  recovered entry and refreshes the vault from that single path. Sync journal
+  reconciliation retracts any unsynced local delete/rename operation whose
+  original bytes are present again, so a restored file is not immediately
+  removed by Mesa's own pending operation log.
+- **Undo never crosses a document boundary.** The editor swaps notes into one
+  long-lived CodeMirror view; if the swap is undoable, one extra Cmd+Z after
+  switching notes reverts the swap itself and the previous note's text is
+  saved over the current note. A note switch now replaces the editor state
+  (fresh history) and a same-note external refresh is dispatched outside the
+  history, so undo can neither cross files nor resurrect stale pre-watcher
+  text. Pinned by `src/components/editorUndoBoundary.test.tsx`.
+
+## External changes while a PDF is open
+
+- If a clean (unedited) PDF changes on disk, the viewer reloads the new bytes
+  automatically and clears the now-stale undo history.
+- If the PDF has unsaved edits, Mesa keeps the edits visible, says so in the
+  status line, and blocks saving until the file is reopened — nothing on disk
+  is clobbered and nothing in the editor is lost.
+- Async edit/history/save work is scoped to the PDF path that started it. A
+  late transform from a previously selected PDF is discarded and cannot
+  replace the current PDF's in-memory bytes.
+- Mesa's own save echoing back through the file watcher is recognized by byte
+  equality and ignored (undo history survives saves).
+- Hover thumbnails are invalidated when a PDF changes on disk.
+- If an external text refresh cannot read the changed file, Mesa keeps the
+  cached text and reports the read failure. It never treats that failure as a
+  real empty document or uses it as a save baseline.
+
+## Writes Mesa does not make itself: the embedded Pi agent
+
+Pi launch requires native consent for trusted external-process access for each
+vault during the app session. Its toolbar labels that boundary. Consent does not
+make Pi writes verified or sandboxed. The existing vault watcher reconciles
+successful external reads into clean editors, search and the graph; dirty drafts
+keep their expected-byte baseline and refuse a stale overwrite. Failed refreshes
+retain prior content. Recovery copies for arbitrary external writes cannot be
+guaranteed; use Mesa's reviewed research apply for those guarantees.
+
+Everything above covers writes Mesa's own code performs. It does not cover
+Pi: the embedded agent runs as a real, unsandboxed native process
+(`src-tauri/src/terminal.rs`, cwd = the vault folder) driven by whatever
+provider/model the user configured in the terminal. When Pi's own `write` or
+`edit` tool touches a file, the bytes land on disk straight from that
+external process — never through `persistVerifiedBytes` — so a bad tool call,
+a hand-rolled extraction script, or a model mistake can overwrite a vault file
+with none of the guarantees above. Binary files like PDFs are the most
+visible casualty, since a text-oriented tool is the least equipped to
+round-trip them safely, but the gap is general: any file Pi's tools touch is
+exposed.
+
+The bundled extension rejects specific built-in binary text writes. It does
+not constrain arbitrary shell commands or third-party tools:
+
+- `src-tauri/resources/mesa-activity.ts` (the bundled Pi extension that also
+  powers living-graph read/write reporting) intercepts Pi's `tool_call` event,
+  which fires *before* a built-in tool runs. When the tool is a content write
+  (`write`/`edit`/`apply_patch`) and the target path has a binary extension,
+  the extension returns `{ block: true, reason }` and the write never happens.
+- The extension alone owns the extension list, the predicate and the reason
+  string; it is compiled into the Rust binary via `include_str!`.
+  `src/lib/piBinaryWrite.test.ts` executes the shipped extension file and
+  checks the block, its reason and the activity it reports.
+- The `reason` string is the model's only feedback, so it states the constraint
+  and both routes that do work: a format-aware tool via `bash` (qpdf,
+  ImageMagick, a Python library), or Mesa's own editor. Without that, a capable
+  agent simply retries the same corrupting write with different content.
+- `bash` is never blocked. The agent can still transform binary files with real
+  format-aware tools — only the text-encoder path is closed.
+- Text files are untouched by this rule. Pi editing notes is the intended
+  workflow and round-trips safely; formats that merely look like documents
+  (`.rtf`, `.svg`, `.csv`, `.json`, `.xml`) are text and stay writable.
+
+Reads are never blocked, and non-binary writes still get no verified-write
+coverage — Mesa's code never touches those bytes on the way to disk. The
+guarantee here is specifically that Pi cannot destroy a binary file.
+
+### Removed: Pi-write snapshots
+
+Earlier versions took a defensive `.name.ext.mesa-pi-snapshot-…bak` copy before
+every Pi write and offered a "Restore previous version" button. That net did
+not work in the case it existed for, because it kept the wrong copy: restore
+returned the *newest* snapshot, which after a second Pi write is already the
+corrupted state, and the count cap (newest 5 per file) evicted the one pristine
+pre-corruption copy once an agent wrote the same file six times. It was removed
+in favour of the block above — prevention, rather than a recovery point that
+was usually already poisoned.
+
+Existing `.mesa-pi-snapshot-…bak` files are left on disk untouched: for a file
+corrupted before the block landed, the oldest such sibling may be the last good
+copy. They are dot-prefixed, so scan/watch/sync ignore them.
+
+## Scope
+
+- Mesa's own writes (note saves, PDF saves, file duplication, drag-and-drop
+  imports, zip extraction) are covered by the verified-write guarantees above.
+  Deletes and renames initiated by the user in the UI are filesystem moves:
+  delete moves to hidden Mesa recovery storage, and rename uses one
+  byte-preserving native no-replace move and refuses overwrite.
+- Writes made by the embedded Pi agent's own tools never go through
+  `persistVerifiedBytes` (Mesa's code never touches those bytes on the way to
+  disk, so it cannot verify or roll them back the same way). Binary files are
+  protected by blocking those writes outright — see the section above. Text
+  writes by Pi proceed unverified, exactly as any other external editor's do.
+
+## Save feedback and interrupted navigation
+
+The status bar reports pending, saving and failed **text** changes independently
+of transient import or scan messages. These indicators describe the text-save
+queue; PDF editing retains its own save state. Failed text writes remain available
+under save recovery. The native main-window close guard waits for verified text
+writes and rechecks for edits that arrive before the final close request.
+The app-level Quit guard uses the same recovery choices after a failed or timed-out save.
+
+Vault selection ignores stale folder checks. An interrupted scan keeps the old
+workspace, clears the loading state and restores its watcher. A retryable notice
+identifies the unavailable target. A refused text flush leaves the current vault
+open rather than abandoning its unsaved edits.
+
+Settings are validated on load and preserve unknown fields from newer versions.
+An unreadable settings value remains intact until an explicit save; that save first
+preserves the raw value under `mesa:settings:recovery`. If preservation fails, Mesa
+refuses replacement. Failed persistence shows **Settings need attention** with
+**Retry settings**. Settings changes still apply to the current session.
+
+When overlapping vault switches fail, the existing editor remains active and
+its file watcher is restored, including failures before the newer scan starts.
+
+## Disposable vault index
+
+The local [vault index](vault-index.md) stores compressed copies and metadata in
+application storage. It never writes vault files and is never a recovery source
+for a failed save. Missing or invalid records rebuild from the vault. Verified
+writes and their original-byte preconditions remain authoritative.
+
+## Concurrent replacement and permanent recovery removal
+
+Desktop replacement uses Linux atomic exchange, macOS atomic swap, or Windows
+ReplaceFile with a backup destination. The actual displaced bytes are retained
+under a rescue artifact name and compared after commit. If an external edit
+arrives in the final comparison window, the save reports a conflict, retains
+that edit in the named rescue, and keeps Mesa's authored version at the target.
+Review both before retrying. Unsupported replacement primitives report an
+`unsupported-filesystem` error, preserve the target, and explain how to save
+copies outside the vault or move to a compatible filesystem. Some exFAT, SMB,
+and NFS volumes lack the required primitive; availability depends on the OS
+and filesystem implementation. Unsupported replacement primitives fail visibly;
+there is no in-place or destructive rename fallback. A later writer may still
+change either version through an existing file handle; Mesa does not claim to
+lock other editors. Crash recovery preserves rescue copies beside live targets.
+
+Deleted files offers Permanently delete for an item and Empty recovery storage
+for the full loaded list, including items hidden by the search filter. The user
+must type DELETE or EMPTY in a confirmation that explains irreversibility and
+storage limits. Empty operates on that snapshot, so newer deletions are retained.
+Partial failure stops removal and shows how many items were removed. Changing
+vault sessions stops scheduling old actions. The native command permits only
+main-window calls inside approved recovery storage and rejects traversal,
+symlinks, reparse points, and the storage root. Permanent removal affects no
+live file and does not promise SSD erasure or removal from external backups.
+Recovery has no automatic expiry; retention is an explicit user decision.
+
+When an observed external text edit replaces clean cached text, Mesa retains the
+last known text in document history before refreshing the editor and reports the
+external change. Dirty text keeps its original verified-save baseline. History
+failures are disclosed; writes between observations and uncached/binary bytes are
+not recoverable through this text-history feature.
+
+## Enforced desktop mutation boundary
+
+Every app window is denied filesystem-plugin mutation and writable open/create
+operations. Verified native saves require expected SHA-256/length or a missing
+target. Callers without a baseline read one before submitting; IPC rejects an
+unconditional overwrite. Trusted internal recovery remains stricter per operation.
+Ordinary saves and renames reject hidden recovery/control directories.
+Saves, renames, folder creation, delete, restore and Deep Research targets check
+the path again after the operating system resolves it, so a Windows 8.3 short
+name such as `GIT~1` cannot reach `.git`. On Windows, a save also refuses a file
+name with `:` (alternate data streams), a device name such as `CON`, `CONIN$`
+or `CLOCK$`, or a trailing dot or space. Bulk text reads accept at most 128
+visible paths per request, never hidden or `node_modules` paths, and never
+above the 8 MiB automatic text limit. The media (`asset`) scope also requires a
+literal leading dot, and Mesa windows cannot navigate to `asset` URLs.
+Visible directories use native creation. Delete and restore use recoverable,
+no-replace moves. Recovery catalogue reads need no recursive hidden-path grant.
+Artifact restoration accepts stale recognized originals, retains rescue copies,
+and fails when a destination appears. Native tests exercise collisions, symlink
+parents, fresh artifacts and concurrent edits; capability tests cover every window.
+Pi and other OS processes remain outside this renderer boundary.
+
+## Unix access metadata
+
+Native atomic saves and received sync replacements preserve the existing file
+owner/group, permission bits, access ACL and extended attributes through held
+file handles. A preservation failure stops publication. New files and temporary
+stages use mode 0600; macOS inherited ACL grants are removed before bytes are
+written. These controls do not lock out existing external handles or guarantee
+Windows directory-metadata power-loss durability. Native regression tests cover
+macOS modes, ACL/xattr retention and inherited-ACL removal; Linux ACL/xattr
+execution requires Linux.
+
+## Text encoding and line endings
+
+Existing UTF-8 byte-order marks are retained in both save candidates and exact
+expected-byte hashes. A failed BOM read stops the save without touching the
+file. Text containing a replacement character is checked against the original
+bytes with strict UTF-8 decoding before editing is enabled, including cached
+and deliberately loaded documents, external refreshes and confirmed disk-copy
+recovery. Invalid UTF-8 opens read-only with a clear
+status; Mesa does not transcode it. Authored UTF-8 replacement characters remain
+editable. Pure CRLF documents retain their line endings through editor changes,
+saves and tab history; mixed endings retain the existing LF normalization.
+Regression coverage is in the existing native-write, document-controller and
+editor undo suites. Native save/close acceptance remains a separate check.
+
+Native ordinary saves serialize per canonical target, so a large binary save does
+not hold a global exclusive lock against an unrelated note. Rename, deletion,
+recovery and reviewed multi-file applies retain exclusive admission against all
+ordinary saves. Existing hash checks, displaced-byte rescue and read-back remain
+unchanged. `vaultwrite.rs` tests cover same-target serialization, independent
+save overlap, and exclusion by the destructive-operation gate. Tauri's borrowed
+request body still requires an owned worker copy; this change does not claim a
+reduction in large-save memory or disk work.

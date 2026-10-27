@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "path": "docs/mesa-demo.webp",
+      "bytes": 47728066,
+      "sha256": "00d3d441c8aa984e02dae13d3a7e82ba87597aadc0d5c475a6c17e2705c05d65",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": "Re-recorded with scripts/demo from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles). Lossless PNG capture and lossless WebP at 60 fps (102.7 s, 2781 frames) replace the earlier 30 fps lossy encode. The project owner approved this replacement for README publication on 2026-10-15. All frames decode in Brave with an infinite loop; 323 sampled frames match the captured source exactly; the loop crossfade was checked. Exact derivative human pixel review remains pending."
+    },
+    {
+      "path": "docs/mesa-hero-themes.png",
+      "bytes": 1555722,
+      "sha256": "71b9de84eff05ea3fc3c4d7e4d8bcd459006f52d8e1a2224091778e740336ea6",
+      "status": "approved",
+      "reviewerType": "human",
+      "reviewedOn": "2026-10-15",
+      "evidence": "Project owner selected the synthetic Lorem Ipsum vault Midnight and Dusk hero with its diagonal divider and authorized publication on 2026-10-15."
+    },
+    {
+      "path": "docs/mesa-wordmark.gif",
+      "bytes": 2709372,
+      "sha256": "79ad3fb414f7caaf364016c2d62eee0713735054e555339549a2b5b406db7103",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "docs/mesa-wordmark.png",
+      "bytes": 143490,
+      "sha256": "9bf522b4cd53a4c0e7dc9f6d337ed7d8cf8a471fbe9052b340249a285e8ba2b8",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/128x128.png",
+      "bytes": 13499,
+      "sha256": "68f47193df21f9fd1a7cc001f63127e9c256c2e2a06ee38b2866a43fd72efc54",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/128x128@2x.png",
+      "bytes": 34150,
+      "sha256": "94fd71672c29e5832836cedc712345744ded8052d304bc9e1832c2dd7c354a4b",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/32x32.png",
+      "bytes": 1703,
+      "sha256": "7b4a22f78348c559c0c8fb8643175da282676907ec7deb8c610583273381a8ba",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/icon.icns",
+      "bytes": 457830,
+      "sha256": "70872622da69a82f3ae1ea6fc5e01ad7d02967b2bd53e7a248bfae8519533655",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/icon.ico",
+      "bytes": 58429,
+      "sha256": "29aa77a23ff039f2995058d4cd71abf63bdf76d7f85f6f9c5c6915c63c73c08a",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    },
+    {
+      "path": "src-tauri/icons/icon.png",
+      "bytes": 55430,
+      "sha256": "e96aedc58793b028c505e6cb0b4e1de9ee2f399a080c64ab12802ab6a07d092d",
+      "status": "pending",
+      "reviewerType": "human",
+      "reviewedOn": null,
+      "evidence": ""
+    }
+  ]
+}

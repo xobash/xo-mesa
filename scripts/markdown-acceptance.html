@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><title>Mesa Markdown regression</title><link rel="icon" href="data:,"></head>
+<body><div id="root"></div>
+<script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {MarkdownView} from '/src/components/MarkdownView.tsx';
+import '/src/styles.css';
+const paragraphs = Array.from({length:2000}, (_, i) => `Paragraph ${i}: a stable block with **bold** text and [a reference][r].`);
+const source = () => '# Markdown regression\n\n> [!note] Preview contract\n> Shared references, tasks, raw HTML and Unicode: 雪山.\n\n- [x] Completed\n- [ ] Pending\n\n' + paragraphs.join('\n\n') + '\n\n[r]: https://example.com\n\n<div>\n\n**Nested HTML**\n\n</div>\n\n<img onerror="window.fixtureUnsafe=true">';
+function Fixture() {
+ const [text, setText] = React.useState(source);
+ return React.createElement('main', {style:{maxWidth:900, margin:'32px auto', padding:24}},
+  React.createElement('h1', null, 'Synthetic Markdown preview'),
+  React.createElement('button', {onClick:() => {paragraphs[1000]='Edited paragraph 1000.'; setText(source());}}, 'Edit one paragraph'),
+  React.createElement('button', {onClick:() => {for(let i=0;i<40;i++) setTimeout(() => {paragraphs[1000]=`Latest edit ${i}.`; setText(source());}, i*5);}}, 'Rapid edits'),
+  React.createElement(MarkdownView, {source:text, files:[], onWikiClick:() => {}}));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+</script></body></html>

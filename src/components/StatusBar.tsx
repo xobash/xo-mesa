@@ -1,0 +1,131 @@
+import { useDeferredValue, useMemo } from "react";
+import { useAppStore } from "../store";
+import { backlinksFor } from "../lib/graph";
+import { SORT_LABELS } from "../lib/sort";
+import { countWords } from "../lib/wordCount";
+import { isTextualVaultFile } from "../lib/vault";
+
+export function StatusBar() {
+  const activePath = useAppStore((s) => s.activePath);
+  const content = useAppStore((s) => s.content);
+  const notes = useAppStore((s) => s.notes);
+  const files = useAppStore((s) => s.files);
+  const sortMode = useAppStore((s) => s.settings.sortMode);
+  const syncListening = useAppStore((s) => s.syncListening);
+  const linkCount = useAppStore((s) => s.openTabs.length);
+  const status = useAppStore((s) => s.status);
+  const importInProgress = useAppStore((s) => s.importInProgress);
+  const cancelImport = useAppStore((s) => s.cancelImport);
+  const settingsIssue = useAppStore((s) => s.settingsIssue);
+  const retrySettings = useAppStore((s) => s.retrySettings);
+  const saveState = useAppStore((s) => s.textSaveState);
+  const textSaveIssues = useAppStore((s) => s.textSaveIssues);
+  const retryTextSaveIssue = useAppStore((s) => s.retryTextSaveIssue);
+  const applyDiskTextForSaveIssue = useAppStore(
+    (s) => s.useDiskTextForSaveIssue
+  );
+
+  // Derive words and characters from the same deferred text snapshot so the
+  // scan can wait for input and both counts stay consistent.
+  const statsText = useDeferredValue(content);
+  const words = useMemo(() => countWords(statsText), [statsText]);
+  const backlinks = useMemo(
+    () => (activePath ? backlinksFor(notes, activePath).length : 0),
+    [notes, activePath]
+  );
+  // Recount only when the notes-object identity changes.
+  const noteCount = useMemo(() => Object.keys(notes).length, [notes]);
+  const assetCount = useMemo(
+    () => files.reduce((n, f) => (isTextualVaultFile(f) ? n : n + 1), 0),
+    [files]
+  );
+  const saveIssues = useMemo(
+    () => Object.values(textSaveIssues),
+    [textSaveIssues]
+  );
+
+  // Render global status failures here; suppress the redundant post-open note count.
+  const statusMsg = status && status !== `${noteCount} notes` ? status : "";
+  const statusIsError = /failed|blocked|error/i.test(statusMsg);
+
+  return (
+    <footer className="statusbar">
+      <span>{noteCount} notes</span>
+      {assetCount > 0 && <span>{assetCount} {assetCount === 1 ? "asset" : "assets"}</span>}
+      {linkCount > 0 && <span>{linkCount} open</span>}
+      <span className="sb-sort">sort: {SORT_LABELS[sortMode].toLowerCase()}</span>
+      {activePath && <span className="sb-path">{activePath}</span>}
+      {statusMsg && (
+        <span
+          className={"sb-status" + (statusIsError ? " err" : "")}
+          role={statusIsError ? "alert" : "status"}
+          title={statusMsg}
+        >
+          {statusMsg}
+        </span>
+      )}
+      {importInProgress && (
+        <button className="sb-save-action" onClick={cancelImport} aria-label="Cancel import">
+          Cancel import
+        </button>
+      )}
+      <span className="sb-save-state" role="status" aria-live="polite" aria-atomic="true">
+        {saveState.failed > 0 ? "Text changes need attention"
+          : saveState.saving > 0 ? "Saving text changes…"
+          : saveState.pending > 0 ? "Unsaved text changes"
+          : activePath ? "Text changes saved" : ""}
+      </span>
+      {saveIssues.length > 0 && (
+        <details className="sb-save-issues">
+          <summary
+            aria-label={`${saveIssues.length} unsaved ${
+              saveIssues.length === 1 ? "file" : "files"
+            }. Show save recovery actions.`}
+          >
+            <span aria-hidden="true">⚠</span>{" "}
+            {saveIssues.length} unsaved
+          </summary>
+          <div className="sb-save-issue-list" role="list">
+            {saveIssues.map((issue) => (
+              <div className="sb-save-issue" role="listitem" key={issue.key}>
+                <div className="sb-save-copy">
+                  <strong>{issue.relPath}</strong>
+                  <span title={issue.message}>{issue.message}</span>
+                </div>
+                <button
+                  type="button"
+                  className="sb-save-action"
+                  disabled={issue.busy !== null}
+                  aria-label={`Retry saving ${issue.relPath}`}
+                  onClick={() => void retryTextSaveIssue(issue.key)}
+                >
+                  {issue.busy === "retry" ? "Retrying…" : "Retry"}
+                </button>
+                <button
+                  type="button"
+                  className="sb-save-action danger"
+                  disabled={issue.busy !== null}
+                  aria-label={`Use disk copy of ${issue.relPath}`}
+                  title="Replace unsaved changes after confirmation"
+                  onClick={() => void applyDiskTextForSaveIssue(issue.key)}
+                >
+                  {issue.busy === "disk" ? "Reading…" : "Use disk copy"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {settingsIssue && <details className="sb-save-issues"><summary>Settings need attention</summary><div className="sb-save-issue-list"><span role="alert">{settingsIssue}</span><button className="sb-save-action" onClick={retrySettings}>Retry settings</button></div></details>}
+      <span className="sb-spacer" />
+      {syncListening && <span className="sb-sync">◉ sync on</span>}
+      {activePath && (
+        <>
+          <span>{words.toLocaleString()} words</span>
+          <span>{statsText.length.toLocaleString()} chars</span>
+          <span>{backlinks} backlinks</span>
+        </>
+      )}
+    </footer>
+  );
+}

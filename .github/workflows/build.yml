@@ -1,0 +1,174 @@
+name: build
+
+on:
+  push:
+    branches: [main, 'verification/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer pull-request run cancels the superseded one. Push, scheduled and
+# manual runs get their own group so every commit keeps its full check run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Fast gate: type-check, unit tests, and the web build on Linux.
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:coverage
+      - run: npm run test:assets
+      - run: npm run audit:assets
+      - run: npm run test:toolchains
+      - run: npm run test:documents
+      - run: npm run test:capabilities
+      - run: npm run test:release
+      - run: npm run test:bootstrap
+      - run: npm run test:index
+      - run: npm run test:activity-api
+      - run: npm run test:markdown
+      - run: npm run test:notices
+      - run: npm run build
+      - run: npm run audit:public
+      - run: npm run audit:independent
+      # Registry-backed advisory gate. Kept separate from the offline
+      # `supplyChainContract.test.ts` pins, which catch a bad lockfile but
+      # cannot see an advisory published after the pin was written.
+      - run: npm audit --audit-level=moderate
+
+  # Rust unit tests and lints cover native behavior on each supported OS.
+  #
+  # Windows and macOS are in the matrix, not just Linux: the PTY resolver's
+  # PATHEXT lookup, the Node-shebang launch path and the cmd.exe wrapper
+  # fallback are all behind `#[cfg(target_os = "windows")]`, while macOS owns
+  # WKWebView/title-bar behavior and Unix-only filesystem primitives. No
+  # bundling here — the desktop job below still owns that.
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux system dependencies (WebKitGTK)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Exercise Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/windows-installer-behavior.check.ps1
+
+  rust-advisory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+      - run: node scripts/native-advisory-check.mjs
+      - run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+      - run: node scripts/third-party-notices.mjs --check-native
+
+  # Native desktop bundles for each supported OS. Branch rules do not require
+  # them and the release gate reads only main push runs, so pull requests skip them.
+  desktop:
+    needs: [frontend, rust, rust-advisory]
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-latest
+            name: macos
+          - os: ubuntu-latest
+            name: linux
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.96.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+      - name: Add macOS universal build targets
+        if: matrix.os == 'macos-latest'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - name: Install Linux system dependencies (WebKitGTK)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            patchelf \
+            libayatana-appindicator3-dev
+      - run: npm ci
+      - name: Build the desktop app
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        with:
+          args: ${{ matrix.name == 'macos' && '--target universal-apple-darwin' || matrix.name == 'windows' && '--bundles msi,nsis' || '' }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mesa-${{ matrix.name }}
+          path: |
+            src-tauri/target/release/bundle/**/*
+            src-tauri/target/universal-apple-darwin/release/bundle/**/*
+          if-no-files-found: error
+          retention-days: 7

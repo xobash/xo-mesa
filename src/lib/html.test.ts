@@ -1,0 +1,316 @@
+import { describe, expect, it } from "vitest";
+import {
+  hydrateSavedHtml,
+  localSavedHtmlAssetPath,
+  MAX_SAVED_HTML_ASSET_CHARS,
+  savedHtmlInlineAssetPath,
+  rewriteCssAssetUrls,
+  rewriteSavedHtml,
+  rewriteSavedHtmlUrl,
+  savedFromUrl,
+  stripSavedHtmlPreviewCode,
+} from "./html";
+
+const asset = (path: string) => `asset://localhost${path}`;
+
+describe("saved webpage HTML rewriting", () => {
+  it("reads the original browser URL from saved-page comments", () => {
+    expect(
+      savedFromUrl(
+        "<!-- saved from url=(0043)https://example.com/archive/saved-page.html -->"
+      )
+    ).toBe("https://example.com/archive/saved-page.html");
+  });
+
+  it("rewrites local sibling assets through the app asset protocol", () => {
+    expect(
+      rewriteSavedHtmlUrl(
+        "./Page_files/app.css",
+        "/vault/web/Page.html",
+        asset,
+        "https://example.com/articles/page"
+      )
+    ).toBe("asset://localhost/vault/web/Page_files/app.css");
+    expect(rewriteSavedHtml('<img src=unquoted.png srcset=small.png><video poster=poster.jpg>', '/vault/web/Page.html', asset)).toBe('<img src="asset://localhost/vault/web/unquoted.png" srcset="asset://localhost/vault/web/small.png"><video poster="asset://localhost/vault/web/poster.jpg">');
+  });
+
+  it("strips inline and external scripts for markup-only previews", () => {
+    expect(
+      stripSavedHtmlPreviewCode(
+        '<style>@font-face{font-family:x;src:url(/missing.woff2)}p{color:red}</style><p onclick="alert(1)">before</p><script>alert(1)</script><script src="app.js"></script><img onerror=fail><p>after</p>'
+      )
+    ).toBe('<style>p{color:red}</style><p>before</p><img><p>after</p>');
+  });
+
+  it("rewrites root-relative URLs against the original site", () => {
+    expect(
+      rewriteSavedHtmlUrl(
+        "/_next/static/app.js",
+        "/vault/web/Page.html",
+        asset,
+        "https://example.com/articles/page"
+      )
+    ).toBe("https://example.com/_next/static/app.js");
+  });
+
+  it("leaves hashes, data URLs, and existing protocol URLs alone", () => {
+    // Entities decode once: an escaped "&amp;" in the page is the text "&amp;".
+    expect(rewriteSavedHtmlUrl("https://example.com/a?x=1&amp;amp;y=2&amp;quot;", "/vault/Page.html", asset, null)).toBe(
+      "https://example.com/a?x=1&amp;y=2&quot;"
+    );
+    expect(rewriteSavedHtmlUrl("https://example.com/a?x=1&amp;y=&#39;2&#39;", "/vault/Page.html", asset, null)).toBe(
+      "https://example.com/a?x=1&y='2'"
+    );
+    expect(rewriteSavedHtmlUrl("#main", "/vault/Page.html", asset, null)).toBe("#main");
+    expect(rewriteSavedHtmlUrl("data:image/png;base64,abc", "/vault/Page.html", asset, null)).toBe(
+      "data:image/png;base64,abc"
+    );
+    expect(rewriteSavedHtmlUrl("asset://localhost/vault/app.css", "/vault/Page.html", asset, null)).toBe(
+      "asset://localhost/vault/app.css"
+    );
+  });
+
+  it("rewrites href, src, poster, action, and srcset attributes", () => {
+    const html = rewriteSavedHtml(
+      [
+        "<!-- saved from url=(0024)https://site.test/news/a -->",
+        "<html><head><link href=\"./A_files/main.css\"></head>",
+        "<body>",
+        "<img src='./A_files/hero.png' srcset='./A_files/small.png 1x, ./A_files/big.png 2x'>",
+        "<video poster=\"./A_files/poster.jpg\"></video>",
+        "<form action='/signup'></form>",
+        "</body></html>",
+      ].join(""),
+      "/vault/web/A.html",
+      asset
+    );
+
+    expect(html).not.toContain("<base");
+    expect(html).toContain('href="asset://localhost/vault/web/A_files/main.css"');
+    expect(html).toContain("src='asset://localhost/vault/web/A_files/hero.png'");
+    expect(html).toContain(
+      "srcset='asset://localhost/vault/web/A_files/small.png 1x, asset://localhost/vault/web/A_files/big.png 2x'"
+    );
+    expect(html).toContain('poster="asset://localhost/vault/web/A_files/poster.jpg"');
+    expect(html).toContain("action='https://site.test/signup'");
+  });
+
+  it("resolves local saved assets relative to their owning file", () => {
+    expect(
+      localSavedHtmlAssetPath(
+        "./Page_files/app.css",
+        "/vault/web/Page.html"
+      )
+    ).toBe("/vault/web/Page_files/app.css");
+    expect(
+      localSavedHtmlAssetPath("../shared/app.css", "/vault/web/Page_files/app.css")
+    ).toBe("/vault/web/shared/app.css");
+    expect(localSavedHtmlAssetPath("/_next/app.css", "/vault/web/Page.html")).toBeNull();
+    expect(localSavedHtmlAssetPath("https://site.test/app.css", "/vault/web/Page.html")).toBeNull();
+  });
+
+  it("never inlines assets outside the saved document's folder", async () => {
+    const doc = "/vault/web/saved/page.html";
+    expect(savedHtmlInlineAssetPath("../../Private/journal.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("a/../../b.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("..\\secret.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("/other/private.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("file:///other/private.css", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("./page_files/notes.md", doc, "style")).toBeNull();
+    expect(savedHtmlInlineAssetPath("./page_files/app.css", doc, "script")).toBeNull();
+    expect(savedHtmlInlineAssetPath("./page_files/app.css", doc, "style")).toBe(
+      "/vault/web/saved/page_files/app.css"
+    );
+    expect(savedHtmlInlineAssetPath("./page_files/../b.js?v=1", doc, "script")).toBe(
+      "/vault/web/saved/b.js"
+    );
+
+    expect(savedHtmlInlineAssetPath("../../Private/journal.css", doc, "style", "/vault")).toBe("/vault/Private/journal.css");
+    expect(savedHtmlInlineAssetPath("../../../../outside.css", doc, "style", "/vault")).toBeNull();
+    expect(savedHtmlInlineAssetPath("../fonts/a.woff2", doc, "font", "/vault")).toBe("/vault/web/fonts/a.woff2");
+    const reads: string[] = [];
+    const html = await hydrateSavedHtml(
+      [
+        '<link rel="stylesheet" href="../../Private/journal.md">',
+        '<link rel="stylesheet" href="../secret.css">',
+        '<script src="../keys.js"></script>',
+        '<script src="./page_files/data.md"></script>',
+        '<link rel="stylesheet" href="./page_files/ok.css">',
+      ].join(""),
+      doc,
+      asset,
+      async (path) => {
+        reads.push(path);
+        return "p{color:red}";
+      }
+    );
+    expect(reads).toEqual(["/vault/web/saved/page_files/ok.css"]);
+    expect(html).not.toContain("data-mesa-href=\"../../Private");
+    expect(html).not.toContain("data-mesa-src");
+    expect(html).toContain("p{color:red}");
+  });
+
+  it("leaves oversize local assets unhydrated", async () => {
+    const html = await hydrateSavedHtml(
+      '<link rel="stylesheet" href="./big.css">',
+      "/vault/a.html",
+      asset,
+      async () => "x".repeat(MAX_SAVED_HTML_ASSET_CHARS + 1)
+    );
+    expect(html).toContain('<link rel="stylesheet"');
+    expect(html).not.toContain("<style");
+  });
+
+  it("rewrites CSS url() references relative to the stylesheet path", () => {
+    const css = rewriteCssAssetUrls(
+      [
+        "@font-face{src:url('../fonts/site.woff2') format('woff2')}",
+        ".hero{background-image:url(\"./hero.png\")}",
+        ".icon{mask:url(/icons/mask.svg)}",
+      ].join("\n"),
+      "/vault/web/Page_files/css/app.css",
+      asset,
+      "https://example.com/news/page"
+    );
+
+    expect(css).toContain(
+      "url('asset://localhost/vault/web/Page_files/fonts/site.woff2')"
+    );
+    expect(css).toContain(
+      'url("asset://localhost/vault/web/Page_files/css/hero.png")'
+    );
+    expect(css).toContain("url(https://example.com/icons/mask.svg)");
+  });
+
+  it("inlines local saved stylesheets before srcDoc rendering", async () => {
+    const html = await hydrateSavedHtml(
+      [
+        "<!-- saved from url=(0028)https://example.com/news/a -->",
+        '<html><head><link rel="stylesheet" href="./A_files/app.css"></head>',
+        '<body><script src="./A_files/app.js"></script></body></html>',
+      ].join(""),
+      "/vault/web/A.html",
+      asset,
+      async (path) => {
+        if (path.endsWith("app.css")) return ".hero{background:url('./hero.png')}";
+        if (path.endsWith("app.js")) return "window.__mesaSavedPage = true;";
+        throw new Error("missing");
+      }
+    );
+
+    expect(html).toContain('<style data-mesa-href="./A_files/app.css">');
+    expect(html).toContain(
+      "background:url('asset://localhost/vault/web/A_files/hero.png')"
+    );
+    expect(html).toContain('data-mesa-src="./A_files/app.js"');
+    expect(html).not.toContain('<link rel="stylesheet" href="./A_files/app.css">');
+  });
+
+  it("removes scripts without reading them for markup-only previews", async () => {
+    const reads: string[] = [];
+    const html = await hydrateSavedHtml(
+      [
+        '<html><head><link rel="stylesheet" href="./A_files/app.css"></head>',
+        '<body><script>window.inline = true;</script>',
+        '<script src="./A_files/app.js"></script><p>Kept</p></body></html>',
+      ].join(""),
+      "/vault/web/A.html",
+      asset,
+      async (path) => {
+        reads.push(path);
+        if (path.endsWith("app.css")) return "body{color:red}";
+        if (path.endsWith("app.js")) return "window.external = true";
+        throw new Error("missing");
+      },
+      { scripts: false }
+    );
+
+    expect(html).toContain("<p>Kept</p>");
+    expect(html).toContain("body{color:red}");
+    expect(html).not.toContain("<script");
+    expect(reads.some((path) => path.endsWith("app.js"))).toBe(false);
+  });
+
+  it("reuses an already-stripped preview and still strips inlined font rules", async () => {
+    const stripped = stripSavedHtmlPreviewCode(
+      '<link rel="stylesheet" href="./A_files/app.css"><p onload="bad()">Kept</p><script>bad()</script>'
+    );
+    const html = await hydrateSavedHtml(
+      stripped,
+      "/vault/web/A.html",
+      asset,
+      async () => "@font-face{font-family:x;src:url(/missing.woff2)}p{color:red}",
+      { scripts: false, previewCodeStripped: true }
+    );
+
+    expect(html).toContain("<p>Kept</p>");
+    expect(html).toContain("p{color:red}");
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("onload=");
+    expect(html).not.toContain("@font-face");
+  });
+
+  it("keeps hostile stylesheet text inside the style element in preview mode", async () => {
+    const html = await hydrateSavedHtml(
+      '<link rel="stylesheet" href="./A_files/app.css"><p>Kept</p>',
+      "/vault/web/A.html",
+      asset,
+      async () => "</style><script>bad()</script><style>p{color:red}",
+      { scripts: false }
+    );
+
+    expect(html).toContain("<\\/style><script>bad()</script><style>");
+    expect(html).not.toContain("</style><script>bad()");
+  });
+});
+
+it("preview code stripping is not a sanitizer or network policy", () => {
+  const html = '<form action="https://example.com"><input></form><img src="https://example.com/image.png">';
+  expect(stripSavedHtmlPreviewCode(html)).toBe(html);
+});
+
+it('rewrites inline CSS and archive-relative images without injecting a base', async () => {
+  const html = await hydrateSavedHtml('<style>p{background:url(img/a.png)}</style><p style="background:url(img/b.png)">Hi</p>', '/vault/page.html', asset, async () => '', { scripts: false });
+  expect(html).toContain('asset://localhost/vault/img/a.png');
+  expect(html).toContain('asset://localhost/vault/img/b.png');
+  const archived = rewriteSavedHtml('<!-- saved from url=(0030)https://example.com/articles/a --><!-- mesa-archive --><img src="img/a.png">', '/vault/page.html', asset);
+  expect(archived).toContain('src="https://example.com/articles/img/a.png"');
+});
+it('inlines bounded local fonts only for the full viewer', async () => {
+  const source = '<style>@font-face{font-family:x;src:url(fonts/a.woff2)}p{font-family:x}</style>';
+  const reads: string[] = [];
+  const html = await hydrateSavedHtml(source, '/vault/page.html', asset, async () => '', { scripts: false, fonts: { readBytes: async path => { reads.push(path); return new Uint8Array([1,2,3]); } } });
+  expect(reads).toEqual(['/vault/fonts/a.woff2']);
+  expect(html).toContain('data:font/woff2;base64,AQID');
+  const preview = await hydrateSavedHtml(source, '/vault/page.html', asset, async () => '', { scripts: false });
+  expect(preview).not.toContain('@font-face');
+  const oversized = await hydrateSavedHtml(source, '/vault/page.html', asset, async () => '', { scripts: false, fonts: { readBytes: async () => new Uint8Array(2 * 1024 * 1024 + 1) } });
+  expect(oversized).not.toContain('@font-face');
+});
+
+it('font rules in nested CSS may read sibling fonts inside the document folder only', async () => {
+  const paths: string[] = [];
+  const html = await hydrateSavedHtml('<link rel="stylesheet" href="files/css/a.css">', '/vault/page.html', asset,
+    async () => '@font-face{font-family:x;src:url(../fonts/a.woff2)}@font-face{font-family:y;src:url(../../../private.woff2)}',
+    { scripts: false, fonts: { readBytes: async path => { paths.push(path); return new Uint8Array([1]); } } });
+  expect(paths).toEqual(['/vault/files/fonts/a.woff2']);
+  expect(html).toContain('data:font/woff2');
+  expect(html).not.toContain('font-family:y');
+});
+
+it('preserves quoted CSS URLs in single-quoted style attributes', async () => {
+  const html = await hydrateSavedHtml("<div style='background:url(&#39;image.png&#39;)'></div>", '/vault/page.html', asset, async () => '', { scripts: false });
+  expect(html).toContain("style='background:url(&#39;asset://localhost/vault/image.png&#39;)'");
+});
+
+it('retains a supported icon-font fallback when old EOT or remote alternatives are present', async () => {
+  const reads: string[] = [];
+  const html = await hydrateSavedHtml('<style>@font-face{font-family:icons;src:url(icons.eot);src:url(icons.eot?#iefix) format("embedded-opentype"),url(icons.woff2) format("woff2"),url(https://example.com/icons.ttf) format("truetype")}</style>', '/vault/page.html', asset, async () => '', {
+    scripts: false, fonts: { readBytes: async path => { reads.push(path); return new Uint8Array([1,2,3]); } }
+  });
+  expect(reads).toEqual(['/vault/icons.woff2']);
+  expect(html).toContain('font-family:icons');
+  expect(html).toContain('data:font/woff2;base64,AQID');
+  expect(html).not.toContain('icons.eot');
+  expect(html).not.toContain('https://example.com');
+});

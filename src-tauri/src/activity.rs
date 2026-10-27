@@ -1,0 +1,1221 @@
+// Loopback activity, browser, and research bridge for the embedded Pi agent.
+// This listener stays available without enabling device sync.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+};
+
+use serde::{Deserialize, Serialize};
+use tauri::Emitter;
+use tiny_http::{Method, Request, Response, Server};
+
+/// The Pi extension sources, compiled into the binary and written to temp files
+/// at startup so Mesa can hand Pi real paths via (repeatable) `--extension`.
+/// Bundling them with `include_str!` means the shipped extensions are exactly
+/// what was code-reviewed in this repo — nothing is fetched from npm or the
+/// network at runtime.
+const EXTENSION_SRC: &str = include_str!("../resources/mesa-activity.ts");
+const GOAL_EXTENSION_SRC: &str = include_str!("../resources/mesa-goal.ts");
+const CONTEXT_EXTENSION_SRC: &str = include_str!("../resources/mesa-context.ts");
+const BROWSER_EXTENSION_SRC: &str = include_str!("../resources/mesa-browser.ts");
+const BROWSER_QUEUE_SRC: &str = include_str!("../resources/mesa-browser-queue.ts");
+const DEEP_RESEARCH_EXTENSION_SRC: &str = include_str!("../resources/mesa-deep-research.ts");
+
+/// Loopback ports to try, in order (inclusive). The first free one wins.
+const PORT_FIRST: u16 = 8788;
+const PORT_LAST: u16 = 8820;
+/// Request workers for the loopback bridge. One may fetch a page while the
+/// others keep context and research control routes responsive.
+const ACTIVITY_SERVER_WORKERS: usize = 4;
+const ACTIVITY_STOP_POLL: Duration = Duration::from_millis(50);
+const ACTIVITY_BODY_CAP: usize = 1024 * 1024;
+const BROWSE_BODY_CAP: usize = 16 * 1024;
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResearchDecision {
+    Accepted,
+    Rejected,
+    Stopped,
+}
+
+#[derive(Clone, Serialize)]
+struct ResearchReply {
+    status: ResearchDecision,
+    message: String,
+}
+
+struct ResearchPending {
+    run_id: String,
+    request_id: String,
+    sender: std::sync::mpsc::SyncSender<ResearchReply>,
+    replied: bool,
+}
+
+/// One admitted finish wait leaves the other loopback workers free for
+/// browsing and lifecycle events. No result cache survives a wait.
+#[derive(Default)]
+struct ResearchReplies(Mutex<Option<ResearchPending>>);
+
+struct ResearchWait<'a> {
+    replies: &'a ResearchReplies,
+    receiver: std::sync::mpsc::Receiver<ResearchReply>,
+}
+
+impl ResearchReplies {
+    fn begin(&self, run_id: String, request_id: String) -> Result<ResearchWait<'_>, String> {
+        let mut pending = self.0.lock().map_err(|e| e.to_string())?;
+        if pending.is_some() {
+            return Err("another finish is awaiting validation".into());
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        *pending = Some(ResearchPending {
+            run_id,
+            request_id,
+            sender,
+            replied: false,
+        });
+        Ok(ResearchWait {
+            replies: self,
+            receiver,
+        })
+    }
+
+    fn respond(&self, run_id: &str, request_id: &str, reply: ResearchReply) -> Result<(), String> {
+        let mut pending = self.0.lock().map_err(|e| e.to_string())?;
+        let pending = pending
+            .as_mut()
+            .filter(|p| p.run_id == run_id && p.request_id == request_id)
+            .ok_or("no matching finish awaiting validation")?;
+        if pending.replied {
+            return Err("finish already answered".into());
+        }
+        pending.sender.try_send(reply).map_err(|e| e.to_string())?;
+        pending.replied = true;
+        Ok(())
+    }
+}
+
+impl ResearchWait<'_> {
+    fn wait(&self, running: &AtomicBool, timeout: Duration) -> Result<ResearchReply, String> {
+        let start = std::time::Instant::now();
+        while running.load(Ordering::Acquire) && start.elapsed() < timeout {
+            match self
+                .receiver
+                .recv_timeout(ACTIVITY_STOP_POLL.min(timeout.saturating_sub(start.elapsed())))
+            {
+                Ok(reply) => return Ok(reply),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Err("Mesa did not acknowledge validation before the bridge stopped or timed out; completion is unconfirmed".into())
+    }
+}
+
+impl Drop for ResearchWait<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.replies.0.lock() {
+            *pending = None;
+        }
+    }
+}
+
+fn research_replies() -> &'static ResearchReplies {
+    static REPLIES: OnceLock<ResearchReplies> = OnceLock::new();
+    REPLIES.get_or_init(ResearchReplies::default)
+}
+
+/// Only the main store validates research.
+#[tauri::command]
+pub fn deep_research_respond(
+    window: tauri::Window,
+    run_id: String,
+    request_id: String,
+    status: ResearchDecision,
+    message: String,
+) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("only the main workspace may validate Deep Research".into());
+    }
+    research_replies().respond(&run_id, &request_id, ResearchReply { status, message })
+}
+
+/// One rendered capture of the main workspace view, answered by the main renderer.
+struct ViewReply {
+    meta: String,
+    mime: String,
+    bytes: Vec<u8>,
+}
+
+struct ViewPending {
+    request_id: String,
+    sender: std::sync::mpsc::SyncSender<ViewReply>,
+}
+
+/// One admitted `/view` wait; no capture outlives its request.
+#[derive(Default)]
+struct ViewReplies(Mutex<Option<ViewPending>>);
+
+struct ViewWait<'a> {
+    replies: &'a ViewReplies,
+    receiver: std::sync::mpsc::Receiver<ViewReply>,
+}
+
+impl ViewReplies {
+    fn begin(&self, request_id: String) -> Result<ViewWait<'_>, String> {
+        let mut pending = self.0.lock().map_err(|e| e.to_string())?;
+        if pending.is_some() {
+            return Err("another view capture is in progress".into());
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        *pending = Some(ViewPending { request_id, sender });
+        Ok(ViewWait {
+            replies: self,
+            receiver,
+        })
+    }
+
+    fn respond(&self, request_id: &str, reply: ViewReply) -> Result<(), String> {
+        let pending = self.0.lock().map_err(|e| e.to_string())?;
+        let pending = pending
+            .as_ref()
+            .filter(|p| p.request_id == request_id)
+            .ok_or("no matching view capture is waiting")?;
+        pending
+            .sender
+            .try_send(reply)
+            .map_err(|_| "view capture already answered".to_string())
+    }
+}
+
+impl ViewWait<'_> {
+    fn wait(&self, running: &AtomicBool, timeout: Duration) -> Option<ViewReply> {
+        let start = std::time::Instant::now();
+        while running.load(Ordering::Acquire) && start.elapsed() < timeout {
+            match self
+                .receiver
+                .recv_timeout(ACTIVITY_STOP_POLL.min(timeout.saturating_sub(start.elapsed())))
+            {
+                Ok(reply) => return Some(reply),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        None
+    }
+}
+
+impl Drop for ViewWait<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.replies.0.lock() {
+            *pending = None;
+        }
+    }
+}
+
+fn view_replies() -> &'static ViewReplies {
+    static REPLIES: OnceLock<ViewReplies> = OnceLock::new();
+    REPLIES.get_or_init(ViewReplies::default)
+}
+
+const VIEW_IMAGE_CAP: usize = 8 * 1024 * 1024;
+const VIEW_META_CAP: usize = 8 * 1024;
+const VIEW_WAIT: Duration = Duration::from_secs(10);
+
+/// Validate a renderer capture reply. Metadata is URI-encoded JSON so it can
+/// travel in an ASCII response header; image bytes are the raw IPC body.
+fn parse_view_reply(
+    headers: &tauri::http::HeaderMap,
+    body: &tauri::ipc::InvokeBody,
+) -> Result<(String, ViewReply), String> {
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| format!("missing {name} header"))
+    };
+    let request_id = header("x-mesa-view-request")?.to_string();
+    let meta = header("x-mesa-view-meta")?.to_string();
+    let mime = header("x-mesa-view-mime")?.to_string();
+    if meta.len() > VIEW_META_CAP || !meta.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err("invalid view metadata".into());
+    }
+    let bytes = match body {
+        tauri::ipc::InvokeBody::Raw(data) => data.clone(),
+        tauri::ipc::InvokeBody::Json(_) => Vec::new(),
+    };
+    if bytes.len() > VIEW_IMAGE_CAP {
+        return Err("view capture is too large".into());
+    }
+    match mime.as_str() {
+        "image/jpeg" | "image/png" if !bytes.is_empty() => {}
+        "none" if bytes.is_empty() => {}
+        _ => return Err("invalid view capture type".into()),
+    }
+    Ok((request_id, ViewReply { meta, mime, bytes }))
+}
+
+/// Only the main workspace answers view captures for Pi.
+#[tauri::command]
+pub fn activity_view_respond(
+    window: tauri::Window,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    crate::require_main(window.label())?;
+    let (request_id, reply) = parse_view_reply(request.headers(), request.body())?;
+    view_replies().respond(&request_id, reply)
+}
+
+#[derive(Debug)]
+enum BodyError {
+    TooLarge,
+    Read,
+    InvalidUtf8,
+}
+
+/// Bound request bytes before UTF-8 conversion and JSON parsing.
+fn read_bounded_utf8(
+    reader: &mut (impl Read + ?Sized),
+    declared: Option<usize>,
+    cap: usize,
+) -> Result<String, BodyError> {
+    if declared.is_some_and(|length| length > cap) {
+        return Err(BodyError::TooLarge);
+    }
+    let mut bytes = Vec::with_capacity(declared.unwrap_or(0).min(cap));
+    reader
+        .take((cap + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| BodyError::Read)?;
+    if bytes.len() > cap {
+        return Err(BodyError::TooLarge);
+    }
+    String::from_utf8(bytes).map_err(|_| BodyError::InvalidUtf8)
+}
+
+fn read_bounded_body(req: &mut Request, cap: usize) -> Result<String, BodyError> {
+    let declared = req.body_length();
+    read_bounded_utf8(req.as_reader(), declared, cap)
+}
+
+fn body_error_status(error: BodyError) -> u16 {
+    match error {
+        BodyError::TooLarge => 413,
+        BodyError::Read | BodyError::InvalidUtf8 => 400,
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct ActivityInfo {
+    pub port: u16,
+    pub token: String,
+    #[serde(rename = "extensionPath")]
+    pub extension_path: String,
+    #[serde(rename = "goalExtensionPath")]
+    pub goal_extension_path: String,
+    #[serde(rename = "contextExtensionPath")]
+    pub context_extension_path: String,
+    #[serde(rename = "browserExtensionPath")]
+    pub browser_extension_path: String,
+    #[serde(rename = "deepResearchExtensionPath")]
+    pub deep_research_extension_path: String,
+}
+
+struct ActivityServer {
+    running: Arc<AtomicBool>,
+    handles: Vec<JoinHandle<()>>,
+    info: ActivityInfo,
+    extension_dir: std::path::PathBuf,
+}
+
+/// A `/browse` request can wait for a native fetch for several seconds.
+/// Admit only one so concurrent browse calls cannot occupy the whole request
+/// pool and starve context and research control routes.
+struct BrowsePermit<'a> {
+    active: &'a AtomicBool,
+}
+
+impl<'a> BrowsePermit<'a> {
+    fn try_acquire(active: &'a AtomicBool) -> Option<Self> {
+        active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self { active })
+    }
+}
+
+impl Drop for BrowsePermit<'_> {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+fn state() -> &'static Mutex<Option<ActivityServer>> {
+    static S: OnceLock<Mutex<Option<ActivityServer>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(None))
+}
+
+// The context is repeated in the model system prompt before every turn. Keep
+// this server-side bound small so a large tab list cannot consume the window.
+const CONTEXT_MAX_BYTES: usize = 8 * 1024;
+
+fn context_state() -> &'static Mutex<String> {
+    static CONTEXT: OnceLock<Mutex<String>> = OnceLock::new();
+    CONTEXT.get_or_init(|| Mutex::new(String::new()))
+}
+
+fn bounded_context(mut context: String) -> String {
+    context = context.trim().to_string();
+    if context.len() <= CONTEXT_MAX_BYTES {
+        return context;
+    }
+    let mut end = CONTEXT_MAX_BYTES;
+    while !context.is_char_boundary(end) {
+        end -= 1;
+    }
+    context.truncate(end);
+    context
+}
+
+fn nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+/// A fresh 256-bit bearer token for the local Pi bridge.
+pub(crate) fn make_token() -> Result<String, String> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut bytes = [0_u8; 32];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| "could not generate a secure Pi bridge token".to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = i32::try_from(pid) else {
+            return true;
+        };
+        // Permission failures are unknown, never evidence that a process died.
+        unsafe {
+            libc::kill(pid, 0) == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER},
+            System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            },
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return GetLastError() != ERROR_INVALID_PARAMETER;
+            }
+            let mut code = 0;
+            let alive = GetExitCodeProcess(handle, &mut code) == 0 || code == 259;
+            CloseHandle(handle);
+            alive
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+fn sweep_extensions_in(
+    temp: &std::path::Path,
+    now: u128,
+    alive: impl Fn(u32) -> bool,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(temp)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str().and_then(|name| name.strip_prefix("mesa-pi-")) else {
+            continue;
+        };
+        let Some((pid, created)) = name.split_once('-') else {
+            continue;
+        };
+        let (Ok(pid), Ok(created)) = (pid.parse::<u32>(), created.parse::<u128>()) else {
+            continue;
+        };
+        if pid == 0
+            || now.saturating_sub(created) < Duration::from_secs(60).as_nanos()
+            || alive(pid)
+        {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.uid() != unsafe { libc::geteuid() } {
+                continue;
+            }
+        }
+        // remove_dir_all does not follow directory or descendant symlinks.
+        std::fs::remove_dir_all(entry.path())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sweep_stale_extensions() {
+    if let Err(error) = sweep_extensions_in(&std::env::temp_dir(), nanos(), process_alive) {
+        eprintln!("Mesa could not clean stale Pi extension directories: {error}");
+    }
+}
+
+fn create_extension_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(dir)
+    }
+}
+
+/// Materialize the bundled Pi extensions; returns
+/// (activity_path, goal_path, context_path, browser_path, deep_research_path).
+fn write_extensions() -> Result<(String, String, String, String, String), String> {
+    // A unique directory and create_new files fail closed on a collision.
+    let dir = std::env::temp_dir().join(format!("mesa-pi-{}-{}", std::process::id(), nanos()));
+    create_extension_dir(&dir).map_err(|e| e.to_string())?;
+    let write = |path: &std::path::Path, source: &str| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(source.as_bytes()).map_err(|e| e.to_string())
+    };
+    let result = (|| {
+        let activity = dir.join("mesa-activity.ts");
+        write(&activity, EXTENSION_SRC)?;
+        let goal = dir.join("mesa-goal.ts");
+        write(&goal, GOAL_EXTENSION_SRC)?;
+        let context = dir.join("mesa-context.ts");
+        write(&context, CONTEXT_EXTENSION_SRC)?;
+        let browser = dir.join("mesa-browser.ts");
+        write(&browser, BROWSER_EXTENSION_SRC)?;
+        let browser_queue = dir.join("mesa-browser-queue.ts");
+        write(&browser_queue, BROWSER_QUEUE_SRC)?;
+        let deep_research = dir.join("mesa-deep-research.ts");
+        write(&deep_research, DEEP_RESEARCH_EXTENSION_SRC)?;
+        Ok((
+            activity.to_string_lossy().to_string(),
+            goal.to_string_lossy().to_string(),
+            context.to_string_lossy().to_string(),
+            browser.to_string_lossy().to_string(),
+            deep_research.to_string_lossy().to_string(),
+        ))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    result
+}
+
+fn auth_ok(req: &Request, token: &str) -> bool {
+    req.headers()
+        .iter()
+        .any(|h| h.field.equiv("Authorization") && crate::bearer::matches(h.value.as_str(), token))
+}
+
+fn loopback_host_allowed(host: &str, port: u16) -> bool {
+    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+}
+
+fn host_ok(req: &Request, port: u16) -> bool {
+    let mut hosts = req
+        .headers()
+        .iter()
+        .filter(|header| header.field.equiv("Host"));
+    let Some(host) = hosts.next() else {
+        return false;
+    };
+    hosts.next().is_none() && loopback_host_allowed(host.value.as_str(), port)
+}
+
+fn json_response(req: Request, json: String) {
+    let mut resp = Response::from_string(json);
+    if let Ok(h) = "Content-Type: application/json".parse::<tiny_http::Header>() {
+        resp = resp.with_header(h);
+    }
+    let _ = req.respond(resp);
+}
+
+/// Run one blocking operation while the activity server remains live. The
+/// caller stops waiting at shutdown instead of inheriting the operation's
+/// timeout. `/browse` admission bounds detached work to at most one fallback.
+fn blocking_while_running<T, F>(
+    running: &AtomicBool,
+    thread_name: &str,
+    operation: F,
+) -> Result<Option<T>, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    if !running.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name(thread_name.to_string())
+        .spawn(move || {
+            let _ = sender.send(operation());
+        })
+        .map_err(|error| format!("could not start {thread_name}: {error}"))?;
+    loop {
+        if !running.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        match receiver.recv_timeout(ACTIVITY_STOP_POLL) {
+            Ok(result) => return Ok(Some(result)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(format!("{thread_name} stopped without a result"));
+            }
+        }
+    }
+}
+
+fn browse_fetch_while_running(
+    target: String,
+    running: &AtomicBool,
+) -> Option<Result<crate::browse::BrowsePage, String>> {
+    match blocking_while_running(running, "mesa-activity-browse-fetch", move || {
+        crate::browse::browse_fetch_blocking(target)
+    }) {
+        Ok(result) => result,
+        Err(error) => Some(Err(error)),
+    }
+}
+
+fn handle_request(
+    mut req: Request,
+    port: u16,
+    token: &str,
+    app: &tauri::AppHandle,
+    running: &AtomicBool,
+    browse_active: &AtomicBool,
+) {
+    let url = req.url().to_string();
+    let method = req.method().clone();
+    if !host_ok(&req, port) {
+        let _ = req.respond(Response::from_string("misdirected request").with_status_code(421));
+        return;
+    }
+    if !auth_ok(&req, token) {
+        let _ = req.respond(Response::from_string("unauthorized").with_status_code(401));
+        return;
+    }
+    if url == "/activity" && method == Method::Post {
+        match read_bounded_body(&mut req, ACTIVITY_BODY_CAP) {
+            Ok(body) => {
+                let _ = app.emit("activity", body);
+                let _ = req.respond(Response::from_string("ok"));
+            }
+            Err(error) => {
+                let status = body_error_status(error);
+                let _ = req.respond(
+                    Response::from_string("invalid activity body").with_status_code(status),
+                );
+            }
+        }
+        return;
+    }
+    // Current path-only Mesa workspace context. The bundled context extension
+    // reads this before every Pi turn, so a long-lived/shared PTY follows the
+    // main workspace without restarting or relying on immutable process env.
+    if url == "/context" && method == Method::Get {
+        let context = context_state()
+            .lock()
+            .map(|context| context.clone())
+            .unwrap_or_default();
+        json_response(req, serde_json::json!({ "context": context }).to_string());
+        return;
+    }
+    // Rendered pixels of the main workspace view, captured by the main renderer
+    // on request so remote inference providers can see what the user sees.
+    if url == "/view" && method == Method::Get {
+        let request_id = match make_token() {
+            Ok(id) => id,
+            Err(error) => {
+                let _ = req.respond(Response::from_string(error).with_status_code(500));
+                return;
+            }
+        };
+        let wait = match view_replies().begin(request_id.clone()) {
+            Ok(wait) => wait,
+            Err(error) => {
+                let _ = req.respond(Response::from_string(error).with_status_code(409));
+                return;
+            }
+        };
+        if let Err(error) = app.emit_to("main", "mesa://view-request", &request_id) {
+            let _ = req.respond(Response::from_string(error.to_string()).with_status_code(503));
+            return;
+        }
+        let Some(reply) = wait.wait(running, VIEW_WAIT) else {
+            let _ = req.respond(
+                Response::from_string("Mesa did not return a view capture in time")
+                    .with_status_code(504),
+            );
+            return;
+        };
+        let content_type = if reply.mime == "none" {
+            "application/octet-stream"
+        } else {
+            reply.mime.as_str()
+        };
+        let headers = [
+            format!("Content-Type: {content_type}"),
+            format!("X-Mesa-View: {}", reply.meta),
+        ];
+        let mut response = Response::from_data(reply.bytes);
+        for header in headers {
+            if let Ok(header) = header.parse::<tiny_http::Header>() {
+                response = response.with_header(header);
+            }
+        }
+        let _ = req.respond(response);
+        return;
+    }
+    // Fetch through the native broker without rendering website scripts.
+    if url == "/browse" && method == Method::Post {
+        let Some(_browse_permit) = BrowsePermit::try_acquire(browse_active) else {
+            let mut response =
+                Response::from_string("browse already in progress").with_status_code(429);
+            if let Ok(header) = "Retry-After: 1".parse::<tiny_http::Header>() {
+                response = response.with_header(header);
+            }
+            let _ = req.respond(response);
+            return;
+        };
+        let body = match read_bounded_body(&mut req, BROWSE_BODY_CAP) {
+            Ok(body) => body,
+            Err(error) => {
+                let status = body_error_status(error);
+                let _ = req
+                    .respond(Response::from_string("invalid browse body").with_status_code(status));
+                return;
+            }
+        };
+        let target = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(String::from))
+            .unwrap_or_default();
+        if target.is_empty() {
+            let _ = req.respond(Response::from_string("missing url").with_status_code(400));
+            return;
+        }
+        if let Err(error) = crate::browse::check_public_url(&target) {
+            let _ = req.respond(Response::from_string(error).with_status_code(400));
+            return;
+        }
+        // The native fetcher owns resolution and the final connection.
+        let page = match browse_fetch_while_running(target.clone(), running) {
+            Some(Ok(page)) => page,
+            Some(Err(error)) => {
+                let _ = req.respond(Response::from_string(error).with_status_code(502));
+                return;
+            }
+            None => {
+                let _ = req.respond(Response::from_string("server stopping").with_status_code(503));
+                return;
+            }
+        };
+        let _ = app.emit("mesa://browse", target);
+        let json = serde_json::to_string(&page).unwrap_or_else(|_| "{}".into());
+        json_response(req, json);
+        return;
+    }
+    // Return the latest native-fetched source, never a page-authored snapshot.
+    if url == "/browse/current" && method == Method::Get {
+        json_response(req, crate::browse::current_page_json());
+        return;
+    }
+    // Deep Research bridge: the mesa-deep-research extension POSTs
+    // The frontend owns validation. A correlated finish waits for its decision
+    // so the model sees rejection as its tool result, not terminal keystrokes.
+    if url == "/deep-research" && method == Method::Post {
+        let mut body = String::new();
+        if req
+            .as_reader()
+            .take(1_048_577)
+            .read_to_string(&mut body)
+            .is_err()
+        {
+            let _ = req.respond(Response::from_string("read error").with_status_code(400));
+            return;
+        }
+        if body.len() > 1_048_576 {
+            let _ = req
+                .respond(Response::from_string("research payload too large").with_status_code(413));
+            return;
+        }
+        let parsed = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(value) => value,
+            Err(_) => {
+                let _ = req.respond(
+                    Response::from_string("invalid research payload").with_status_code(400),
+                );
+                return;
+            }
+        };
+        let wait = if parsed["kind"] == "finish" {
+            let (Some(run_id), Some(request_id)) =
+                (parsed["runId"].as_str(), parsed["requestId"].as_str())
+            else {
+                let _ = req.respond(
+                    Response::from_string("finish requires runId and requestId")
+                        .with_status_code(400),
+                );
+                return;
+            };
+            match research_replies().begin(run_id.into(), request_id.into()) {
+                Ok(wait) => Some(wait),
+                Err(error) => {
+                    let _ = req.respond(Response::from_string(error).with_status_code(409));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if let Err(error) = app.emit("mesa://deep-research", body) {
+            let _ = req.respond(Response::from_string(error.to_string()).with_status_code(503));
+            return;
+        }
+        if let Some(wait) = wait {
+            match wait.wait(running, Duration::from_secs(30)) {
+                Ok(reply) => json_response(req, serde_json::to_string(&reply).unwrap_or_default()),
+                Err(error) => {
+                    let _ = req.respond(Response::from_string(error).with_status_code(504));
+                }
+            }
+        } else {
+            let _ = req.respond(Response::from_string("ok"));
+        }
+        return;
+    }
+    let _ = req.respond(Response::from_string("not found").with_status_code(404));
+}
+
+fn bind_activity_server(first: u16, last: u16) -> Result<(Server, u16), String> {
+    for port in first..=last {
+        if let Ok(server) = Server::http(format!("127.0.0.1:{port}")) {
+            return Ok((server, port));
+        }
+    }
+    Err("no free loopback port for the activity server".into())
+}
+
+/// Start (or reuse) the loopback activity server and materialize the Pi
+/// extension. Idempotent: repeated calls return the same running server's
+/// port/token/extension path, so surface switches and context restarts never
+/// spawn duplicate servers.
+#[tauri::command]
+pub fn activity_start(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+) -> Result<ActivityInfo, String> {
+    crate::require_main(window.label())?;
+    start_native(app)
+}
+
+pub(crate) fn start_native(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
+    let mut guard = state().lock().map_err(|e| e.to_string())?;
+    if let Some(existing) = guard.as_ref() {
+        return Ok(existing.info.clone());
+    }
+
+    let (server, port) = bind_activity_server(PORT_FIRST, PORT_LAST)?;
+    let token = make_token()?;
+    let (
+        extension_path,
+        goal_extension_path,
+        context_extension_path,
+        browser_extension_path,
+        deep_research_extension_path,
+    ) = write_extensions()?;
+
+    let server = Arc::new(server);
+
+    let running = Arc::new(AtomicBool::new(true));
+    let browse_active = Arc::new(AtomicBool::new(false));
+    let mut handles = Vec::with_capacity(ACTIVITY_SERVER_WORKERS);
+    for _ in 0..ACTIVITY_SERVER_WORKERS {
+        let server = server.clone();
+        let running = running.clone();
+        let browse_active = browse_active.clone();
+        let token = token.clone();
+        let app = app.clone();
+        handles.push(std::thread::spawn(move || {
+            while running.load(Ordering::Acquire) {
+                match server.recv_timeout(Duration::from_millis(250)) {
+                    Ok(Some(req)) => {
+                        handle_request(req, port, &token, &app, &running, &browse_active)
+                    }
+                    Ok(None) => {}
+                    Err(_) => break,
+                }
+            }
+        }));
+    }
+
+    let info = ActivityInfo {
+        port,
+        token,
+        extension_path,
+        goal_extension_path,
+        context_extension_path,
+        browser_extension_path,
+        deep_research_extension_path,
+    };
+    let extension_dir = std::path::Path::new(&info.extension_path)
+        .parent()
+        .ok_or_else(|| "extension directory unavailable".to_string())?
+        .to_path_buf();
+    *guard = Some(ActivityServer {
+        running,
+        handles,
+        info: info.clone(),
+        extension_dir,
+    });
+    Ok(info)
+}
+
+/// Publish the main workspace's current path-only Pi context. This state is
+/// independent of the loopback server lifecycle, so the main renderer can
+/// update it before Pi starts and the first agent turn still sees it.
+#[tauri::command]
+pub fn activity_set_context(window: tauri::Window, context: String) -> Result<(), String> {
+    crate::require_main(window.label())?;
+    let mut current = context_state().lock().map_err(|e| e.to_string())?;
+    *current = bounded_context(context);
+    Ok(())
+}
+
+// Blocking work: run off the main (UI) thread.
+#[tauri::command(async)]
+pub fn activity_stop(window: tauri::Window) -> Result<(), String> {
+    crate::require_main(window.label())?;
+    stop_native()
+}
+
+pub(crate) fn stop_native() -> Result<(), String> {
+    let mut guard = state().lock().map_err(|e| e.to_string())?;
+    let stopped = guard.take();
+    if let Some(st) = stopped.as_ref() {
+        st.running.store(false, Ordering::Release);
+    }
+    // A request may be finishing in another worker and call back into
+    // Other bridge operations also need `state()`. Never hold this
+    // lock while waiting for worker threads to exit.
+    drop(guard);
+    if let Some(st) = stopped {
+        for h in st.handles {
+            let _ = h.join();
+        }
+        std::fs::remove_dir_all(&st.extension_dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_extensions_from_exited_process_are_removed() {
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .spawn()
+            .unwrap();
+        #[cfg(any(unix, windows))]
+        {
+            let pid = child.id();
+            child.wait().unwrap();
+            assert!(!process_alive(pid));
+            let temp = std::env::temp_dir().join(format!(
+                "mesa-exited-test-{}-{}",
+                std::process::id(),
+                nanos()
+            ));
+            create_extension_dir(&temp).unwrap();
+            let stale = temp.join(format!("mesa-pi-{pid}-1"));
+            create_extension_dir(&stale).unwrap();
+            sweep_extensions_in(&temp, nanos(), process_alive).unwrap();
+            assert!(!stale.exists());
+            std::fs::remove_dir(temp).unwrap();
+        }
+    }
+
+    #[test]
+    fn sweeps_only_old_dead_process_directories() {
+        let temp = std::env::temp_dir().join(format!(
+            "mesa-sweep-test-{}-{}",
+            std::process::id(),
+            nanos()
+        ));
+        std::fs::create_dir(&temp).unwrap();
+        let now = 120_000_000_000_u128;
+        for name in [
+            "mesa-pi-123-1",
+            "mesa-pi-124-119000000000",
+            "mesa-pi-125-1",
+            "mesa-pi-0-1",
+            "mesa-pi-invalid-1",
+            "other",
+        ] {
+            create_extension_dir(&temp.join(name)).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(temp.join("mesa-pi-123-1"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            std::os::unix::fs::symlink(temp.join("other"), temp.join("mesa-pi-126-1")).unwrap();
+        }
+        sweep_extensions_in(&temp, now, |pid| pid == 125).unwrap();
+        assert!(!temp.join("mesa-pi-123-1").exists());
+        for name in [
+            "mesa-pi-124-119000000000",
+            "mesa-pi-125-1",
+            "mesa-pi-0-1",
+            "mesa-pi-invalid-1",
+            "other",
+        ] {
+            assert!(temp.join(name).exists());
+        }
+        #[cfg(unix)]
+        assert!(temp.join("mesa-pi-126-1").is_symlink());
+        sweep_extensions_in(&temp, now + Duration::from_secs(60).as_nanos(), |pid| {
+            pid == 125
+        })
+        .unwrap();
+        assert!(!temp.join("mesa-pi-124-119000000000").exists());
+        assert!(temp.join("mesa-pi-125-1").exists());
+        assert!(process_alive(std::process::id()));
+        std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn bounded_activity_and_browse_bodies_reject_oversize_payloads() {
+        let mut body = std::io::Cursor::new(b"hello".to_vec());
+        assert!(matches!(
+            read_bounded_utf8(&mut body, Some(5), 4),
+            Err(BodyError::TooLarge)
+        ));
+        let mut body = std::io::Cursor::new(b"hello".to_vec());
+        assert!(matches!(
+            read_bounded_utf8(&mut body, None, 4),
+            Err(BodyError::TooLarge)
+        ));
+        let mut body = std::io::Cursor::new(b"hello".to_vec());
+        assert_eq!(read_bounded_utf8(&mut body, None, 5).unwrap(), "hello");
+        assert_eq!(body_error_status(BodyError::TooLarge), 413);
+    }
+
+    #[test]
+    fn occupied_activity_port_is_rejected_before_extension_setup() {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        assert!(bind_activity_server(port, port).is_err());
+    }
+
+    #[test]
+    fn bridge_tokens_are_fresh_256_bit_values() {
+        let first = make_token().unwrap();
+        let second = make_token().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+        for route in ["/browse", "/context", "/deep-research"] {
+            assert!(
+                !crate::bearer::matches(&format!("Bearer {second}"), &first),
+                "{route}"
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_rejects_dns_rebound_hostnames() {
+        assert!(loopback_host_allowed("127.0.0.1:8788", 8788));
+        assert!(loopback_host_allowed("localhost:8788", 8788));
+        assert!(!loopback_host_allowed("evil.example:8788", 8788));
+        assert!(!loopback_host_allowed("127.0.0.1:8789", 8788));
+        assert!(!loopback_host_allowed("127.0.0.1", 8788));
+    }
+
+    #[test]
+    fn research_decisions_are_correlated_and_single_admission() {
+        let replies = ResearchReplies::default();
+        let wait = replies.begin("run".into(), "call".into()).unwrap();
+        assert!(replies.begin("other".into(), "call".into()).is_err());
+        let reply = ResearchReply {
+            status: ResearchDecision::Rejected,
+            message: "missing Findings".into(),
+        };
+        assert!(replies.respond("old-run", "call", reply.clone()).is_err());
+        assert!(replies.respond("run", "old-call", reply.clone()).is_err());
+        replies.respond("run", "call", reply.clone()).unwrap();
+        assert!(replies.respond("run", "call", reply).is_err());
+        let result = wait
+            .wait(&AtomicBool::new(true), Duration::from_millis(100))
+            .unwrap();
+        assert_eq!(serde_json::to_value(result).unwrap()["status"], "rejected");
+        assert!(replies
+            .respond(
+                "run",
+                "call",
+                ResearchReply {
+                    status: ResearchDecision::Accepted,
+                    message: "late duplicate".into(),
+                }
+            )
+            .is_err());
+        drop(wait);
+        assert!(replies.begin("next".into(), "next-call".into()).is_ok());
+    }
+
+    #[test]
+    fn research_wait_shutdown_and_timeout_release_the_slot() {
+        let replies = ResearchReplies::default();
+        let wait = replies.begin("run".into(), "call".into()).unwrap();
+        assert!(wait
+            .wait(&AtomicBool::new(false), Duration::from_secs(30))
+            .is_err());
+        drop(wait);
+        let wait = replies.begin("next".into(), "next-call".into()).unwrap();
+        assert!(wait.wait(&AtomicBool::new(true), Duration::ZERO).is_err());
+        drop(wait);
+        let reply = ResearchReply {
+            status: ResearchDecision::Accepted,
+            message: "ready".into(),
+        };
+        assert!(replies.respond("next", "next-call", reply).is_err());
+        assert!(replies.begin("last".into(), "last-call".into()).is_ok());
+    }
+
+    fn view_headers(id: &str, meta: &str, mime: &str) -> tauri::http::HeaderMap {
+        let mut map = tauri::http::HeaderMap::new();
+        map.insert("x-mesa-view-request", id.parse().unwrap());
+        map.insert("x-mesa-view-meta", meta.parse().unwrap());
+        map.insert("x-mesa-view-mime", mime.parse().unwrap());
+        map
+    }
+
+    #[test]
+    fn view_replies_require_a_typed_bounded_capture() {
+        let image = tauri::ipc::InvokeBody::Raw(vec![0xff, 0xd8, 0xff]);
+        let empty = tauri::ipc::InvokeBody::Raw(Vec::new());
+        let (id, reply) =
+            parse_view_reply(&view_headers("id", "%7B%7D", "image/jpeg"), &image).unwrap();
+        assert_eq!((id.as_str(), reply.bytes.len()), ("id", 3));
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "none"), &empty).is_ok());
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "none"), &image).is_err());
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "image/jpeg"), &empty).is_err());
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "text/html"), &image).is_err());
+        assert!(parse_view_reply(&view_headers("id", "{ }", "image/jpeg"), &image).is_err());
+        let oversized = tauri::ipc::InvokeBody::Raw(vec![0; VIEW_IMAGE_CAP + 1]);
+        assert!(parse_view_reply(&view_headers("id", "%7B%7D", "image/png"), &oversized).is_err());
+    }
+
+    #[test]
+    fn view_captures_are_correlated_single_admission_and_released() {
+        let replies = ViewReplies::default();
+        let reply = || ViewReply {
+            meta: "%7B%7D".into(),
+            mime: "none".into(),
+            bytes: Vec::new(),
+        };
+        let wait = replies.begin("first".into()).unwrap();
+        assert!(replies.begin("second".into()).is_err());
+        assert!(replies.respond("stale", reply()).is_err());
+        replies.respond("first", reply()).unwrap();
+        assert!(replies.respond("first", reply()).is_err());
+        assert!(wait
+            .wait(&AtomicBool::new(true), Duration::from_millis(100))
+            .is_some());
+        drop(wait);
+        let wait = replies.begin("next".into()).unwrap();
+        assert!(wait.wait(&AtomicBool::new(false), VIEW_WAIT).is_none());
+        drop(wait);
+        assert!(replies.respond("next", reply()).is_err());
+        assert!(replies.begin("last".into()).is_ok());
+    }
+
+    #[test]
+    fn live_context_is_trimmed_and_bounded_on_utf8_boundaries() {
+        assert_eq!(bounded_context("  active.md  ".into()), "active.md");
+        let oversized = "é".repeat(CONTEXT_MAX_BYTES);
+        let bounded = bounded_context(oversized);
+        assert!(bounded.len() <= CONTEXT_MAX_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
+        assert!(bounded.ends_with('é'));
+    }
+
+    #[test]
+    fn browse_admission_is_single_and_reusable() {
+        let active = AtomicBool::new(false);
+        let first = BrowsePermit::try_acquire(&active).expect("first browse must be admitted");
+        assert!(BrowsePermit::try_acquire(&active).is_none());
+        drop(first);
+        assert!(BrowsePermit::try_acquire(&active).is_some());
+    }
+
+    #[test]
+    fn pending_fallback_stops_with_the_server() {
+        let running = Arc::new(AtomicBool::new(true));
+        let stop = running.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
+        let stopper = std::thread::spawn(move || {
+            started_rx.recv().unwrap();
+            stop.store(false, Ordering::Release);
+        });
+        let result = blocking_while_running(&running, "test-pending-fallback", move || {
+            started_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+            "late result"
+        });
+        stopper.join().unwrap();
+        assert_eq!(result.unwrap(), None);
+    }
+}

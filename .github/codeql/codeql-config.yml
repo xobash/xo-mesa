@@ -1,0 +1,5 @@
+name: Mesa CodeQL
+# scripts/demo re-records the README demo with a mocked IPC layer and a
+# synthetic vault. It never ships and is not run by CI or tests.
+paths-ignore:
+  - scripts/demo
