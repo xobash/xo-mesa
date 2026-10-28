@@ -144,6 +144,4 @@ if __name__ == "__main__":
 
 These clients are exercised against a synthetic TLS listener by
 `npm run test:activity-api`, including wrong-pin rejection before HTTP,
-scoped credentials, quoted/newline payloads, and HTTP failure reporting. A
-Receive-mode packaged app on each supported platform remains a separate native
-acceptance check.
+scoped credentials, quoted/newline payloads, and HTTP failure reporting.

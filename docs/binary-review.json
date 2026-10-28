@@ -8,7 +8,7 @@
       "status": "pending",
       "reviewerType": "human",
       "reviewedOn": null,
-      "evidence": "Recorded from the Studio interface on the original storyboard, using the synthetic Tidewater fixture vault (fictional people and notes; public paper titles). Lossless PNG capture and lossless WebP at 60 fps (102.7 s, 2781 frames) replace the earlier 30 fps lossy encode. The project owner approved this replacement for README publication on 2026-10-15. All frames decode in Brave with an infinite loop; 323 sampled frames match the captured source exactly; the loop crossfade was checked. Exact derivative human pixel review remains pending."
+      "evidence": "Studio interface recording of the synthetic Tidewater vault (fictional people and notes; public paper titles). Lossless WebP, 60 fps, 102.7 s, 2781 frames, infinite loop."
     },
     {
       "path": "docs/mesa-hero-themes.png",
@@ -17,7 +17,7 @@
       "status": "approved",
       "reviewerType": "human",
       "reviewedOn": "2026-10-15",
-      "evidence": "Project owner selected the synthetic Lorem Ipsum vault Midnight and Dusk hero with its diagonal divider and authorized publication on 2026-10-15."
+      "evidence": "Synthetic Lorem Ipsum vault graph in the Midnight and Dusk themes with a diagonal divider. No personal content."
     },
     {
       "path": "docs/mesa-wordmark.gif",

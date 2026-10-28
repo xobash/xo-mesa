@@ -433,7 +433,7 @@ status; Mesa does not transcode it. Authored UTF-8 replacement characters remain
 editable. Pure CRLF documents retain their line endings through editor changes,
 saves and tab history; mixed endings retain the existing LF normalization.
 Regression coverage is in the existing native-write, document-controller and
-editor undo suites. Native save/close acceptance remains a separate check.
+editor undo suites.
 
 Native ordinary saves serialize per canonical target, so a large binary save does
 not hold a global exclusive lock against an unrelated note. Rename, deletion,

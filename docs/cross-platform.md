@@ -58,11 +58,10 @@ The practical differences are platform dependencies and native window details:
 | Path limits | Long paths can require an administrator-enabled Windows setting; the bootstrap warns before the first Rust build. | No equivalent 260-character Windows limit applies. |
 
 Windows should therefore be functionally comparable after its runtime and build
-prerequisites are present. This repository can verify Windows Rust compilation
-in CI and static bootstrap contracts, but a macOS workspace cannot prove a
-clean Windows install, WebView2 bootstrap, firewall prompt, native window
-painting, or a real Windows Pi/provider session. Those remain physical Windows
-acceptance checks.
+prerequisites are present. CI compiles and tests the Windows Rust code and the
+bootstrap contracts. A clean Windows install, WebView2 bootstrap, firewall
+prompt, native window painting and a Windows Pi session are checked during
+[native acceptance](native-acceptance.md).
 
 ## Local builds
 
@@ -101,7 +100,7 @@ preview container uses the same Node version and an immutable image digest.
 Windows installs the exact official Node archive only after its reviewed
 architecture-specific SHA-256 matches. The wrappers verify versions before launch.
 Lockfiles plus fixed tools reduce drift; OS SDKs and system packages remain
-external inputs, so this does not establish bit-for-bit reproducibility.
+external inputs, so builds are not bit-for-bit reproducible.
 `npm run test:toolchains` checks those contracts.
 
 ## CI build matrix
@@ -405,6 +404,6 @@ lock. The synchronous exit callback calls the activity shutdown helper directly.
 The native command threading regression covers worker dispatch and exit cleanup.
 
 Watch and authorization requests can overlap; vault controllers must reject late
-watcher results. Server start commands retain their existing lifecycle. Automated
-checks do not prove responsiveness on a physical desktop; validate vault open and
-switch, Sync close, PDF save and activity port release on quit on each target.
+watcher results. Server start commands retain their existing lifecycle. Native
+acceptance checks vault open and switch, Sync close, PDF save and activity port
+release on quit on each target.

@@ -8,8 +8,7 @@ completeness and artifact identity; it cannot authenticate the observations.
 ## Support Matrix
 
 The native acceptance matrix is the list of real desktop targets Mesa promises
-to exercise before calling a release healthy. "Matrix" is not a special tool;
-it is just the tested OS/runtime row plus the workflows below.
+to exercise before calling a release healthy.
 
 | Matrix target | Required checks |
 | --- | --- |

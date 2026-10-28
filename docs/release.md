@@ -136,14 +136,14 @@ outside the repository. Run
 The script builds the universal bundle, verifies its code signature, validates
 the stapled notarization ticket, and checks Gatekeeper acceptance. A missing
 identity, key, app, ticket, or failed assessment stops the release.
-The normal CI desktop artifacts remain unsigned development builds. The
-protected pipeline below supersedes the former macOS-only candidate process.
-Signing credentials must be configured before its jobs can pass.
+The normal CI desktop artifacts remain unsigned development builds.
+Signing credentials must be configured before the protected pipeline below
+can pass.
 
 ## Privacy Audit
 
-The [control register](security-controls.md) distinguishes incident responses,
-audit findings and preventive checks, with executable regressions for each.
+The [control register](security-controls.md) lists each privacy and release
+check with its executable regression.
 
 Audit the exact release commit, release notes, uploaded artifacts, and public
 repository refs before publishing:
@@ -201,8 +201,8 @@ Candidate jobs use the reviewed `release` environment and produce:
 Every uploaded package, checksum inventory and candidate manifest has GitHub
 artifact provenance. All products include the locked third-party notices.
 Only verified package formats are copied into candidate output. Signing files
-and temporary keys are removed even after failure. These jobs build candidates;
-a successful build still does not establish native acceptance.
+and temporary keys are removed even after failure. These jobs build
+candidates; native acceptance is a separate release step.
 
 Candidate builds pin Node 22.22.3 and Rust 1.96.0 with locked dependency
 inventories; each build job runs `cargo fetch --locked` first, so a stale
@@ -395,6 +395,12 @@ fails seven days earlier. A version or advisory change requires review;
 removal needs the supported upstream GTK and D-Bus binding transitions and
 fresh Linux acceptance, not a forced incompatible dependency override.
 
+To re-review before the expiry, run
+`cargo audit --file src-tauri/Cargo.lock --json` and confirm that each tracked
+warning still has no compatible upstream fix. Then remove the exception through
+the upgrade, or record the new review date in `nativeAdvisoryReview` and in
+this section.
+
 The source installer checks that the final checkout commit equals the signed
 release tag; an ahead checkout is preserved and never launched by this path.
 
@@ -406,8 +412,8 @@ icon containers, and rejects unsupported formats or textual/location metadata.
 A human must inspect each static image and every demo frame for personal
 content before recording `status: "approved"`, `reviewerType: "human"`, a
 `reviewedOn` date and concise evidence for its exact SHA-256 in
-`docs/binary-review.json`. Record no personal names or local paths. Changed
-hashes require renewed review. `node scripts/asset-metadata.mjs --review
+`docs/binary-review.json`. Record no personal names or local paths. A changed hash
+needs a new review. `node scripts/asset-metadata.mjs --review
 docs/binary-review.json` rejects pending, missing or stale entries; the release
 candidate gate executes it against the requested commit. Metadata checks and
-automated frame sampling do not establish human pixel approval.
+automated frame sampling do not replace the human review.

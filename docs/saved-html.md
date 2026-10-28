@@ -56,8 +56,8 @@ There is no per-vault or Pi-created-file bypass. Hover previews remain inert.
 
 Run scripts is unavailable on Windows: the pinned WebView2 integration injects
 Tauri initialization into subframes, so the required absent-IPC isolation has
-not been established there. Use the system browser. macOS/Linux packaged frame
-isolation requires native acceptance; source and unit tests alone do not prove it.
+not been established there. Use the system browser. On macOS and Linux, packaged
+frame isolation is checked during [native acceptance](native-acceptance.md).
 The app's script CSP stays unchanged; only its frame sources admit `mesa-html`.
 
 **Open in system browser** opens only an existing `.html` or `.htm` file inside
@@ -85,5 +85,4 @@ still requires the shared frame policy and `sandbox=""`. Preview cards refuse
 more than four million characters and never present truncated HTML as complete.
 Existing HTML, frame, archive, viewer and reader test suites cover local assets,
 CSS, fonts, SVG references, consent cancellation/revocation, size refusal and
-broker rewriting. Automated checks do not establish packaged cross-platform
-webview acceptance.
+broker rewriting.

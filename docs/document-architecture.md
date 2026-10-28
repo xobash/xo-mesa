@@ -27,7 +27,6 @@ the image. A load or decode failure replaces the broken-image icon with a
 message and Retry image action. Opening another image clears that failure;
 retry creates a fresh image element. Mesa does not rewrite damaged images.
 `MediaView.test.tsx` covers load failure, retry and document-switch isolation.
-File validity and native webview decoding remain separate checks.
 
 `CodeView` keeps the exact tokenized code view and RFC-style CSV/TSV table for
 ordinary files. Very large code and data files use a windowed row view, so file

@@ -28,8 +28,7 @@ probes, staging, and publication use the held parent handle. A
 directory replaced after validation cannot redirect those operations through
 a new symlink. Windows holds non-reparse ancestor handles without write/delete sharing through
 reads, journal moves, staging and publication. That blocks ancestor renames and
-junction retargeting while the operation runs. Physical Windows hostile-race
-acceptance remains required; Unix uses handle-relative operations.
+junction retargeting while the operation runs. Unix uses handle-relative operations.
 
 The activity bridge accepts at most 1 MiB of metadata per request. File GET
 responses use bounded streaming with backpressure; file PUTs remain capped at
@@ -357,9 +356,7 @@ Streaming preserves the endpoints, TLS pinning, SHA-256 hashes, manifest
 format, and conflict names. Rust regression tests cover real
 loopback HTTP uploads and downloads, bounded receive buffers, interrupted and
 truncated bodies, invalid hashes, conditional replacement, and create-only
-publication. Loopback HTTP
-tests check streaming mechanics; they do not establish physical-device TLS
-acceptance.
+publication.
 
 ## The Sync Console & Troubleshooting Package
 
@@ -467,13 +464,13 @@ in-memory window. A shared-key holder still has access to the served vault.
 
 | Phase or property | Required behavior |
 | --- | --- |
-| Pairing | Share a generated 256-bit key through an operator-selected trusted channel; discovery is an untrusted locator, not authority. |
+| Pairing | Share a generated 256-bit key through a trusted channel you choose; discovery is an untrusted locator, not authority. |
 | First contact | Observe the leaf TLS certificate, exchange fresh SPAKE2/Ed25519 messages and a fresh nonce, verify the session HMAC bound to that nonce and certificate fingerprint, then pin the certificate. |
 | Authentication | Protected requests carry HMAC-SHA-256 of the shared key and `mesa-sync-cert-v1:` plus server fingerprint over pinned TLS. The raw shared key never travels on the wire. TLS signature verification proves certificate private-key possession. |
 | Replay | Fresh SPAKE2 sessions/nonces prevent replay of identity proofs. The certificate-bound bearer is reusable by design until key or certificate replacement; it is not a per-request replay-resistant credential. |
 | Downgrade | Manifests must advertise journal version 2 and protocol version 3; missing/unsupported journal exchange fails before file transfers. No plaintext or legacy authentication fallback. |
 | Peer identity | The pinned certificate fingerprint identifies the remote server. Incoming journal fingerprint headers associate records; they are not TLS client authentication. Any shared-key holder can send journal data. |
-| Certificate replacement | A known pin mismatch stops at the TLS handshake before credentials or bodies. Re-pair only after operator fingerprint verification; never silently trust a new certificate. |
+| Certificate replacement | A known pin mismatch stops at the TLS handshake before credentials or bodies. Re-pair only after you verify the fingerprint; never silently trust a new certificate. |
 | Rotation | Replace the shared key on every remaining device. Running Receive restarts with the new key. There is no automatic key-distribution or certificate-rotation protocol. |
 | Revocation | Remove the peer to retire its journal participants, then rotate the shared key to revoke its network authority. Retirement alone is not credential revocation. |
 | Journal ordering | Operation identity is device plus numeric sequence; deduplicate IDs, validate operation shape and paths, order per-device sequences numerically. Compact only after every known participant acknowledges; retain offline participants. |

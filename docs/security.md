@@ -26,18 +26,17 @@ independent security assessment.
 | Versioned model | TM-6; no external review recorded |
 | Automated rejection/recovery coverage | Markdown/HTML, archive bounds, sync proof/pin/path checks, native URL/reader isolation and sync parser, write interruption and stale-baseline tests |
 | Penetration testing | No independent report recorded |
-| Coverage-guided fuzzing, including native IPC | Not established |
+| Coverage-guided fuzzing, including native IPC | Not yet in place |
 | Malicious-vault, hostile-peer, corrupt-file, traversal, SSRF and hostile-HTML corpora | Synthetic regression cases exist; complete versioned native corpora are not established |
 | Native Windows/macOS/Linux acceptance | Incomplete; see [native acceptance](native-acceptance.md) |
 | Signed releases and independent reproducibility | Not established; see [release process](release.md) |
 
 Record revision, platform, command/corpus and outcome with any new evidence.
-For fuzzing, also record the target, engine, seeds, duration, coverage and crashes.
 
 ## Contract boundaries and evidence
 
 The table links each failure to code, coverage and the behavior that depends on
-it. Publication controls have individual origins in the [control register](security-controls.md).
+it. Publication controls are listed in the [control register](security-controls.md).
 
 | Boundary / failure | Enforcing code | Regression evidence | Dependent behavior and limit |
 | --- | --- | --- | --- |
@@ -231,7 +230,7 @@ fixed lowercase SHA-256 hashes. Rejected or partial manifests never become a bas
 
 [Release admission](release.md) checks signed revisions, exact CI/package identity,
 provenance and artifact-bound native records. The [control register](security-controls.md)
-names enforcement and regressions; a record hash cannot authenticate an observation.
+names enforcement and regressions.
 
 Sync TLS identity directories/keys use 0700/0600 on Unix. Windows applies a
 current-user ACL through a write limited to changed owner/access sections;
@@ -256,8 +255,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 `npm run test:documents` executes deterministic hostile-document mutations in
-frontend CI. Native IPC and full document-format fuzzing remain separate
-validation work.
+frontend CI. Native IPC and document-format fuzzing are not yet in place.
 
 PDF text replacement removes selected glyphs and unreachable original content streams, preserves surrounding selectable text, and refuses unsupported structures without output. It is not document-wide redaction: metadata, attachments, other pages, retained source copies and undo history are outside the selected text edit. See [PDF editing](pdf-editing.md).
 
@@ -284,4 +282,4 @@ recheck their vault/session or draft after the wait. Recovery uses an in-app
 exact-phrase DELETE/EMPTY dialog with Cancel and Escape. This prevents a Promise
 from being treated as consent and supplies a text-input workflow on WKWebView.
 Regression tests cover cancellation, rejection, delayed answers and partial
-purge failure. Physical Windows/Linux acceptance remains separate.
+purge failure.

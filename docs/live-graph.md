@@ -244,8 +244,7 @@ shows a visible drawing status; a failed frame keeps the render loop alive and
 clears its error status after a successful retry. The first fitted frame is
 covered by a canvas-command regression that checks all node bounds. Native
 acceptance must also confirm visible pixels, first-open fit, resizing, Fit,
-zoom, node dragging, and unchanged ambient motion. Unit tests do not establish
-WKWebView, WebView2, or WebKitGTK presentation.
+zoom, node dragging, and unchanged ambient motion.
 
 ## Theme palette
 

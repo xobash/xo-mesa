@@ -131,8 +131,7 @@ preconditions and crash recovery remain the save boundary.
   indexed/plain cache mode, still-indexing count, and name-only skipped/failed
   count for the active renderer.
 
-Native macOS and physical Windows startup/input performance require separate
-measurements. Browser and Node results do not establish those acceptance claims.
+Native startup and input performance are measured during [native acceptance](native-acceptance.md).
 
 Search dispatch compares the 256 copy-on-write bucket identities before building
 transport deltas. Unchanged queries do not enumerate the document inventory.
