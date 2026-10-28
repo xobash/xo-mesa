@@ -1,8 +1,17 @@
 import type { ResearchActivity } from "./deepResearch";
 
-const TRACKING_PARAMS = /^(utm_[^]+|fbclid|gclid|mc_cid|mc_eid)$/i;
+const TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|dclid$|msclkid$|mc_cid$|mc_eid$|igshid$|ref$|ref_src$|spm$)/i;
 
+/**
+ * Canonicalize a web URL for dedup and citation: lowercase scheme/host, strip
+ * a leading `www.`, drop tracking params, sort the rest, drop the fragment,
+ * and drop a trailing slash (except the root). Query values stay encoded, so
+ * `?q=a%26b` keeps one parameter. Returns `null` for anything that is not a
+ * valid absolute http(s) URL — non-http schemes (file:, javascript:, data:)
+ * are rejected outright.
+ */
 export function canonicalizeSourceUrl(raw: string): string | null {
+  if (typeof raw !== "string") return null;
   const value = raw.trim();
   if (!value) return null;
   let u: URL;
@@ -10,11 +19,14 @@ export function canonicalizeSourceUrl(raw: string): string | null {
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   const host = u.hostname.toLowerCase().replace(/^www\./, "");
   if (!host) return null;
-  const params = [...u.searchParams.entries()].filter(([k]) => !TRACKING_PARAMS.test(k)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const qs = params.length ? "?" + params.map(([k, v]) => `${k}=${v}`).join("&") : "";
+  const params = new URLSearchParams(
+    [...u.searchParams.entries()]
+      .filter(([k]) => !TRACKING_PARAMS.test(k))
+      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+  ).toString();
   let path = u.pathname || "/";
   if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
-  return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${path}${qs}`;
+  return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${path}${params ? `?${params}` : ""}`;
 }
 
 export function activityForNavigation(rawUrl: string, at: number): ResearchActivity | null {

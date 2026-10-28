@@ -152,15 +152,30 @@ fn target(root: &Path, rel: &str) -> Result<PathBuf, String> {
     }
     Ok(path)
 }
+/// One no-follow, non-blocking open; size is checked on that handle and the
+/// read stops one byte past the limit even if the file grows.
 fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    match fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.to_string()),
-        Ok(m) if !m.is_file() || m.file_type().is_symlink() || m.len() > LIMIT as u64 => {
-            Err("research file is unsupported or too large".into())
-        }
-        Ok(_) => fs::read(path).map(Some).map_err(|e| e.to_string()),
+    use std::io::Read;
+    const UNSUPPORTED: &str = "research file is unsupported or too large";
+    let file = match crate::sync_core::open_file_no_follow(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(UNSUPPORTED.into()),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Err(UNSUPPORTED.into()),
+        Err(e) => return Err(e.to_string()),
+    };
+    if file.metadata().map_err(|e| e.to_string())?.len() > LIMIT as u64 {
+        return Err(UNSUPPORTED.into());
     }
+    let mut bytes = Vec::new();
+    file.take(LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > LIMIT {
+        return Err(UNSUPPORTED.into());
+    }
+    Ok(Some(bytes))
 }
 fn expected(bytes: Option<&[u8]>) -> ExpectedCurrent {
     match bytes {
@@ -426,6 +441,26 @@ pub async fn vault_apply_research(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn research_reads_refuse_links_and_fifos_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("mesa-research-read-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("note.md"), b"text").unwrap();
+        std::os::unix::fs::symlink(dir.join("note.md"), dir.join("link.md")).unwrap();
+        let fifo = std::ffi::CString::new(dir.join("pipe.md").to_str().unwrap()).unwrap();
+        // SAFETY: the path is NUL-terminated and owned for the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            read(&dir.join("note.md")).unwrap().as_deref(),
+            Some(&b"text"[..])
+        );
+        assert_eq!(read(&dir.join("missing.md")).unwrap(), None);
+        assert!(read(&dir.join("link.md")).is_err());
+        assert!(read(&dir.join("pipe.md")).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
     fn folder(label: &str) -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("mesa-research-{label}-{}", std::process::id()));

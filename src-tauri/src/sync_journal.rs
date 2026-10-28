@@ -61,8 +61,10 @@ pub struct SyncJournal {
     /// The last known vault manifest lets the next sync reconstruct an action
     /// after a crash or an edit made outside Mesa.
     pub known: Vec<JournalEntry>,
-    /// Last content known to be identical on this device and each TLS peer.
-    /// Kept locally; a peer cannot declare the base used for a replacement.
+    /// Last content known to be identical on this device and each peer. A
+    /// shared-key holder may submit it under any bound, self-reported
+    /// fingerprint; it is intersected with current local bytes. The shared key
+    /// is fully trusted, so this is bookkeeping, not per-device authentication.
     #[serde(default)]
     pub peer_bases: HashMap<String, Vec<JournalEntry>>,
     #[serde(default, deserialize_with = "deserialize_peer_bindings")]
@@ -118,18 +120,15 @@ pub(super) fn journal_path(root: &Path) -> PathBuf {
     root.join(JOURNAL_FILE)
 }
 
-pub(super) fn journal_device(root: &Path) -> String {
-    // This is only an operation-origin identifier, never an authentication
-    // credential. It is persisted in the journal and combined with a sequence.
-    format!(
-        "{:x}-{:x}",
-        std::process::id(),
-        now_ms()
-            ^ root
-                .to_string_lossy()
-                .bytes()
-                .fold(0u64, |a, b| a.wrapping_mul(33).wrapping_add(b as u64))
-    )
+/// A new journal's operation-origin identifier: 128 OS-random bits. It is
+/// never an authentication credential; an existing journal keeps its stored ID.
+pub(super) fn journal_device() -> std::io::Result<String> {
+    use ring::rand::SecureRandom;
+    let mut bytes = [0u8; 16];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| std::io::Error::other("could not generate a sync journal identity"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 pub(super) fn journal_mutex() -> &'static Mutex<()> {
@@ -154,7 +153,7 @@ pub(super) fn load_journal_unlocked(root: &Path) -> std::io::Result<SyncJournal>
             body
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SyncJournal::empty(journal_device(root)));
+            return Ok(SyncJournal::empty(journal_device()?));
         }
         Err(error) => return Err(error),
     };
@@ -707,10 +706,15 @@ pub(super) fn save_journal_unlocked(
         .write(true)
         .create_new(true)
         .open(&tmp)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
+    let written = file.write_all(&bytes).and_then(|()| file.sync_all());
     drop(file);
-    std::fs::rename(&tmp, path)?;
+    if let Err(error) = written.and_then(|()| std::fs::rename(&tmp, &path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+    // The rename is durable only once its directory entry is flushed.
+    #[cfg(unix)]
+    std::fs::File::open(root)?.sync_all()?;
     Ok(saved)
 }
 
@@ -948,6 +952,15 @@ pub fn move_file_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// A source changed after its check was moved back; report it as a conflict.
+fn moved_or_conflict(result: std::io::Result<()>) -> std::io::Result<JournalApply> {
+    match result {
+        Ok(()) => Ok(JournalApply::Applied),
+        Err(error) if is_source_changed(&error) => Ok(JournalApply::Conflict),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(not(unix))]
 pub(super) fn move_no_replace(
     from: &Path,
@@ -959,12 +972,19 @@ pub(super) fn move_no_replace(
     let _source_parents = WindowsParentGuard::acquire(from, false)?;
     #[cfg(windows)]
     let _target_parents = WindowsParentGuard::acquire(to, true)?;
+    #[cfg(test)]
+    run_before_move_hook();
     move_file_no_replace(from, to)?;
-    let actual = hash_file_streaming(to)?;
-    if fingerprint_matches(&actual, size, hash) {
-        Ok(())
-    } else {
-        Err(invalid_data("journal move failed final verification"))
+    match hash_file_streaming(to) {
+        Ok(actual) if fingerprint_matches(&actual, size, hash) => Ok(()),
+        // A writer changed the source after the caller's check: move it back.
+        _ => match move_file_no_replace(to, from) {
+            Ok(()) => Err(source_changed()),
+            Err(restore) => Err(invalid_data(format!(
+                "journal move failed final verification; moved bytes kept at {}: {restore}",
+                to.display()
+            ))),
+        },
     }
 }
 
@@ -1015,6 +1035,8 @@ pub fn apply_journal_operation(
                     // unambiguous to the frontend recovery parser while retaining
                     // the exact original filename for restore.
                     let tomb = trash.join(format!("{}-remote--{}", now_ms(), original));
+                    #[cfg(test)]
+                    run_before_move_hook();
                     move_file_no_replace(&from, &tomb)?;
                     let moved = hash_file_streaming(&tomb)?;
                     if !fingerprint_matches(&moved, op.size, &op.hash) {
@@ -1055,8 +1077,7 @@ pub fn apply_journal_operation(
                         if target_error.kind() == std::io::ErrorKind::NotFound
                             && fingerprint_matches(&source, op.size, &op.hash) =>
                     {
-                        move_no_replace(&from, &to, op.size, &op.hash)?;
-                        Ok(JournalApply::Applied)
+                        moved_or_conflict(move_no_replace(&from, &to, op.size, &op.hash))
                     }
                     (Ok(source), Ok(target))
                         if fingerprint_matches(&source, op.size, &op.hash)
@@ -1103,8 +1124,7 @@ pub fn apply_journal_operation(
                         });
                     match candidate {
                         Some(recovered) => {
-                            move_no_replace(&recovered, &from, op.size, &op.hash)?;
-                            Ok(JournalApply::Applied)
+                            moved_or_conflict(move_no_replace(&recovered, &from, op.size, &op.hash))
                         }
                         // The regular manifest transfer may still supply these
                         // bytes, but never mark this restore acknowledged until a
@@ -1156,10 +1176,8 @@ pub(super) fn apply_journal_operation_rooted(
             let tomb = RootedTarget::resolve(root, &tomb_rel, true)?;
             match from.move_no_replace(&tomb, op.size, &op.hash) {
                 Ok(()) => Ok(JournalApply::Applied),
+                // Changed bytes were moved back, or kept as visible recovery.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                    if let Ok(actual) = tomb.fingerprint(&tomb.name) {
-                        let _ = tomb.move_no_replace(&from, actual.0, &actual.1);
-                    }
                     Ok(JournalApply::Conflict)
                 }
                 Err(error) => Err(error),
@@ -1181,9 +1199,8 @@ pub(super) fn apply_journal_operation_rooted(
                     Ok(JournalApply::AlreadyApplied)
                 }
                 (Some(source), None) if fingerprint_matches(&source, op.size, &op.hash) => {
-                    from.ok_or_else(|| invalid_data("journal source vanished"))?
-                        .move_no_replace(&to, op.size, &op.hash)?;
-                    Ok(JournalApply::Applied)
+                    let from = from.ok_or_else(|| invalid_data("journal source vanished"))?;
+                    moved_or_conflict(from.move_no_replace(&to, op.size, &op.hash))
                 }
                 (Some(source), Some(target))
                     if fingerprint_matches(&source, op.size, &op.hash)
@@ -1228,8 +1245,7 @@ pub(super) fn apply_journal_operation_rooted(
                     .ok()
                     .is_some_and(|actual| fingerprint_matches(&actual, op.size, &op.hash))
                 {
-                    candidate.move_no_replace(&from, op.size, &op.hash)?;
-                    return Ok(JournalApply::Applied);
+                    return moved_or_conflict(candidate.move_no_replace(&from, op.size, &op.hash));
                 }
             }
             Ok(JournalApply::Conflict)

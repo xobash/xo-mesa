@@ -16,6 +16,7 @@ import {
   IN_TAURI,
 } from "../lib/vault";
 import { installCloseGuard } from "../lib/closeGuard";
+import { createFileIndex } from "../lib/fileIndex";
 import { resolveTarget } from "../lib/graph";
 import { installNativeDragDock } from "../lib/windowDock";
 import { MarkdownView } from "./MarkdownView";
@@ -120,8 +121,9 @@ export function DocumentView() {
     };
   }, [vault]);
 
+  const fileIndex = useMemo(() => createFileIndex(), []);
   const selectedFile = useMemo<VaultFile>(() => {
-    const existing = files.find((file) => file.relPath === rel);
+    const existing = fileIndex(files).get(rel);
     if (existing) return fileRevision ? { ...existing, mtime: fileRevision } : existing;
     const base = rel.replace(/.*\//, "");
     const ext = extOf(base);
@@ -133,7 +135,7 @@ export function DocumentView() {
       isMarkdown: ext === "md" || ext === "markdown",
       mtime: fileRevision || undefined,
     };
-  }, [files, rel, vault, fileRevision]);
+  }, [fileIndex, files, rel, vault, fileRevision]);
 
   useEffect(() => {
     if (!IN_TAURI) return;

@@ -191,7 +191,11 @@ round trip during startup.
 On Windows, Mesa prefers a real `PATHEXT` launcher (`.exe`, `.com`, `.cmd`,
 `.bat`) over a same-name extensionless file, because npm installs can ship Unix-style `pi` scripts beside Windows launch shims. If Mesa resolves
 an extensionless Node shebang script it launches it through `node.exe`; if only
-the Windows wrapper exists it launches that wrapper through `cmd.exe`.
+the Windows wrapper exists it launches that wrapper through `cmd.exe`. A
+`node.exe` beside the script is used only when it exists.
+
+Pi's `PATH` starts with Pi's own folder, then the inherited `PATH`, then common
+install folders as fallbacks, so a common folder never shadows the user's tools.
 
 Mesa does not fake a transcript with styled text. It also does not substitute
 Terminal.app, Windows Terminal, cmd.exe, or PowerShell for the detached Pi
@@ -367,7 +371,9 @@ writes under `Web Archives/`; the saved document opens offline.
 Pi's `browse(url)` returns native-fetched source data and mirrors navigation
 into the reader. `browse_read()` returns the latest fetched source and its age,
 not a page-controlled DOM snapshot or proof of what the user saw. User browsing
-and Pi browsing retain separate in-memory cookie jars. Page data is untrusted
+and Pi browsing retain separate in-memory cookie jars. The reader fetches a page
+Pi opened, and links followed from it, with Pi's jar; only addresses the user
+enters use the user's jar. Page data is untrusted
 and is encoded as evidence rather than instructions or authorization.
 
 ## Seeing the current view

@@ -2606,6 +2606,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "icu_normalizer",
  "keyring",
  "libc",
  "notify-debouncer-full",

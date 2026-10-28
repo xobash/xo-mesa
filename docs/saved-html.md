@@ -80,8 +80,15 @@ Archiving registers the file before opening it, preserving tabs and the active
 Research run. A vault change prevents publication into the new vault.
 
 `src/lib/html.ts` owns rewriting, hydration and the frame boundary.
-`stripSavedHtmlPreviewCode` is an optimization, not a sanitizer. Its output
-still requires the shared frame policy and `sandbox=""`. Preview cards refuse
+`stripSavedHtmlPreviewCode` is an optimization, not a sanitizer. It scans
+markup as the HTML parser tokenizes it: scripts (any end-tag form, or to the
+end when unclosed) and `on*` attributes are removed only from tags, and
+`@font-face` rules only from `<style>` text and `style` attributes, so prose
+and code samples stay intact. Its output still requires the shared frame
+policy and `sandbox=""`. The frame purifier also removes `xlink:href` except
+same-document SVG references. Whole-document scans stay linear on hostile
+input, and `srcset` follows the HTML candidate rules, so commas inside a URL
+stay part of it. Preview cards refuse
 more than four million characters and never present truncated HTML as complete.
 Existing HTML, frame, archive, viewer and reader test suites cover local assets,
 CSS, fonts, SVG references, consent cancellation/revocation, size refusal and

@@ -26,7 +26,8 @@
   $releaseOpenPgpFingerprints = @()
   $currentDir = Get-Location
   $installDir = if ($env:MESA_DIR) {
-    [System.IO.Path]::GetFullPath($env:MESA_DIR)
+    # Resolve against the PowerShell location, not the process directory.
+    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:MESA_DIR)
   } elseif ((Split-Path $currentDir -Leaf) -eq "xo-mesa" -and (Test-Path (Join-Path $currentDir ".git"))) {
     [string]$currentDir
   } else {

@@ -151,6 +151,16 @@ describe('calendar edits from current text', () => {
     await store().removeCalendarEvent('2026-10-21', 'Added');
     expect(store().calendarEvents.map((event) => event.title)).toEqual(['Typed in editor']);
   });
+  it('keeps unknown fields and entries it cannot show when adding and removing', async () => {
+    const rich = JSON.stringify([{ date: '2026-10-20', title: 'Kept', color: 'red', id: 7 }, { note: 'not an event' }, 'loose', { date: 'soon', title: 'Bad date' }]);
+    useAppStore.setState({ vaultPath: '/v', files: [calendar], fileFor: (rel) => rel === 'calendar.json' ? calendar : undefined, calendarEvents: [], contentCache: { 'calendar.json': rich } });
+    await store().addCalendarEvent('2026-10-19', 'Added');
+    const added = JSON.parse(store().contentCache['calendar.json'] as string);
+    expect(added).toEqual([{ date: '2026-10-19', title: 'Added' }, { date: '2026-10-20', title: 'Kept', color: 'red', id: 7 }, { note: 'not an event' }, 'loose', { date: 'soon', title: 'Bad date' }]);
+    await store().removeCalendarEvent('2026-10-19', 'Added');
+    expect(JSON.parse(store().contentCache['calendar.json'] as string)).toEqual(JSON.parse(rich));
+    expect(store().calendarEvents).toEqual([{ date: '2026-10-20', title: 'Kept' }]);
+  });
   it('refuses to replace calendar.json text that is not an event list', async () => {
     useAppStore.setState({ vaultPath: '/v', files: [calendar], fileFor: (rel) => rel === 'calendar.json' ? calendar : undefined, calendarEvents: [], contentCache: { 'calendar.json': '[{"date": "2026-' } });
     await store().addCalendarEvent('2026-10-21', 'Added');

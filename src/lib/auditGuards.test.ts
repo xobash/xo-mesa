@@ -28,7 +28,7 @@ it("allows patched Node 22 releases while preserving the reviewed toolchain pin"
 });
 
 it("includes UI components in coverage and excludes their test files", () => {
-  expect(config).toContain('"src/components/**/*.tsx"');
+  expect(config).toContain('"src/components/**/*.{ts,tsx}"');
   expect(config).toContain('"**/*.test.tsx"');
 });
 

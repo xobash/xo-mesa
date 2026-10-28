@@ -21,7 +21,7 @@ it('shows the stored index at once, then patches changed documents without repla
   io.index.mockImplementation(async (options: Parameters<typeof import('../lib/vaultIndex').loadIndexedNotes>[0]) => {
     options.onCached!({ notes: { 'A.md': note('A.md', []), 'B.md': note('B.md', []) }, cache: { 'A.md': 'a stored', 'B.md': 'b stored' }, missing: 0 });
     const shown = state.getState();
-    shownAt = { indexingTextFiles: shown.indexingTextFiles, notes: shown.notes };
+    shownAt = { indexingTextFiles: shown.indexingTextFiles, notes: shown.notes, notesIndexPending: shown.notesIndexPending };
     // A live edit lands while verification runs.
     state.setState({ notes: { ...shown.notes, 'A.md': note('A.md', ['Live']) }, contentCache: forkContentCache(shown.contentCache, { 'A.md': 'a live' }) });
     await new Promise<void>(resolve => { finish = resolve; });
@@ -36,6 +36,7 @@ it('shows the stored index at once, then patches changed documents without repla
   await controller.actions.openVault('/v');
   await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
   expect(shownAt.indexingTextFiles).toBe(0);
+  expect(shownAt.notesIndexPending).toBe(false);
   expect(Object.keys(shownAt.notes ?? {}).sort()).toEqual(['A.md', 'B.md']);
   finish();
   await vi.waitFor(() => expect(state.getState().status).toBe('2 documents indexed'));
@@ -45,5 +46,28 @@ it('shows the stored index at once, then patches changed documents without repla
   expect(final.contentCache['B.md']).toBe('b disk [[A]]');
   expect(final.notes['B.md'].rawLinks).toEqual(['A']);
   expect(final.indexingTextFiles).toBe(0);
+  controller.dispose();
+});
+
+it('holds the note-index flag through the selected-note read and clears it when indexing fails', async () => {
+  const state = createStore<AppState>(() => ({ ...useAppStore.getInitialState(), vaultPath: null, files: [], notes: {}, contentCache: {} }));
+  let pendingDuringSelect: boolean | undefined;
+  state.setState({ selectFile: vi.fn(async (rel: string) => {
+    pendingDuringSelect = state.getState().notesIndexPending;
+    state.setState({ notes: { [rel]: note(rel, []) } });
+  }) });
+  let fail!: (error: Error) => void;
+  io.index.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+  const controller = createVaultController({ get: state.getState, set: state.setState,
+    textSaves: new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: async () => {} }), resetDocuments: vi.fn(),
+    stopResearch: async () => {}, setupActivityBridge: async () => {}, ensureSyncEventBridge: async () => {},
+    stopListening: async () => false, startListening: async () => {} });
+  await controller.actions.openVault('/v');
+  expect(pendingDuringSelect).toBe(true);
+  await vi.waitFor(() => expect(fail).toBeTypeOf('function'));
+  expect(state.getState().notesIndexPending).toBe(true);
+  fail(new Error('disk gone'));
+  await vi.waitFor(() => expect(state.getState().notesIndexPending).toBe(false));
+  expect(state.getState().status).toContain('Text indexing failed');
   controller.dispose();
 });

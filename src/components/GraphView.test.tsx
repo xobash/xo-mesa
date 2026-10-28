@@ -9,15 +9,25 @@ import { buildNotes } from "../lib/graph";
 import { bumpActivityAmount } from "../lib/activity";
 import { GraphView, resolveOverlaps } from "./GraphView";
 
-const captured = vi.hoisted(() => ({ sim: null as unknown }));
+const captured = vi.hoisted(() => ({ sim: null as unknown, builds: 0 }));
 vi.mock("d3-force", async (original) => {
   const actual = await original<typeof import("d3-force")>();
   return { ...actual, forceSimulation: (...args: Parameters<typeof actual.forceSimulation>) => {
     const sim = actual.forceSimulation(...args);
     captured.sim = sim;
+    captured.builds++;
     return sim;
   } };
 });
+// Only the store-driven open test uses these; other tests never open a vault.
+const openIo = vi.hoisted(() => ({ files: [] as VaultFile[], index: null as null | ((options: { onProgress?: (done: number, total: number) => void }) => Promise<unknown>) }));
+vi.mock("../lib/vault", async (original) => ({ ...await original<object>(),
+  authorizeVaultRoot: async () => {}, assertVaultRootAvailable: async () => {},
+  scanVault: async () => openIo.files, recoverWriteArtifacts: async () => ({ restored: [], removed: [] }),
+  watchVault: async () => () => {} }));
+vi.mock("../lib/vaultIndex", async (original) => ({ ...await original<object>(),
+  loadIndexedNotes: (options: { onProgress?: (done: number, total: number) => void }) => openIo.index!(options) }));
+vi.mock("../lib/vaultMetadata", () => ({ hydrateVaultMetadata: async () => {} }));
 vi.mock("./PreviewCard", () => ({ PreviewCard: () => null }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let host: HTMLDivElement;
@@ -218,6 +228,100 @@ it("keeps toolbar pointer presses out of canvas drag capture", () => {
     expect(event.defaultPrevented).toBe(false);
     pointer("pointerup", 10, 10);
   }
+});
+
+it("waits for note metadata before its first build so an opening vault paints the full graph settled", () => {
+  const entries = { "A.md": "[[B]]", "B.md": "" };
+  const files: VaultFile[] = [
+    ...Object.keys(entries).map((relPath) => ({ path: `/demo/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true })),
+    { path: "/demo/pic.png", relPath: "pic.png", name: "pic", ext: "png", isMarkdown: false },
+  ];
+  captured.sim = null;
+  act(() => {
+    useAppStore.setState({ files, notes: {}, indexingTextFiles: 2, notesIndexPending: true,
+      settings: { ...initial.settings, animations: false, graphShowOrphans: true, graphShowTags: false, graphShowAttachments: true } });
+    root.render(<GraphView />);
+  });
+  // The catalog alone (one attachment) must not build or warm a simulation.
+  expect(captured.sim).toBeNull();
+  expect(host.textContent).toContain("before the graph is drawn");
+  act(() => { useAppStore.setState({ notes: buildNotes(files, new Map(Object.entries(entries))), indexingTextFiles: 0, notesIndexPending: false }); });
+  // The first build runs the synchronous warm ticks and leaves the open alpha.
+  const sim = simulation();
+  expect(sim.nodes().map((n) => n.id).sort()).toEqual(["A.md", "B.md", "pic.png"]);
+  expect(sim.alpha()).toBeLessThanOrEqual(0.2);
+  expect(host.textContent).not.toContain("before the graph is drawn");
+  // A vault with no text files is not gated: attachments draw at once.
+  act(() => { useAppStore.setState({ files: [files[2]], notes: {}, indexingTextFiles: 0 }); });
+  expect(simulation().nodes().map((n) => n.id)).toEqual(["pic.png"]);
+});
+
+it("keeps an opening vault unbuilt while the directly selected note is published, then builds once", async () => {
+  const files: VaultFile[] = [
+    { path: "/v/A.md", relPath: "A.md", name: "A", ext: "md", isMarkdown: true },
+    { path: "/v/pic.png", relPath: "pic.png", name: "pic", ext: "png", isMarkdown: false },
+  ];
+  openIo.files = files;
+  let finishIndex!: () => void;
+  const indexed = buildNotes(files, new Map([["A.md", "![](pic.png)"]]));
+  openIo.index = async (options) => {
+    await new Promise<void>((resolve) => { finishIndex = resolve; });
+    options.onProgress?.(1, 1);
+    return { notes: indexed, cache: { "A.md": "![](pic.png)" }, reused: 0, read: 1, skipped: [], failed: [], changed: new Map() };
+  };
+  // Mirrors the document controller: opening a note adds its metadata.
+  const selectFile = vi.fn(async (rel: string) => {
+    useAppStore.setState({ activePath: rel, notes: { ...useAppStore.getState().notes, [rel]: { relPath: rel, title: "A", rawLinks: [], tags: [], aliases: [] } } });
+  });
+  captured.sim = null;
+  captured.builds = 0;
+  act(() => {
+    useAppStore.setState({ selectFile, settings: { ...initial.settings, animations: false, graphShowOrphans: true, graphShowTags: false, graphShowAttachments: true } });
+    root.render(<GraphView />);
+  });
+  const buildsBeforeOpen = captured.builds;
+  await act(async () => { await useAppStore.getState().openVault("/v"); });
+  await act(async () => { await vi.waitFor(() => expect(finishIndex).toBeTypeOf("function")); });
+  expect(selectFile).toHaveBeenCalledWith("A.md");
+  expect(Object.keys(useAppStore.getState().notes)).toEqual(["A.md"]);
+  expect(useAppStore.getState().notesIndexPending).toBe(true);
+  expect(captured.builds).toBe(buildsBeforeOpen);
+  expect(host.textContent).toContain("before the graph is drawn");
+  await act(async () => { finishIndex(); await vi.waitFor(() => expect(useAppStore.getState().notesIndexPending).toBe(false)); });
+  expect(captured.builds).toBe(buildsBeforeOpen + 1);
+  expect(simulation().nodes().map((n) => n.id).sort()).toEqual(["A.md", "pic.png"]);
+  expect(host.textContent).not.toContain("before the graph is drawn");
+});
+
+it("paints no previous-vault labels while the next vault waits for its index", () => {
+  let frame: FrameRequestCallback | null = null;
+  const labels: string[] = [];
+  const context = new Proxy({
+    fillText: (value: string) => { labels.push(value); },
+    createRadialGradient: () => ({ addColorStop: () => undefined }),
+    measureText: (value: string) => ({ width: value.length * 7 }),
+  }, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => undefined });
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480, toJSON: () => ({}),
+  });
+  vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => { frame = callback; return 1; }));
+  const entries = { "Alpha one.md": "[[Alpha two]]", "Alpha two.md": "" };
+  const filesA: VaultFile[] = Object.keys(entries).map((relPath) => ({ path: `/a/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true }));
+  act(() => {
+    useAppStore.setState({ files: filesA, notes: buildNotes(filesA, new Map(Object.entries(entries))), activePath: "Alpha one.md",
+      settings: { ...initial.settings, animations: false, graphShowOrphans: true, graphShowTags: false } });
+    root.render(<GraphView />);
+  });
+  const runFrame = () => act(() => { vi.advanceTimersByTime(50); frame?.(performance.now()); });
+  for (let i = 0; i < 120 && !labels.some((label) => label.startsWith("Alpha")); i++) runFrame();
+  expect(labels.some((label) => label.startsWith("Alpha"))).toBe(true);
+  // Vault B's open publication: a catalog, no index yet.
+  const filesB: VaultFile[] = [{ path: "/b/Beta.md", relPath: "Beta.md", name: "Beta", ext: "md", isMarkdown: true }];
+  act(() => { useAppStore.setState({ files: filesB, notes: {}, activePath: null, notesIndexPending: true, indexingTextFiles: 1 }); });
+  labels.length = 0;
+  for (let i = 0; i < 40; i++) runFrame();
+  expect(labels.filter((label) => label.startsWith("Alpha"))).toEqual([]);
 });
 
 it("paints visible nodes on its first fitted frame with an ordinary 2D context", () => {

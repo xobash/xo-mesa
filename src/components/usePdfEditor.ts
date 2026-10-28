@@ -16,7 +16,7 @@ import {
   sanitizePdfBytes,
 } from "../lib/pdfBytes";
 import type { FormField } from "../lib/pdf";
-import { persistPdfBytes } from "../lib/pdfSave";
+import { assertValidPdfSnapshot, persistPdfBytes } from "../lib/pdfSave";
 import { pdfHistoryBytes, trimPdfHistory } from "../lib/pdfHistory";
 import {
   mergePdfTextRunSources,
@@ -1132,8 +1132,7 @@ export function usePdfEditor(
       // Reusing them avoids two full-document copies on every successful save.
       const expectedCurrentBytes = baseline;
       try {
-        const { assertValidPdfBytes } = await loadPdfEditModule();
-        await assertValidPdfBytes(snapshot);
+        await assertValidPdfSnapshot(snapshot);
         if (!isCurrentDocumentGeneration(document)) return;
         if (IN_TAURI) {
           // The expected bytes are enforced inside the verified-write

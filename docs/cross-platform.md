@@ -97,8 +97,15 @@ moved or renamed.
 Development, ordinary CI, candidate builds and release tooling use Node
 `22.22.3` (`.node-version`) and Rust `1.96.0` (`rust-toolchain.toml`). The browser
 preview container uses the same Node version and an immutable image digest.
-Windows installs the exact official Node archive only after its reviewed
-architecture-specific SHA-256 matches. The wrappers verify versions before launch.
+`run.cmd` and `run.sh` keep an existing Node only when it is exactly that
+version. Otherwise they install the official Node archive for the architecture
+into a Mesa-owned user folder only after its reviewed SHA-256 matches, and reuse
+it offline on later starts: `%LOCALAPPDATA%\Mesa\toolchains` on Windows,
+`~/Library/Application Support/Mesa/toolchains` on macOS and
+`${XDG_DATA_HOME:-~/.local/share}/mesa/toolchains` on Linux. `run.sh` does not
+install or modify nvm; it can use an nvm copy of the exact version by path.
+`run.cmd` keeps the pinned Node ahead of later PATH changes and checks
+`node -v` again before `npm ci`. The wrappers verify versions before launch.
 Lockfiles plus fixed tools reduce drift; OS SDKs and system packages remain
 external inputs, so builds are not bit-for-bit reproducible.
 `npm run test:toolchains` checks those contracts.

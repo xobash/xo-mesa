@@ -155,6 +155,10 @@ if exist "src-tauri\target" if exist "%STAMP%" call :checkmoved
 REM Delayed expansion keeps "&" in the folder path from splitting the command.
 >"%STAMP%" echo !CD!
 
+REM Later PATH refreshes may add a system Node; npm must still run the pin.
+call :require_pinned_node
+if errorlevel 1 exit /b 1
+
 call node scripts\launch-cache.mjs check-deps
 if errorlevel 1 (
   echo   . Installing JS dependencies...
@@ -243,7 +247,17 @@ exit /b 0
 :use_pinned_node
 set "MESA_NODE_ARCH=x64"
 if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "MESA_NODE_ARCH=arm64"
-set "PATH=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-%MESA_NODE_ARCH%;%PATH%"
+set "MESA_NODE_PINNED_DIR=%LOCALAPPDATA%\Mesa\toolchains\node-v%MESA_NODE_VERSION%-win-%MESA_NODE_ARCH%"
+set "PATH=%MESA_NODE_PINNED_DIR%;%PATH%"
+exit /b 0
+
+:require_pinned_node
+call :node_version
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  echo   x PATH now resolves Node.js !MESA_NODE_ACTUAL! instead of the pinned %MESA_NODE_VERSION%.
+  echo     Remove the other Node.js from PATH or re-run run.cmd in a new terminal.
+  exit /b 1
+)
 exit /b 0
 
 :refresh_paths
@@ -251,6 +265,8 @@ if exist "%SCOOP_SHIMS%" set "PATH=%SCOOP_SHIMS%;%PATH%"
 if exist "%CARGO_BIN%" set "PATH=%CARGO_BIN%;%PATH%"
 if exist "%NODE_BIN%" set "PATH=%NODE_BIN%;%PATH%"
 if exist "%GIT_BIN%" set "PATH=%GIT_BIN%;%PATH%"
+REM Keep the activated pinned Node ahead of any system Node added above.
+if defined MESA_NODE_PINNED_DIR if exist "%MESA_NODE_PINNED_DIR%\" set "PATH=%MESA_NODE_PINNED_DIR%;%PATH%"
 exit /b
 
 :has_webview2

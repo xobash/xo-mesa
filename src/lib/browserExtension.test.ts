@@ -34,6 +34,21 @@ describe("browser tool source boundary", () => {
     expect(result).toContain("native static fetch");
   });
 
+  it("removes script and style elements with any end-tag form, including unclosed ones", () => {
+    const text = (body: string) => JSON.parse(format({ body }, "https://example.org").split("\n").pop()!).pageText;
+    expect(text("a<script>x()</script foo>b<SCRIPT\n>y()</SCRIPT\n>c<style>p{}</style >d<script>z() never closed")).toBe("a b c d");
+    expect(text("<p>one</p>\u00a0\u00a0\n\n\n<p>two</p>")).toBe("one\ntwo");
+  });
+
+  it("converts hostile pages in linear time", () => {
+    // Measured in milliseconds; the bound separates linear from quadratic work.
+    for (const body of ["<script".repeat(30_000), "<!--".repeat(50_000), "<a".repeat(100_000), "\u00a0".repeat(200_000), "<style".repeat(30_000)]) {
+      const start = performance.now();
+      format({ body }, "https://example.org");
+      expect(performance.now() - start).toBeLessThan(200);
+    }
+  });
+
   it("decodes each HTML entity once", () => {
     const result = format({ body: "<p>a &amp;lt;b&amp;gt; &amp;amp; &lt;c&gt; &quot;d&quot; &amp;quot;</p>" }, "https://example.org");
     const data = JSON.parse(result.split("\n").pop()!);

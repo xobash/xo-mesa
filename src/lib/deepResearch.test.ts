@@ -1054,3 +1054,50 @@ describe("createRunId", () => {
 // deep-research extension. A session restart on context drift would silently
 // shed that extension mid-run. These pins keep AgentPanel's reuse conservative
 // and keep the DR launch wired into the spawn env/args.
+
+describe("untrusted result fields", () => {
+  it("drops non-text source fields instead of ending the run", () => {
+    const result = {
+      version: 1,
+      report: { title: 7, markdown: "# R" },
+      notes: [{ title: "N", markdown: "# N", sourceUrl: 3, links: [] }],
+      sources: [null, { url: 1 }, { url: "https://a.example", title: 5, date: 2024 }, "https://b.example"],
+      claims: [{ text: "fact", kind: "verified", sourceUrl: 42 }],
+      related: [],
+    } as unknown as DeepResearchResult;
+    let out: DeepResearchResult | undefined;
+    expect(() => { out = validateResearchResult(result); }).not.toThrow();
+    expect(out!.sources).toEqual([{ url: "https://a.example/", title: "https://a.example/", date: undefined }]);
+    expect(out!.claims).toEqual([{ text: "fact", kind: "unknown", sourceUrl: undefined }]);
+    expect(out!.notes.map((n) => n.sourceUrl)).toEqual([null]);
+    expect(out!.report.title).toBe("Deep Research");
+    expect(dedupeSources([undefined, { url: "https://c.example/p", title: " T ", date: " 2024 " }] as unknown[]))
+      .toEqual([{ url: "https://c.example/p", title: "T", date: "2024" }]);
+  });
+});
+
+describe("one source URL canonicalization", () => {
+  it("keeps encoded query values and matches the startup-safe observed-navigation module", async () => {
+    const urls = await import("./deepResearchUrls");
+    expect(canonicalizeSourceUrl).toBe(urls.canonicalizeSourceUrl);
+    expect(canonicalizeSourceUrl("https://a.example/s?q=a%26b&ref=x&utm_x=1")).toBe("https://a.example/s?q=a%26b");
+    expect(canonicalizeSourceUrl("https://a.example/s?q=x%3Dy+z&b=%23")).toBe("https://a.example/s?b=%23&q=x%3Dy+z");
+    expect(dedupeSources([{ url: "https://a.example/s?q=a%26b", title: "A" }, { url: "https://a.example/s?q=a&b", title: "B" }])).toHaveLength(2);
+  });
+
+  it("escapes source titles and wraps unsafe destinations in generated links", () => {
+    const url = "https://en.example/wiki/Foo_(bar";
+    const result: DeepResearchResult = {
+      version: 1,
+      report: { title: "R", markdown: "# R" },
+      notes: [],
+      sources: [{ url, title: "A [draft] \\ title\nnext" }],
+      claims: [{ text: "fact", kind: "verified", sourceUrl: url }],
+      related: [],
+    };
+    const cs = buildChangeSet({ runId: "r", result, folder: "Research", existingFiles: [], notes: {}, content: {}, now: new Date("2026-07-17T12:00:00Z") });
+    const report = cs.ops.find((o) => o.kind === "create")!;
+    expect(report.content).toContain(`- [A \\[draft\\] \\\\ title next](<${url}>)`);
+    expect(report.content).toContain(`([source](<${url}>))`);
+  });
+});

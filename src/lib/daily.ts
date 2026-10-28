@@ -115,6 +115,16 @@ export interface CalEvent {
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+function eventOf(item: unknown): CalEvent | null {
+  if (!item || typeof item !== "object") return null;
+  const date = String((item as Record<string, unknown>).date ?? "");
+  const title = String((item as Record<string, unknown>).title ?? "").trim();
+  return ISO_RE.test(date) && title ? { date, title } : null;
+}
+
+const compareEvents = (a: CalEvent, b: CalEvent) =>
+  a.date.localeCompare(b.date) || a.title.localeCompare(b.title);
+
 /** Parse `calendar.json` into events, tolerant of malformed input. */
 export function parseEvents(json: string): CalEvent[] {
   try {
@@ -122,10 +132,8 @@ export function parseEvents(json: string): CalEvent[] {
     if (!Array.isArray(data)) return [];
     const out: CalEvent[] = [];
     for (const item of data) {
-      if (!item || typeof item !== "object") continue;
-      const date = String((item as Record<string, unknown>).date ?? "");
-      const title = String((item as Record<string, unknown>).title ?? "").trim();
-      if (ISO_RE.test(date) && title) out.push({ date, title });
+      const event = eventOf(item);
+      if (event) out.push(event);
     }
     return out;
   } catch {
@@ -133,23 +141,50 @@ export function parseEvents(json: string): CalEvent[] {
   }
 }
 
-/** Events from the current `calendar.json` text before an edit; null when the
- *  text is not a JSON array, so an edit cannot replace unreadable content. */
-export function eventsForEdit(json: string): CalEvent[] | null {
-  if (!json.trim()) return [];
-  try {
-    if (!Array.isArray(JSON.parse(json))) return null;
-  } catch {
-    return null;
+/** Add and/or remove one event in the current `calendar.json` text without
+ *  losing data: other fields of each item and entries Mesa cannot show are
+ *  kept. Events are date-sorted first; other entries follow in their original
+ *  order. Returns null when the text is not a JSON array, so an edit cannot
+ *  replace unreadable content. */
+export function editCalendarJson(
+  json: string,
+  change: { add?: CalEvent; remove?: CalEvent }
+): { content: string; events: CalEvent[] } | null {
+  let items: unknown[] = [];
+  if (json.trim()) {
+    try {
+      const data: unknown = JSON.parse(json);
+      if (!Array.isArray(data)) return null;
+      items = data;
+    } catch {
+      return null;
+    }
   }
-  return parseEvents(json);
+  const { add, remove } = change;
+  if (remove) {
+    items = items.filter((item) => {
+      const event = eventOf(item);
+      return !(event && event.date === remove.date && event.title === remove.title);
+    });
+  }
+  if (add) items = [...items, { date: add.date, title: add.title }];
+  const events: { item: unknown; event: CalEvent }[] = [];
+  const other: unknown[] = [];
+  for (const item of items) {
+    const event = eventOf(item);
+    if (event) events.push({ item, event });
+    else other.push(item);
+  }
+  events.sort((a, b) => compareEvents(a.event, b.event));
+  return {
+    content: JSON.stringify([...events.map(({ item }) => item), ...other], null, 2) + "\n",
+    events: events.map(({ event }) => event),
+  };
 }
 
 /** Serialize events to stable, date-sorted JSON for `calendar.json`. */
 export function serializeEvents(events: CalEvent[]): string {
-  const sorted = [...events].sort(
-    (a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title)
-  );
+  const sorted = [...events].sort(compareEvents);
   return JSON.stringify(sorted, null, 2) + "\n";
 }
 

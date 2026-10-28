@@ -59,6 +59,8 @@ interface SharedPiSessionState {
   lastOutputSeq: number;
 }
 
+// Fixed terminal ANSI palette, independent of the Mesa theme (a documented
+// raw-hex exception in DESIGN.md).
 const SHARED_PI_THEME = {
   background: "#050508",
   foreground: "#d8d8d2",

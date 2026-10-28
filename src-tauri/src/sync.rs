@@ -61,10 +61,12 @@ const SERVER_CONNECTION_LIMIT: usize = 8;
 /// One pooled client uses up to four transfer connections plus control calls
 /// and a lingering probe or retry connection.
 const PEER_CONNECTION_LIMIT: usize = 6;
-const CONNECTION_HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+/// Pre-authentication budget: an unauthenticated socket holds one of the eight
+/// slots for at most the TLS handshake plus first request headers.
+const CONNECTION_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTION_LIFETIME: Duration = Duration::from_secs(60 * 60);
 const CONNECTION_DRAIN: Duration = Duration::from_secs(30);
-const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Concurrent file transfers during `sync_run`. Multiplexed over one pooled
 /// client, so this is N in-flight requests over a handful of reused
@@ -179,6 +181,10 @@ struct DiscoveryPacket {
     listening: bool,
     fingerprint: String,
 }
+
+/// Mirrors whether `state()` holds a server, so status never waits for a
+/// start/stop that holds the lock across a bounded join.
+static SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn state() -> &'static Mutex<Option<ServerState>> {
     static S: OnceLock<Mutex<Option<ServerState>>> = OnceLock::new();
@@ -521,6 +527,8 @@ fn build_pinned_client(
     reqwest::Client::builder()
         .use_preconfigured_tls(tls)
         .redirect(reqwest::redirect::Policy::none())
+        // Peers are direct LAN addresses; a system proxy must not see sync traffic.
+        .no_proxy()
         .connect_timeout(Duration::from_secs(10))
         // Time allowed between received chunks — catches a stalled transfer
         // without capping the total duration of a large one.
@@ -573,17 +581,24 @@ fn take_fingerprint(observed: &Arc<Mutex<Option<String>>>) -> String {
         .unwrap_or_default()
 }
 
-/// Normalize an optional pin to bare lowercase hex; empty → None.
-fn normalize_pin(pin: Option<String>) -> Option<String> {
-    let hex: String = pin?
-        .chars()
-        .filter(|c| c.is_ascii_hexdigit())
-        .collect::<String>()
-        .to_lowercase();
-    if hex.is_empty() {
-        None
+/// Normalize an optional pin to bare lowercase hex. Only an absent or blank
+/// pin means trust-on-first-use; anything else must be a full SHA-256.
+fn normalize_pin(pin: Option<String>) -> Result<Option<String>, String> {
+    let Some(pin) = pin.filter(|pin| !pin.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let mut hex = String::with_capacity(64);
+    for ch in pin.chars() {
+        if ch.is_ascii_hexdigit() {
+            hex.push(ch.to_ascii_lowercase());
+        } else if !matches!(ch, ':' | '-' | ' ') {
+            return Err("Device fingerprint is not a valid SHA-256 fingerprint.".into());
+        }
+    }
+    if hex.len() == 64 {
+        Ok(Some(hex))
     } else {
-        Some(hex)
+        Err("Device fingerprint is not a valid SHA-256 fingerprint.".into())
     }
 }
 
@@ -818,7 +833,7 @@ pub async fn sync_fetch_manifest(
     let token = crate::secrets::resolve_async(token).await?;
     require_sync_key(&token)?;
     let (client, credential, fingerprint) =
-        establish_sync_credential(&base, &token, normalize_pin(pin)).await?;
+        establish_sync_credential(&base, &token, normalize_pin(pin)?).await?;
     let manifest = fetch_manifest_with(&client, &base, &credential).await?;
     if manifest.journal_version != sync_core::JOURNAL_VERSION
         || manifest.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION
@@ -1090,14 +1105,21 @@ fn open_upload(path: &Path) -> std::io::Result<(std::fs::File, u64, String)> {
     open_upload_handle(sync_core::open_file_no_follow(path)?)
 }
 
+fn transfer_limit_error(max_bytes: u64) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "file exceeds the {} MiB sync transfer limit",
+            max_bytes / (1024 * 1024)
+        ),
+    )
+}
+
 fn open_upload_handle(mut file: std::fs::File) -> std::io::Result<(std::fs::File, u64, String)> {
     use std::io::Seek;
     let max_bytes = transfer_limit().map_err(std::io::Error::other)?;
     if file.metadata()?.len() > max_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "file exceeds receiver's 1 GiB PUT limit",
-        ));
+        return Err(transfer_limit_error(max_bytes));
     }
     let mut hash = sync_core::ContentHasher::new();
     let mut buffer = [0u8; TRANSFER_CHUNK_BYTES];
@@ -1112,10 +1134,7 @@ fn open_upload_handle(mut file: std::fs::File) -> std::io::Result<(std::fs::File
         }
         n += count as u64;
         if n > max_bytes {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "file exceeds receiver's 1 GiB PUT limit",
-            ));
+            return Err(transfer_limit_error(max_bytes));
         }
         hash.update(&buffer[..count]);
     }
@@ -1319,7 +1338,7 @@ pub async fn sync_run(
     let started = Instant::now();
     cancel_flag().store(false, Ordering::Relaxed);
     let base = base.trim_end_matches('/').to_string();
-    let pin = normalize_pin(pin);
+    let pin = normalize_pin(pin)?;
     let retry_set: Option<std::collections::HashSet<String>> = retry
         .map(|rels| {
             rels.into_iter()
@@ -1327,6 +1346,48 @@ pub async fn sync_run(
                 .collect()
         })
         .filter(|rels: &std::collections::HashSet<String>| !rels.is_empty());
+
+    let result = run_sync(&app, root, base, token, pin, retry_set, peer_name, started).await;
+    settle_sync_run(result, started, cancelled(), |level, message| {
+        emit_log(&app, level, message);
+        emit_progress(&app, "done", 0, 0, "");
+        flush_sync_events(&app);
+    })
+}
+
+/// Every early exit still sends the final progress frame and drains the
+/// console. A run cancelled at any step returns a cancelled report, not an error.
+fn settle_sync_run(
+    result: Result<SyncReport, String>,
+    started: Instant,
+    was_cancelled: bool,
+    end: impl FnOnce(&str, &str),
+) -> Result<SyncReport, String> {
+    match result {
+        Ok(report) => Ok(report),
+        Err(_) if was_cancelled => {
+            end("info", "sync stopping — no incomplete work was committed");
+            Ok(cancelled_report(started))
+        }
+        Err(error) => {
+            end("error", &format!("sync stopped: {error}"));
+            Err(error)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_sync(
+    app: &tauri::AppHandle,
+    root: PathBuf,
+    base: String,
+    token: String,
+    pin: Option<String>,
+    retry_set: Option<std::collections::HashSet<String>>,
+    peer_name: Option<String>,
+    started: Instant,
+) -> Result<SyncReport, String> {
+    let app = app.clone();
 
     emit_log(
         &app,
@@ -1399,7 +1460,7 @@ pub async fn sync_run(
         remote_journal.device.clone(),
     )
     .await?;
-    let own_fingerprint = get_identity_async(&app).await?.fingerprint;
+    let own_fingerprint = get_identity_async(&app).await?.fingerprint.clone();
 
     // 2. Local manifest — fresh streaming hashes off the async runtime.
     emit_progress(&app, "scan", 0, 0, "");
@@ -1910,7 +1971,8 @@ pub async fn sync_run(
 
 // === Discovery ============================================================
 
-#[tauri::command]
+// Identity creation and the discovery lock can block: run off the UI thread.
+#[tauri::command(async)]
 pub fn sync_discovery_start(
     app: tauri::AppHandle,
     name: String,
@@ -1934,7 +1996,7 @@ pub fn sync_discovery_start(
     let running_thread = running.clone();
     // Advertise this device's stable TLS certificate fingerprint so peers can
     // pin it. It doubles as the self-filter id (own packets are ignored).
-    let fingerprint = get_identity(&app)?.fingerprint;
+    let fingerprint = get_identity(&app)?.fingerprint.clone();
     let host = local_lan_ip().unwrap_or_else(|_| "0.0.0.0".to_string());
     let own = DiscoveryPacket {
         mesa_discovery: true,

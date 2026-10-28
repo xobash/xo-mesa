@@ -2,10 +2,85 @@ import { forEachSegment, inlineCodeSpans, isMarkdownPath } from "./markdownCode"
 import { extOf, stripExt } from "./vault";
 import { linkKey } from "./fsnames";
 
-const WIKI_LINK_RE = /(!?)\[\[([^\]\n]+?)\]\]/g;
+// A body that stops at a single "]", a newline or the end is consumed as a
+// non-link, so repeated "[[" cannot rescan the same line from every start.
+const WIKI_LINK_RE = /(!?)\[\[([^\]\n]+)(\]\]|\]|(?=\n)|$)/g;
 // Destination: `<with spaces>` or a bare run with balanced parentheses; optional CommonMark title.
-// A label may hold one inline image, as in a badge: `[![alt](img.png)](Note.md)`.
-const MARKDOWN_LINK_RE = /(!?)\[((?:[^\]\n]*?!\[[^[\]\n]*\]\([^()\s]+\))?[^\]\n]*?)\]\((<[^<>\n]+>|(?:\\.|[^\\\s()])+(?:\((?:\\.|[^\\\n()])*\)(?:\\.|[^\\\s()])*)*)([ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\))[ \t]*)?\)/g;
+const LINK_TAIL_RE = /\((<[^<>\n]+>|(?:\\.|[^\\\s()])+(?:\((?:\\.|[^\\\n()])*\)(?:\\.|[^\\\s()])*)*)([ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\))[ \t]*)?\)/y;
+const LABEL_IMAGE_TAIL_RE = /\([^()\s]+\)/y;
+
+type MarkdownLinkReplacer = (match: string, bang: string, label: string, raw: string, title: string | undefined) => string;
+
+/** First "]" or newline at or after `from`, cached so increasing queries stay linear. */
+function labelStops(text: string): (from: number) => number {
+  let start = -1;
+  let stop = -1;
+  return (from) => {
+    if (from >= start && from <= stop) return stop;
+    let i = from;
+    while (i < text.length && text[i] !== "]" && text[i] !== "\n") i++;
+    start = from;
+    stop = i;
+    return i;
+  };
+}
+
+/**
+ * Replace inline Markdown links `[label](dest "title")` and images. A label
+ * may hold one inline image, as in a badge: `[![alt](img.png)](Note.md)`.
+ * This is a linear scan with the same matches as the equivalent regular
+ * expression, whose nested lazy label groups were quadratic on runs of "![".
+ */
+function replaceMarkdownLinks(text: string, replacer: MarkdownLinkReplacer): string {
+  const labelStop = labelStops(text);
+  const afterImageStop = labelStops(text);
+  const tails = new Map<number, RegExpExecArray | null>();
+  const tailAt = (at: number) => {
+    let tail = tails.get(at);
+    if (tail === undefined) {
+      LINK_TAIL_RE.lastIndex = at;
+      tails.set(at, tail = LINK_TAIL_RE.exec(text));
+    }
+    return tail;
+  };
+  // Per label end: the label image's "[" and the "]" that closes the outer label, or -1.
+  const images = new Map<number, { open: number; close: number }>();
+  let out = "";
+  let last = 0;
+  for (let s = text.indexOf("["); s >= 0; s = text.indexOf("[", s + 1)) {
+    const e1 = labelStop(s + 1);
+    if (text[e1] !== "]") continue;
+    let image = images.get(e1);
+    if (!image) {
+      const open = text.lastIndexOf("[", e1 - 1);
+      let close = -1;
+      LABEL_IMAGE_TAIL_RE.lastIndex = e1 + 1;
+      if (open > 0 && text[open - 1] === "!" && LABEL_IMAGE_TAIL_RE.test(text)) {
+        const e2 = afterImageStop(LABEL_IMAGE_TAIL_RE.lastIndex);
+        if (text[e2] === "]") close = e2;
+      }
+      images.set(e1, image = { open, close });
+    }
+    let labelEnd = -1;
+    let tail: RegExpExecArray | null = null;
+    if (image.close >= 0 && image.open - 1 > s) {
+      tail = tailAt(image.close + 1);
+      if (tail) labelEnd = image.close;
+    }
+    if (!tail) {
+      tail = tailAt(e1 + 1);
+      labelEnd = e1;
+    }
+    if (!tail) continue;
+    const bang = s - 1 >= last && text[s - 1] === "!" ? "!" : "";
+    const start = s - bang.length;
+    const end = tail.index + tail[0].length;
+    out += text.slice(last, start) + replacer(text.slice(start, end), bang, text.slice(s + 1, labelEnd), tail[1], tail[2]);
+    last = end;
+    s = end - 1;
+  }
+  return last ? out + text.slice(last) : text;
+}
 /** Percent-encode the characters a bare Markdown destination cannot hold literally. */
 const encodeDestination = (path: string) => path
   .replace(/%/g, "%25").replace(/#/g, "%23").replace(/ /g, "%20").replace(/\(/g, "%28").replace(/\)/g, "%29");
@@ -105,8 +180,9 @@ export function rewriteInboundLinks(
     return hadExt || !renamedIsMarkdown ? base : stripExt(base);
   };
   let changed = false;
-  const text = rewriteMarkdownProse(content, isMarkdownPath(sourceRel), (prose) => prose
-    .replace(WIKI_LINK_RE, (match, bang: string, body: string) => {
+  const text = rewriteMarkdownProse(content, isMarkdownPath(sourceRel), (prose) => replaceMarkdownLinks(prose
+    .replace(WIKI_LINK_RE, (match, bang: string, body: string, close: string) => {
+      if (close !== "]]") return match;
       // Inside tables the alias separator is written `\|`; keep that escape.
       let pipe = body.indexOf("|");
       if (pipe > 0 && body[pipe - 1] === "\\") pipe--;
@@ -122,10 +198,9 @@ export function rewriteInboundLinks(
       // follow the renamed file. Image/file embeds never resolve through the
       // note resolver, so they remain byte-for-byte unchanged.
       return `${bang}[[${replacementTarget(target)}${heading}${alias}]]`;
-    })
-    .replace(MARKDOWN_LINK_RE, function rewriteLink(_match: string, bang: string, label: string, raw: string, title: string | undefined): string {
+    }), function rewriteLink(_match: string, bang: string, label: string, raw: string, title: string | undefined): string {
       // The label's own image follows a renamed attachment independently.
-      label = label.includes("](") ? label.replace(MARKDOWN_LINK_RE, rewriteLink) : label;
+      label = label.includes("](") ? replaceMarkdownLinks(label, rewriteLink) : label;
       const unchanged = `${bang}[${label}](${raw}${title ?? ""})`;
       const angle = raw.startsWith("<");
       const destination = angle ? raw.slice(1, -1) : raw;

@@ -13,10 +13,17 @@ export async function forEachConcurrent<T>(
   if (!items.length) return;
   const limit = Math.max(1, Math.min(items.length, Math.trunc(concurrency) || 1));
   let nextIndex = 0;
+  // The first rejection rejects the call; no worker starts another item after it.
+  let failed = false;
   const worker = async () => {
-    while (nextIndex < items.length && !stopped?.()) {
+    while (!failed && nextIndex < items.length && !stopped?.()) {
       const index = nextIndex++;
-      await task(items[index], index);
+      try {
+        await task(items[index], index);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
     }
   };
   await Promise.all(Array.from({ length: limit }, () => worker()));

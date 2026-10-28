@@ -160,6 +160,15 @@ it("protects other notes when a large note fills the history budget", async () =
     for (const rel of ["a.md", "b.md", "c.md"]) expect(await listTextRevisionsAsync("/vault", rel)).toHaveLength(1);
   }
 });
+it("bounds the protected newest snapshots by a total character budget", async () => {
+  const large = "p".repeat(999_999);
+  const records = historyDatabase(Array.from({ length: 70 }, (_, i) => ({ id: `r${i}`, root: "/vault", relPath: `f${i}.md`, content: large, savedAt: i + 1, order: i })));
+  await recordTextRevisionAsync("/vault", "new.md", "small", 100);
+  const kept = [...records.values()].map((entry) => entry.relPath as string);
+  expect(kept).toContain("new.md");
+  // 64 of the newest large snapshots fit the protected budget; the oldest go.
+  expect(kept.filter((rel) => rel !== "new.md").sort()).toEqual(Array.from({ length: 64 }, (_, i) => `f${i + 6}.md`).sort());
+});
 it("coalesces autosaves without coalescing an external snapshot", async () => {
   await recordTextRevisionAsync("/vault", "a.md", "first", 1, { source: "autosave" });
   await recordTextRevisionAsync("/vault", "a.md", "second", 1001, { source: "autosave" });

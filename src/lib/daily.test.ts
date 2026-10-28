@@ -7,6 +7,7 @@ import {
   weekMatrix,
   parseEvents,
   serializeEvents,
+  editCalendarJson,
   holidaysForYear,
   shiftISO,
 } from "./daily";
@@ -144,5 +145,21 @@ describe("shiftISO", () => {
   it("clamps Feb 29 on a year shift", () => {
     expect(shiftISO("2024-02-29", 0, 0, 1)).toBe("2025-02-28");
     expect(shiftISO("2024-02-29", 0, 0, -4)).toBe("2020-02-29");
+  });
+});
+
+describe("editCalendarJson", () => {
+  it("round-trips unknown fields and unshown entries losslessly", () => {
+    const items = [{ date: "2026-02-01", title: "B", extra: { nested: true } }, 42, { date: "2026-01-01", title: " A ", tz: "UTC" }];
+    const added = editCalendarJson(JSON.stringify(items), { add: { date: "2026-01-15", title: "New" } })!;
+    expect(JSON.parse(added.content)).toEqual([items[2], { date: "2026-01-15", title: "New" }, items[0], 42]);
+    expect(added.events.map((event) => event.title)).toEqual(["A", "New", "B"]);
+    const removed = editCalendarJson(added.content, { remove: { date: "2026-01-01", title: "A" } })!;
+    expect(JSON.parse(removed.content)).toEqual([{ date: "2026-01-15", title: "New" }, items[0], 42]);
+  });
+  it("starts an empty file and refuses text that is not an array", () => {
+    expect(editCalendarJson("", { add: { date: "2026-01-01", title: "A" } })!.events).toHaveLength(1);
+    expect(editCalendarJson("{}", { add: { date: "2026-01-01", title: "A" } })).toBeNull();
+    expect(editCalendarJson("[", { add: { date: "2026-01-01", title: "A" } })).toBeNull();
   });
 });

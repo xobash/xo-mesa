@@ -23,6 +23,12 @@ test('development, CI and release use the exact reviewed toolchains', () => {
   for (const file of ['.github/workflows/build.yml', '.github/workflows/release-candidate.yml', '.github/workflows/release.yml']) {
     assert.match(read(file), /node-version-file: \.node-version/);
   }
+  // Dependency lifecycle scripts stay off. CI rebuilds only esbuild; fsevents ships its macOS binary prebuilt.
+  const installScripts = Object.entries(JSON.parse(read('package-lock.json')).packages).filter(([, entry]) => entry.hasInstallScript).map(([path]) => path);
+  assert.deepEqual(installScripts.filter(path => path !== 'node_modules/fsevents'), ['node_modules/esbuild'], 'review the new install script before allowing it in CI');
+  for (const file of ['.github/workflows/build.yml', '.github/workflows/release-candidate.yml', '.github/workflows/release.yml']) {
+    for (const [line] of read(file).matchAll(/^\s+- run: npm (?:ci|install)\b.*$/gm)) assert.match(line, /npm ci --ignore-scripts$/, `${file} runs dependency install scripts`);
+  }
   // Jobs that hold signing secrets or id-token must not restore shared caches.
   for (const file of ['.github/workflows/release-candidate.yml', '.github/workflows/release.yml']) {
     const workflow = read(file);
@@ -30,8 +36,16 @@ test('development, CI and release use the exact reviewed toolchains', () => {
     assert.doesNotMatch(workflow, /rust-cache|actions\/cache/, `${file} restores a shared cache`);
   }
   assert.match(read('run.sh'), /MESA_NODE_VERSION="\$\(cat \.node-version\)"/);
-  assert.match(read('run.sh'), /nvm install "\$MESA_NODE_VERSION"/);
-  assert.doesNotMatch(read('run.sh'), /nvm (install|use) --lts/);
+  assert.match(read('run.sh'), /source scripts\/posix-node\.sh\n[^\n]*\nmesa_ensure_node "\$MESA_NODE_VERSION"/);
+  assert.doesNotMatch(read('run.sh'), /\bnvm\b/, 'run.sh must not install or modify nvm');
+  // Changing .node-version must fail until each platform digest is re-reviewed.
+  const posixNode = read('scripts/posix-node.sh');
+  assert.match(posixNode, new RegExp(`\\[ "\\$version" = "${nodePin}" \\]`));
+  assert.match(posixNode, /https:\/\/nodejs\.org\/dist\/v\$version\/\$name\.tar\.gz/);
+  const posixDigests = [...posixNode.matchAll(/^\s+(darwin|linux)-(arm64|x64)\) printf '([0-9a-f]{64})' ;;$/gm)];
+  const windowsDigests = [...read('scripts/windows-node.ps1').matchAll(/^\s+(?:x64|arm64) = '([0-9a-f]{64})'$/gm)];
+  assert.equal(posixDigests.length, 4); assert.equal(windowsDigests.length, 2);
+  assert.equal(new Set([...posixDigests.map(match => match[3]), ...windowsDigests.map(match => match[1])]).size, 6, 'Node archive digests must be distinct');
   assert.match(read('run.cmd'), /set \/p MESA_NODE_VERSION=<\.node-version/);
   assert.match(read('run.cmd'), /scripts\\windows-node\.ps1/);
   assert.match(read('run.cmd'), new RegExp(`rustup default ${rustPin}-msvc`));
@@ -39,7 +53,7 @@ test('development, CI and release use the exact reviewed toolchains', () => {
   assert.match(read('scripts/windows-node.ps1'), new RegExp(`if \\(\\$version -ne '${nodePin}'\\)`));
   // Relaunch reuses an installed pinned Node instead of downloading again.
   assert.match(read('scripts/windows-node.ps1'), /node\.exe'\) --version\) -eq "v\$version"\) \{ exit 0 \}/);
-  assert.match(read('run.sh'), /command -v nvm[^\n]*\n\s*nvm use "\$MESA_NODE_VERSION"/);
+  assert.match(posixNode, /bin\/node" -v 2>\/dev\/null \|\| true\)" != "v\$version" \]; then/);
   assert.match(read('run.cmd'), />"%STAMP%" echo !CD!/);
 });
 

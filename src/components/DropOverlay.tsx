@@ -18,11 +18,13 @@ export function DropOverlay() {
 
   useEffect(() => {
     if (!IN_TAURI) return;
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     let lastDrop = 0;
     void (async () => {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
-      unlisten = await getCurrentWebview().onDragDropEvent(
+      if (disposed) return;
+      const stop = await getCurrentWebview().onDragDropEvent(
         (event: { payload: DragPayload }) => {
           const type = event.payload?.type;
           if (type === "enter" || type === "over") setActive(true);
@@ -47,9 +49,12 @@ export function DropOverlay() {
           }
         }
       );
-    })();
+      if (disposed) stop();
+      else unlisten = stop;
+    })().catch(() => undefined);
     return () => {
-      if (unlisten) unlisten();
+      disposed = true;
+      unlisten?.();
     };
   }, [importDropped]);
 

@@ -512,13 +512,13 @@ fn comspec() -> String {
     env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
 }
 
-fn terminal_command(program: Option<&str>) -> Result<(CommandBuilder, Vec<PathBuf>), String> {
+fn terminal_command(program: Option<&str>) -> Result<(CommandBuilder, Option<PathBuf>), String> {
     match program {
         Some("pi") => {
             let pi = resolve_pi_binary()?;
-            let path_prefixes = terminal_path_prefixes(&pi);
+            let program_dir = pi.parent().map(Path::to_path_buf);
             let cmd = pi_command(&pi)?;
-            Ok((cmd, path_prefixes))
+            Ok((cmd, program_dir))
         }
         _ => Err("only Pi can start in Mesa's terminal".into()),
     }
@@ -705,20 +705,6 @@ fn resolve_explicit_pi_candidate(candidate: &Path) -> Option<PathBuf> {
     is_executable(candidate).then(|| candidate.to_path_buf())
 }
 
-fn terminal_path_prefixes(program: &Path) -> Vec<PathBuf> {
-    let mut prefixes = Vec::new();
-
-    if let Some(parent) = program.parent() {
-        prefixes.push(parent.to_path_buf());
-    }
-
-    for dir in common_bin_dirs() {
-        prefixes.push(dir);
-    }
-
-    prefixes
-}
-
 #[cfg(target_os = "windows")]
 fn windows_launches_directly(path: &Path) -> bool {
     match path
@@ -733,23 +719,23 @@ fn windows_launches_directly(path: &Path) -> bool {
 
 #[cfg(target_os = "windows")]
 fn file_starts_with_mz(path: &Path) -> bool {
-    fs::read(path)
-        .map(|bytes| bytes.starts_with(b"MZ"))
-        .unwrap_or(false)
+    let mut magic = [0u8; 2];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .is_ok_and(|()| &magic == b"MZ")
 }
 
 #[cfg(target_os = "windows")]
 fn script_uses_node(path: &Path) -> bool {
-    let Ok(bytes) = fs::read(path) else {
+    let mut head = Vec::new();
+    if fs::File::open(path)
+        .and_then(|file| file.take(512).read_to_end(&mut head))
+        .is_err()
+    {
         return false;
-    };
-    let Ok(text) = String::from_utf8(bytes) else {
-        return false;
-    };
-    text.lines()
-        .next()
-        .map(|line| line.starts_with("#!") && line.contains("node"))
-        .unwrap_or(false)
+    }
+    let line = head.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    std::str::from_utf8(line).is_ok_and(|line| line.starts_with("#!") && line.contains("node"))
 }
 
 #[cfg(target_os = "windows")]
@@ -771,7 +757,7 @@ fn node_script_command(script: &Path) -> Result<CommandBuilder, String> {
 fn resolve_node_binary_for_script(script: &Path) -> Result<PathBuf, String> {
     if let Some(parent) = script.parent() {
         for candidate in [parent.join("node.exe"), parent.join("node")] {
-            if windows_launches_directly(&candidate) {
+            if candidate.is_file() && windows_launches_directly(&candidate) {
                 return Ok(candidate);
             }
         }
@@ -794,20 +780,30 @@ fn resolve_node_binary_for_script(script: &Path) -> Result<PathBuf, String> {
     Err("Pi resolved to a Node script, but Mesa could not find node.exe to launch it. Install Node.js or point MESA_PI_BIN at a native Pi executable.".into())
 }
 
-fn merged_path(prefixes: &[PathBuf]) -> Option<OsString> {
+/// Pi's own directory first, then the inherited PATH, then common install
+/// directories as fallbacks; a common directory never shadows the user's PATH.
+fn merged_path(
+    program_dir: Option<&Path>,
+    inherited: Option<OsString>,
+    fallbacks: &[PathBuf],
+) -> Option<OsString> {
     let mut paths: Vec<PathBuf> = Vec::new();
 
-    for prefix in prefixes {
-        if prefix.is_dir() && !paths.iter().any(|existing| existing == prefix) {
-            paths.push(prefix.clone());
-        }
+    if let Some(dir) = program_dir.filter(|dir| dir.is_dir()) {
+        paths.push(dir.to_path_buf());
     }
 
-    if let Some(existing) = env::var_os("PATH") {
+    if let Some(existing) = inherited {
         for path in env::split_paths(&existing) {
             if !paths.iter().any(|candidate| candidate == &path) {
                 paths.push(path);
             }
+        }
+    }
+
+    for dir in fallbacks {
+        if dir.is_dir() && !paths.iter().any(|existing| existing == dir) {
+            paths.push(dir.clone());
         }
     }
 
@@ -1051,7 +1047,7 @@ pub async fn terminal_start(
     crate::require_agent_surface(window.label())?;
     let root = cwd.as_deref().ok_or("Pi needs an approved vault folder")?;
     let root = crate::vaultscope::require_approved(&app, root)?;
-    let (mut cmd, path_prefixes) = terminal_command(program.as_deref())?;
+    let (mut cmd, program_dir) = terminal_command(program.as_deref())?;
     static PROCESS_GATE: Mutex<()> = Mutex::new(());
     let approved_root = root.clone();
     let dialog_app = app.clone();
@@ -1075,7 +1071,11 @@ pub async fn terminal_start(
     cmd.env("TERM", "xterm-256color");
     cmd.env("TERM_PROGRAM", "Mesa");
     cmd.env("COLORTERM", "truecolor");
-    if let Some(path) = merged_path(&path_prefixes) {
+    if let Some(path) = merged_path(
+        program_dir.as_deref(),
+        env::var_os("PATH"),
+        &common_bin_dirs(),
+    ) {
         cmd.env("PATH", path.to_string_lossy().to_string());
     }
     let envs = envs.unwrap_or_default();
@@ -1629,6 +1629,69 @@ mod tests {
         assert!(!windows_launches_directly(&script));
         assert!(windows_launches_directly(&node));
         fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_node_lookup_requires_an_existing_sibling_and_reads_only_a_prefix() {
+        let dir = std::env::temp_dir().join(format!("mesa-pi-test-{}-nonode", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir");
+        let script = dir.join("pi");
+        let mut bytes = b"#!/usr/bin/env node\n".to_vec();
+        bytes.extend_from_slice(&[0xff; 4096]);
+        fs::write(&script, &bytes).expect("script");
+        assert!(
+            script_uses_node(&script),
+            "a binary tail must not hide the shebang"
+        );
+        if let Ok(node) = resolve_node_binary_for_script(&script) {
+            assert_ne!(
+                node,
+                dir.join("node.exe"),
+                "missing sibling node.exe was returned"
+            );
+            assert!(node.is_file());
+        }
+        let short = dir.join("short");
+        fs::write(&short, b"M").expect("short");
+        assert!(!file_starts_with_mz(&short));
+        let image = dir.join("image");
+        fs::write(&image, b"MZ\x90\x00").expect("image");
+        assert!(file_starts_with_mz(&image));
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn merged_path_keeps_inherited_path_ahead_of_common_dirs() {
+        let base = std::env::temp_dir().join(format!("mesa-path-order-{}", std::process::id()));
+        let program = base.join("program");
+        let user = base.join("user");
+        let common = base.join("common");
+        for dir in [&program, &user, &common] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let inherited = env::join_paths([user.clone(), common.clone()]).unwrap();
+        let merged = merged_path(
+            Some(&program),
+            Some(inherited),
+            std::slice::from_ref(&common),
+        )
+        .unwrap();
+        assert_eq!(
+            env::split_paths(&merged).collect::<Vec<_>>(),
+            [program.clone(), user.clone(), common.clone()]
+        );
+        let merged = merged_path(
+            Some(&program),
+            Some(env::join_paths([user.clone()]).unwrap()),
+            &[common.clone(), program.clone()],
+        )
+        .unwrap();
+        assert_eq!(
+            env::split_paths(&merged).collect::<Vec<_>>(),
+            [program, user, common]
+        );
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[cfg(target_os = "windows")]

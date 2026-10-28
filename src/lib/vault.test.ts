@@ -112,6 +112,20 @@ describe("canonicalRoot", () => {
     expect(canonicalRoot("/tmp/MesaVault")).toBe("/tmp/MesaVault");
     expect(canonicalRoot("mesa://demo")).toBe("mesa://demo");
   });
+  it("keeps the separator of a bare drive or filesystem root", () => {
+    expect(canonicalRoot("D:\\")).toBe("D:/");
+    expect(canonicalRoot("d:/")).toBe("D:/");
+    expect(canonicalRoot("/")).toBe("/");
+    expect(canonicalRoot("//")).toBe("/");
+  });
+
+  it("maps paths under a bare root to vault-relative paths", () => {
+    expect(normalizeVaultRelPath("D:\\Notes\\a.md", canonicalRoot("D:\\"))).toBe("Notes/a.md");
+    expect(normalizeVaultRelPath("file:///D:/Notes/a.md", "D:/")).toBe("Notes/a.md");
+    expect(normalizeVaultRelPath("/Notes/a.md", canonicalRoot("/"))).toBe("Notes/a.md");
+    // A sibling drive is not under the root.
+    expect(normalizeVaultRelPath("E:/Notes/a.md", "D:/")).toBe("");
+  });
 });
 
 describe("decodePeekBytes", () => {

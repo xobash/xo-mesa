@@ -44,3 +44,9 @@ it("preserves whitespace cleanup across spaces, tabs, and paragraphs", () => {
     }
   }
 });
+
+it("skips the \\ucN fallback after \\uN, including hex escapes, and reads Windows-1252 bytes", () => {
+  expect(rtfToText("{\\rtf1 caf\\u233\\'e9}")).toBe("café");
+  expect(rtfToText("{\\rtf1 caf\\u233 e and \\uc2\\u8217\\'92\\'92s {\\uc0\\u8364}x}")).toBe("café and ’s €x");
+  expect(rtfToText("{\\rtf1 it\\'92s \\'93q\\'94 \\'80\\'81}")).toBe("it’s “q” €\u0081");
+});

@@ -30,12 +30,17 @@ a new symlink. Windows holds non-reparse ancestor handles without write/delete s
 reads, journal moves, staging and publication. That blocks ancestor renames and
 junction retargeting while the operation runs. Unix uses handle-relative operations.
 
-The activity bridge accepts at most 1 MiB of metadata per request. File GET
+The authenticated `POST /activity` route on the sync listener is the public
+external-tool activity API ([activity API](activity-api.md)); it shares the sync
+key and grants no narrower permission. It accepts at most 1 MiB of metadata per request. File GET
 responses use bounded streaming with backpressure; file PUTs remain capped at
 64 MiB by default and are staged with bounded chunks and final byte/hash verification.
 Missing nested folders are created one component at a time under a held vault
 directory on macOS and Linux. A rejected path or oversized request
-does not modify the vault.
+does not modify the vault: folders created for a rejected upload are removed
+again while empty. A pinned fingerprint must be a complete SHA-256 value; only
+an absent pin means trust on first use. Sync leaves the vault folder's own ACL
+unchanged.
 
 ## Security Model
 
@@ -231,7 +236,8 @@ an operation on such a name; no peer accepts it, so loading the journal drops
 it and rewrites the file. Mesa's own recovery paths never come from a peer.
 
 **Connection limits.** The receiver closes a connection that does not finish its
-request headers within 10 seconds (this also closes idle keep-alive connections),
+TLS handshake within 5 seconds or its
+request headers within 5 seconds (this also closes idle keep-alive connections),
 drains and closes any connection after one hour, and times out silent request bodies after 60
 seconds. Of the 8 global connection slots, one source address (IPv6 /64) may hold
 6. The client caps a peer's manifest at 256 MiB and its journal at 32 MiB.
@@ -259,7 +265,9 @@ Mesa records a causally ordered restore operation instead of merely retracting
 the tombstone, so a peer that has already received the delete can recover it.
 Matching bytes removed by a peer operation
 go to the normal per-folder `.mesa-trash` recovery storage and can be restored
-through Mesa's recovery UI.
+through Mesa's recovery UI. If a local edit lands between the byte check and the
+move, Mesa moves the edited file back and reports a conflict instead of
+leaving it only in recovery storage.
 
 Every peer must advertise journal version 2 and sync protocol version 3, and serve the journal
 endpoint. Missing or unsupported journal data stops sync before file transfers.
@@ -414,6 +422,8 @@ another device. Later syncs use the recorded common version for conditional
 one-sided updates and keep divergent changes as conflict copies. A receiver
 records a common version only for a device that already exchanged a journal
 under that certificate fingerprint and is not removed, and keeps at most 256.
+That fingerprint is reported by the sender, not proven: any shared-key holder
+can name another bound device (see the protocol table).
 
 Outgoing sync reserves one operation before setup, saves pending text first,
 and owns one cancellable background-queue admission. Cancelling while the job is
@@ -469,7 +479,7 @@ in-memory window. A shared-key holder still has access to the served vault.
 | Authentication | Protected requests carry HMAC-SHA-256 of the shared key and `mesa-sync-cert-v1:` plus server fingerprint over pinned TLS. The raw shared key never travels on the wire. TLS signature verification proves certificate private-key possession. |
 | Replay | Fresh SPAKE2 sessions/nonces prevent replay of identity proofs. The certificate-bound bearer is reusable by design until key or certificate replacement; it is not a per-request replay-resistant credential. |
 | Downgrade | Manifests must advertise journal version 2 and protocol version 3; missing/unsupported journal exchange fails before file transfers. No plaintext or legacy authentication fallback. |
-| Peer identity | The pinned certificate fingerprint identifies the remote server. Incoming journal fingerprint headers associate records; they are not TLS client authentication. Any shared-key holder can send journal data. |
+| Peer identity | The pinned certificate fingerprint identifies the remote server. Incoming journal and common-version fingerprint headers are self-reported and associate records; they are not TLS client authentication. Every shared-key holder is fully trusted: it can send journal data and record a common version under any bound fingerprint, which is then intersected with the receiver's current bytes. |
 | Certificate replacement | A known pin mismatch stops at the TLS handshake before credentials or bodies. Re-pair only after you verify the fingerprint; never silently trust a new certificate. |
 | Rotation | Replace the shared key on every remaining device. Running Receive restarts with the new key. There is no automatic key-distribution or certificate-rotation protocol. |
 | Revocation | Remove the peer to retire its journal participants, then rotate the shared key to revoke its network authority. Retirement alone is not credential revocation. |

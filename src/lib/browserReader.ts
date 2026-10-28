@@ -1,4 +1,5 @@
-import { CSS_URL_RE, unwrapScriptFallbacks } from "./html";
+import { replaceCssUrls, unwrapScriptFallbacks } from "./html";
+import { rewriteSrcset } from "./remoteImages";
 import DOMPurify from "dompurify";
 
 /** The sole executable content in the reader is this Mesa-owned link bridge. */
@@ -90,11 +91,12 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
     const url = absolute(raw, owner);
     return url ? `${options.proxyBase}${options.token}?u=${encodeURIComponent(url)}` : "";
   };
-  const rewriteCss = (css: string, owner: string) => css.replace(CSS_URL_RE, (_m, dq, sq, bare) => `url("${proxy(dq ?? sq ?? bare ?? "", owner).replace(/"/g, "%22")}")`);
+  const rewriteCss = (css: string, owner: string) => replaceCssUrls(css, (_m, dq, sq, bare) => `url("${proxy(dq ?? sq ?? bare ?? "", owner).replace(/"/g, "%22")}")`);
   let sheets = 0;
   const stats = { requested: 0, failed: 0, timedOut: 0 };
   const cssCache = new Map<string, Promise<string | ReaderStylesheet>>();
-  const importRe = /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?([^;]*);/gi;
+  // `(;|$)` keeps an unterminated statement linear; it is left as ordinary CSS.
+  const importRe = /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?([^;]*)(;|$)/gi;
   async function stylesheet(url: string, depth: number, ancestors: Set<string>): Promise<string> {
     if (depth > 3 || ancestors.has(url) || sheets >= 30) return "";
     if (Date.now() >= deadline) { stats.requested++; stats.timedOut++; return ""; }
@@ -111,6 +113,7 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
       if (css.length > 2 * 1024 * 1024) { stats.failed++; return ""; }
       let out = "", at = 0;
       for (const match of css.matchAll(importRe)) {
+        if (!match[5]) break;
         out += rewriteCss(css.slice(at, match.index), owner);
         const target = absolute(match[1] ?? match[2] ?? match[3], owner);
         const imported = target ? await stylesheet(target, depth + 1, new Set([...ancestors, url])) : "";
@@ -127,6 +130,7 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
     const css = style.textContent ?? "";
     let out = "", at = 0;
     for (const match of css.matchAll(importRe)) {
+      if (!match[5]) break;
       out += rewriteCss(css.slice(at, match.index), base);
       const target = absolute(match[1] ?? match[2] ?? match[3], base);
       const imported = target ? await stylesheet(target, 1, new Set()) : "";
@@ -158,11 +162,7 @@ export async function prepareReaderResources(rawHtml: string, baseUrl: string, o
     }
     if (node.hasAttribute("srcset")) {
       const value = node.getAttribute("srcset")!;
-      // Data URLs contain commas; keeping them in src avoids ambiguous splitting.
-      node.setAttribute("srcset", /^data:/i.test(value.trim()) ? "" : value.split(",").map(candidate => {
-        const [url, ...descriptor] = candidate.trim().split(/\s+/);
-        return [proxy(url, base), ...descriptor].join(" ");
-      }).join(", "));
+      node.setAttribute("srcset", rewriteSrcset(value, url => proxy(url, base)));
     }
     if (node.hasAttribute("style")) node.setAttribute("style", rewriteCss(node.getAttribute("style")!, base));
   }

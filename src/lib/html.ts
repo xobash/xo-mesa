@@ -1,4 +1,5 @@
 import DOMPurify from "dompurify";
+import { mapSrcset } from "./remoteImages";
 
 /** Expand script-free fallbacks before sanitization; promoted URLs still pass the frame policy. */
 export function unwrapScriptFallbacks(html: string): string {
@@ -25,18 +26,19 @@ export function unwrapScriptFallbacks(html: string): string {
 export type AssetUrlConverter = (path: string) => string;
 export type TextAssetReader = (path: string) => Promise<string>;
 
-const SAVED_FROM_RE = /<!--\s*saved from url=\(\d+\)([^>]+?)\s*-->/i;
+// Whole-document patterns must stay linear on hostile input. An unterminated
+// tag or statement therefore matches to the end (`>?`, `|$`) once instead of
+// being rescanned from every later start; replacers leave such matches as-is.
+const SAVED_FROM_PREFIX_RE = /<!--\s*saved from url=\(\d+\)/gi;
 const ATTR_RE =
   /(\s)(src|href|poster|action)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
 const SRCSET_RE = /(\s)srcset\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
-const STYLE_LINK_RE = /<link\b[^>]*>/gi;
-const SCRIPT_TAG_RE = /<script\b[^>]*\bsrc=("([^"]*)"|'([^']*)')[^>]*>\s*<\/script>/gi;
-const ALL_SCRIPT_TAG_RE = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
-const EVENT_HANDLER_ATTR_RE =
-  /\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi;
+const STYLE_LINK_RE = /<link\b[^>]*>?/gi;
+const STYLE_BLOCK_RE = /(<style\b[^>]*>?)([\s\S]*?)(<\/style(?=[\t\n\f\r />])[^>]*>?|$)/gi;
+const SCRIPT_TAG_RE = /<script\b([^>]*)(>\s*<\/script>)?/gi;
 const FONT_FACE_RULE_RE = /@font-face\s*\{[^{}]*\}/gi;
-export const CSS_URL_RE =
-  /url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s][^)]*?))\s*\)/gi;
+const CSS_IMPORT_STATEMENT_RE =
+  /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?([^;]*)(;|$)/gi;
 const CSS_IMPORT_RE =
   /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?/gi;
 const SKIP_SCHEME_RE =
@@ -93,31 +95,258 @@ function getAttr(tag: string, attr: string): string | null {
   return decodeUrlAttr(match[2] ?? match[3] ?? match[4] ?? "");
 }
 
+/** The URL in the first `<!-- saved from url=(N)… -->` comment. */
 export function savedFromUrl(html: string): string | null {
-  const match = html.match(SAVED_FROM_RE);
-  if (!match) return null;
-  const raw = decodeUrlAttr(match[1].trim());
-  try {
-    return new URL(raw).href;
-  } catch {
-    return null;
+  // The value ends at the first ">" after the prefix, which must close "-->".
+  // Reuse that position across prefixes so repeated unclosed prefixes stay linear.
+  let gt = 0;
+  for (const match of html.matchAll(SAVED_FROM_PREFIX_RE)) {
+    const start = match.index + match[0].length;
+    if (gt >= 0 && gt < start) gt = html.indexOf(">", start);
+    if (gt < 0) return null;
+    if (gt - 2 - start < 1 || !html.startsWith("-->", gt - 2)) continue;
+    const raw = decodeUrlAttr(html.slice(start, gt - 2).trim());
+    try {
+      return new URL(raw).href;
+    } catch {
+      return null;
+    }
   }
+  return null;
+}
+
+export interface CssUrlMatch {
+  index: number;
+  end: number;
+  double?: string;
+  single?: string;
+  bare?: string;
+}
+
+const isCssSpace = (c: string) => /\s/.test(c);
+
+/**
+ * CSS `url(…)` tokens in one linear pass: `url("…")`, `url('…')` or a bare
+ * value up to the first `)`, with surrounding whitespace outside the value.
+ */
+export function cssUrlMatches(css: string): CssUrlMatch[] {
+  const out: CssUrlMatch[] = [];
+  const next = new Map<string, number>();
+  // indexOf(ch, from) memoized: a miss or a hit beyond `from` stays valid for later `from`.
+  const find = (ch: string, from: number) => {
+    const known = next.get(ch);
+    if (known !== undefined && (known < 0 || known >= from)) return known;
+    const at = css.indexOf(ch, from);
+    next.set(ch, at);
+    return at;
+  };
+  const opener = /url\(/gi;
+  for (let m = opener.exec(css); m; m = opener.exec(css)) {
+    let i = m.index + 4;
+    while (i < css.length && isCssSpace(css[i])) i++;
+    const c = css[i];
+    if (c === undefined || c === ")") continue;
+    let match: CssUrlMatch | null = null;
+    if (c === '"' || c === "'") {
+      const close = find(c, i + 1);
+      if (close < 0) continue;
+      let k = close + 1;
+      while (k < css.length && isCssSpace(css[k])) k++;
+      if (css[k] !== ")") continue;
+      const value = css.slice(i + 1, close);
+      match = c === '"' ? { index: m.index, end: k + 1, double: value } : { index: m.index, end: k + 1, single: value };
+    } else {
+      const close = find(")", i);
+      if (close < 0) continue;
+      match = { index: m.index, end: close + 1, bare: css.slice(i, close).trimEnd() };
+    }
+    out.push(match);
+    opener.lastIndex = match.end;
+  }
+  return out;
+}
+
+/** Replace every CSS `url(…)` token; the replacer receives the quoted or bare value. */
+export function replaceCssUrls(
+  css: string,
+  replacer: (full: string, doubleValue?: string, singleValue?: string, bareValue?: string) => string
+): string {
+  const matches = cssUrlMatches(css);
+  if (!matches.length) return css;
+  let out = "";
+  let at = 0;
+  for (const m of matches) {
+    out += css.slice(at, m.index) + replacer(css.slice(m.index, m.end), m.double, m.single, m.bare);
+    at = m.end;
+  }
+  return out + css.slice(at);
+}
+
+const isHtmlSpace = (c: number) => c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
+const isAsciiAlpha = (c: number) => (c | 32) >= 97 && (c | 32) <= 122;
+const isTagNameEnd = (c: number) => isHtmlSpace(c) || c === 47 || c === 62;
+
+interface ScannedAttr { from: number; name: string; valueFrom: number; valueTo: number; to: number }
+
+/** Read attributes from just after a tag name, following the HTML tokenizer's attribute states. */
+function scanTagAttributes(html: string, at: number): { end: number; attrs: ScannedAttr[]; selfClosing: boolean } {
+  const attrs: ScannedAttr[] = [];
+  const n = html.length;
+  let i = at;
+  for (;;) {
+    const from = i;
+    while (i < n && (isHtmlSpace(html.charCodeAt(i)) || (html[i] === "/" && html[i + 1] !== ">"))) i++;
+    if (i >= n) return { end: n, attrs, selfClosing: false };
+    if (html[i] === "/") return { end: i + 2, attrs, selfClosing: true };
+    if (html[i] === ">") return { end: i + 1, attrs, selfClosing: false };
+    const nameFrom = i++;
+    while (i < n) {
+      const c = html.charCodeAt(i);
+      if (isTagNameEnd(c) || c === 61) break;
+      i++;
+    }
+    const name = html.slice(nameFrom, i).toLowerCase();
+    let j = i;
+    while (j < n && isHtmlSpace(html.charCodeAt(j))) j++;
+    let valueFrom = -1;
+    let valueTo = -1;
+    if (html[j] === "=") {
+      j++;
+      while (j < n && isHtmlSpace(html.charCodeAt(j))) j++;
+      const quote = html[j];
+      if (quote === '"' || quote === "'") {
+        const close = html.indexOf(quote, j + 1);
+        if (close < 0) return { end: n, attrs, selfClosing: false };
+        valueFrom = j + 1;
+        valueTo = close;
+        i = close + 1;
+      } else {
+        valueFrom = j;
+        while (j < n && !isHtmlSpace(html.charCodeAt(j)) && html[j] !== ">") j++;
+        valueTo = i = j;
+      }
+    }
+    attrs.push({ from, name, valueFrom, valueTo, to: i });
+  }
+}
+
+/** Elements whose content the HTML parser reads as text until the matching end tag. */
+const RAW_TEXT_ELEMENTS = new Set(["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes"]);
+const closeTagPatterns = new Map<string, RegExp>();
+
+function findCloseTag(html: string, name: string, from: number): number {
+  let re = closeTagPatterns.get(name);
+  if (!re) closeTagPatterns.set(name, re = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, "gi"));
+  re.lastIndex = from;
+  return re.exec(html)?.index ?? -1;
+}
+
+/**
+ * Remove preview code with one tokenizer-shaped scan. Tags, comments and
+ * raw-text bodies are recognized as the HTML parser reads them, so prose and
+ * code samples that only look like attributes or CSS stay intact, and a
+ * removal cannot join surrounding text into new markup. Not a sanitizer.
+ */
+function stripSavedMarkup(html: string, strip: { scripts: boolean; handlers: boolean; fonts: boolean }): string {
+  const n = html.length;
+  let out = "";
+  let copied = 0;
+  const replace = (from: number, to: number, text: string) => {
+    out += html.slice(copied, from) + text;
+    copied = to;
+  };
+  let foreign = 0;
+  let i = 0;
+  while (i < n) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) break;
+    const next = html.charCodeAt(lt + 1);
+    if (next === 33 || next === 63) { // <! and <?
+      if (html.startsWith("<!--", lt)) {
+        if (html.startsWith("<!-->", lt)) { i = lt + 5; continue; }
+        if (html.startsWith("<!--->", lt)) { i = lt + 6; continue; }
+        const end = html.indexOf("-->", lt + 4);
+        i = end < 0 ? n : end + 3;
+        continue;
+      }
+      const end = html.indexOf(">", lt + 2);
+      i = end < 0 ? n : end + 1;
+      continue;
+    }
+    if (next === 47) { // </
+      const first = html.charCodeAt(lt + 2);
+      if (isAsciiAlpha(first)) {
+        let j = lt + 2;
+        while (j < n && !isTagNameEnd(html.charCodeAt(j))) j++;
+        const name = html.slice(lt + 2, j).toLowerCase();
+        if ((name === "svg" || name === "math") && foreign > 0) foreign--;
+        i = scanTagAttributes(html, j).end;
+        continue;
+      }
+      if (first === 62) { i = lt + 3; continue; }
+      const end = html.indexOf(">", lt + 2);
+      i = end < 0 ? n : end + 1;
+      continue;
+    }
+    if (!isAsciiAlpha(next)) { i = lt + 1; continue; }
+    let j = lt + 1;
+    while (j < n && !isTagNameEnd(html.charCodeAt(j))) j++;
+    const name = html.slice(lt + 1, j).toLowerCase();
+    const tag = scanTagAttributes(html, j);
+    if (strip.scripts && name === "script") {
+      const close = findCloseTag(html, "script", tag.end);
+      const end = close < 0 ? n : scanTagAttributes(html, close + 8).end;
+      // A literal "<" before the removed element must not open a tag with the text after it.
+      if (lt > copied ? html[lt - 1] === "<" : out.endsWith("<")) {
+        if (lt > copied) replace(lt - 1, lt, "&lt;");
+        else out = `${out.slice(0, -1)}&lt;`;
+      }
+      replace(lt, end, "");
+      i = end;
+      continue;
+    }
+    for (const attr of tag.attrs) {
+      if (strip.handlers && /^on[a-z0-9_-]+$/.test(attr.name)) {
+        // Keep a separator so the neighbouring attribute names cannot merge.
+        const after = attr.to < n ? html.charCodeAt(attr.to) : 62;
+        replace(attr.from, attr.to, isTagNameEnd(after) ? "" : " ");
+      } else if (strip.fonts && attr.name === "style" && attr.valueFrom >= 0) {
+        const value = html.slice(attr.valueFrom, attr.valueTo);
+        const stripped = value.replace(FONT_FACE_RULE_RE, "");
+        if (stripped !== value) replace(attr.valueFrom, attr.valueTo, stripped);
+      }
+    }
+    i = tag.end;
+    if (name === "svg" || name === "math") {
+      if (!tag.selfClosing) foreign++;
+    } else if (name === "plaintext" && foreign === 0) {
+      i = n;
+    } else if (foreign === 0 && RAW_TEXT_ELEMENTS.has(name)) {
+      const close = findCloseTag(html, name, tag.end);
+      const contentEnd = close < 0 ? n : close;
+      if (strip.fonts && name === "style") {
+        const css = html.slice(tag.end, contentEnd);
+        const stripped = css.replace(FONT_FACE_RULE_RE, "");
+        // Removal can join text into "</style"; escape it so CSS stays inside the element.
+        if (stripped !== css) replace(tag.end, contentEnd, escapeStyleText(stripped));
+      }
+      i = contentEnd;
+    }
+  }
+  return out + html.slice(copied);
 }
 
 /** Preview optimization, not a sanitizer. Render only in sandbox="" iframes with the saved-HTML frame policy. */
 export function stripSavedHtmlPreviewCode(html: string): string {
-  return html
-    .replace(ALL_SCRIPT_TAG_RE, "")
-    .replace(EVENT_HANDLER_ATTR_RE, "")
-    // A saved page's root-relative web fonts cannot resolve inside a local
-    // srcDoc preview. Removing the declaration produces the same browser font
-    // fallback without issuing a burst of guaranteed-failing requests.
-    .replace(FONT_FACE_RULE_RE, "");
+  // A saved page's root-relative web fonts cannot resolve inside a local
+  // srcDoc preview. Removing the declaration produces the same browser font
+  // fallback without issuing a burst of guaranteed-failing requests.
+  return stripSavedMarkup(html, { scripts: true, handlers: true, fonts: true });
 }
 
 /** Remove only declarations that stylesheet inlining can newly introduce. */
 function stripSavedHtmlPreviewInlinedFonts(html: string): string {
-  return html.replace(FONT_FACE_RULE_RE, "");
+  return stripSavedMarkup(html, { scripts: false, handlers: false, fonts: true });
 }
 
 export function rewriteSavedHtmlUrl(
@@ -196,20 +425,8 @@ function rewriteSrcset(
   originalUrl: string | null,
   archive = false
 ): string {
-  return rawValue
-    .split(",")
-    .map((candidate) => {
-      const trimmed = candidate.trim();
-      if (!trimmed) return trimmed;
-      const parts = trimmed.split(/\s+/);
-      const url = parts.shift();
-      if (!url) return trimmed;
-      return [
-        archive && originalUrl ? resolveArchiveUrl(url, originalUrl) : rewriteSavedHtmlUrl(url, filePath, toAssetUrl, originalUrl),
-        ...parts,
-      ].join(" ");
-    })
-    .join(", ");
+  return mapSrcset(rawValue, (url) =>
+    archive && originalUrl ? resolveArchiveUrl(url, originalUrl) : rewriteSavedHtmlUrl(url, filePath, toAssetUrl, originalUrl));
 }
 
 /** Rewrite saved-page asset references relative to the saved document before framing. */
@@ -266,9 +483,8 @@ export function rewriteCssAssetUrls(
   toAssetUrl: AssetUrlConverter,
   originalUrl: string | null = null
 ): string {
-  return css
-    .replace(
-      CSS_URL_RE,
+  return replaceCssUrls(
+      css,
       (_full, doubleValue?: string, singleValue?: string, bareValue?: string) => {
         const value = doubleValue ?? singleValue ?? bareValue ?? "";
         const quote = doubleValue !== undefined ? `"` : singleValue !== undefined ? `'` : "";
@@ -302,7 +518,7 @@ export async function hydrateSavedHtml(
   const scripts = options.scripts !== false;
   // Markup-only previews skip script reads. Reuse stripped fallback input and strip again after CSS inlining.
   let out = scripts || options.previewCodeStripped ? html
-    : options.fonts ? html.replace(ALL_SCRIPT_TAG_RE, "").replace(EVENT_HANDLER_ATTR_RE, "") : stripSavedHtmlPreviewCode(html);
+    : options.fonts ? stripSavedMarkup(html, { scripts: true, handlers: true, fonts: false }) : stripSavedHtmlPreviewCode(html);
   const archive = /<!--\s*mesa-archive\s*-->/i.test(html);
   let fontBytes = 0;
   let fontQueue = Promise.resolve();
@@ -329,15 +545,15 @@ export async function hydrateSavedHtml(
     const hydrated = await replaceAsync(rule, /(\bsrc\s*:\s*)((?:\([^)]*\)|[^;{}])+)(;?)/gi, async (_m, prefix, sources, semicolon) => {
       const retained: string[] = [];
       for (const source of cssList(sources)) {
-        const match = [...source.matchAll(CSS_URL_RE)][0];
+        const match = cssUrlMatches(source)[0];
         if (!match) { if (/^\s*local\(/i.test(source)) { retained.push(source); kept = true; } continue; }
-        const raw = match[1] ?? match[2] ?? match[3] ?? "";
+        const raw = match.double ?? match.single ?? match.bare ?? "";
         if (/^data:font\//i.test(raw)) { retained.push(source); kept = true; continue; }
         const path = savedHtmlInlineAssetPath(raw, owner, "font", options.vaultRoot ?? dirname(filePath));
         if (!path) continue;
         const data = await readFont(path);
         if (!data) { failedRead = true; continue; }
-        retained.push(source.replace(match[0], `url("${data}")`)); kept = true;
+        retained.push(`${source.slice(0, match.index)}url("${data}")${source.slice(match.end)}`); kept = true;
       }
       return retained.length ? `${prefix}${retained.join(",")}${semicolon}` : "";
     });
@@ -359,9 +575,9 @@ export async function hydrateSavedHtml(
     cssQueue = pending;
     return pending.then(() => result);
   };
-  const imports = /@import\s+(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^"')\s;]+))\s*\)?([^;]*);/gi;
   const prepareCss = async (css: string, owner: string, depth: number, ancestors: Set<string>): Promise<string> => {
-    const expanded = await replaceAsync(css, imports, async (statement, dq, sq, bare, qualifiers) => {
+    const expanded = await replaceAsync(css, CSS_IMPORT_STATEMENT_RE, async (statement, dq, sq, bare, qualifiers, end) => {
+      if (!end) return statement;
       const raw = dq ?? sq ?? bare ?? "";
       // Web imports remain for the consent-controlled native reader broker.
       if (/^(?:https?:|\/\/)/i.test(raw)) return statement;
@@ -376,12 +592,14 @@ export async function hydrateSavedHtml(
     return rewriteCssAssetUrls(options.fonts ? await fonts(expanded, owner) : expanded, owner, toAssetUrl, originalUrl);
   };
   // Prepare authored styles before replacing links, so inlined sheets keep their own URL base.
-  out = await replaceAsync(out, /(<style\b[^>]*>)([\s\S]*?)(<\/style\s*>)/gi, async (_m, open, css, close) => {
+  out = await replaceAsync(out, STYLE_BLOCK_RE, async (block, open, css, close) => {
+    if (!open.endsWith(">") || !close.endsWith(">")) return block;
     const prepared = archive && originalUrl ? rewriteArchiveCss(css, originalUrl) : await prepareCss(css, filePath, 0, new Set());
     return `${open}${escapeStyleText(prepared)}${close}`;
   });
 
   out = await replaceAsync(out, STYLE_LINK_RE, async (tag) => {
+    if (!tag.endsWith(">")) return tag;
     const rel = (getAttr(tag, "rel") ?? "").toLowerCase().split(/\s+/);
     if (!rel.includes("stylesheet") && !(rel.includes("preload") && getAttr(tag, "as")?.toLowerCase() === "style")) return tag;
     const href = getAttr(tag, "href");
@@ -406,15 +624,17 @@ export async function hydrateSavedHtml(
     out = await replaceAsync(
       out,
       SCRIPT_TAG_RE,
-      async (tag, quoted: string, doubleValue?: string, singleValue?: string) => {
-        const src = doubleValue ?? singleValue ?? quoted.slice(1, -1);
+      async (tag, attributes: string, emptyBody?: string) => {
+        const source = emptyBody ? /\bsrc=("([^"]*)"|'([^']*)')/i.exec(attributes) : null;
+        if (!source) return tag;
+        const src = source[2] ?? source[3] ?? "";
         const scriptPath = savedHtmlInlineAssetPath(src, filePath, "script");
         if (!scriptPath) return tag;
         try {
           const script = await readTextAsset(scriptPath);
           if (script.length > MAX_SAVED_HTML_ASSET_CHARS) return tag;
           const attrs = tag
-            .replace(/\s+src=("([^"]*)"|'([^']*)')/i, "")
+            .replace(/(?<!\s)\s+src=("([^"]*)"|'([^']*)')/i, "")
             .replace(/>\s*<\/script>\s*$/i, "");
           return `${attrs} data-mesa-src="${escapeAttr(src)}">${escapeScriptText(
             script
@@ -477,7 +697,7 @@ export function savedHtmlFrameDocument(html: string, active = false): string {
       WHOLE_DOCUMENT: true,
       FORBID_TAGS: ["script", "iframe", "frame", "object", "embed", "base", "meta", "form"],
       // Offline links must not navigate the frame out of its document policy.
-      FORBID_ATTR: ["href", "action", "formaction", "ping", "srcdoc", "target"],
+      FORBID_ATTR: ["href", "xlink:href", "action", "formaction", "ping", "srcdoc", "target"],
       ADD_TAGS: ["style", "use"],
       ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|asset|mesa-web):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
     });
@@ -497,7 +717,7 @@ function resolveArchiveUrl(raw: string, base: string): string {
   try { return new URL(value, base).href; } catch { return value; }
 }
 function rewriteArchiveCss(css: string, base: string): string {
-  return css.replace(CSS_URL_RE, (_m, dq, sq, bare) => `url("${resolveArchiveUrl(dq ?? sq ?? bare ?? "", base).replace(/"/g, "%22").replace(/</g, "%3C").replace(/>/g, "%3E")}")`);
+  return replaceCssUrls(css, (_m, dq, sq, bare) => `url("${resolveArchiveUrl(dq ?? sq ?? bare ?? "", base).replace(/"/g, "%22").replace(/</g, "%3C").replace(/>/g, "%3E")}")`);
 }
 let purifier: ReturnType<typeof DOMPurify> | undefined;
 function savedPurifier() {
@@ -518,8 +738,8 @@ function savedPurifier() {
 function archiveBaseUrl(html: string): string | null {
   const original = savedFromUrl(html);
   if (!original || !/<!--\s*mesa-archive\s*-->/i.test(html)) return original;
-  const tag = html.match(/<base\b[^>]*>/i)?.[0];
-  const href = tag ? getAttr(tag, "href") : null;
+  const tag = html.match(/<base\b[^>]*>?/i)?.[0];
+  const href = tag?.endsWith(">") ? getAttr(tag, "href") : null;
   try { return href ? new URL(href, original).href : original; } catch { return original; }
 }
 

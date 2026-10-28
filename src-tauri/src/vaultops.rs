@@ -130,7 +130,9 @@ pub async fn vault_restore_recovery(
         let _lock = vaultwrite::WRITE_LOCK
             .write()
             .unwrap_or_else(|e| e.into_inner());
-        move_entry(&root, &trash_rel_path, &target_rel_path)
+        move_entry(&root, &trash_rel_path, &target_rel_path)?;
+        prune_empty_trash_parents(&root, &trash_rel_path);
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -292,6 +294,42 @@ fn recovery_original(rel: &str) -> Option<String> {
     let name = name.strip_prefix("remote--").unwrap_or(name);
     Some(format!("{}/{}", parts[..index].join("/"), name))
 }
+/// A root-trash delete keeps the original folders (`.mesa-trash/<stamp>/notes/a.md`).
+/// Follow a chain of single visible children so the item lists as the deleted
+/// entry, not a folder that may still exist in the vault.
+fn deepest_single_entry(path: std::path::PathBuf) -> (std::path::PathBuf, bool) {
+    let mut current = path;
+    loop {
+        let Ok(mut entries) = fs::read_dir(&current) else {
+            return (current, true);
+        };
+        let (Some(Ok(only)), None) = (entries.next(), entries.next()) else {
+            return (current, true);
+        };
+        let Ok(kind) = only.file_type() else {
+            return (current, true);
+        };
+        let name = only.file_name();
+        if kind.is_symlink() || !name.to_str().is_some_and(visible) || is_reparse(&only) {
+            return (current, true);
+        }
+        if !kind.is_dir() {
+            return (only.path(), false);
+        }
+        current = only.path();
+    }
+}
+#[cfg(windows)]
+fn is_reparse(entry: &fs::DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    !entry
+        .metadata()
+        .is_ok_and(|meta| meta.file_attributes() & 0x400 == 0)
+}
+#[cfg(not(windows))]
+fn is_reparse(_entry: &fs::DirEntry) -> bool {
+    false
+}
 pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
     fn walk(
         root: &Path,
@@ -299,42 +337,50 @@ pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
         in_trash: bool,
         out: &mut Vec<RecoveryEntry>,
     ) -> Result<(), String> {
-        for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let kind = entry.file_type().map_err(|e| e.to_string())?;
-            if kind.is_symlink() {
+        // Only the vault root is fatal; an unreadable folder must not hide
+        // every other recovery item.
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if dir == root => return Err(error.to_string()),
+            Err(_) => return Ok(()),
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { continue };
+            let Ok(kind) = entry.file_type() else {
                 continue;
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                if entry
-                    .metadata()
-                    .map_err(|e| e.to_string())?
-                    .file_attributes()
-                    & 0x400
-                    != 0
-                {
-                    continue;
-                }
+            };
+            if kind.is_symlink() || is_reparse(&entry) {
+                continue;
             }
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            let rel = path
-                .strip_prefix(root)
-                .map_err(|e| e.to_string())?
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel_of = |path: &Path| -> Result<String, String> {
+                Ok(path
+                    .strip_prefix(root)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/"))
+            };
+            let rel = rel_of(&path)?;
             if in_trash {
                 if let Some(original) = recovery_original(&rel) {
                     if !visible(&original) {
                         continue;
                     }
+                    let (path, is_directory) = if kind.is_dir() && rel.starts_with(".mesa-trash/") {
+                        deepest_single_entry(path)
+                    } else {
+                        (path, kind.is_dir())
+                    };
+                    let rel = rel_of(&path)?;
+                    let Some(original) = recovery_original(&rel).filter(|o| visible(o)) else {
+                        continue;
+                    };
                     out.push(RecoveryEntry {
                         name: original.rsplit('/').next().unwrap_or("").into(),
                         trash_rel_path: rel,
                         original_rel_path: original,
-                        is_directory: kind.is_dir(),
+                        is_directory,
                     });
                 } else if kind.is_dir() {
                     walk(root, &path, true, out)?;
@@ -351,6 +397,28 @@ pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
     walk(root, root, false, &mut entries)?;
     entries.sort_by(|a, b| a.original_rel_path.cmp(&b.original_rel_path));
     Ok(entries)
+}
+/// After a root-trash restore, remove the now-empty folders it leaves under
+/// `.mesa-trash/<stamp>/`, so they never list as deleted items.
+pub(crate) fn prune_empty_trash_parents(root: &Path, trash_rel: &str) {
+    let parts: Vec<_> = trash_rel.split('/').collect();
+    if parts.first() != Some(&".mesa-trash") {
+        return;
+    }
+    for depth in (2..parts.len()).rev() {
+        let rel = parts[..depth].join("/");
+        #[cfg(unix)]
+        let removed = sync_core::RootedTarget::resolve(root, &rel, false)
+            .and_then(|dir| dir.remove_empty_dir());
+        #[cfg(not(unix))]
+        let removed = match sync_core::safe_join_confined(root, &rel) {
+            Some(path) => fs::remove_dir(path),
+            None => return,
+        };
+        if removed.is_err() {
+            return;
+        }
+    }
 }
 #[tauri::command]
 pub async fn vault_list_recovery(
@@ -458,11 +526,59 @@ mod tests {
         fs::write(root.join(".mesa-trash/123/notes/a.md"), b"deleted").unwrap();
         fs::create_dir_all(root.join("notes/.mesa-trash")).unwrap();
         fs::write(root.join("notes/.mesa-trash/456-remote--b.md"), b"remote").unwrap();
+        fs::create_dir_all(root.join(".mesa-trash/124/folder/sub")).unwrap();
+        fs::write(root.join(".mesa-trash/124/folder/sub/x.md"), b"x").unwrap();
+        fs::write(root.join(".mesa-trash/124/folder/sub/y.md"), b"y").unwrap();
         let entries = list_recovery(&root).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].original_rel_path, "notes");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].original_rel_path, "folder/sub");
         assert!(entries[0].is_directory);
-        assert_eq!(entries[1].original_rel_path, "notes/b.md");
+        assert_eq!(entries[1].original_rel_path, "notes/a.md");
+        assert_eq!(entries[1].trash_rel_path, ".mesa-trash/123/notes/a.md");
+        assert!(!entries[1].is_directory);
+        assert_eq!(entries[2].original_rel_path, "notes/b.md");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_deleted_files_restore_into_their_folder() {
+        let root = std::env::temp_dir().join(format!("mesa-ops-nested-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::write(root.join("notes/a.md"), b"a").unwrap();
+        fs::write(root.join("notes/b.md"), b"b").unwrap();
+        move_entry(&root, "notes/a.md", ".mesa-trash/1/notes/a.md").unwrap();
+        move_entry(&root, "notes/b.md", ".mesa-trash/2/notes/b.md").unwrap();
+        let entries = list_recovery(&root).unwrap();
+        let originals: Vec<_> = entries
+            .iter()
+            .map(|e| e.original_rel_path.as_str())
+            .collect();
+        assert_eq!(originals, ["notes/a.md", "notes/b.md"]);
+        for entry in &entries {
+            move_entry(&root, &entry.trash_rel_path, &entry.original_rel_path).unwrap();
+            prune_empty_trash_parents(&root, &entry.trash_rel_path);
+        }
+        assert_eq!(fs::read(root.join("notes/a.md")).unwrap(), b"a");
+        assert_eq!(fs::read(root.join("notes/b.md")).unwrap(), b"b");
+        assert!(!root.join("notes 2").exists());
+        assert!(list_recovery(&root).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_unreadable_folder_does_not_hide_other_recovery_items() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("mesa-ops-unreadable-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("locked")).unwrap();
+        fs::create_dir_all(root.join(".mesa-trash/1")).unwrap();
+        fs::write(root.join(".mesa-trash/1/kept.md"), b"kept").unwrap();
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        let listed = list_recovery(&root);
+        fs::set_permissions(root.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(listed.unwrap()[0].original_rel_path, "kept.md");
         fs::remove_dir_all(root).unwrap();
     }
 

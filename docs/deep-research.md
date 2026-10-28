@@ -215,8 +215,11 @@ Pi's result is data, not instructions. Mesa **validates and normalizes** it
 before it can become a change set:
 
 - sources are **canonicalized** (lowercase host, `www.` stripped, tracking
-  params dropped, fragment/trailing-slash removed) and **deduplicated**;
-  malformed and non-`http(s)` URLs are rejected;
+  params dropped, remaining query parameters sorted with their values still
+  encoded, fragment/trailing-slash removed) and **deduplicated**; malformed
+  and non-`http(s)` URLs are rejected. Observed navigation uses the same
+  canonical form. A source, claim or note field that is not text is ignored
+  rather than ending the run;
 - claims keep their **uncertainty**: `verified`, `inference`, `conflict`
   (sources disagree), and `unknown` are preserved and rendered separately;
 - generated notes and sources are **capped** to the limits.
@@ -241,7 +244,8 @@ From the validated result Mesa builds a **deterministic change set**:
 - a **research report / index note** (in the configured research folder)
   with wiki-links to the source notes, a references list, a related-notes
   list, and a confidence section (verified / inference / disagreement /
-  unknown);
+  unknown). Generated source links escape title brackets and put URLs with
+  spaces or parentheses in `<…>`;
 - **source notes** only when useful and non-duplicate;
 - **useful related-note updates** only when Pi supplies substantive markdown,
   `high` confidence, and at least one validated source URL. Mesa appends the

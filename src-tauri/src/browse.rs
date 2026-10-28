@@ -226,10 +226,13 @@ pub async fn browse_fetch(
     window: tauri::Window,
     app: tauri::AppHandle,
     url: String,
+    agent: Option<bool>,
 ) -> Result<BrowsePage, String> {
     crate::require_agent_surface(window.label())?;
     use tauri::Emitter;
-    let mut page = fetch_inner(url, false).await?;
+    // Pi-initiated pages read through Pi's cookie jar; the flag can only
+    // narrow access, never grant the user's session to an agent page.
+    let mut page = fetch_inner(url, agent.unwrap_or(false)).await?;
     page.subresource_token = Some(create_resource_token(window.label())?);
     let _ = app.emit(
         "mesa://browse-observed",

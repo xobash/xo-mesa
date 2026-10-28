@@ -81,3 +81,29 @@ it('retains brokered CSS containing SVG data URLs', async () => {
   expect(html).toContain('body{color:teal}');
   expect(html).toContain('%3Csvg');
 });
+
+it('brokers each srcset candidate whole when CDN URLs contain commas', async () => {
+  const html = await prepareReaderResources('<img srcset="https://cdn.example/c_fill,w_100/a.png 1x, https://cdn.example/c_fill,w_200/a.png 2x">', 'https://example.com/', {
+    token: 't', proxyBase: 'mesa-web://localhost/', fetchStylesheet: async () => ''
+  });
+  const srcset = new DOMParser().parseFromString(html, 'text/html').querySelector('img')?.getAttribute('srcset');
+  expect(srcset).toBe(`mesa-web://localhost/t?u=${encodeURIComponent('https://cdn.example/c_fill,w_100/a.png')} 1x, mesa-web://localhost/t?u=${encodeURIComponent('https://cdn.example/c_fill,w_200/a.png')} 2x`);
+});
+
+it('prepares hostile stylesheet text in linear time', async () => {
+  const sheets = ['url(a'.repeat(40_000), `url(a${' '.repeat(200_000)}`, '@import a'.repeat(22_000)];
+  for (const css of sheets) {
+    const start = performance.now();
+    const html = await prepareReaderResources('<link rel="stylesheet" href="/s.css">', 'https://example.com/', {
+      token: 't', proxyBase: 'mesa-web://localhost/', fetchStylesheet: async () => css
+    });
+    // Measured in milliseconds; the bound separates linear from quadratic work.
+    expect(performance.now() - start).toBeLessThan(200);
+    expect(html).toContain('<style>');
+  }
+  const unterminated = await prepareReaderResources('<style>p{background:url(a.png)} @import "x.css"</style>', 'https://example.com/', {
+    token: 't', proxyBase: 'mesa-web://localhost/', fetchStylesheet: async () => { throw new Error('not requested'); }
+  });
+  expect(unterminated).toContain(`url("mesa-web://localhost/t?u=${encodeURIComponent('https://example.com/a.png')}")`);
+  expect(unterminated).toContain('@import "x.css"');
+});

@@ -148,3 +148,21 @@ describe("sync LAN discovery", () => {
     ).toBeNull();
   });
 });
+
+describe("10-character pairing code detection", () => {
+  it("keeps bare 10-character hostnames as hosts", () => {
+    expect(isPairingCode("macbookpro")).toBe(false);
+    expect(isPairingCode("raspberry1")).toBe(false);
+    expect(isPairingCode("raspberry-1")).toBe(false);
+    expect(parsePeerInput("macbookpro")).toBe("macbookpro:8787");
+  });
+
+  it("accepts the displayed custom-port code with or without its leading #", () => {
+    const code = encodePairing("198.51.100.5", 9000)!;
+    expect(isPairingCode(code)).toBe(true);
+    expect(isPairingCode(code.slice(1).toLowerCase())).toBe(true);
+    expect(isPairingCode(code.slice(1).replace(/-/g, " "))).toBe(true);
+    expect(isPairingCode(`#${code.replace(/[#-]/g, "")}`)).toBe(true);
+    expect(parsePeerInput(code.slice(1))).toBe("198.51.100.5:9000");
+  });
+});

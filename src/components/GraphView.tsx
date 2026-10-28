@@ -888,12 +888,51 @@ export function GraphView() {
     return true;
   }
 
+  // The graph waits for note metadata before its first build. A vault open
+  // publishes the file catalog (and the selected note) before the note index:
+  // a stored index arrives when it is loaded, a fresh index when indexing
+  // finishes. Building from the catalog would paint and warm a partial graph,
+  // then rebuild and re-settle every node when the index arrives. A vault with
+  // no text files has nothing to wait for.
+  const awaitingNotes = useAppStore((s) => s.notesIndexPending);
+
   // ---- build / update the graph when notes change ------------------------
   useEffect(() => {
     // A filter or metadata refresh replaces node objects. Release any grab
     // before replacing them so it cannot pin a stale node or keep alpha hot.
     if (dragRef.current.node || dragRef.current.panning) endDrag(false);
     stopDragPhysics();
+    if (awaitingNotes) {
+      // Drop any previous vault's graph and simulation so the first build of
+      // this vault takes the fresh-simulation path and paints settled. Clear
+      // every derived lookup too, so no previous label or hover can paint.
+      simRef.current?.stop();
+      simRef.current = null;
+      nodesRef.current = [];
+      forceNodesRef.current = [];
+      linksRef.current = [];
+      timelapseRef.current = false;
+      replayCameraRef.current = false;
+      setTimelapseOn(false);
+      timelineNodesRef.current = [];
+      timelineLinksRef.current = [];
+      timelineNeighborsRef.current = new Map();
+      timelineOrderRef.current = [];
+      timelineVisibleCountRef.current = 0;
+      degreeSortedRef.current = [];
+      nodeByIdRef.current = new Map();
+      adjacencyRef.current = new Map();
+      neighborsRef.current = new Map();
+      linkEndpointsRef.current = { sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] };
+      focusRef.current = { id: null, k: 0 };
+      hitIndexRef.current = null;
+      graphSigRef.current = "";
+      clearGraphHover();
+      setShownCount(0);
+      needsRedrawRef.current = true;
+      resumeRef.current();
+      return;
+    }
     const { nodes, links } = buildGraph(notes, files, {
       showTags: graphShowTags,
       existingOnly: graphExistingFilesOnly,
@@ -1031,6 +1070,7 @@ export function GraphView() {
   }, [
     notes,
     files,
+    awaitingNotes,
     graphShowTags,
     graphExistingFilesOnly,
     graphShowOrphans,
@@ -2561,7 +2601,7 @@ export function GraphView() {
       <canvas ref={canvasRef} className="graph-canvas" />
       {canvasUnavailable && <div className="graph-index-status" role="status">Graph drawing is unavailable in this webview.</div>}
       {drawingFailed && <div className="graph-index-status" role="status">Graph drawing was interrupted. Resize the pane or reopen the graph to retry.</div>}
-      {indexingTextFiles > 0 && <div className="graph-index-status" role="status">Indexing {indexingTextFiles} text files; graph may grow.</div>}
+      {indexingTextFiles > 0 && <div className="graph-index-status" role="status">{awaitingNotes ? `Indexing ${indexingTextFiles} text files before the graph is drawn…` : `Indexing ${indexingTextFiles} text files; graph may grow.`}</div>}
       {hover && (
         <PreviewCard target={{ kind: "note", id: hover.id }} x={hover.x} y={hover.y} />
       )}

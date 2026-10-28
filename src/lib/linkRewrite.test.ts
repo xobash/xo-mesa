@@ -103,3 +103,20 @@ it("matches NFD and NFC spellings of the renamed file and keeps a leading ./", (
   expect(rewriteInboundLinks("docs/Index.md", "[a](./Note.md) [c](../docs/Note.md)", "docs/Note.md", "docs/Renamed.md", () => null, true, false).text)
     .toBe("[a](./Renamed.md) [c](Renamed.md)");
 });
+
+it("scans malformed link runs in linear time and still repairs the following links", () => {
+  const resolve = (target: string) => target.toLowerCase().replace(/\.md$/, "") === "note" ? "Note.md" : null;
+  // Measured near 10 ms; the bound separates linear from quadratic work.
+  for (const noise of ["![".repeat(100_000), "[[".repeat(100_000), "[](".repeat(66_000), "[![a](b)".repeat(25_000), `${"[[a".repeat(66_000)}]x`]) {
+    const start = performance.now();
+    const result = rewriteInboundLinks("a.md", `${noise}\n[n](Note.md) [[Note]] [![i](p.png)](Note.md)`, "Note.md", "New.md", resolve, true, true);
+    expect(performance.now() - start).toBeLessThan(200);
+    expect(result.text.endsWith("\n[n](New.md) [[New]] [![i](p.png)](New.md)")).toBe(true);
+  }
+});
+
+it("keeps wiki-link edge cases: a single bracket ends a candidate, an embedded [[ starts the body", () => {
+  const resolve = (target: string) => target.toLowerCase() === "note" ? "Note.md" : null;
+  expect(rewriteInboundLinks("a.md", "[[Note]x [[Note]] [[a\n[[Note]]", "Note.md", "New.md", resolve, true, true).text)
+    .toBe("[[Note]x [[New]] [[a\n[[New]]");
+});

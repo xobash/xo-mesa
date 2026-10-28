@@ -74,16 +74,14 @@ export async function nativeVaultWriteAtomic(
   if (expectedCurrentBytes === undefined) {
     expectedCurrentBytes = await exists(path) ? await readFile(path) : null;
   }
-  const expected = expectedCurrentBytes === undefined
-    ? { kind: "any" }
-    : expectedCurrentBytes === null
-      ? { kind: "missing" }
-      : {
-          kind: "hash",
-          sha256: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", expectedCurrentBytes.slice().buffer)))
-            .map((byte) => byte.toString(16).padStart(2, "0")).join(""),
-          size: expectedCurrentBytes.length,
-        };
+  const expected = expectedCurrentBytes === null
+    ? { kind: "missing" }
+    : {
+        kind: "hash",
+        sha256: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", expectedCurrentBytes.slice().buffer)))
+          .map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+        size: expectedCurrentBytes.length,
+      };
   // Bytes are the raw IPC body; a nested Uint8Array would be sent as a JSON
   // number array several times the file's size.
   const pathHex = Array.from(new TextEncoder().encode(path))
@@ -202,7 +200,12 @@ export function fileKind(ext: string): FileKind {
 
 /** Canonical vault-root spelling for storage/comparison: forward slashes and normalized trailing separators. */
 export function canonicalRoot(p: string): string {
-  const slashed = p.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const trimmed = p.trim().replace(/\\/g, "/");
+  let slashed = trimmed.replace(/\/+$/, "");
+  // A bare filesystem or drive root keeps its separator: `/` and `D:/`, never
+  // "" or the drive-relative `D:`.
+  if (!slashed && trimmed.startsWith("/")) slashed = "/";
+  else if (/^[a-zA-Z]:$/.test(slashed)) slashed += "/";
   // Windows drive letters are case-insensitive; different entry points hand
   // back `c:/…` vs `C:/…` for the same folder. One canonical spelling keeps
   // the recents list and lastVault from storing duplicates.
@@ -249,12 +252,15 @@ export function normalizeVaultRelPath(
   // Windows drive-letter file URLs decode to `/C:/…` — strip the URL slash so
   // the absolute path matches the vault root's `C:/…` spelling.
   raw = raw.replace(/^\/([a-zA-Z]:\/)/, "$1");
-  const root = vaultRoot?.trim().replace(/\\/g, "/").replace(/\/+$/, "") ?? "";
+  const givenRoot = vaultRoot?.trim() ?? "";
+  // `/` and `D:/` reduce to the prefixes "" and `D:`; the separator check below
+  // still requires a segment boundary.
+  const root = givenRoot.replace(/\\/g, "/").replace(/\/+$/, "");
   // Vault filesystems are case-insensitive on Windows and (by default) macOS,
   // and tools report the same file under different casings (`c:\…` vs `C:/…`).
   // Match prefixes case-insensitively but keep the reported casing in the rel.
   if (
-    root &&
+    givenRoot &&
     raw.toLowerCase().startsWith(root.toLowerCase()) &&
     (raw.length === root.length || raw[root.length] === "/")
   ) {
@@ -298,11 +304,12 @@ export async function pickVault(): Promise<string | null> {
   return null;
 }
 
-/** Restore Tauri filesystem and asset access only for a user-approved vault. */
-export async function authorizeVaultRoot(root: string): Promise<void> {
-  if (isDemo(root)) return;
+/** Restore Tauri filesystem and asset access only for a user-approved vault.
+ * Resolves with a non-blocking local-storage warning, if any. */
+export async function authorizeVaultRoot(root: string): Promise<string | null> {
+  if (isDemo(root)) return null;
   await invoke("vault_authorize", { root });
-  await initializeVaultStorage(root);
+  return initializeVaultStorage(root);
 }
 
 /** Require a reachable remembered directory; unavailable roots must not become empty vaults. */
@@ -921,6 +928,9 @@ export interface DroppedImportResult {
   cancelled: boolean;
 }
 
+/** Largest single non-ZIP file a drag-and-drop import reads into memory. */
+export const MAX_DROPPED_FILE_BYTES = 512 * 1024 * 1024;
+
 /** Optional foreground controls for a long drag-and-drop import. */
 export interface DroppedImportOptions {
   signal?: AbortSignal;
@@ -972,9 +982,17 @@ export async function importDroppedPaths(
       if (ext === "zip") {
         await importZip(root, norm, base, created, options.signal);
       } else {
+        const destRel = TEXT_EXT.test(base) ? base : `attachments/${base}`;
+        if (!isIndexableVaultRelPath(destRel)) {
+          throw new Error(`Hidden file names are not imported: ${base}.`);
+        }
+        // Check the size before reading: the whole file is held in memory.
+        const metadata = await stat(norm);
+        if (metadata.size > MAX_DROPPED_FILE_BYTES) {
+          throw new Error(`${base} exceeds the ${MAX_DROPPED_FILE_BYTES / 1024 / 1024} MB import limit.`);
+        }
         const data = await readFile(norm);
         throwIfImportAborted(options.signal);
-        const destRel = TEXT_EXT.test(base) ? base : `attachments/${base}`;
         await placeFile(root, destRel, data, created);
       }
     } catch (error) {
@@ -1044,15 +1062,22 @@ async function importZip(
     throwIfImportAborted(signal);
     if (name.endsWith("/")) continue; // directory entry
     if (name.toLowerCase().startsWith("__macosx/")) continue; // macOS zip cruft
+    const rel = safeImportedRel(name);
+    // Hidden entries (.DS_Store, Mesa write artifacts) would be invisible and
+    // could enter the recovery sweep.
+    if (!isIndexableVaultRelPath(rel)) continue;
     const entry = entries[name];
     // Metadata validation is a budget promise; hold the decoder to it before a
     // verified write in case an invalid archive lied about its central directory.
     if (!entry || entry.byteLength !== expandedBytes) {
       throw new Error(`ZIP entry ${name} did not match its verified metadata.`);
     }
-    await placeFile(root, `${targetFolder}/${safeImportedRel(name)}`, entry, created);
+    await placeFile(root, `${targetFolder}/${rel}`, entry, created);
   }
 }
+
+/** Longest delay before the plugin-watch fallback delivers a batch. */
+export const WATCH_FALLBACK_MAX_WAIT_MS = 500;
 
 /** A file change observed by the filesystem watcher. */
 export interface VaultWatchEvent {
@@ -1060,8 +1085,10 @@ export interface VaultWatchEvent {
   paths: string[];
   /** Coarse kind: "create" (file or folder appeared), "modify" (data/metadata
    *  changed), "remove" (file or folder deleted). Falls back to "modify" when
-   *  the underlying event kind is ambiguous. */
-  kind: "create" | "modify" | "remove";
+   *  the underlying event kind is ambiguous. "rescan" (paths: the root) means
+   *  events were lost to an overflow or watcher error; the vault needs one
+   *  full rescan. */
+  kind: "create" | "modify" | "remove" | "rescan";
 }
 
 /** Validate a batch delivered by the native `vault_watch` channel before it
@@ -1079,7 +1106,7 @@ export function decodeWatchBatch(msg: unknown): VaultWatchEvent[] | null {
     const paths = rec.paths.filter((p): p is string => typeof p === "string");
     if (!paths.length) continue;
     const kind =
-      rec.kind === "create" || rec.kind === "remove" ? rec.kind : "modify";
+      rec.kind === "create" || rec.kind === "remove" || rec.kind === "rescan" ? rec.kind : "modify";
     out.push({ paths, kind });
   }
   return out.length ? out : null;
@@ -1122,14 +1149,20 @@ export async function watchVault(
     // can decide how to react (add a file, refresh content, or delete it).
     const batch: VaultWatchEvent[] = [];
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    let batchStartedAt = 0;
+    // Trailing 60 ms quiet window, flushed at the latest after the max wait so
+    // a continuous event stream cannot postpone delivery indefinitely.
     const scheduleFlush = () => {
+      const now = Date.now();
       if (flushTimer) clearTimeout(flushTimer);
+      else batchStartedAt = now;
+      const wait = Math.max(0, Math.min(60, batchStartedAt + WATCH_FALLBACK_MAX_WAIT_MS - now));
       flushTimer = setTimeout(() => {
         flushTimer = undefined;
         if (batch.length) {
           onChange(batch.splice(0));
         }
-      }, 60);
+      }, wait);
     };
     const kindFromEvent = (event: {
       type?:
@@ -1151,13 +1184,19 @@ export async function watchVault(
     };
     const stop = await watch(
       root,
-      (event: { paths?: string[]; type?: unknown }) => {
+      (event: { paths?: string[]; type?: unknown; attrs?: unknown }) => {
         const paths = Array.isArray(event?.paths) ? event.paths : [];
-        if (!paths.length) return;
-        batch.push({
-          paths,
-          kind: kindFromEvent(event as never),
-        });
+        // A pathless or rescan-flagged event means events were lost.
+        const attrs = event?.attrs as { flag?: unknown } | null | undefined;
+        if (!paths.length || attrs?.flag === "rescan") {
+          batch.push({ paths: [root], kind: "rescan" });
+        }
+        if (paths.length) {
+          batch.push({
+            paths,
+            kind: kindFromEvent(event as never),
+          });
+        }
         scheduleFlush();
       },
       { recursive: true, delayMs: 120 }
@@ -1172,6 +1211,9 @@ export async function watchVault(
     return () => {};
   }
 }
+
+/** Concurrent artifact stat requests during crash recovery. */
+const RECOVERY_STAT_CONCURRENCY = 32;
 
 /** Outcome of a crash-recovery sweep, for status/logging. */
 export interface WriteRecoveryResult {
@@ -1207,22 +1249,20 @@ export async function recoverWriteArtifacts(
     for (let offset = 0; offset < writeArtifacts.length; offset += 256) {
       await authorizeWriteArtifacts(writeArtifacts.slice(offset, offset + 256));
     }
-    await Promise.all(
-      found.map(async (a) => {
-        try {
-          const s = await stat(joinPath(a.dir, a.name));
-          a.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
-        } catch {
-          /* leave mtime undefined — planner treats it as stale */
-        }
-        const parsed = parseWriteArtifactName(a.name);
-        // Both labels hold original bytes, so both need to know whether the
-        // file they belong to still exists.
-        if (parsed && parsed.label !== "save") {
-          a.targetExists = await safeExists(joinPath(a.dir, parsed.targetBase));
-        }
-      })
-    );
+    await forEachConcurrent(found, RECOVERY_STAT_CONCURRENCY, async (a) => {
+      try {
+        const s = await stat(joinPath(a.dir, a.name));
+        a.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
+      } catch {
+        /* leave mtime undefined; the planner preserves an artifact of unknown age */
+      }
+      const parsed = parseWriteArtifactName(a.name);
+      // Both labels hold original bytes, so both need to know whether the
+      // file they belong to still exists.
+      if (parsed && parsed.label !== "save") {
+        a.targetExists = await safeExists(joinPath(a.dir, parsed.targetBase));
+      }
+    }, stopped);
     if (stopped?.()) return result;
     for (const action of planWriteRecovery(found, Date.now())) {
       const artifactAbs = joinPath(action.dir, action.artifactName);

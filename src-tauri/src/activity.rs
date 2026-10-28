@@ -938,17 +938,44 @@ pub(crate) fn stop_native() -> Result<(), String> {
     // lock while waiting for worker threads to exit.
     drop(guard);
     if let Some(st) = stopped {
-        for h in st.handles {
-            let _ = h.join();
-        }
+        // A slow authenticated client can hold a worker in a body read or
+        // response write; exit and restart must not wait on it.
+        join_within(st.handles, ACTIVITY_STOP_JOIN);
         std::fs::remove_dir_all(&st.extension_dir).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
+const ACTIVITY_STOP_JOIN: Duration = Duration::from_secs(2);
+
+/// Join workers for at most `limit`; returns whether they all exited. Workers
+/// still busy finish their request and exit on their own.
+fn join_within(handles: Vec<std::thread::JoinHandle<()>>, limit: Duration) -> bool {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for handle in handles {
+            let _ = handle.join();
+        }
+        let _ = done.send(());
+    });
+    finished.recv_timeout(limit).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_does_not_wait_for_a_worker_held_by_a_slow_client() {
+        let quick = vec![std::thread::spawn(|| {})];
+        assert!(join_within(quick, Duration::from_secs(5)));
+        let stuck = vec![std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(3))
+        })];
+        let started = std::time::Instant::now();
+        assert!(!join_within(stuck, Duration::from_millis(100)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     #[test]
     fn stale_extensions_from_exited_process_are_removed() {

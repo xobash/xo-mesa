@@ -71,11 +71,17 @@ interface Dependencies extends Port {
   setupActivityBridge: () => Promise<void>; ensureSyncEventBridge: () => Promise<void>;
   stopListening: () => Promise<boolean>; startListening: (root: string) => Promise<void>;
 }
-/** One event per path, latest kind wins, ordered by its last occurrence. */
+/** One event per path, latest kind wins, ordered by its last occurrence. Any
+ * rescan request becomes one leading rescan event that later kinds cannot hide. */
 export function mergeWatchEvents(events: VaultWatchEvent[]): VaultWatchEvent[] {
   const last = new Map<string, VaultWatchEvent["kind"]>();
-  for (const event of events) for (const path of event.paths) { last.delete(path); last.set(path, event.kind); }
-  return [...last].map(([path, kind]) => ({ kind, paths: [path] }));
+  let rescan: VaultWatchEvent | null = null;
+  for (const event of events) {
+    if (event.kind === "rescan") { rescan ??= { kind: "rescan", paths: event.paths.slice(0, 1) }; continue; }
+    for (const path of event.paths) { last.delete(path); last.set(path, event.kind); }
+  }
+  const merged = [...last].map(([path, kind]): VaultWatchEvent => ({ kind, paths: [path] }));
+  return rescan ? [rescan, ...merged] : merged;
 }
 const fileOrder = new Intl.Collator(undefined).compare;
 function vaultFileFor(root: string, rel: string): VaultFile {
@@ -205,6 +211,36 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       contentCache: cache,
       ...unreadableUpdate(skipped),
     });
+  }
+
+  /** After lost watcher events: one scan turns the difference between disk and
+   * the catalog into ordinary watcher events (create, remove, metadata modify). */
+  async function rescanAsEvents(root: string, isCurrent: () => boolean): Promise<VaultWatchEvent[] | null> {
+    let scanned: VaultFile[];
+    try {
+      scanned = await scanVault(root);
+    } catch (error) {
+      if (isCurrent()) set({ status: `The vault watcher missed changes and the rescan failed: ${String(error)}` });
+      return null;
+    }
+    if (!isCurrent()) return null;
+    const known = new Map(get().files.map((file) => [file.relPath, file]));
+    const onDisk = new Set(scanned.map((file) => file.relPath));
+    const created: string[] = [];
+    const modified: string[] = [];
+    for (const file of scanned) {
+      const prior = known.get(file.relPath);
+      if (!prior) created.push(file.path);
+      else if (file.size !== undefined && file.mtime !== undefined && (file.size !== prior.size || file.mtime !== prior.mtime)) modified.push(prior.path);
+    }
+    // An empty listing of a non-empty catalog is treated as unavailable, not as
+    // a mass deletion.
+    const removed = scanned.length ? [...known.values()].filter((file) => !onDisk.has(file.relPath)).map((file) => file.path) : [];
+    const events: VaultWatchEvent[] = [];
+    if (removed.length) events.push({ kind: "remove", paths: removed });
+    if (created.length) events.push({ kind: "create", paths: created });
+    if (modified.length) events.push({ kind: "modify", paths: modified });
+    return events;
   }
 
   function scheduleExternalRefresh(
@@ -411,6 +447,20 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       set(next);
     };
     try {
+      if (events.some((event) => event.kind === "rescan")) {
+        // One scan per batch replaces every lost event; it also answers any
+        // unresolvable path below.
+        rescanned = true;
+        watcherRescans++;
+        watcherWarning = true;
+        const startedAt = performance.now();
+        const recovered = await rescanAsEvents(rootRaw, isCurrent).finally(() => {
+          watcherRescanMs += performance.now() - startedAt;
+        });
+        if (!isCurrent()) return;
+        if (recovered) set({ status: "The vault watcher missed changes; Mesa rescanned the vault." });
+        events = [...events.filter((event) => event.kind !== "rescan"), ...(recovered ?? [])];
+      }
       for (const evt of events) {
         for (const p of evt.paths) {
           watcherPaths++;
@@ -704,12 +754,13 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           ? "Reaching the vault over the network…"
           : "Checking the vault folder…",
       });
+      let storageWarning: string | null = null;
       // Do this before flushing the current editor, cancelling research, or
       // stopping its watcher. A failed switch must leave the current vault
       // fully operational; startup restore keeps the missing root selected in
       // an explicit retryable state instead of publishing a blank workspace.
       try {
-        await authorizeVaultRoot(root);
+        storageWarning = await authorizeVaultRoot(root);
         await assertVaultRootAvailable(root);
       } catch (error) {
         if (!requestIsCurrent()) return;
@@ -863,7 +914,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         try {
           await textSaves.flushAll();
         } catch {
-          if (isCurrentOpen()) set({ loading: false });
+          // This open superseded the previous vault's index pass.
+          if (isCurrentOpen()) set({ loading: false, notesIndexPending: false });
           return;
         }
         if (!isCurrentOpen()) {
@@ -875,7 +927,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             resumeListening = await stopListening();
           } catch (error) {
             if (isCurrentOpen()) {
-              set({ loading: false, syncStatus: `Could not stop the old vault listener: ${String(error)}` });
+              set({ loading: false, notesIndexPending: false, syncStatus: `Could not stop the old vault listener: ${String(error)}` });
               const activeRoot = get().vaultPath;
               if (activeRoot && !unwatch) await setupWatcher(activeRoot).catch(() => { });
             }
@@ -884,6 +936,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           if (!isCurrentOpen()) return;
         }
 
+        const textFileCount = files.filter(isTextualVaultFile).length;
         set({
           vaultPath: root,
           vaultName: name,
@@ -904,9 +957,10 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           skippedTextFiles: 0,
           failedTextFiles: 0,
           unreadableTextReasons: {},
-          indexingTextFiles: files.filter(isTextualVaultFile).length,
+          indexingTextFiles: textFileCount,
+          notesIndexPending: textFileCount > 0,
           loading: false,
-          status: `${files.length} files found. Indexing text…${recentWarning}`,
+          status: `${files.length} files found. Indexing text…${recentWarning}${storageWarning ? ` ${storageWarning}` : ""}`,
         });
         if (resumeListening) {
           try {
@@ -947,6 +1001,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                   contentCache: cache,
                   notes: { ...cached.notes, ...current.notes },
                   indexingTextFiles: cached.missing,
+                  notesIndexPending: false,
                   status: `${Object.keys(cached.notes).length} documents loaded from the local index. Checking for changes…`,
                 });
                 markMesaPerf("index-cache-published", { files: Object.keys(cached.notes).length, missing: cached.missing });
@@ -986,6 +1041,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                   notes: { ...current.notes, ...changedNotes },
                 } : {}),
                 indexingTextFiles: 0,
+                notesIndexPending: false,
                 unindexedTextFiles: Object.keys(unreadable).length,
                 skippedTextFiles: indexed.skipped.length,
                 failedTextFiles: indexed.failed.length,
@@ -1007,6 +1063,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               contentCache: mergedCache,
               notes: { ...indexed.notes, ...current.notes },
               indexingTextFiles: 0,
+              notesIndexPending: false,
               unindexedTextFiles: Object.keys(unreadableTextReasons).length,
               skippedTextFiles: Object.values(unreadableTextReasons).filter(reason => reason === "skipped").length,
               failedTextFiles: Object.values(unreadableTextReasons).filter(reason => reason === "failed").length,
@@ -1015,7 +1072,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             });
             markMesaPerf("search-index-ready", { files: Object.keys(indexed.notes).length, reused: indexed.reused, read: indexed.read });
           } catch (error) {
-            if (isCurrentOpen()) set({ indexingTextFiles: 0, status: `Text indexing failed: ${String(error)}` });
+            if (isCurrentOpen()) set({ indexingTextFiles: 0, notesIndexPending: false, status: `Text indexing failed: ${String(error)}` });
           }
         })();
 
@@ -1028,7 +1085,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         void ensureSyncEventBridge().catch((error) => set({ syncStatus: `Sync event setup failed: ${String(error)}` }));
       } catch (error) {
         if (!isCurrentOpen()) return;
-        set({ loading: false, unavailableVault: { root, name: pendingName, reason: String(error) }, status: `Vault open failed: ${String(error)}. Reconnect the drive and retry.` });
+        set({ loading: false, notesIndexPending: false, unavailableVault: { root, name: pendingName, reason: String(error) }, status: `Vault open failed: ${String(error)}. Reconnect the drive and retry.` });
         const previousRoot = get().vaultPath;
         if (previousRoot) void setupWatcher(previousRoot);
       }

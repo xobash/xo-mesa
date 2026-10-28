@@ -21,6 +21,8 @@ const MAX_REVISION_CHARS = 1_000_000;
 const MAX_FILES = 500;
 const REVISION_COALESCE_MS = 60_000;
 const MAX_TOTAL_CHARS = 2_000_000;
+/** Budget for the protected newest snapshot of each recent file. */
+const MAX_PROTECTED_CHARS = 64_000_000;
 
 function isTextRevision(entry: unknown): entry is TextRevision {
   return typeof (entry as TextRevision | null)?.id === "string" &&
@@ -84,9 +86,11 @@ function trim(entries: TextRevision[]): TextRevision[] {
   const kept = new Set<TextRevision>();
   const key = (entry: TextRevision) => `${entry.root}\0${entry.relPath}`;
   let chars = 0;
-  // Protect one copy for each of the 500 most recently revised files.
+  // Protect one copy for each of the 500 most recently revised files, within
+  // the protected budget.
   for (const entry of newest) {
-    if (perFile.has(key(entry)) || entry.content.length > MAX_REVISION_CHARS) continue;
+    if (perFile.has(key(entry)) || entry.content.length > MAX_REVISION_CHARS ||
+        chars + entry.content.length > MAX_PROTECTED_CHARS) continue;
     if (perFile.size >= MAX_FILES) break;
     kept.add(entry);
     perFile.set(key(entry), 1);

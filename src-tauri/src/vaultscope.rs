@@ -175,6 +175,15 @@ fn visible_vault_path(path: &Path) -> bool {
     })
 }
 
+/// A dot-prefixed or `node_modules` folder beneath an approved root.
+fn hidden_inside_approved(roots: &BTreeSet<String>, canonical: &Path) -> bool {
+    roots.iter().any(|root| {
+        canonical
+            .strip_prefix(root)
+            .is_ok_and(|rel| !rel.as_os_str().is_empty() && !visible_vault_path(rel))
+    })
+}
+
 /// True when `rel` names only visible entries under `root`, both as spelled
 /// and after the OS resolves its existing components. Windows 8.3 short names
 /// (`GIT~1`) open hidden entries under a visible spelling.
@@ -425,6 +434,13 @@ pub fn vault_authorize(
         return Err("vault folder has not been selected in Mesa".into());
     }
 
+    // An approved root's recursive scope also allows its subfolders, so this
+    // check cannot tell a dialog pick of `<vault>/.git` from a renderer request.
+    if !approved.roots.contains(&normalized) && hidden_inside_approved(&approved.roots, &canonical)
+    {
+        return Err("a hidden folder inside a vault cannot be opened as a vault".into());
+    }
+
     if granted_by_dialog && approved.roots.insert(normalized) {
         save_approved_roots(&approval_path, &approved)?;
     }
@@ -645,6 +661,27 @@ pub(crate) fn require_approved_file(app: &AppHandle, path: &str) -> Result<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_subfolders_of_an_approved_root_are_not_new_vaults() {
+        let roots = BTreeSet::from(["/vault".to_string()]);
+        for hidden in [
+            "/vault/.git",
+            "/vault/notes/.mesa-trash",
+            "/vault/node_modules/x",
+        ] {
+            assert!(
+                hidden_inside_approved(&roots, Path::new(hidden)),
+                "{hidden}"
+            );
+        }
+        for allowed in ["/vault", "/vault/notes", "/other/.git"] {
+            assert!(
+                !hidden_inside_approved(&roots, Path::new(allowed)),
+                "{allowed}"
+            );
+        }
+    }
 
     #[test]
     fn approvals_load_from_disk_once_and_reload_after_invalidation() {

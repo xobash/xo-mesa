@@ -44,8 +44,9 @@ function global:git {
   } elseif ($call -match '\bmerge\b' -and $global:mesaMergeFails) {
     $global:LASTEXITCODE = 1
   } elseif ($call -match '\bclone\b') {
-    New-Item -ItemType Directory -Force (Join-Path $checkout '.git') | Out-Null
-    Copy-Item $runner (Join-Path $checkout 'run.cmd')
+    $target = [string]$args[-1]
+    New-Item -ItemType Directory -Force (Join-Path $target '.git') | Out-Null
+    Copy-Item $runner (Join-Path $target 'run.cmd')
   }
 }
 
@@ -133,6 +134,23 @@ try {
   }
   $global:mesaSignatureOutput = $null
 
+  # Under iex a relative MESA_DIR follows the PowerShell location, which can
+  # differ from the process working directory.
+  $priorProcessDirectory = [Environment]::CurrentDirectory
+  try {
+    Set-Location $temporary
+    [Environment]::CurrentDirectory = $env:SystemRoot
+    $env:MESA_DIR = 'relative checkout'
+    if (Test-Path $launchLog) { Remove-Item $launchLog }
+    $global:mesaGitCalls = @()
+    Invoke-Expression (Get-Content -Raw (Join-Path $project 'install.ps1'))
+    Assert-True (Test-Path (Join-Path $temporary 'relative checkout\.git')) 'relative MESA_DIR did not resolve against the PowerShell location'
+    Assert-True (Test-Path $launchLog) 'relative MESA_DIR checkout did not launch Mesa'
+  } finally {
+    [Environment]::CurrentDirectory = $priorProcessDirectory
+    $env:MESA_DIR = $checkout
+  }
+
   $runScript = Get-Content -Raw (Join-Path $project 'run.cmd')
   # Exercise the actual launch subroutine with a module path that excludes
   # Windows PowerShell's built-ins, as an intermediate cmd process can inherit.
@@ -217,6 +235,26 @@ if ((Get-Content 'expanded/payload.txt' -Raw).Trim() -ne 'archive payload') { th
     $steps = (Get-Content -Raw $env:MESA_TEST_NODE_LOG).Trim()
     Assert-True ($steps -ceq $case[2]) "empty-PATH Node setup ran: $steps"
   }
+  # A later PATH refresh adds %ProgramFiles%\nodejs. The activated pin must stay
+  # first, and the pre-npm check must reject a system Node that wins instead.
+  # :require_pinned_node calls :node_version, which precedes :use_pinned_node.
+  $useAt = $runScript.IndexOf("`n:node_version")
+  $useEnd = $runScript.IndexOf("`n:has_webview2", $useAt + 1)
+  Assert-True ($useAt -ge 0 -and $useEnd -gt $useAt) 'pinned Node activation subroutines are missing'
+  Assert-True ($runScript -match "call :require_pinned_node\r?\nif errorlevel 1 exit /b 1\r?\n\r?\ncall node scripts\\launch-cache\.mjs check-deps") 'npm runs without re-verifying the pinned Node'
+  $systemNode = Join-Path $temporary 'nodejs'
+  New-Item -ItemType Directory -Force $systemNode, $env:MESA_TEST_PINNED_DIR | Out-Null
+  Set-Content (Join-Path $systemNode 'node.cmd') '@echo v20.0.0'
+  Set-Content (Join-Path $env:MESA_TEST_PINNED_DIR 'node.cmd') '@echo v22.22.3'
+  $orderProbe = Join-Path $temporary 'node-order.cmd'
+  $orderBody = "@echo off`r`nsetlocal enabledelayedexpansion`r`nset `"MESA_NODE_VERSION=22.22.3`"`r`nset `"NODE_BIN=$systemNode`"`r`nif `"%MESA_TEST_ACTIVATE%`"==`"1`" call :use_pinned_node`r`ncall :refresh_paths`r`ncall :refresh_paths`r`ncall :require_pinned_node`r`nexit /b %errorlevel%`r`n" + ($runScript.Substring($useAt + 1, $useEnd - $useAt - 1) -replace "`r?`n", "`r`n")
+  Set-Content -Path $orderProbe -Value $orderBody
+  foreach ($case in @(@('1', 0), @('0', 1))) {
+    $env:MESA_TEST_ACTIVATE = $case[0]
+    & cmd.exe /d /c "`"$orderProbe`"" | Out-Null
+    Assert-True ($LASTEXITCODE -eq $case[1]) "pinned Node order check returned $LASTEXITCODE (activated: $($case[0]))"
+  }
+  Remove-Item Env:\MESA_TEST_ACTIVATE -ErrorAction SilentlyContinue
   $env:Path = $priorPath
 
   # Failure cases intentionally leave a nonzero native command status.

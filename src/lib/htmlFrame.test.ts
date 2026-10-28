@@ -62,3 +62,29 @@ it('retains stylesheets containing inert SVG data images without weakening sanit
   expect(frame).toContain('%3Csvg');
   expect(frame).not.toContain('<svg xmlns=');
 });
+
+it('preview stripping leaves no parsed script or handler in obfuscated markup', async () => {
+  const { stripSavedHtmlPreviewCode } = await import('./html');
+  const inputs = [
+    '<scr<script>x</script>ipt>alert(1)</script>',
+    '<<script></script>script>alert(1)</script>',
+    '<img src=x onerror=a()//><p/onclick=b()>c</p><a x="1"onclick="2">d</a>',
+    '<svg><style><img src=x onerror=alert(1)></style></svg>',
+    '<SCRIPT\n>a()</SCRIPT\n><script >b()</script foo>',
+    '<img a="1" o onx="2"nerror=3>',
+  ];
+  for (const input of inputs) {
+    const doc = new DOMParser().parseFromString(stripSavedHtmlPreviewCode(input), 'text/html');
+    expect(doc.querySelectorAll('script')).toHaveLength(0);
+    for (const element of doc.querySelectorAll('*')) {
+      expect(element.getAttributeNames().filter(name => name.startsWith('on'))).toEqual([]);
+    }
+  }
+});
+
+it('removes external SVG xlink references while keeping same-document sprites', async () => {
+  const { savedHtmlFrameDocument } = await import('./html');
+  const html = savedHtmlFrameDocument('<svg><symbol id="i"></symbol><use xlink:href="#i"></use><a xlink:href="https://example.com/out"><text>t</text></a><image xlink:href="https://example.com/p.png"></image></svg>');
+  expect(html).toContain('xlink:href="#i"');
+  expect(html).not.toContain('https://example.com');
+});

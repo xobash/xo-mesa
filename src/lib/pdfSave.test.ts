@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { persistPdfBytes, type PdfSaveFs } from "./pdfSave";
+const parse = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("./pdf", async (original) => {
+  const actual = await original<typeof import("./pdf")>();
+  return { ...actual, assertValidPdfBytes: async (bytes: Uint8Array) => { parse.calls++; await actual.assertValidPdfBytes(bytes); } };
+});
+import { assertValidPdfSnapshot, persistPdfBytes, type PdfSaveFs } from "./pdfSave";
 
 async function makePdf(text: string): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
@@ -180,5 +185,42 @@ describe("persistPdfBytes", () => {
       "Final PDF write verification failed."
     );
     expect(files.has("/vault/test.pdf")).toBe(false);
+  });
+});
+
+describe("validated save snapshots", () => {
+  it("parses a validated snapshot once on the native atomic path", async () => {
+    const original = await makePdf("before");
+    const next = await makePdf("after");
+    const { fs } = makeFs(original);
+    const atomicWrite = vi.fn(async () => {});
+    parse.calls = 0;
+    await assertValidPdfSnapshot(next);
+    await persistPdfBytes("/vault/test.pdf", next, { ...fs, atomicWrite }, { expectedCurrentBytes: original });
+    expect(parse.calls).toBe(1);
+    expect(atomicWrite).toHaveBeenCalledWith("/vault/test.pdf", next, original);
+  });
+
+  it("keeps the specific pre-check error and still rejects unvalidated bytes", async () => {
+    const { fs } = makeFs(await makePdf("before"));
+    const truncated = new TextEncoder().encode("%PDF-1.7\n1 0 obj\n");
+    const atomicWrite = vi.fn(async () => {});
+    await expect(assertValidPdfSnapshot(truncated)).rejects.toThrow(/%%EOF/);
+    await expect(persistPdfBytes("/vault/test.pdf", truncated, { ...fs, atomicWrite }))
+      .rejects.toThrow("Temporary PDF write verification failed.");
+    expect(atomicWrite).not.toHaveBeenCalled();
+  });
+
+  it("still parses every disk read-back on the compatibility path", async () => {
+    const next = await makePdf("after");
+    const { fs, files } = makeFs(await makePdf("before"));
+    await assertValidPdfSnapshot(next);
+    parse.calls = 0;
+    await persistPdfBytes("/vault/test.pdf", next, {
+      ...fs,
+      async rename(from, to) { files.set(to, files.get(from)!); files.delete(from); },
+    });
+    expect(parse.calls).toBeGreaterThan(0);
+    expect(files.get("/vault/test.pdf")).toEqual(next);
   });
 });

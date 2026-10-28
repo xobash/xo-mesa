@@ -217,7 +217,10 @@ Two operations that LOOK like text operations are held to the same rule:
   vault scan, watch, graph, and sync paths ignore it. The contextual Deleted files dialog includes a
   recovery storage view that lists hidden files and whole deleted folders.
   Folder deletions restore as one folder entry, not as a pile of individual
-  nested files. Restore moves the entry back to its original path, or to the
+  nested files. A deleted file inside a folder lists as that file
+  (`notes/a.md`), not as its folder, so it restores into the existing folder;
+  restore and permanent removal clear the empty recovery folders left behind.
+  One unreadable folder does not hide the rest of the catalogue. Restore moves the entry back to its original path, or to the
   next unique sibling when that path is already occupied. Manual restore is
   owned by the store: it flushes pending text saves first, then moves the
   recovered entry and refreshes the vault from that single path. Sync journal
@@ -401,7 +404,11 @@ name such as `GIT~1` cannot reach `.git`. On Windows, a save also refuses a file
 name with `:` (alternate data streams), a device name such as `CON`, `CONIN$`
 or `CLOCK$`, or a trailing dot or space. Bulk text reads accept at most 128
 visible paths per request, never hidden or `node_modules` paths, and never
-above the 8 MiB automatic text limit. The media (`asset`) scope also requires a
+above the 8 MiB automatic text limit. Single bounded byte reads have the same
+visible-path rule, so `.git`, `.env` and recovery storage are not
+renderer-readable. Reads open each file once without following a final link
+or blocking on a FIFO, then check its type and size on that handle. A hidden
+folder inside an approved vault cannot be approved as a separate vault. The media (`asset`) scope also requires a
 literal leading dot, and Mesa windows cannot navigate to `asset` URLs.
 Visible directories use native creation. Delete and restore use recoverable,
 no-replace moves. Recovery catalogue reads need no recursive hidden-path grant.
@@ -416,7 +423,9 @@ Native atomic saves and received sync replacements preserve the existing file
 owner/group, permission bits, access ACL and extended attributes through held
 file handles. A preservation failure stops publication. New files and temporary
 stages use mode 0600; macOS inherited ACL grants are removed before bytes are
-written. These controls do not lock out existing external handles or guarantee
+written. The vault folder itself keeps its own ACL. On a filesystem without
+extended ACL support (FAT, exFAT, many SMB shares) there is no inherited grant
+to remove, so saves and sync continue. These controls do not lock out existing external handles or guarantee
 Windows directory-metadata power-loss durability. Native regression tests cover
 macOS modes, ACL/xattr retention and inherited-ACL removal; Linux ACL/xattr
 execution requires Linux.

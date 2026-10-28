@@ -178,7 +178,14 @@ after the interaction settles.
 | > 4,000 | Settled ambient redraws use 20 fps instead of 30 fps. |
 
 The first painted frame is unchanged: the synchronous warm ticks still run
-before it at every size. The worker runs the same ticks and the same overlap
+before it at every size. While a vault is opening, the graph waits for note
+metadata before that first build. Vault open publishes the file catalog and
+the selected note before the note index. The graph waits until the stored
+index is shown or, without one, until indexing finishes or fails. The pane
+shows the indexing count in the meantime and draws nothing from the previous
+vault. Building from the catalog alone would paint and warm a partial graph,
+then rebuild and re-settle every node when the notes arrive. A vault with no
+text files has nothing to wait for. The worker runs the same ticks and the same overlap
 passes in the same order as the main-thread frame loop, so both paths end in
 the same layout. Snapshot buffers are transferred to the worker and state
 buffers back; neither direction copies them. Without `Worker`, or after a

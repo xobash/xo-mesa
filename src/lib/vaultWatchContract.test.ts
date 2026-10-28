@@ -25,6 +25,7 @@ const ROOT = "/vault";
 type Rec = Record<string, unknown>;
 let invokeCalls: { cmd: string; args: Rec }[] = [];
 let watchCalls = 0;
+let pluginCallback: ((event: unknown) => void) | undefined;
 /** Per-test: set to make `invoke("vault_watch", …)` reject (fallback path). */
 let vaultWatchRejects = false;
 /** The last Channel handed to `invoke("vault_watch")`, so a test can push a
@@ -59,15 +60,16 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   mkdir: async () => {},
   exists: async () => false,
   stat: async () => ({ size: 0, mtime: new Date(0) }),
-  watch: async () => {
+  watch: async (_root: string, callback: (event: unknown) => void) => {
     watchCalls++;
+    pluginCallback = callback;
     return () => {};
   },
   open: async () => ({ read: async () => 0, close: async () => {} }),
 }));
 
 (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
-const { watchVault, decodeWatchBatch } = await import("./vault");
+const { watchVault, decodeWatchBatch, WATCH_FALLBACK_MAX_WAIT_MS } = await import("./vault");
 
 beforeEach(() => {
   invokeCalls = [];
@@ -103,6 +105,10 @@ describe("decodeWatchBatch", () => {
         { paths: [true, 2], kind: "modify" },
       ])
     ).toEqual([{ paths: ["/vault/a.md"], kind: "modify" }]);
+  });
+
+  it("keeps a native rescan request", () => {
+    expect(decodeWatchBatch([{ paths: ["/vault"], kind: "rescan" }])).toEqual([{ paths: ["/vault"], kind: "rescan" }]);
   });
 
   it("defaults an unknown kind to modify", () => {
@@ -163,5 +169,45 @@ describe("watchVault native path", () => {
     expect(invokeCalls.some((c) => c.cmd === "vault_watch")).toBe(true);
     expect(watchCalls).toBe(1); // fell through to tauri-plugin-fs `watch`
     stop();
+  });
+
+  it("delivers a continuous plugin event stream within the max wait", async () => {
+    vi.useFakeTimers();
+    try {
+      vaultWatchRejects = true;
+      const seen: { paths: string[] }[][] = [];
+      const stop = await watchVault(ROOT, (events) => seen.push(events));
+      for (let i = 0; i * 30 < WATCH_FALLBACK_MAX_WAIT_MS * 2; i++) {
+        pluginCallback?.({ type: { modify: {} }, paths: [`/vault/${i}.md`] });
+        vi.advanceTimersByTime(30);
+      }
+      expect(seen.length).toBeGreaterThanOrEqual(1);
+      expect(seen[0].length).toBeLessThanOrEqual(Math.ceil(WATCH_FALLBACK_MAX_WAIT_MS / 30) + 1);
+      vi.advanceTimersByTime(100);
+      expect(seen.flat()).toHaveLength(Math.ceil((WATCH_FALLBACK_MAX_WAIT_MS * 2) / 30));
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("turns a pathless or rescan-flagged plugin event into one rescan request", async () => {
+    vi.useFakeTimers();
+    try {
+      vaultWatchRejects = true;
+      const seen: unknown[] = [];
+      const stop = await watchVault(ROOT, (events) => seen.push(events));
+      pluginCallback?.({ type: "other", paths: [] });
+      pluginCallback?.({ type: { modify: {} }, paths: ["/vault/a.md"], attrs: { flag: "rescan" } });
+      vi.advanceTimersByTime(100);
+      expect(seen).toEqual([[
+        { paths: [ROOT], kind: "rescan" },
+        { paths: [ROOT], kind: "rescan" },
+        { paths: ["/vault/a.md"], kind: "modify" },
+      ]]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

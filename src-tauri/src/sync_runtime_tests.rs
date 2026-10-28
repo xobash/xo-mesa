@@ -1318,3 +1318,155 @@ fn server_runtime_shutdown_does_not_wait_for_long_blocking_work() {
     assert!(started.elapsed() < SERVER_SHUTDOWN_TIMEOUT + Duration::from_secs(1));
     release.store(true, Ordering::Relaxed);
 }
+
+/// Child half of `pinned_client_ignores_system_proxy`: the proxy variables are
+/// set on this process at spawn, so no running test thread sees them change.
+#[test]
+#[ignore]
+fn pinned_client_proxy_probe() {
+    let Ok(target) = std::env::var("MESA_PROXY_PROBE_TARGET") else {
+        return;
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async move {
+        let client = build_pinned_client(None, Arc::new(Mutex::new(None))).unwrap();
+        let _ = client
+            .get(format!("https://{target}/sync/identity"))
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await;
+    });
+}
+
+#[test]
+fn pinned_client_ignores_system_proxy() {
+    use std::net::TcpListener;
+    let target = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    target.set_nonblocking(true).unwrap();
+    proxy.set_nonblocking(true).unwrap();
+    let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "sync::tests::pinned_client_proxy_probe",
+            "--ignored",
+            "--quiet",
+        ])
+        .env(
+            "MESA_PROXY_PROBE_TARGET",
+            target.local_addr().unwrap().to_string(),
+        )
+        .env("HTTPS_PROXY", &proxy_url)
+        .env("https_proxy", &proxy_url)
+        .env("ALL_PROXY", &proxy_url)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        proxy.accept().is_err(),
+        "sync traffic reached the system proxy"
+    );
+    assert!(
+        target.accept().is_ok(),
+        "sync client did not connect directly"
+    );
+}
+
+#[test]
+fn sync_status_answers_while_start_or_stop_holds_the_state_lock() {
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (locked, wait_locked) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _guard = state().lock().unwrap();
+        locked.send(()).unwrap();
+        let _ = held.recv_timeout(Duration::from_secs(10));
+    });
+    wait_locked.recv().unwrap();
+    let (answered, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || answered.send(sync_status()).unwrap());
+    let status = answer.recv_timeout(Duration::from_secs(1));
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    assert!(status.is_ok(), "sync_status waited for the state lock");
+}
+
+#[test]
+fn unauthenticated_connections_hold_a_slot_briefly() {
+    assert_eq!(TLS_HANDSHAKE_TIMEOUT, Duration::from_secs(5));
+    assert_eq!(CONNECTION_HEADER_TIMEOUT, Duration::from_secs(5));
+    // A Windows checkout may convert the doc to CRLF.
+    let doc = include_str!("../../docs/sync.md").replace("\r\n", "\n");
+    assert!(doc.contains("TLS handshake within 5 seconds or its\nrequest headers within 5 seconds"));
+}
+
+#[test]
+fn rejected_request_log_shows_a_bounded_path_without_query() {
+    let uri: hyper::Uri = "/sync/file?rel=secret.md&hash=abc".parse().unwrap();
+    assert_eq!(rejected_path_for_log(uri.path()), "/sync/file");
+    let long = format!("/{}", "a".repeat(500));
+    let shown = rejected_path_for_log(&long);
+    assert_eq!(shown.chars().count(), 65);
+    assert!(shown.ends_with('…'));
+}
+
+#[test]
+fn every_sync_exit_finishes_progress_and_cancellation_is_a_report() {
+    let started = Instant::now();
+    let mut ended = Vec::new();
+    let report = settle_sync_run(Err("cancelled".into()), started, true, |level, _| {
+        ended.push(level.to_string())
+    })
+    .unwrap();
+    assert!(report.cancelled);
+    let error = settle_sync_run(
+        Err("protocol mismatch".into()),
+        started,
+        false,
+        |level, _| ended.push(level.to_string()),
+    );
+    assert_eq!(error.err().as_deref(), Some("protocol mismatch"));
+    assert_eq!(ended, ["info", "error"]);
+    let ok = settle_sync_run(Ok(cancelled_report(started)), started, false, |_, _| {
+        panic!("a completed run already emitted its final frame")
+    });
+    assert!(ok.is_ok());
+}
+
+#[test]
+fn transfer_limit_errors_name_the_configured_limit_and_pins_must_be_complete() {
+    let error = transfer_limit_error(64 * 1024 * 1024).to_string();
+    assert!(error.contains("64 MiB"), "{error}");
+    assert!(!error.contains("GiB"));
+    let full = "AB".repeat(32);
+    assert_eq!(normalize_pin(None).unwrap(), None);
+    assert_eq!(normalize_pin(Some("  ".into())).unwrap(), None);
+    assert_eq!(
+        normalize_pin(Some(full.clone())).unwrap(),
+        Some(full.to_lowercase())
+    );
+    let colons = full
+        .as_bytes()
+        .chunks(2)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect::<Vec<_>>()
+        .join(":");
+    assert_eq!(
+        normalize_pin(Some(colons)).unwrap(),
+        Some(full.to_lowercase())
+    );
+    for bad in [
+        "zz",
+        "abc",
+        &"a".repeat(63),
+        &format!("{full}00"),
+        &format!("{}g", &full[..63]),
+    ] {
+        assert!(normalize_pin(Some(bad.to_string())).is_err(), "{bad}");
+    }
+}

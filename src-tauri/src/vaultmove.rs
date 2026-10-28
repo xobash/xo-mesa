@@ -361,7 +361,9 @@ pub async fn vault_purge_recovery(
         let _guard = crate::vaultwrite::WRITE_LOCK
             .write()
             .unwrap_or_else(|e| e.into_inner());
-        purge_recovery(&root, &trash_rel_path)
+        purge_recovery(&root, &trash_rel_path)?;
+        crate::vaultops::prune_empty_trash_parents(&root, &trash_rel_path);
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?

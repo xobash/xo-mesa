@@ -22,10 +22,11 @@ npm run mesa
   exact helper names. Tests added with code are regression coverage, not
   independent validation.
 - Run the frontend CI checks in the order CI runs them: `npm ci`,
-  `npm run typecheck`, `npm run lint`, `npm run test:coverage` (the test suite
-  plus one global set of coverage floors over `src/lib`, `src/controllers`,
-  `src/components`, `src/store.ts` and `src/App.tsx` together; there are no
-  per-directory floors), `npm run test:assets`, `npm run audit:assets`,
+  `npm run typecheck`, `npm run lint`, `npm run test:coverage` (every
+  `src/**/*.test.{ts,tsx}` file plus one global set of coverage floors over the
+  non-test TypeScript in `src/lib`, `src/controllers` and `src/components`, and
+  `src/store.ts` and `src/App.tsx`, together; there are no per-directory
+  floors), `npm run test:assets`, `npm run audit:assets`,
   `npm run test:toolchains`, `npm run test:documents`, `npm run test:capabilities`,
   `npm run test:release`, `npm run test:bootstrap`, `npm run test:index`,
   `npm run test:activity-api`, `npm run test:markdown`, `npm run test:notices`,

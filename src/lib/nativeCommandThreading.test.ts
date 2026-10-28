@@ -10,7 +10,7 @@ import vaultwatch from "../../src-tauri/src/vaultwatch.rs?raw";
 // Both native command forms dispatch blocking work away from the webview thread.
 const OFF_MAIN_THREAD: Record<string, { source: string; commands: string[] }> = {
   "activity.rs": { source: activity, commands: ["activity_stop"] },
-  "sync.rs": { source: sync, commands: ["sync_discovery_stop"] },
+  "sync.rs": { source: sync, commands: ["sync_discovery_stop", "sync_discovery_start"] },
   "sync_server.rs": { source: syncServer, commands: ["sync_stop"] },
   "sync_identity.rs": { source: syncIdentity, commands: ["sync_identity"] },
   "vaultscope.rs": { source: vaultscope, commands: ["vault_flush_file", "vault_authorize", "vault_authorize_artifacts"] },

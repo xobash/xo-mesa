@@ -39,6 +39,19 @@ describe("forEachConcurrent", () => {
     ).rejects.toThrow("failed");
   });
 
+  it("starts no new item after the first rejection", async () => {
+    const started: number[] = [];
+    await expect(
+      forEachConcurrent([0, 1, 2, 3, 4, 5, 6, 7], 2, async (item) => {
+        started.push(item);
+        await Promise.resolve();
+        if (item === 1) throw new Error("failed");
+      })
+    ).rejects.toThrow("failed");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toEqual([0, 1, 2]);
+  });
+
   it("stops scheduling new work after cancellation", async () => {
     let stopped = false;
     const seen: number[] = [];

@@ -1,16 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../store";
 import {
   fetchRemoteVaultInfo,
   peerFromDiscovery,
-  startSyncDiscovery,
-  stopSyncDiscovery,
   type DiscoveredSyncPeer,
-  type DiscoveryPacket,
   type RemoteVaultInfo,
 } from "../lib/syncUi";
 import { parsePeerInput } from "../lib/pairing";
+import { refreshDiscoveredPeers } from "../lib/discoveryPeers";
+import { syncDiscovery } from "../lib/serialResource";
 import { IN_TAURI } from "../lib/vault";
 import { Modal } from "./Modal";
 
@@ -25,8 +23,8 @@ function humanBytes(n: number): string {
  *
  * Steps: pick a nearby device (or type an address/pairing code) and enter the
  * sync key → we probe it to confirm the key + reach → the user picks a local
- * folder and we clone into it. Discovery mirrors SyncModal's listener so a
- * device that's "Receiving" shows up here automatically.
+ * folder and we clone into it. Nearby search shares SyncModal's discovery
+ * owner and starts only after the user asks for it in this open dialog.
  */
 export function ConnectVaultModal({ onClose }: { onClose: () => void }) {
   const receiveSharedVault = useAppStore((s) => s.receiveSharedVault);
@@ -51,30 +49,20 @@ export function ConnectVaultModal({ onClose }: { onClose: () => void }) {
     }).catch(() => undefined);
   }, []);
 
-  // Live LAN discovery while this modal is open.
+  // Discovery consent lasts only while this dialog is open.
+  const [searching, setSearching] = useState(false);
   useEffect(() => {
-    if (!IN_TAURI) return;
+    if (!IN_TAURI || !searching) return;
     let alive = true;
-    let unlisten: (() => void) | null = null;
-    void (async () => {
-      try {
-        unlisten = await listen<DiscoveryPacket>("sync://discovered", (event) => {
-          const peer = peerFromDiscovery(event.payload);
-          if (!peer || !alive || !peer.listening) return; // only devices sharing
-          setNearby((cur) => ({ ...cur, [peer.id]: peer }));
-        });
-        // Announce ourselves as a browser (not listening) so discovery is mutual.
-        await startSyncDiscovery(vaultName || "Mesa device", savedPort, false);
-      } catch {
-        /* discovery is best-effort; manual entry still works */
-      }
-    })();
-    return () => {
-      alive = false;
-      unlisten?.();
-      void stopSyncDiscovery().catch(() => {});
-    };
-  }, [vaultName, savedPort]);
+    // Announce as a browser (not listening) so discovery is mutual.
+    const release = syncDiscovery({ name: vaultName || "Mesa device", port: savedPort, listening: false }, (packet) => {
+      const peer = peerFromDiscovery(packet);
+      if (!peer || !alive || !peer.listening) return; // only devices sharing
+      setNearby((cur) => refreshDiscoveredPeers(cur, peer));
+    });
+    const timer = setInterval(() => setNearby((cur) => refreshDiscoveredPeers(cur)), 5000);
+    return () => { alive = false; clearInterval(timer); release(); };
+  }, [searching, vaultName, savedPort]);
 
   const discovered = useMemo(
     () =>
@@ -167,8 +155,24 @@ export function ConnectVaultModal({ onClose }: { onClose: () => void }) {
         {/* Nearby devices */}
         <div className="cv-section">
           <div className="cv-section-title">Nearby devices</div>
-          {discovered.length === 0 ? (
+          {!searching ? (
             <div className="cv-empty">
+              <span>
+                Searching broadcasts this device’s name and certificate
+                fingerprint on the local network and stops when this dialog
+                closes.
+              </span>
+              <button
+                type="button"
+                className="btn"
+                disabled={!IN_TAURI}
+                onClick={() => setSearching(true)}
+              >
+                Search nearby devices
+              </button>
+            </div>
+          ) : discovered.length === 0 ? (
+            <div className="cv-empty" role="status">
               <span className="cv-radar" aria-hidden />
               Looking for devices… open Sync on another device and turn on
               <b> Receive</b>.

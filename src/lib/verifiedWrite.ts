@@ -1,3 +1,5 @@
+import { pdfBytesEqual } from "./pdfBytes";
+
 export interface VerifiedWriteFs {
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array): Promise<void>;
@@ -89,12 +91,9 @@ function copyBytes(bytes: Uint8Array): Uint8Array {
   return bytes.slice(0);
 }
 
+/** Exact byte equality, compared a word at a time. */
 export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
+  return pdfBytesEqual(a, b);
 }
 
 async function readBackVerifiedBytes(

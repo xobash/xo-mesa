@@ -136,18 +136,51 @@ fn read_all(
     out
 }
 
-fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
-    // Regular files only, matching `vault_scan`'s `is_file` rule: a directory
-    // or a device node named in `rels` must read as a failure, not hang or
-    // return something the text cache would then hold forever.
-    let meta = std::fs::symlink_metadata(path)?;
-    if !meta.is_file() {
+/// Open a regular file without following a final link or blocking on a FIFO
+/// or device; the type check uses the opened handle, so a swap cannot slip in.
+fn open_regular(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_attributes() & 0x400 != 0
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    if !meta.is_file() || reparse {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a file"));
     }
-    if meta.len() > max_text_file_bytes {
+    Ok(file)
+}
+
+fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
+    use std::io::Read;
+    // Regular files only, matching `vault_scan`'s `is_file` rule: a directory
+    // or a device node named in `rels` must read as a failure, not hang.
+    let file = open_regular(path)?;
+    if file.metadata()?.len() > max_text_file_bytes {
         return Ok(ReadResult::Skipped);
     }
-    std::fs::read(path).map(ReadResult::Content)
+    // A file that grows after the size check still stops at the limit.
+    let mut bytes = Vec::new();
+    file.take(max_text_file_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_text_file_bytes {
+        return Ok(ReadResult::Skipped);
+    }
+    Ok(ReadResult::Content(bytes))
 }
 
 /// Frame the results into one response body.
@@ -230,32 +263,43 @@ pub async fn vault_read_bytes(
     let (root, rel) = crate::vaultscope::approved_path(&app, &path)?;
     let access = crate::vaulttransaction::access(&root).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        use std::io::Read;
         let _access = access;
-        #[cfg(unix)]
-        let file = crate::sync_core::RootedTarget::resolve(&root, &rel, false)
-            .map_err(|e| e.to_string())?
-            .open_read()
-            .map_err(|e| e.to_string())?;
-        #[cfg(windows)]
-        let _guard = crate::sync_core::WindowsParentGuard::acquire(&root.join(&rel), false)
-            .map_err(|e| e.to_string())?;
-        #[cfg(windows)]
-        let file =
-            crate::sync_core::open_file_no_follow(&root.join(rel)).map_err(|e| e.to_string())?;
-        let mut bytes = Vec::new();
-        file.take((max_bytes + usize::from(require_complete)) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > max_bytes {
-            return Err(
-                "File exceeds the inline review limit. Open each copy to review it.".into(),
-            );
-        }
-        Ok(tauri::ipc::Response::new(bytes))
+        read_bounded(&root, &rel, max_bytes, require_complete).map(tauri::ipc::Response::new)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Hidden entries (`.git`, `.env`, recovery folders) are not renderer-readable
+/// vault documents, as spelled or after OS resolution.
+fn read_bounded(
+    root: &Path,
+    rel: &str,
+    max_bytes: usize,
+    require_complete: bool,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    if !crate::vaultscope::resolves_visible(root, rel) {
+        return Err("path is not a visible vault file".into());
+    }
+    #[cfg(unix)]
+    let file = crate::sync_core::RootedTarget::resolve(root, rel, false)
+        .map_err(|e| e.to_string())?
+        .open_read()
+        .map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let _guard = crate::sync_core::WindowsParentGuard::acquire(&root.join(rel), false)
+        .map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    let file = crate::sync_core::open_file_no_follow(&root.join(rel)).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    file.take((max_bytes + usize::from(require_complete)) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > max_bytes {
+        return Err("File exceeds the inline review limit. Open each copy to review it.".into());
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -686,11 +730,8 @@ fn fingerprint_all(root: &Path, rels: &[String]) -> Vec<Option<String>> {
             if !visible_under(&canonical_root, &path) {
                 return None;
             }
-            let mut file = std::fs::File::open(path).ok()?;
+            let mut file = open_regular(&path).ok()?;
             let before = file.metadata().ok()?;
-            if !before.is_file() {
-                return None;
-            }
             let mut remaining = before.len();
             let mut hasher = Sha256::new();
             let mut buffer = [0u8; 65536];
@@ -715,6 +756,32 @@ fn fingerprint_all(root: &Path, rels: &[String]) -> Vec<Option<String>> {
 #[cfg(test)]
 mod fingerprint_tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn fifo_and_hidden_paths_never_block_or_read() {
+        let root = std::env::temp_dir().join(format!("mesa-read-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join(".mesa-trash")).unwrap();
+        std::fs::write(root.join(".git/config"), b"secret").unwrap();
+        std::fs::write(root.join(".env"), b"TOKEN=1").unwrap();
+        std::fs::write(root.join(".mesa-trash/old.md"), b"deleted").unwrap();
+        std::fs::write(root.join("note.md"), b"visible").unwrap();
+        let fifo = std::ffi::CString::new(root.join("pipe.md").to_str().unwrap()).unwrap();
+        // SAFETY: the path is NUL-terminated and owned for the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert_eq!(fingerprint_all(&root, &["pipe.md".into()]), [None]);
+        assert!(read_file(&root.join("pipe.md"), 1024).is_err());
+        for hidden in [".git/config", ".env", ".mesa-trash/old.md"] {
+            assert!(read_bounded(&root, hidden, 1024, true).is_err(), "{hidden}");
+        }
+        assert_eq!(
+            read_bounded(&root, "note.md", 1024, true).unwrap(),
+            b"visible"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn rejects_traversal_and_hashes_content_including_empty_files() {
         let root = std::env::temp_dir().join(format!("mesa-index-{}", std::process::id()));

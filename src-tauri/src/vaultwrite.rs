@@ -212,23 +212,47 @@ fn replace_preserving(from: &Path, to: &Path, displaced: &Path) -> io::Result<()
             .chain(Some(0))
             .collect::<Vec<u16>>()
     };
-    let from = wide(from);
-    let to = wide(to);
-    let displaced = wide(displaced);
+    let (from_wide, to_wide, displaced_wide) = (wide(from), wide(to), wide(displaced));
     let result = unsafe {
         ReplaceFileW(
-            to.as_ptr(),
-            from.as_ptr(),
-            displaced.as_ptr(),
+            to_wide.as_ptr(),
+            from_wide.as_ptr(),
+            displaced_wide.as_ptr(),
             0,
             std::ptr::null(),
             std::ptr::null(),
         )
     };
     if result == 0 {
-        Err(io::Error::last_os_error())
+        Err(restore_unmoved_replacement(
+            io::Error::last_os_error(),
+            to,
+            displaced,
+        ))
     } else {
         Ok(())
+    }
+}
+
+/// ReplaceFileW's ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 leaves the original only
+/// at the backup name. Put it back unless another writer created the target.
+#[cfg(any(windows, test))]
+fn restore_unmoved_replacement(error: io::Error, to: &Path, displaced: &Path) -> io::Error {
+    const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1177;
+    if error.raw_os_error() != Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2)
+        || fs::symlink_metadata(to).is_ok()
+    {
+        return error;
+    }
+    match crate::sync_core::move_file_no_replace(displaced, to) {
+        Ok(()) => error,
+        Err(restore) => io::Error::new(
+            error.kind(),
+            format!(
+                "{error}; original kept at {}: {restore}",
+                displaced.display()
+            ),
+        ),
     }
 }
 
@@ -488,6 +512,37 @@ pub async fn vault_write_atomic(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unmoved_replacement_restores_the_original_only_into_a_missing_target() {
+        let dir = std::env::temp_dir().join(format!("mesa-replace-2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (target, displaced) = (
+            dir.join("note.md"),
+            dir.join(".note.md.mesa-backup-1-a.tmp"),
+        );
+        fs::write(&displaced, b"original").unwrap();
+        let error =
+            restore_unmoved_replacement(io::Error::from_raw_os_error(1177), &target, &displaced);
+        assert_eq!(error.raw_os_error(), Some(1177));
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert!(!displaced.exists());
+        fs::write(&displaced, b"second").unwrap();
+        restore_unmoved_replacement(io::Error::from_raw_os_error(1177), &target, &displaced);
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"original",
+            "an existing target is never replaced"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), b"second");
+        restore_unmoved_replacement(
+            io::Error::from_raw_os_error(5),
+            &dir.join("gone.md"),
+            &displaced,
+        );
+        assert!(displaced.exists(), "other failures keep the displaced file");
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn headers(path_hex: &str, expected: &str) -> tauri::http::HeaderMap {
         let mut map = tauri::http::HeaderMap::new();

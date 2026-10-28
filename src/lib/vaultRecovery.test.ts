@@ -26,6 +26,8 @@ let removeCalls = 0;
 let mkdirCalls: string[] = [];
 let inFlight = 0;
 let peakInFlight = 0;
+let statInFlight = 0;
+let peakStatInFlight = 0;
 let cancelAfterReadDirs: number | null = null;
 let cancelled = false;
 
@@ -89,6 +91,10 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
     }
   },
   stat: async (path: string) => {
+    statInFlight++;
+    peakStatInFlight = Math.max(peakStatInFlight, statInFlight);
+    await Promise.resolve();
+    statInFlight--;
     const mtime = mtimes.get(path);
     if (mtime === undefined) throw new Error(`ESTAT ${path}`);
     return { size: files.get(path)?.length ?? 0, mtime: new Date(mtime) };
@@ -356,6 +362,8 @@ describe("recoverWriteArtifacts traversal", () => {
     mkdirCalls = [];
     inFlight = 0;
     peakInFlight = 0;
+    statInFlight = 0;
+    peakStatInFlight = 0;
     cancelAfterReadDirs = null;
     cancelled = false;
   });
@@ -392,6 +400,15 @@ describe("recoverWriteArtifacts traversal", () => {
     expect(peakInFlight).toBeLessThanOrEqual(16);
     expect(files.has(hiddenArtifact)).toBe(true);
     expect(files.has(moduleArtifact)).toBe(true);
+  });
+
+  it("bounds artifact stat requests for a large discovered list", async () => {
+    const now = Date.now();
+    for (let i = 0; i < 200; i++) addFile(ROOT, artifactName(`n${i}.md`, "save", `s${i}`), { mtime: now - STALE_MS });
+    const result = await recoverWriteArtifacts(ROOT);
+    expect(result.removed).toHaveLength(200);
+    expect(peakStatInFlight).toBeGreaterThan(1);
+    expect(peakStatInFlight).toBeLessThanOrEqual(32);
   });
 
   it("preserves fresh, missing-target, rescue, and locked-artifact rules", async () => {

@@ -78,13 +78,18 @@ function cleanCode(code: string): string {
     .replace(/O/g, "0");
 }
 
-/** True if a string looks like a pairing code (7 or 10 base32 chars, no host punctuation). */
+/**
+ * True if a string looks like a pairing code: 7 or 10 base32 chars, no host
+ * punctuation, and the displayed form's leading "#" or grouping. A bare
+ * 10-character name such as `macbookpro` stays a hostname.
+ */
 export function isPairingCode(input: string): boolean {
   const t = input.trim();
   if (/[.:/@]/.test(t)) return false; // looks like an address/URL
   const len = cleanCode(t).length;
   if (len === 7) return t.startsWith("#") || /[-\s]/.test(t);
-  return len === 10;
+  if (len !== 10) return false;
+  return t.startsWith("#") || /^[0-9a-z]{4}[-\s]+[0-9a-z]{4}[-\s]+[0-9a-z]{2}$/i.test(t);
 }
 
 /** Decode a pairing code back into `{ host, port }`, or `null` if invalid. */

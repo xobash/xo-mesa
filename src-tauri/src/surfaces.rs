@@ -16,7 +16,8 @@ pub struct SurfaceRequest {
     overlay: bool,
     background: Option<[u8; 3]>,
 }
-fn validate_route(label: &str, route: &str) -> Result<url::Url, String> {
+/// Research viewers may read Pi output history, so only main may open them.
+fn validate_route(caller: &str, label: &str, route: &str) -> Result<url::Url, String> {
     if label.len() > 128
         || !label
             .bytes()
@@ -64,7 +65,8 @@ fn validate_route(label: &str, route: &str) -> Result<url::Url, String> {
             && doc.is_none()
             && research.is_none()
     } else if label.starts_with("research-") {
-        research.is_some_and(|value| value == "1")
+        caller == "main"
+            && research.is_some_and(|value| value == "1")
             && fields
                 .get("researchLabel")
                 .is_some_and(|value| value == label)
@@ -81,9 +83,10 @@ fn validate_route(label: &str, route: &str) -> Result<url::Url, String> {
 #[tauri::command(async)]
 pub fn workspace_open_surface(
     app: tauri::AppHandle,
+    window: tauri::Window,
     request: SurfaceRequest,
 ) -> Result<(), String> {
-    let url = validate_route(&request.label, &request.url)?;
+    let url = validate_route(window.label(), &request.label, &request.url)?;
     let root = url
         .query_pairs()
         .find(|(key, _)| key == "vault")
@@ -157,13 +160,24 @@ mod tests {
     use super::*;
     #[test]
     fn only_document_panel_and_read_only_research_routes_can_be_created() {
-        assert!(validate_route("doc-one", "index.html?doc=note.md&vault=synthetic").is_ok());
-        assert!(validate_route("panel-one", "index.html?panel=graph&vault=synthetic").is_ok());
+        let caller = "doc-other";
+        assert!(
+            validate_route(caller, "doc-one", "index.html?doc=note.md&vault=synthetic").is_ok()
+        );
         assert!(validate_route(
-            "research-one",
-            "index.html?research=1&researchLabel=research-one"
+            caller,
+            "panel-one",
+            "index.html?panel=graph&vault=synthetic"
         )
         .is_ok());
+        let research = "index.html?research=1&researchLabel=research-one";
+        assert!(validate_route("main", "research-one", research).is_ok());
+        for caller in ["doc-one", "panel-one", "agent-one", "research-two"] {
+            assert!(
+                validate_route(caller, "research-one", research).is_err(),
+                "{caller} must not open a research viewer"
+            );
+        }
         for (label, route) in [
             ("main", "index.html?doc=note.md"),
             ("agent-one", "index.html?doc=note.md"),
@@ -174,7 +188,10 @@ mod tests {
             ("panel-one", "index.html?panel=agent"),
             ("research-one", "index.html?research=1&researchLabel=main"),
         ] {
-            assert!(validate_route(label, route).is_err(), "{label}: {route}");
+            assert!(
+                validate_route("main", label, route).is_err(),
+                "{label}: {route}"
+            );
         }
     }
 }

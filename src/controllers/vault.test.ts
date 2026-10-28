@@ -85,6 +85,45 @@ it('coalesces paths with their latest kind in last occurrence order', () => {
     .toEqual([{kind:'modify',paths:['/v/b.md']},{kind:'create',paths:['/v/a.md']}]);
 });
 
+it('keeps one leading rescan request that later kinds for the root cannot hide', () => {
+  expect(mergeWatchEvents([{kind:'rescan',paths:['/v']},{kind:'modify',paths:['/v']},{kind:'rescan',paths:['/v']},{kind:'create',paths:['/v/a.md']}]))
+    .toEqual([{kind:'rescan',paths:['/v']},{kind:'modify',paths:['/v']},{kind:'create',paths:['/v/a.md']}]);
+});
+
+it('turns a watcher overflow into one rescan that applies lost creates, deletes and edits', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const sized = (rel: string, size: number): VaultFile => ({ ...file(rel), size, mtime: 1 });
+  const existing = [sized('kept.md', 1), sized('gone.md', 1), sized('edited.md', 1)];
+  f.state.setState({ files: existing, contentCache: { 'kept.md': 'k', 'gone.md': 'g', 'edited.md': 'old' },
+    fileFor: rel => f.state.getState().files.find(file => file.relPath === rel),
+    notes: Object.fromEntries(existing.map(file => [file.relPath, { relPath: file.relPath, title: file.name, rawLinks: [], tags: [], aliases: [] }])) });
+  io.scan.mockReset().mockResolvedValue([sized('kept.md', 1), sized('edited.md', 9), sized('new.md', 3)] as never);
+  io.read.mockReset().mockImplementation(async () => ({ ok: true, text: 'fresh' }));
+  // Two overflow windows plus a root modify arrive before the batch runs.
+  f.change([{ kind: 'rescan', paths: ['/v'] }]);
+  f.change([{ kind: 'rescan', paths: ['/v'] }, { kind: 'modify', paths: ['/v'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files.map(file => file.relPath)).toEqual(['edited.md', 'kept.md', 'new.md']));
+  await vi.waitFor(() => expect(f.state.getState().contentCache['edited.md']).toBe('fresh'));
+  expect(f.state.getState().contentCache['new.md']).toBe('fresh');
+  expect(f.state.getState().contentCache['gone.md']).toBeUndefined();
+  expect(f.state.getState().contentCache['kept.md']).toBe('k');
+  // One scan for the merged batch (the root modify may schedule a later debounced refresh).
+  expect(io.scan).toHaveBeenCalledTimes(1);
+  expect(f.state.getState().status).toContain('missed changes');
+  f.controller.dispose();
+});
+
+it('never treats an empty rescan listing as a mass deletion', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  f.state.setState({ files: [file('a.md')], fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });
+  io.scan.mockReset().mockResolvedValue([] as never);
+  f.change([{ kind: 'rescan', paths: ['/v'] }]);
+  await vi.waitFor(() => expect(io.scan).toHaveBeenCalled());
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(f.state.getState().files.map(file => file.relPath)).toEqual(['a.md']);
+  f.controller.dispose();
+});
+
 it('ingests 200 external creates with one read each and one sorted catalogue commit', async () => {
   const f = watcherFixture(); await f.controller.actions.openVault('/v');
   const existing = Array.from({length:2000}, (_, i) => file(`Old-${i}.md`));

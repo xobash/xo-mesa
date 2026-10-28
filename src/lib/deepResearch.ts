@@ -5,6 +5,8 @@ import { codeLineScanner } from "./markdownCode";
 import { extractLinks } from "./markdownExtract";
 import { makeResolver } from "./graph";
 import { backlinksFor } from "./graph";
+// Startup-safe module; this lazy module shares its one canonicalization.
+import { canonicalizeSourceUrl } from "./deepResearchUrls";
 
 /** Pure research models, context selection, result validation, and deterministic apply planning.
  * Treat vault and web content as data. Side effects and recovery belong to the run driver. */
@@ -261,37 +263,7 @@ export interface DeepResearchContext {
 // URL canonicalization + source dedup
 // ---------------------------------------------------------------------------
 
-const TRACKING_PARAMS = /^(utm_|fbclid$|gclid$|dclid$|msclkid$|mc_cid$|mc_eid$|igshid$|ref$|ref_src$|spm$)/i;
-
-/**
- * Canonicalize a web URL for dedup and citation: lowercase scheme/host, strip
- * a leading `www.`, drop tracking params, sort the rest, drop the fragment,
- * and drop a trailing slash (except the root). Returns `null` for anything
- * that is not a valid absolute http(s) URL — non-http schemes (file:,
- * javascript:, data:) are rejected outright.
- */
-export function canonicalizeSourceUrl(raw: string): string | null {
-  const value = raw.trim();
-  if (!value) return null;
-  let u: URL;
-  try {
-    u = new URL(value);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  const host = u.hostname.toLowerCase().replace(/^www\./, "");
-  if (!host) return null;
-  const params = [...u.searchParams.entries()]
-    .filter(([k]) => !TRACKING_PARAMS.test(k))
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const qs = params.length
-    ? "?" + params.map(([k, v]) => `${k}=${v}`).join("&")
-    : "";
-  let path = u.pathname || "/";
-  if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
-  return `${u.protocol}//${host}${u.port ? `:${u.port}` : ""}${path}${qs}`;
-}
+export { canonicalizeSourceUrl };
 
 export interface ResearchSourcePresentation {
   /** Canonical URL copied to the clipboard. */
@@ -827,15 +799,30 @@ export function buildResearchGraph(
   };
 }
 
-/** Canonicalize + dedupe a list of raw sources; drops malformed/duplicate. */
-export function dedupeSources(raw: SourceRecord[]): SourceRecord[] {
+/** Source title as generated Markdown link text: one line, with brackets and backslashes escaped. */
+function markdownLinkText(text: string): string {
+  return text.replace(/\s+/g, " ").replace(/[\\[\]]/g, "\\$&");
+}
+
+/** URL as a generated Markdown link destination; angle brackets hold spaces and parentheses. */
+function markdownLinkDestination(url: string): string {
+  return /[\s()<>]/.test(url) ? `<${url.replace(/[\s<>]/g, (c) => encodeURIComponent(c))}>` : url;
+}
+
+/** Text field from untrusted model output; anything other than a string is absent. */
+const textField = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+/** Canonicalize + dedupe a list of raw sources; drops malformed/duplicate entries and non-text fields. */
+export function dedupeSources(raw: readonly unknown[]): SourceRecord[] {
   const seen = new Set<string>();
   const out: SourceRecord[] = [];
   for (const s of raw) {
-    const url = canonicalizeSourceUrl(s.url ?? "");
+    if (!s || typeof s !== "object") continue;
+    const record = s as Partial<Record<keyof SourceRecord, unknown>>;
+    const url = canonicalizeSourceUrl(textField(record.url));
     if (!url || seen.has(url)) continue;
     seen.add(url);
-    out.push({ url, title: (s.title ?? "").trim() || url, date: s.date?.trim() || undefined });
+    out.push({ url, title: textField(record.title) || url, date: textField(record.date) || undefined });
   }
   return out;
 }
@@ -1270,7 +1257,7 @@ export function validateResearchResult(
   const claims: ResearchClaim[] = (Array.isArray(result.claims) ? result.claims : [])
     .filter((c) => typeof c?.text === "string" && c.text.trim())
     .map((c) => {
-      const sourceUrl = c.sourceUrl ? canonicalizeSourceUrl(c.sourceUrl) : null;
+      const sourceUrl = canonicalizeSourceUrl(textField(c.sourceUrl));
       const validSourceUrl = sourceUrl && byUrl.has(sourceUrl) ? sourceUrl : undefined;
       const rawKind =
         c.kind === "verified" || c.kind === "inference" || c.kind === "conflict" || c.kind === "unknown"
@@ -1284,7 +1271,7 @@ export function validateResearchResult(
     });
 
   const report = {
-    title: safeNoteTitle(result.report?.title ?? "Deep Research"),
+    title: safeNoteTitle(typeof result.report?.title === "string" ? result.report.title : "Deep Research"),
     markdown: truncateUtf8(
       redactResearchContent(String(result.report?.markdown ?? "")).content,
       limits.maxReportBytes
@@ -1304,7 +1291,7 @@ export function validateResearchResult(
         redactResearchContent(n.markdown).content,
         Math.min(limits.maxGeneratedNoteBytes, generatedBytesRemaining)
       ),
-      sourceUrl: n.sourceUrl ? canonicalizeSourceUrl(n.sourceUrl) : null,
+      sourceUrl: canonicalizeSourceUrl(textField(n.sourceUrl)),
       links: Array.isArray(n.links) ? n.links.filter((l) => typeof l === "string") : [],
     }))
     // A source note must point at one of the surviving, validated sources.
@@ -1612,7 +1599,7 @@ export function buildChangeSet(input: {
   for (const t of sourceNoteTargets) apparatus += `\n- [[${t.linkTarget}]]`;
   if (result.sources.length) {
     apparatus += `\n\n## References`;
-    for (const s of result.sources) apparatus += `\n- [${s.title}](${s.url})${s.date ? ` · ${s.date}` : ""}`;
+    for (const s of result.sources) apparatus += `\n- [${markdownLinkText(s.title)}](${markdownLinkDestination(s.url)})${s.date ? ` · ${s.date}` : ""}`;
   }
   if (relatedExisting.length) {
     apparatus += `\n\n## Related notes\n${relatedExisting.map((r) => `- [[${r.relPath}]]${r.reason ? ` — ${r.reason}` : ""}`).join("\n")}`;
@@ -1620,7 +1607,7 @@ export function buildChangeSet(input: {
   if (result.claims.length) {
     const bucket = (k: SourceKind) => result.claims.filter((c) => c.kind === k);
     const section = (label: string, list: ResearchClaim[]) =>
-      list.length ? `\n\n### ${label}\n${list.map((c) => `- ${c.text}${c.sourceUrl ? ` ([source](${c.sourceUrl}))` : ""}`).join("\n")}` : "";
+      list.length ? `\n\n### ${label}\n${list.map((c) => `- ${c.text}${c.sourceUrl ? ` ([source](${markdownLinkDestination(c.sourceUrl)}))` : ""}`).join("\n")}` : "";
     apparatus +=
       `\n\n## Confidence & uncertainty` +
       section("Verified", bucket("verified")) +
@@ -1661,7 +1648,7 @@ export function buildChangeSet(input: {
     const next =
       cur.trimEnd() +
       `\n\n${marker}\n## Research update — ${dateISO}\n${addition}` +
-      `\n\nSources:\n${citedSources.map((u) => `- [${sourceByUrl.get(u)?.title ?? u}](${u})`).join("\n")}` +
+      `\n\nSources:\n${citedSources.map((u) => `- [${markdownLinkText(sourceByUrl.get(u)?.title ?? u)}](${markdownLinkDestination(u)})`).join("\n")}` +
       `${reportBacklink}\n`;
     ops.push({
       kind: "update",

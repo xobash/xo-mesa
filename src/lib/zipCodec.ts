@@ -21,6 +21,12 @@ function u32(bytes: Uint8Array, offset: number): number {
   return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
 }
 
+function latin1(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 0x4000) out += String.fromCharCode(...bytes.subarray(i, i + 0x4000));
+  return out;
+}
+
 /**
  * Reads ZIP central-directory metadata before decompression. ZIP64 and data
  * descriptors are rejected because ordinary headers cannot bound their expansion.
@@ -49,7 +55,7 @@ export function inspectZipForImport(data: Uint8Array): ZipImportEntry[] {
   if (!Number.isSafeInteger(directoryEnd) || directoryEnd > eocd) {
     throw new Error("ZIP central directory is outside the archive.");
   }
-  const decode = new TextDecoder("utf-8", { fatal: false });
+  const utf8 = new TextDecoder("utf-8", { fatal: false });
   const result: ZipImportEntry[] = [];
   let expanded = 0;
   let at = directoryOffset;
@@ -64,7 +70,9 @@ export function inspectZipForImport(data: Uint8Array): ZipImportEntry[] {
     const commentBytes = u16(data, at + 32);
     const end = at + 46 + nameBytes + extraBytes + commentBytes;
     if (end > directoryEnd) throw new Error("ZIP entry metadata is truncated.");
-    const name = decode.decode(data.subarray(at + 46, at + 46 + nameBytes));
+    // Same rule as fflate's entry keys: UTF-8 only with general-purpose flag bit 11, else Latin-1.
+    const rawName = data.subarray(at + 46, at + 46 + nameBytes);
+    const name = u16(data, at + 8) & 0x0800 ? utf8.decode(rawName) : latin1(rawName);
     // Unix file type is stored in the upper 16 bits of the external
     // attributes. A symlink archive member must never be treated as ordinary
     // bytes: different extractors disagree about where it points.

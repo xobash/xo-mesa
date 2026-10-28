@@ -64,3 +64,49 @@ it.each([[8, true], [9, false]] as const)("drops obsolete index version %s witho
   await (await import("./vaultStorage")).discardLegacyIndexStorage();
   expect(deleteDatabase).toHaveBeenCalledTimes(removed ? 1 : 0);
 });
+
+it("skips a malformed legacy draft key and still migrates the valid ones", async () => {
+  const broken = "mesa:overlay-draft:{not json";
+  localStorage.setItem(broken, "kept as is");
+  const valid = `mesa:overlay-draft:${JSON.stringify(["/synthetic/one", "draft.md"])}`;
+  localStorage.setItem(valid, "authored bytes");
+  const { initializeVaultStorage, vaultStorageId } = await import("./vaultStorage");
+  await expect(initializeVaultStorage("/synthetic/one")).resolves.toBeNull();
+  expect(localStorage.getItem(broken)).toBe("kept as is");
+  expect(localStorage.getItem(valid)).toBeNull();
+  expect(localStorage.getItem(`mesa:overlay-draft:${JSON.stringify([vaultStorageId("/synthetic/one"), "draft.md"])}`)).toBe("authored bytes");
+});
+
+it.each(["blocked", "timeout"] as const)("reports a %s legacy index removal as a warning without blocking the open", async (failure) => {
+  vi.useFakeTimers();
+  try {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.doMock("./textRevisionHistory", () => ({ legacyRevisionRoots: async () => new Set<string>(), migrateRevisionNamespaces: async () => {} }));
+    vi.stubGlobal("indexedDB", { deleteDatabase: vi.fn(), open: () => {
+      const request = { result: { version: 1, close: vi.fn() }, onsuccess: null, onerror: null, onblocked: null as (() => void) | null, error: null };
+      if (failure === "blocked") queueMicrotask(() => request.onblocked?.());
+      return request;
+    } });
+    const key = `mesa:overlay-draft:${JSON.stringify(["/synthetic/one", "draft.md"])}`;
+    localStorage.setItem(key, "authored bytes");
+    const pending = (await import("./vaultStorage")).initializeVaultStorage("/synthetic/one");
+    await vi.advanceTimersByTimeAsync(2500);
+    const warning = await pending;
+    expect(warning).toMatch(failure === "blocked" ? /blocked/ : /timed out/);
+    // Draft migration still completed.
+    expect(localStorage.getItem(key)).toBeNull();
+  } finally {
+    vi.doUnmock("./textRevisionHistory");
+    vi.useRealTimers();
+  }
+});
+
+it("stores image metadata relative to bare drive and filesystem roots", async () => {
+  const { privateImagePath, restoreImagePath } = await import("./vaultStorage");
+  expect(privateImagePath("D:/img/a.png", "D:/")).toBe("mesa-relative:img/a.png");
+  expect(restoreImagePath("mesa-relative:img/a.png", "D:/")).toBe("D:/img/a.png");
+  expect(privateImagePath("/img/a.png", "/")).toBe("mesa-relative:img/a.png");
+  expect(restoreImagePath("mesa-relative:img/a.png", "/")).toBe("/img/a.png");
+  expect(privateImagePath("/vault/img/a.png", "/vault/")).toBe("mesa-relative:img/a.png");
+  expect(privateImagePath("/other/a.png", "/vault")).toBeUndefined();
+});

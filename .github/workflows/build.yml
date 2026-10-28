@@ -29,7 +29,8 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:coverage
@@ -159,7 +160,8 @@ jobs:
             librsvg2-dev \
             patchelf \
             libayatana-appindicator3-dev
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
       - name: Build the desktop app
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         with:

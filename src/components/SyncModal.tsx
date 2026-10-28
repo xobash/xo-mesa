@@ -1,21 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { refreshDiscoveredPeers } from "../lib/discoveryPeers";
-import { createSerialResource } from "../lib/serialResource";
+import { syncDiscovery } from "../lib/serialResource";
 import { SyncConflictReview } from "./SyncConflictReview";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { MAX_AUTO_SYNC_MINUTES, normalizeAutoSyncMinutes } from "../lib/syncAutoSchedule";
 import { useAppStore } from "../store";
 import {
   syncServerRunning,
   localSyncAddr,
   peerFromDiscovery,
-  startSyncDiscovery,
-  stopSyncDiscovery,
   syncIdentity,
   formatFingerprint,
   type DiscoveredSyncPeer,
-  type DiscoveryPacket,
   type SyncProgress,
 } from "../lib/syncUi";
 import {
@@ -27,8 +23,6 @@ import { generateSyncKey, validSyncKey } from "../lib/syncKey";
 import { IN_TAURI } from "../lib/vault";
 import { Modal } from "./Modal";
 import type { SyncPeer } from "../types";
-
-const ownDiscovery = createSerialResource();
 
 function SecretInput({ value, onCommit, label }: { value: string; onCommit: (value: string) => void; label: string }) {
   const [draft, setDraft] = useState("");
@@ -455,18 +449,14 @@ export function SyncModal() {
     const shouldDiscover = settings.syncEnabled && settings.syncDiscovery && open;
     if (!shouldDiscover) return;
     let alive = true;
-    const release = ownDiscovery(async () => {
-      const unlisten = await listen<DiscoveryPacket>("sync://discovered", (event) => {
-        const peer = peerFromDiscovery(event.payload);
+    const release = syncDiscovery(
+      { name: settings.syncDeviceName.trim() || vaultName || "Mesa device", port: settings.syncPort, listening },
+      (packet) => {
+        const peer = peerFromDiscovery(packet);
         if (!peer || !alive) return;
         setNearby((current) => refreshDiscoveredPeers(current, peer));
-      });
-      if (!alive) { unlisten(); return () => {}; }
-      try {
-        await startSyncDiscovery(settings.syncDeviceName.trim() || vaultName || "Mesa device", settings.syncPort, listening);
-      } catch (error) { unlisten(); throw error; }
-      return async () => { unlisten(); await stopSyncDiscovery(); };
-    });
+      },
+    );
     return () => { alive = false; release(); };
   }, [
     open,

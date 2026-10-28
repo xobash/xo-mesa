@@ -19,23 +19,33 @@ async function identify(root: string): Promise<string> {
   namespaces.set(root, id);
   return id;
 }
-let migration: Promise<void> | undefined;
-/** Retain recovery bytes before removing legacy path-bearing keys/records. */
-export async function initializeVaultStorage(root = ""): Promise<void> {
-  if (!desktop() || root.startsWith("mesa://")) return;
+let migration: Promise<string | null> | undefined;
+/** Retain recovery bytes before removing legacy path-bearing keys/records.
+ * Resolves with a warning when only the disposable legacy index could not be
+ * removed; that never blocks a vault open. */
+export async function initializeVaultStorage(root = ""): Promise<string | null> {
+  if (!desktop() || root.startsWith("mesa://")) return null;
   if (root) await identify(root);
   if (!migration) migration = migrateLegacyStorage().catch(error => { migration = undefined; throw error; });
-  await migration;
+  return migration;
 }
-async function migrateLegacyStorage(): Promise<void> {
-  await discardLegacyIndexStorage();
+async function migrateLegacyStorage(): Promise<string | null> {
+  let warning: string | null = null;
+  try {
+    await discardLegacyIndexStorage();
+  } catch (error) {
+    warning = `The old search index could not be removed (${String(error instanceof Error ? error.message : error)}); Mesa retries on the next start.`;
+    console.warn("[mesa]", warning);
+  }
   const history = await import("./textRevisionHistory");
   const roots = await history.legacyRevisionRoots();
   const drafts: Array<{ key: string; root: string; rel: string; value: string }> = [];
   for (let n = 0; n < localStorage.length; n++) {
     const key = localStorage.key(n);
     if (!key?.startsWith("mesa:overlay-draft:")) continue;
-    const parts: unknown = JSON.parse(key.slice("mesa:overlay-draft:".length));
+    let parts: unknown;
+    // A malformed key is left untouched; it must not block every vault open.
+    try { parts = JSON.parse(key.slice("mesa:overlay-draft:".length)); } catch { continue; }
     if (!Array.isArray(parts) || typeof parts[0] !== "string" || typeof parts[1] !== "string" || opaque(parts[0])) continue;
     const value = localStorage.getItem(key);
     if (value !== null) { drafts.push({ key, root: parts[0], rel: parts[1], value }); roots.add(parts[0]); }
@@ -56,16 +66,17 @@ async function migrateLegacyStorage(): Promise<void> {
     const key = localStorage.key(n);
     if (key?.startsWith("mesa:graph-window:")) localStorage.removeItem(key);
   }
+  return warning;
 }
 
 /** Store image metadata relative to its owning root; authored text is unchanged. */
 export function privateImagePath(path: string | undefined, root: string): string | undefined {
   if (!path) return undefined;
-  return path.startsWith(root.replace(/\\/g, "/").replace(/\/$/, "") + "/")
-    ? "mesa-relative:" + path.slice(root.length + 1) : undefined;
+  const prefix = root.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
+  return path.startsWith(prefix) ? "mesa-relative:" + path.slice(prefix.length) : undefined;
 }
 export function restoreImagePath(path: string | undefined, root: string): string | undefined {
-  return path?.startsWith("mesa-relative:") ? root.replace(/\/$/, "") + "/" + path.slice(14) : path;
+  return path?.startsWith("mesa-relative:") ? root.replace(/\/+$/, "") + "/" + path.slice(14) : path;
 }
 
 /** Delete only obsolete disposable indexes; retain opaque-ID caches across starts. */

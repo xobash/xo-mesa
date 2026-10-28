@@ -46,14 +46,14 @@ export default defineConfig({
     },
   },
   test: {
-    // Local checkpoint copies and scratch work must never run as part of the
-    // suite — a stray test there silently changes the counts a green claim is
-    // judged by. `tmp/` is gitignored scratch (corpora, measurement harnesses),
-    // so it is excluded for the same reason as `.backups/`.
+    // Tests live beside the frontend sources. Restricting discovery to `src/`
+    // keeps nested checkouts, local copies and scratch folders out of the
+    // suite, so the test count a green run reports stays stable.
+    include: ["src/**/*.test.{ts,tsx}"],
     exclude: ["**/node_modules/**", "**/dist/**", "**/.backups/**", "**/tmp/**", "**/output/**"],
     coverage: {
       provider: "v8",
-      include: ["src/lib/**/*.ts", "src/controllers/**/*.ts", "src/components/**/*.tsx", "src/store.ts", "src/App.tsx"],
+      include: ["src/lib/**/*.ts", "src/controllers/**/*.ts", "src/components/**/*.{ts,tsx}", "src/store.ts", "src/App.tsx"],
       exclude: ["**/*.test.ts", "**/*.test.tsx", "**/*.d.ts"],
       reporter: ["text-summary"],
       // One global set of floors for all included files together; there are no

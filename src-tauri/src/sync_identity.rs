@@ -9,8 +9,8 @@ pub(super) struct Identity {
     pub(super) fingerprint: String,
 }
 
-pub(super) fn identity_cache() -> &'static Mutex<Option<Identity>> {
-    static S: OnceLock<Mutex<Option<Identity>>> = OnceLock::new();
+pub(super) fn identity_cache() -> &'static Mutex<Option<Arc<Identity>>> {
+    static S: OnceLock<Mutex<Option<Arc<Identity>>>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(None))
 }
 
@@ -372,7 +372,7 @@ pub(super) fn load_identity(dir: &std::path::Path, stop: Option<u8>) -> Result<I
 }
 
 /// Cache only an identity whose complete bundle was durably published.
-pub(super) fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
+pub(super) fn get_identity(app: &tauri::AppHandle) -> Result<Arc<Identity>, String> {
     let mut guard = identity_cache().lock().map_err(|e| e.to_string())?;
     if let Some(id) = guard.as_ref() {
         return Ok(id.clone());
@@ -382,14 +382,21 @@ pub(super) fn get_identity(app: &tauri::AppHandle) -> Result<Identity, String> {
         .app_config_dir()
         .map_err(|e| e.to_string())?
         .join("sync-identity");
-    let id = load_identity(&dir, None)?;
+    let id = Arc::new(load_identity(&dir, None)?);
     *guard = Some(id.clone());
     Ok(id)
 }
 
 /// `get_identity` on the blocking pool: the first call reads or creates the
 /// identity on disk (two PowerShell ACL runs on Windows).
-pub(super) async fn get_identity_async(app: &tauri::AppHandle) -> Result<Identity, String> {
+pub(super) async fn get_identity_async(app: &tauri::AppHandle) -> Result<Arc<Identity>, String> {
+    // Every server request asks; once loaded, answer without a blocking task.
+    // `try_lock` never waits behind a first load that holds the lock.
+    if let Ok(guard) = identity_cache().try_lock() {
+        if let Some(id) = guard.as_ref() {
+            return Ok(id.clone());
+        }
+    }
     let app = app.clone();
     tokio::task::spawn_blocking(move || get_identity(&app))
         .await
@@ -401,5 +408,5 @@ pub(super) async fn get_identity_async(app: &tauri::AppHandle) -> Result<Identit
 // Blocking work: run off the main (UI) thread.
 #[tauri::command(async)]
 pub fn sync_identity(app: tauri::AppHandle) -> Result<String, String> {
-    Ok(get_identity(&app)?.fingerprint)
+    Ok(get_identity(&app)?.fingerprint.clone())
 }

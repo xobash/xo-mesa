@@ -1,9 +1,9 @@
 /**
  * Minimal RTF → plain-text converter (no native deps). Handles the common
  * output of TextEdit/Word: groups, ignored destinations (fonttbl, colortbl,
- * stylesheet, pictures, …), \par/\line/\sect → newline, \tab, \'xx hex escapes,
- * and \uN unicode. Good enough to *read* an .rtf inside Mesa; it doesn't
- * preserve styling.
+ * stylesheet, pictures, …), \par/\line/\sect → newline, \tab, \'xx hex escapes
+ * (Windows-1252), and \uN unicode with its \ucN-counted fallback skipped.
+ * Good enough to *read* an .rtf inside Mesa; it doesn't preserve styling.
  */
 const DESTINATIONS = new Set([
   "fonttbl",
@@ -31,6 +31,14 @@ const DESTINATIONS = new Set([
   "xmlnstbl",
 ]);
 
+/** Windows-1252 characters for bytes 0x80-0x9F; undefined bytes keep their code. */
+const CP1252_80_9F = "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f" +
+  "\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
+
+function ansiChar(code: number): string {
+  return code >= 0x80 && code <= 0x9f ? CP1252_80_9F[code - 0x80] : String.fromCharCode(code);
+}
+
 export function rtfToText(rtf: string): string {
   if (typeof rtf !== "string") return "";
   if (!/\\rtf\d/.test(rtf)) return rtf; // not actually RTF — leave untouched
@@ -42,18 +50,26 @@ export function rtfToText(rtf: string): string {
   let ignoreAtDepth = -1; // when ≥0, skip output until this group depth closes
   let nextGroupIgnorable = false; // set by \*
   const ignoring = () => ignoreAtDepth !== -1;
+  // \ucN: fallback units after each \uN, scoped to the group (default 1).
+  const ucStack: number[] = [];
+  let uc = 1;
+  let skipFallback = 0;
 
   while (i < n) {
     const c = rtf[i];
 
     if (c === "{") {
       depth++;
+      ucStack.push(uc);
+      skipFallback = 0;
       i++;
       continue;
     }
     if (c === "}") {
       if (ignoring() && depth === ignoreAtDepth) ignoreAtDepth = -1;
       depth--;
+      uc = ucStack.pop() ?? 1;
+      skipFallback = 0;
       i++;
       continue;
     }
@@ -62,7 +78,8 @@ export function rtfToText(rtf: string): string {
       continue;
     }
     if (c !== "\\") {
-      if (!ignoring()) out += c;
+      if (skipFallback > 0) skipFallback--;
+      else if (!ignoring()) out += c;
       i++;
       continue;
     }
@@ -70,16 +87,20 @@ export function rtfToText(rtf: string): string {
     // c === "\\" — a control word, symbol, or escape
     const next = rtf[i + 1];
     if (next === "\\" || next === "{" || next === "}") {
-      if (!ignoring()) out += next;
+      if (skipFallback > 0) skipFallback--;
+      else if (!ignoring()) out += next;
       i += 2;
       continue;
     }
     if (next === "'") {
       const code = parseInt(rtf.substr(i + 2, 2), 16);
-      if (!ignoring() && !isNaN(code)) out += String.fromCharCode(code);
+      if (skipFallback > 0) skipFallback--;
+      else if (!ignoring() && !isNaN(code)) out += ansiChar(code);
       i += 4;
       continue;
     }
+    // Any other control ends an unfinished fallback.
+    skipFallback = 0;
     if (next === "*") {
       nextGroupIgnorable = true;
       i += 2;
@@ -127,7 +148,12 @@ export function rtfToText(rtf: string): string {
         case "u": {
           const code = parseInt(num, 10);
           if (!isNaN(code)) out += String.fromCharCode(code < 0 ? code + 0x10000 : code);
-          if (j < n && rtf[j] !== "\\" && rtf[j] !== "{" && rtf[j] !== "}") j++;
+          skipFallback = uc;
+          break;
+        }
+        case "uc": {
+          const count = parseInt(num, 10);
+          uc = Number.isFinite(count) && count >= 0 ? count : 1;
           break;
         }
         default:

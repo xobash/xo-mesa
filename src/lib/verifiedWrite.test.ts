@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { persistVerifiedBytes, type VerifiedWriteFs } from "./verifiedWrite";
+import { bytesEqual, persistVerifiedBytes, type VerifiedWriteFs } from "./verifiedWrite";
 
 function makeFs(initial?: Uint8Array): {
   fs: VerifiedWriteFs;
@@ -585,5 +585,23 @@ describe("persistVerifiedBytes", () => {
     ).rejects.toThrow("Final file write verification failed.");
     expect(files.get("/vault/test.bin")).toEqual(original);
     expect([...files.keys()]).toEqual(["/vault/test.bin"]);
+  });
+});
+
+describe("bytesEqual", () => {
+  it("compares aligned and unaligned views exactly, including the byte tail", () => {
+    const base = new Uint8Array(4103).map((_, i) => (i * 31) & 0xff);
+    const shifted = new Uint8Array(base.length + 1);
+    shifted.set(base, 1);
+    const unaligned = shifted.subarray(1);
+    expect(bytesEqual(base, unaligned)).toBe(true);
+    for (const index of [0, 2048, base.length - 1]) {
+      const changed = base.slice();
+      changed[index] ^= 1;
+      expect(bytesEqual(changed, unaligned)).toBe(false);
+      expect(bytesEqual(unaligned, changed)).toBe(false);
+    }
+    expect(bytesEqual(base, base.subarray(0, base.length - 1))).toBe(false);
+    expect(bytesEqual(new Uint8Array(), new Uint8Array())).toBe(true);
   });
 });

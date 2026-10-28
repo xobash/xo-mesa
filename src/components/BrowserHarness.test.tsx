@@ -125,3 +125,24 @@ it('opens HTTPS pages directly and offers the HTTPS address for plain-HTTP pages
   await open('http://example.com/c');
   expect(opener.openUrl).not.toHaveBeenCalled();
 });
+
+it('reads Pi navigations with the agent cookie jar and typed pages with the user jar', async () => {
+  await mount(); mock.invoke.mockImplementation((_command, args) => Promise.resolve(page(args.url, '<p>Page</p>')));
+  await navigate('https://example.com/pi');
+  expect(mock.invoke.mock.lastCall).toEqual(['browse_fetch', { url: 'https://example.com/pi', agent: true }]);
+  const frame = host.querySelector('iframe')!;
+  await act(async () => window.dispatchEvent(new MessageEvent('message', {
+    source: frame.contentWindow, data: { __mesaBrowse: { url: 'https://example.com/pi-link' } },
+  })));
+  expect(mock.invoke.mock.lastCall?.[1]).toEqual({ url: 'https://example.com/pi-link', agent: true });
+  const input = host.querySelector<HTMLInputElement>('.browser-url-input')!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    setter.call(input, 'https://example.com/typed');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+  expect(mock.invoke.mock.lastCall?.[1]).toEqual({ url: 'https://example.com/typed', agent: false });
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label=Back]')!.click());
+  expect(mock.invoke.mock.lastCall?.[1]).toEqual({ url: 'https://example.com/pi-link', agent: true });
+});

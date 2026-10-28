@@ -209,6 +209,21 @@ pub(super) struct IdentityProof {
     pub(super) proof: String,
 }
 
+/// An unauthenticated request controls its URI: log only a bounded path,
+/// never its query, so the console cannot be flooded or carry attacker data.
+pub(super) fn rejected_path_for_log(path: &str) -> String {
+    const MAX_CHARS: usize = 64;
+    let mut shown: String = path
+        .chars()
+        .take(MAX_CHARS)
+        .map(|ch| if ch.is_control() { '?' } else { ch })
+        .collect();
+    if path.chars().nth(MAX_CHARS).is_some() {
+        shown.push('…');
+    }
+    shown
+}
+
 /// Serves one HTTP/1 connection. Request headers must arrive within
 /// `header_timeout`, which also closes idle keep-alive connections, and the
 /// whole connection is drained and closed after `CONNECTION_LIFETIME`.
@@ -524,7 +539,7 @@ pub(super) async fn handle_hyper(
         );
     }
     let fingerprint = match get_identity_async(&app).await {
-        Ok(identity) => identity.fingerprint,
+        Ok(identity) => identity.fingerprint.clone(),
         Err(_) => {
             return closing(hyper_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -545,7 +560,7 @@ pub(super) async fn handle_hyper(
                 format!(
                     "[serve] rejected {} {} — bad or missing sync key",
                     method,
-                    req.uri()
+                    rejected_path_for_log(req.uri().path())
                 ),
             );
         }
@@ -592,11 +607,21 @@ pub(super) async fn handle_hyper(
     if path == "/sync/manifest" && method == HyperMethod::GET {
         let started = Instant::now();
         let manifest_root = root.as_ref().clone();
-        let (entries, skipped) = match tokio::task::spawn_blocking(move || {
+        // Journal reconciliation takes a std mutex and fsyncs: keep it on the
+        // blocking pool with the scan.
+        let (entries, skipped, reconciled) = match tokio::task::spawn_blocking(move || {
             let _scan_guard = manifest_lock()
                 .lock()
                 .map_err(|_| "manifest lock poisoned".to_string())?;
-            Ok::<_, String>(sync_core::build_manifest(&manifest_root))
+            let (entries, skipped) = sync_core::build_manifest(&manifest_root);
+            let reconciled = if skipped.is_empty() {
+                sync_core::reconcile_complete_journal(&manifest_root, &entries, &skipped)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            } else {
+                Ok(())
+            };
+            Ok::<_, String>((entries, skipped, reconciled))
         })
         .await
         {
@@ -622,7 +647,7 @@ pub(super) async fn handle_hyper(
                 "vault scan incomplete; fix the listed path and retry",
             );
         }
-        if let Err(error) = sync_core::reconcile_complete_journal(&root, &entries, &skipped) {
+        if let Err(error) = reconciled {
             emit_log(
                 &app,
                 "warn",
@@ -734,6 +759,8 @@ pub(super) async fn handle_hyper(
     }
 
     if path == "/sync/base" && method == HyperMethod::PUT {
+        // The fingerprint is self-reported by a shared-key holder, who is fully
+        // trusted; it selects a bound record and is not client authentication.
         let Some(sender) = req
             .headers()
             .get("x-mesa-fingerprint")
@@ -1123,6 +1150,7 @@ pub fn sync_start(
         return Ok(());
     }
     if let Some(previous) = guard.take() {
+        SERVER_RUNNING.store(false, Ordering::Release);
         previous.running.store(false, Ordering::Relaxed);
         for handle in previous.handles {
             let _ = handle.join();
@@ -1253,6 +1281,7 @@ pub fn sync_start(
         vault: root,
         bind_address: bind_ip,
     });
+    SERVER_RUNNING.store(true, Ordering::Release);
     Ok(())
 }
 
@@ -1273,6 +1302,7 @@ pub fn sync_stop() -> Result<(), String> {
     // bounded by the server runtime shutdown timeout.
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(st) = guard.take() {
+        SERVER_RUNNING.store(false, Ordering::Release);
         st.running.store(false, Ordering::Relaxed);
         for h in st.handles {
             let _ = h.join();
@@ -1281,9 +1311,10 @@ pub fn sync_stop() -> Result<(), String> {
     Ok(())
 }
 
+/// Never waits on the state lock: start/stop may hold it while joining.
 #[tauri::command]
 pub fn sync_status() -> bool {
-    state().lock().map(|g| g.is_some()).unwrap_or(false)
+    SERVER_RUNNING.load(Ordering::Acquire)
 }
 
 /// Best-effort discovery of this device's LAN IP, used to show its pairing

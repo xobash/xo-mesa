@@ -811,6 +811,20 @@ fn manifest_reports_unportable_names_and_case_collisions() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Linux can hold NFC and NFD spellings of one name side by side; APFS treats
+/// them as one entry, so the portable key must map them together.
+#[test]
+fn portable_name_key_folds_case_and_unicode_normalization() {
+    let nfc = "Caf\u{e9}/R\u{e9}sum\u{e9}.md";
+    let nfd = "cafe\u{301}/re\u{301}sume\u{301}.md";
+    assert_eq!(portable_name_key(nfc), portable_name_key(nfd));
+    assert_eq!(
+        portable_name_key("Notes/A.md"),
+        portable_name_key("notes/a.md")
+    );
+    assert_ne!(portable_name_key("cafe.md"), portable_name_key(nfc));
+}
+
 #[cfg(unix)]
 #[test]
 fn safe_join_rejects_symlink_escape() {
@@ -877,12 +891,20 @@ fn windows_held_parent_cannot_be_renamed_during_receive() {
 #[test]
 fn windows_parent_locks_release_after_an_interrupted_receive() {
     let vault = ManifestVault::new("windows-parent-guard");
+    // An existing parent stays after the receive and must be unlocked.
+    std::fs::create_dir_all(vault.0.join("notes")).unwrap();
     let target = vault.0.join("notes/new.md");
     let receive = StagedFile::begin(&target, 32, Some(4), None).unwrap();
     assert!(std::fs::rename(target.parent().unwrap(), vault.0.join("moved")).is_err());
     drop(receive);
     std::fs::rename(target.parent().unwrap(), vault.0.join("moved")).unwrap();
     assert_eq!(std::fs::read_dir(vault.0.join("moved")).unwrap().count(), 0);
+
+    // A parent the interrupted receive created is removed with it.
+    let fresh = vault.0.join("fresh/new.md");
+    let receive = StagedFile::begin(&fresh, 32, Some(4), None).unwrap();
+    drop(receive);
+    assert!(!vault.0.join("fresh").exists());
 }
 
 #[cfg(windows)]
@@ -2153,4 +2175,170 @@ fn load_repairs_a_journal_holding_operations_peers_refuse() {
     assert_eq!(loaded.next_sequence, 3);
     let bytes = std::fs::read(v.0.join(".mesa-sync-journal.json")).unwrap();
     assert!(!String::from_utf8_lossy(&bytes).contains("draft~1.md"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rooted_sync_operations_keep_the_vault_root_acl() {
+    use std::process::Command;
+    let v = ManifestVault::new("root-acl");
+    let acl = |path: &Path| {
+        let out = Command::new("ls").arg("-led").arg(path).output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(Command::new("chmod")
+        .args(["+a", "everyone allow list,search"])
+        .arg(&v.0)
+        .status()
+        .unwrap()
+        .success());
+    let before = acl(&v.0);
+    assert!(!before.is_empty());
+    v.write("note.md", b"hello");
+    let (entries, skipped) = build_manifest(&v.0);
+    assert_eq!(entries.len(), 1, "{skipped:?}");
+    let staged = StagedFile::receive_rooted(
+        &v.0,
+        "put.md",
+        &b"pushed"[..],
+        1024,
+        Some(6),
+        Some(&content_hash_hex(b"pushed")),
+    )
+    .unwrap();
+    staged.commit(&v.0.join("put.md")).unwrap();
+    let mut read = String::new();
+    RootedTarget::resolve(&v.0, "note.md", false)
+        .unwrap()
+        .open_read()
+        .unwrap()
+        .read_to_string(&mut read)
+        .unwrap();
+    assert_eq!(read, "hello");
+    assert_eq!(acl(&v.0), before, "sync must not strip the root's ACL");
+    let _ = Command::new("chmod").arg("-RN").arg(&v.0).status();
+    let _ = std::fs::remove_dir_all(&v.0);
+}
+
+#[test]
+fn conditional_edit_restores_a_racing_local_edit_and_reports_conflict() {
+    let v = ManifestVault::new("replace-race");
+    v.write("note.md", b"old");
+    let target = v.0.join("note.md");
+    let staged = StagedFile::receive(
+        &target,
+        &b"new"[..],
+        1024,
+        Some(3),
+        Some(&content_hash_hex(b"new")),
+    )
+    .unwrap();
+    let racing = target.clone();
+    set_before_move_hook(move || std::fs::write(&racing, b"racing edit").unwrap());
+    let error = staged
+        .commit_replace(&v.0, "note.md", 3, &content_hash_hex(b"old"))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"racing edit");
+    let trash = v.0.join(".mesa-trash");
+    let stranded = std::fs::read_dir(&trash)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(stranded, 0, "the racing edit must not stay in recovery");
+}
+
+#[test]
+fn journal_delete_restores_bytes_changed_during_the_move() {
+    let v = ManifestVault::new("journal-delete-race");
+    v.write("note.md", b"old");
+    let target = v.0.join("note.md");
+    let op = JournalOperation {
+        id: "d:1".into(),
+        device: "d".into(),
+        sequence: 1,
+        at_ms: 1,
+        kind: JournalOperationKind::Delete,
+        from: "note.md".into(),
+        to: None,
+        size: 3,
+        hash: content_hash_hex(b"old"),
+    };
+    let racing = target.clone();
+    set_before_move_hook(move || std::fs::write(&racing, b"racing edit").unwrap());
+    assert_eq!(
+        apply_journal_operation(&v.0, &op).unwrap(),
+        JournalApply::Conflict
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"racing edit");
+}
+
+#[test]
+fn rejected_nested_receive_leaves_no_created_folders() {
+    let v = ManifestVault::new("rejected-parents");
+    std::fs::create_dir(v.0.join("kept")).unwrap();
+    let wrong = content_hash_hex(b"other");
+    #[cfg(unix)]
+    let rejected =
+        StagedFile::receive_rooted(&v.0, "a/b/c.md", &b"body"[..], 1024, None, Some(&wrong));
+    #[cfg(unix)]
+    assert!(matches!(rejected, Err(ReceiveError::HashMismatch { .. })));
+    let rejected = StagedFile::receive(
+        &v.0.join("kept/x/y/c.md"),
+        &b"body"[..],
+        1024,
+        None,
+        Some(&wrong),
+    );
+    assert!(matches!(rejected, Err(ReceiveError::HashMismatch { .. })));
+    assert!(!v.0.join("a").exists(), "rejected PUT left a/");
+    assert!(
+        !v.0.join("kept/x").exists(),
+        "rejected receive left kept/x/"
+    );
+    assert!(v.0.join("kept").is_dir(), "an existing folder was removed");
+    #[cfg(unix)]
+    {
+        let accepted = StagedFile::receive_rooted(
+            &v.0,
+            "a/b/c.md",
+            &b"body"[..],
+            1024,
+            None,
+            Some(&content_hash_hex(b"body")),
+        )
+        .unwrap();
+        accepted.commit(&v.0.join("a/b/c.md")).unwrap();
+        assert_eq!(std::fs::read(v.0.join("a/b/c.md")).unwrap(), b"body");
+    }
+}
+
+#[test]
+fn new_journal_identities_are_random_and_failed_saves_leave_no_temp() {
+    let first = journal_device().unwrap();
+    assert_eq!(first.len(), 32);
+    assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_ne!(first, journal_device().unwrap());
+    let v = ManifestVault::new("journal-save-fail");
+    std::fs::create_dir_all(v.0.join(JOURNAL_FILE).join("occupied")).unwrap();
+    assert!(save_journal(&v.0, &SyncJournal::empty(first)).is_err());
+    let leftovers: Vec<_> = std::fs::read_dir(&v.0)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn ensure_real_parent_keeps_the_folders_it_creates() {
+    let v = ManifestVault::new("parent-keep");
+    ensure_real_parent(&v.0.join("a/b/c.md")).unwrap();
+    assert!(v.0.join("a/b").is_dir());
 }

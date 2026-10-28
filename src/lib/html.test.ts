@@ -314,3 +314,91 @@ it('retains a supported icon-font fallback when old EOT or remote alternatives a
   expect(html).not.toContain('icons.eot');
   expect(html).not.toContain('https://example.com');
 });
+
+describe("linear saved-HTML scanning", () => {
+  const KB200 = 200 * 1024;
+  const fast = (run: () => unknown) => {
+    const start = performance.now();
+    run();
+    return performance.now() - start;
+  };
+  // Measured near 1 ms; the bound only separates linear from quadratic work.
+  const BOUND_MS = 200;
+
+  it("reads saved-from comments in linear time", () => {
+    expect(fast(() => savedFromUrl(`<!-- saved from url=(1)a${" ".repeat(KB200)}`))).toBeLessThan(BOUND_MS);
+    expect(fast(() => savedFromUrl("<!-- saved from url=(1)".repeat(KB200 / 23)))).toBeLessThan(BOUND_MS);
+    expect(savedFromUrl("<!-- saved from url=(1)x --><!-- saved from url=(0019)https://a.example/ -->")).toBeNull();
+    expect(savedFromUrl("<!-- saved from url=(2)> --><!-- saved from url=(0019) https://a.example/p  -->")).toBe("https://a.example/p");
+  });
+
+  it("strips handlers and scripts in linear time", () => {
+    for (const input of [" ".repeat(KB200), "<script>".repeat(KB200 / 8), "<a onx=".repeat(KB200 / 7), '<a b="'.repeat(KB200 / 6), "<!--".repeat(KB200 / 4)]) {
+      expect(fast(() => stripSavedHtmlPreviewCode(input))).toBeLessThan(BOUND_MS);
+    }
+  });
+
+  it("rewrites CSS url() tokens in linear time and keeps whitespace outside the value", () => {
+    for (const input of [`url(a${" ".repeat(KB200)}`, "url(a".repeat(KB200 / 5), 'url("'.repeat(KB200 / 5), "@import a".repeat(KB200 / 9)]) {
+      expect(fast(() => rewriteCssAssetUrls(input, "/vault/a.css", asset))).toBeLessThan(BOUND_MS);
+    }
+    expect(rewriteCssAssetUrls('a{b:url(  img/x.png  )} c{d:url( "y z.png" )} e{f:url(\n\'w.png\'\t)}', "/vault/s/a.css", asset))
+      .toBe('a{b:url(asset://localhost/vault/s/img/x.png)} c{d:url("asset://localhost/vault/s/y z.png")} e{f:url(\'asset://localhost/vault/s/w.png\')}');
+    expect(rewriteCssAssetUrls('a{b:url("x.png" y)}', "/vault/a.css", asset)).toBe('a{b:url("x.png" y)}');
+  });
+
+  it("hydrates stylesheets, links and imports in linear time", async () => {
+    for (const input of ["<link ".repeat(KB200 / 6), "<style>".repeat(KB200 / 7), "</style ".repeat(KB200 / 8), `<style>${"@import a".repeat(KB200 / 9)}</style>`, "<base ".repeat(KB200 / 6)]) {
+      const start = performance.now();
+      await hydrateSavedHtml(input, "/vault/page.html", asset, async () => "", { scripts: false });
+      expect(performance.now() - start).toBeLessThan(BOUND_MS);
+    }
+  });
+
+  it("closes a style element at an end tag with attributes and leaves an unclosed one alone", async () => {
+    const closed = await hydrateSavedHtml('<style>p{background:url(a.png)}</style data-x><p style="color:red">x</p>', "/vault/page.html", asset, async () => "", { scripts: false });
+    expect(closed).toContain("p{background:url(asset://localhost/vault/a.png)}</style data-x>");
+    const open = '<style>p{background:url(a.png)}';
+    expect(await hydrateSavedHtml(open, "/vault/page.html", asset, async () => "", { scripts: false })).toBe(open);
+  });
+});
+
+describe("preview code stripping inside markup only", () => {
+  it("keeps attribute-like prose and code samples intact", () => {
+    const prose = "<p>Set the flag one = true and online=yes</p><pre>@font-face{font-family:x}</pre><code>onclick=go()</code>";
+    expect(stripSavedHtmlPreviewCode(prose)).toBe(prose);
+    const kept = '<!-- <p onclick="x"> --><textarea><b onclick=1></textarea><title>a onload=1</title>';
+    expect(stripSavedHtmlPreviewCode(kept)).toBe(kept);
+  });
+
+  it("removes handlers in every attribute form and fonts only from styles", () => {
+    expect(stripSavedHtmlPreviewCode('<p onclick="a()" id=x ONMOUSEOVER=b onfocus>t</p><p/onclick=x>u</p><img src=x onerror=alert(1)//>'))
+      .toBe("<p id=x>t</p><p>u</p><img src=x>");
+    // Neighbouring names stay separate, so "o" + "nerror" cannot merge into a handler.
+    expect(stripSavedHtmlPreviewCode('<img a="1" o onx="2"nerror=3><a x="1"onclick="2"href=y>')).toBe('<img a="1" o nerror=3><a x="1" href=y>');
+    expect(stripSavedHtmlPreviewCode('<style>@font-face{font-family:y;src:url(a.woff)}p{}</style><div style="a:b;@font-face{x:y}">'))
+      .toBe('<style>p{}</style><div style="a:b;">');
+  });
+
+  it("removes obfuscated and unterminated scripts without reassembling markup", () => {
+    const cases: Array<[string, string]> = [
+      ["a<script>x()</script foo>b<SCRIPT\n>y()</SCRIPT\n>c<script>z()</script\t>d", "abcd"],
+      ["<<script></script>script>alert(1)</script>", "&lt;script>alert(1)</script>"],
+      ["x<script>never closed <p>tail", "x"],
+      ["<svg><script>a()</script></svg>", "<svg></svg>"],
+    ];
+    for (const [input, output] of cases) {
+      expect(stripSavedHtmlPreviewCode(input)).toBe(output);
+      expect(stripSavedHtmlPreviewCode(output)).toBe(output);
+    }
+    // Removing a font rule cannot close the style element early.
+    expect(stripSavedHtmlPreviewCode("<style></sty@font-face{}le><img src=x onerror=1></style>")).toBe("<style><\\/style><img src=x onerror=1></style>");
+  });
+});
+
+describe("saved-HTML srcset candidates", () => {
+  it("keeps commas inside CDN URLs", () => {
+    expect(rewriteSavedHtml('<img srcset="img/a,w_100.png 1x, img/b,w_200.png 2x,img/c.png">', "/vault/p.html", asset))
+      .toBe('<img srcset="asset://localhost/vault/img/a,w_100.png 1x, asset://localhost/vault/img/b,w_200.png 2x, asset://localhost/vault/img/c.png">');
+  });
+});

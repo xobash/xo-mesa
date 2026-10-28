@@ -321,7 +321,7 @@ fn list_vault_files_with_errors_until(
     // collide even when their contained file names differ.
     let mut seen = std::collections::HashMap::<String, String>::new();
     for rel in &names {
-        let key = rel.to_lowercase();
+        let key = portable_name_key(rel);
         if let Some(first) = seen.get(&key) {
             if first != rel {
                 errors.push((
@@ -338,6 +338,14 @@ fn list_vault_files_with_errors_until(
         }
     }
     Some((out, errors))
+}
+
+/// Names that one supported filesystem treats as the same entry: case-insensitive
+/// (APFS, NTFS) and normalization-insensitive (APFS), so NFC first, then lowercase.
+pub(crate) fn portable_name_key(rel: &str) -> String {
+    icu_normalizer::ComposingNormalizerBorrowed::new_nfc()
+        .normalize(rel)
+        .to_lowercase()
 }
 
 #[cfg(not(unix))]

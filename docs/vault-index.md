@@ -19,7 +19,9 @@ or settings.
 Each open scans and recovers files, then publishes the file catalog. The selected
 document loads directly and can be edited while the rest of the text corpus is
 indexed in bounded background batches. Search, graph, backlinks, and tasks show
-when their results are incomplete. A vault switch or reopen cancels obsolete
+when their results are incomplete. The graph draws nothing until the stored
+index is shown or the first index pass ends, so it never paints a partial or
+previous-vault graph. A vault switch or reopen cancels obsolete
 work; an editor or watcher result that lands first is never replaced by an older
 index result.
 
@@ -102,7 +104,9 @@ fallback cannot guarantee the same responsiveness for a single huge document.
 Each record includes integrity protection for its compressed body, candidate
 filter, metadata and tasks. Missing, incompatible or corrupt records are rebuilt.
 Unavailable storage, quota errors and blocked database opens do not prevent vault
-loading. Encoding worker errors and timeouts fall back to exact local encoding.
+loading. If an obsolete index schema cannot be removed at startup (blocked or
+timed out), the open continues, the status line reports it, and Mesa retries on
+the next start. Encoding worker errors and timeouts fall back to exact local encoding.
 
 Persistence retains at most four vault roots and at most 128 MiB of estimated
 compressed and metadata payload per snapshot. Documents above 32 Mi characters
@@ -142,6 +146,12 @@ the document revision. Initial indexing still visits the full inventory.
 External watcher batches run serially within one vault generation. Queued paths coalesce to the latest event kind before their read starts. An older slow read cannot publish after a newer watcher batch; a vault switch or watcher replacement retires queued work. Unsaved text keeps its original save baseline.
 
 A resolved external create batch reads each textual addition once with bounded concurrency, then commits one sorted catalogue, notes and text snapshot. Failed reads remain name-only files, without an invented editable baseline. Activity snippets reuse successful reads. Only unresolved paths request a fallback scan.
+
+When the watcher loses events (an inotify queue overflow, another rescan-flagged
+or pathless event, or a watcher error), it sends one root-level `rescan` entry.
+Mesa then runs one vault scan for that batch and applies the difference as
+ordinary creates, removals and size/modification-time changes. An empty listing
+never removes the catalog. The status line reports the rescan.
 
 Pi activity for an already catalogued file records activity and requests a bounded
 preview only. Its watcher notification refreshes content; the activity bridge

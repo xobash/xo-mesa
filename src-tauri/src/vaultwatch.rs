@@ -1,11 +1,12 @@
 //! Filter indexable paths and coalesce survivors into one native watch message per debounce window.
 //! Keep unclassifiable paths for frontend validation; maintain scan/watch predicate parity.
+//! Overflow, pathless events and watcher errors become one root-level `rescan` entry.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify_debouncer_full::notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, Debouncer, RecommendedCache};
@@ -77,10 +78,52 @@ fn rel_under_root(root: &Path, abs: &Path) -> Option<String> {
     Some(out)
 }
 
+/// Kind of the root-level entry that asks the frontend for one full rescan.
+const RESCAN_KIND: &str = "rescan";
+
+/// Minimum spacing of error-driven rescans. A watcher that fails on every
+/// window must not turn into back-to-back full vault scans.
+const ERROR_RESCAN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Admits at most one error-driven rescan per `ERROR_RESCAN_INTERVAL`.
+#[derive(Default)]
+struct ErrorRescanGate {
+    last: Option<Instant>,
+}
+
+impl ErrorRescanGate {
+    fn admit(&mut self, now: Instant) -> bool {
+        match self.last {
+            Some(last) if now.saturating_duration_since(last) < ERROR_RESCAN_INTERVAL => false,
+            _ => {
+                self.last = Some(now);
+                true
+            }
+        }
+    }
+}
+
+/// One root-level rescan entry: events may have been lost (queue overflow or a
+/// watcher error), so no path list can be trusted as complete.
+fn rescan_entry(root: &Path) -> WatchEvent {
+    WatchEvent {
+        paths: vec![root.to_string_lossy().to_string()],
+        kind: RESCAN_KIND,
+    }
+}
+
 /// Filter and coalesce one debounce window. Drop events with no surviving paths;
-/// retain paths that cannot be classified under the root.
-fn build_batch(root: &Path, events: &[(EventKind, Vec<PathBuf>)]) -> Vec<WatchEvent> {
+/// retain paths that cannot be classified under the root. A window with a
+/// rescan-flagged or pathless event starts with one rescan entry.
+fn build_batch(
+    root: &Path,
+    events: &[(EventKind, Vec<PathBuf>)],
+    needs_rescan: bool,
+) -> Vec<WatchEvent> {
     let mut batch: Vec<WatchEvent> = Vec::new();
+    if needs_rescan || events.iter().any(|(_, paths)| paths.is_empty()) {
+        batch.push(rescan_entry(root));
+    }
     for (kind, paths) in events {
         let mut kept: Vec<String> = Vec::new();
         for abs in paths {
@@ -189,22 +232,28 @@ pub fn vault_watch(
 ) -> Result<u32, String> {
     let root_path = crate::vaultscope::require_approved(&app, &root)?;
     let root_for_cb = root_path.clone();
+    let mut error_gate = ErrorRescanGate::default();
     let mut debouncer = new_debouncer(
         Duration::from_millis(WATCH_DEBOUNCE_MS),
         None,
         move |result: notify_debouncer_full::DebounceEventResult| {
             let events = match result {
                 Ok(events) => events,
-                // A watch error (e.g. a transient rescan on Windows) must not
-                // tear the watcher down; the next window recovers. The plugin
-                // path also swallowed these.
-                Err(_) => return,
+                // A watch error keeps the watcher alive, but events may have
+                // been lost: ask the frontend for one full rescan, rate-limited.
+                Err(_) => {
+                    if error_gate.admit(Instant::now()) {
+                        let _ = on_event.send(vec![rescan_entry(&root_for_cb)]);
+                    }
+                    return;
+                }
             };
+            let needs_rescan = events.iter().any(|ev| ev.event.need_rescan());
             let tuples: Vec<(EventKind, Vec<PathBuf>)> = events
                 .into_iter()
                 .map(|ev| (ev.event.kind, ev.event.paths))
                 .collect();
-            let batch = build_batch(&root_for_cb, &tuples);
+            let batch = build_batch(&root_for_cb, &tuples, needs_rescan);
             if !batch.is_empty() {
                 // The single bridge crossing per window. On Windows this is one
                 // UI-thread eval instead of `tuples.len()` of them.
@@ -333,7 +382,7 @@ mod tests {
         ));
 
         let plugin_sends = events.len(); // one per event on the plugin path
-        let batch = build_batch(&root, &events);
+        let batch = build_batch(&root, &events, false);
         let native_sends = usize::from(!batch.is_empty()); // one per window, if non-empty
 
         assert_eq!(plugin_sends, 3301);
@@ -363,7 +412,7 @@ mod tests {
                 )
             })
             .collect();
-        let batch = build_batch(&root, &events);
+        let batch = build_batch(&root, &events, false);
         assert!(batch.is_empty(), "a .git-only window must send nothing");
     }
 
@@ -381,7 +430,7 @@ mod tests {
                 p("/somewhere/else.md"),
             ],
         )];
-        let batch = build_batch(&root, &events);
+        let batch = build_batch(&root, &events, false);
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].kind, "modify");
         assert_eq!(
@@ -391,5 +440,51 @@ mod tests {
                 "/somewhere/else.md".to_string(),
             ]
         );
+    }
+
+    /// An inotify overflow arrives as a pathless `Other` event flagged Rescan.
+    /// It must become one leading root-level rescan entry, never a dropped
+    /// window; surviving paths in the same window are still reported.
+    #[test]
+    fn overflow_and_pathless_events_request_one_rescan() {
+        let root = p("/vault");
+        let overflow = vec![
+            (EventKind::Other, Vec::new()),
+            (EventKind::Modify(ModifyKind::Any), vec![p("/vault/a.md")]),
+            (EventKind::Other, Vec::new()),
+        ];
+        let batch = build_batch(&root, &overflow, true);
+        assert_eq!(batch.len(), 2);
+        assert_eq!(batch[0].kind, "rescan");
+        assert_eq!(batch[0].paths, vec!["/vault".to_string()]);
+        assert_eq!(batch[1].paths, vec!["/vault/a.md".to_string()]);
+
+        // A pathless event alone still asks for a rescan without the flag.
+        let pathless = vec![(EventKind::Other, Vec::new())];
+        let batch = build_batch(&root, &pathless, false);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].kind, "rescan");
+
+        // A flagged window of `.git` churn still asks for a rescan.
+        let git = vec![(
+            EventKind::Create(CreateKind::File),
+            vec![p("/vault/.git/index")],
+        )];
+        let batch = build_batch(&root, &git, true);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].kind, "rescan");
+    }
+
+    /// A watcher that errors on every window asks for at most one rescan per
+    /// interval, and asks again once the interval has passed.
+    #[test]
+    fn repeated_watch_errors_rescan_at_most_once_per_interval() {
+        let mut gate = ErrorRescanGate::default();
+        let start = Instant::now();
+        assert!(gate.admit(start));
+        assert!(!gate.admit(start + Duration::from_millis(120)));
+        assert!(!gate.admit(start + ERROR_RESCAN_INTERVAL - Duration::from_millis(1)));
+        assert!(gate.admit(start + ERROR_RESCAN_INTERVAL));
+        assert!(!gate.admit(start + ERROR_RESCAN_INTERVAL + Duration::from_secs(1)));
     }
 }

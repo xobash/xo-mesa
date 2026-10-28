@@ -49,12 +49,14 @@ const MAX_LINKS = 40;
 
 /** Dependency-free conversion of fetched HTML into bounded readable text. */
 function htmlToText(html: string): string {
+  // An unclosed element, comment or tag runs to the end, as in a browser,
+  // which also keeps each pattern linear on hostile pages.
   return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<script[\s\S]*?(?:<\/script\b[^>]*(?:>|$)|$)/gi, " ")
+    .replace(/<style[\s\S]*?(?:<\/style\b[^>]*(?:>|$)|$)/gi, " ")
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, " ")
     .replace(/<\/(p|div|li|tr|h[1-6]|br|section|article)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
+    .replace(/<[^>]+(?:>|$)/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -63,7 +65,7 @@ function htmlToText(html: string): string {
     // Last, so `&amp;lt;` stays the text `&lt;` instead of decoding twice.
     .replace(/&amp;/g, "&")
     .replace(/[ \t]+/g, " ")
-    .replace(/\s*\n\s*/g, "\n")
+    .replace(/\s+/g, (space) => space.includes("\n") ? "\n" : space)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

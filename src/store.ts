@@ -15,7 +15,7 @@ import {
   applyTemplate,
   localISO,
   localTime,
-  eventsForEdit,
+  editCalendarJson,
   serializeEvents,
   type CalEvent
 } from "./lib/daily";
@@ -325,6 +325,9 @@ export interface AppState {
     /** Text files still awaiting background indexing after vault open.
    * Non-zero means search and other indexed views have incomplete coverage. */
   indexingTextFiles: number;
+  /** True from a vault open until its first note-index publication (stored
+   *  index, completed pass, or failure). Directly opened notes do not clear it. */
+  notesIndexPending: boolean;
 
   setTheme: (t: ThemeId) => void;
   setUiStyle: (style: UiStyleId) => void;
@@ -784,6 +787,7 @@ export const useAppStore = create<AppState>((set, get) => {
     failedTextFiles: 0,
     unreadableTextReasons: {},
     indexingTextFiles: 0,
+    notesIndexPending: false,
 
     showHoverPreview: (target, x, y) => set({ hoverPreview: { target, x, y } }),
     hideHoverPreview: () => {
@@ -1370,10 +1374,9 @@ export const useAppStore = create<AppState>((set, get) => {
           const file = get().fileFor(CALENDAR_FILE);
           if (!file) throw new Error(`${CALENDAR_FILE} is no longer available.`);
           const prev = get().contentCache[CALENDAR_FILE] ?? loaded;
-          const existing = eventsForEdit(prev);
-          if (!existing) throw new Error(`${CALENDAR_FILE} is not a valid event list; fix it before adding events.`);
-          const events = [...existing, { date, title: t }];
-          const content = serializeEvents(events);
+          const edited = editCalendarJson(prev, { add: { date, title: t } });
+          if (!edited) throw new Error(`${CALENDAR_FILE} is not a valid event list; fix it before adding events.`);
+          const { events, content } = edited;
           set({
             calendarEvents: events,
             content:
@@ -1412,12 +1415,9 @@ export const useAppStore = create<AppState>((set, get) => {
         const file = get().fileFor(CALENDAR_FILE);
         if (!file) throw new Error(`${CALENDAR_FILE} is no longer available.`);
         const prev = get().contentCache[CALENDAR_FILE] ?? loaded;
-        const existing = eventsForEdit(prev);
-        if (!existing) throw new Error(`${CALENDAR_FILE} is not a valid event list; fix it before removing events.`);
-        const events = existing.filter(
-          (e) => !(e.date === date && e.title === title)
-        );
-        const content = serializeEvents(events);
+        const edited = editCalendarJson(prev, { remove: { date, title } });
+        if (!edited) throw new Error(`${CALENDAR_FILE} is not a valid event list; fix it before removing events.`);
+        const { events, content } = edited;
         set({
           calendarEvents: events,
           content:

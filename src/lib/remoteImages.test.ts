@@ -5,7 +5,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: (_path: string, scheme: string) => `${scheme}://localhost/`,
 }));
 vi.mock('./vault', () => ({ IN_TAURI: true }));
-import { brokerImageUrl, rewriteSrcset, subscribeRemoteImages } from './remoteImages';
+import { brokerImageUrl, parseSrcset, rewriteSrcset, subscribeRemoteImages } from './remoteImages';
 
 afterEach(() => { native.invoke.mockReset(); native.tokens = 0; });
 
@@ -47,4 +47,18 @@ it('reports an unavailable broker so callers keep remote media unloaded', async 
   const release = subscribeRemoteImages(listener);
   await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(null));
   release();
+});
+
+it('parses srcset candidates as HTML does, keeping commas inside URLs', () => {
+  expect(parseSrcset('https://cdn.example/f_auto,w_100/a.png 1x,https://cdn.example/f_auto,w_200/a.png 2x')).toEqual([
+    { url: 'https://cdn.example/f_auto,w_100/a.png', descriptors: ['1x'] },
+    { url: 'https://cdn.example/f_auto,w_200/a.png', descriptors: ['2x'] },
+  ]);
+  expect(parseSrcset(' a.png,, b.png 100w  , c.png,')).toEqual([
+    { url: 'a.png', descriptors: [] },
+    { url: 'b.png', descriptors: ['100w'] },
+    { url: 'c.png', descriptors: [] },
+  ]);
+  const rewrite = (raw: string) => `P(${raw})`;
+  expect(rewriteSrcset('//cdn.example/x,y.png 2x', rewrite)).toBe('P(//cdn.example/x,y.png) 2x');
 });

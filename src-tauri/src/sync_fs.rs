@@ -5,8 +5,49 @@ use super::*;
 /// symlink/junction components. The target has already passed
 /// `safe_join_confined`; this second check closes the common validation-to-
 /// create gap for nested transfers.
-#[cfg(unix)]
 pub fn ensure_real_parent(target: &Path) -> std::io::Result<()> {
+    let mut created = CreatedDirs::default();
+    let result = ensure_real_parent_tracked(target, &mut created);
+    created.keep();
+    result
+}
+
+/// Directories created for one staged receive. Dropping it removes them,
+/// deepest first, only while still empty, so a rejected transfer leaves no
+/// folders behind and a published file keeps its parents.
+#[derive(Default)]
+pub struct CreatedDirs {
+    paths: Vec<PathBuf>,
+    #[cfg(unix)]
+    rooted: Vec<(std::fs::File, std::ffi::CString)>,
+}
+
+impl CreatedDirs {
+    /// The caller owns these folders now; dropping removes nothing.
+    fn keep(&mut self) {
+        self.paths.clear();
+        #[cfg(unix)]
+        self.rooted.clear();
+    }
+}
+
+impl Drop for CreatedDirs {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        for (parent, name) in self.rooted.drain(..).rev() {
+            use std::os::fd::AsRawFd;
+            // SAFETY: parent is an open directory and name is NUL-terminated;
+            // AT_REMOVEDIR removes only an empty directory and never follows links.
+            unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+        }
+        for path in self.paths.drain(..).rev() {
+            let _ = std::fs::remove_dir(path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn ensure_real_parent_tracked(target: &Path, created: &mut CreatedDirs) -> std::io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::io::RawFd;
@@ -57,6 +98,8 @@ pub fn ensure_real_parent(target: &Path) -> std::io::Result<()> {
                 unsafe { libc::close(fd) };
                 return Err(error);
             }
+        } else {
+            created.paths.push(dir.clone());
         }
         // SAFETY: fd is open and name is NUL-terminated; O_NOFOLLOW rejects symlink parents.
         let next = unsafe {
@@ -81,8 +124,23 @@ pub fn ensure_real_parent(target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn missing_parents(target: &Path) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = target.parent();
+    while let Some(dir) = current {
+        if std::fs::symlink_metadata(dir).is_ok() {
+            break;
+        }
+        missing.push(dir.to_path_buf());
+        current = dir.parent();
+    }
+    missing.reverse();
+    missing
+}
+
 #[cfg(not(unix))]
-pub fn ensure_real_parent(target: &Path) -> std::io::Result<()> {
+fn ensure_real_parent_tracked(target: &Path, created: &mut CreatedDirs) -> std::io::Result<()> {
     let parent = target
         .parent()
         .ok_or_else(|| invalid_data("sync target has no parent"))?;
@@ -118,6 +176,7 @@ pub fn ensure_real_parent(target: &Path) -> std::io::Result<()> {
     }
     for dir in missing.into_iter().rev() {
         std::fs::create_dir(&dir)?;
+        created.paths.push(dir.clone());
         let metadata = std::fs::symlink_metadata(&dir)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(invalid_data("sync target parent was replaced"));
@@ -177,6 +236,47 @@ pub(super) fn collision_error(path: &Path) -> std::io::Error {
 
 pub(super) fn invalid_data(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
+}
+
+#[derive(Debug)]
+struct SourceChanged;
+
+impl std::fmt::Display for SourceChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("source changed during move; it was moved back")
+    }
+}
+
+impl std::error::Error for SourceChanged {}
+
+pub(super) fn source_changed() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, SourceChanged)
+}
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_MOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Test seam: run once on this thread just before the next verified move.
+#[cfg(test)]
+pub(super) fn set_before_move_hook(hook: impl FnOnce() + 'static) {
+    BEFORE_MOVE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+pub(super) fn run_before_move_hook() {
+    if let Some(hook) = BEFORE_MOVE.with(|slot| slot.borrow_mut().take()) {
+        hook();
+    }
+}
+
+/// The move found different bytes and restored them to the source path.
+pub(super) fn is_source_changed(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<SourceChanged>())
 }
 
 pub(super) trait CommitFs {
@@ -565,6 +665,8 @@ pub struct StagedFile {
     preserve: bool,
     #[cfg(unix)]
     rooted: Option<RootedStage>,
+    // Last: removed after the candidate and any parent guard are released.
+    _created: CreatedDirs,
 }
 
 #[cfg(unix)]
@@ -600,13 +702,25 @@ impl RootedTarget {
             Err(std::io::Error::last_os_error())
         } else {
             // SAFETY: open returned a nonnegative descriptor with no other owner.
-            let file = unsafe { std::fs::File::from_raw_fd(raw) };
-            file_metadata::private(&file)?;
-            Ok(file)
+            // The vault root keeps the user's own access controls.
+            Ok(unsafe { std::fs::File::from_raw_fd(raw) })
         }
     }
 
     pub fn resolve(root: &Path, rel: &str, create_parents: bool) -> std::io::Result<Self> {
+        let mut created = CreatedDirs::default();
+        let target = Self::resolve_tracked(root, rel, create_parents, &mut created);
+        // Callers of this form keep the folders they asked for.
+        created.keep();
+        target
+    }
+
+    fn resolve_tracked(
+        root: &Path,
+        rel: &str,
+        create_parents: bool,
+        created: &mut CreatedDirs,
+    ) -> std::io::Result<Self> {
         use std::os::fd::FromRawFd;
         let display = safe_join(root, rel).ok_or_else(|| invalid_data("unsafe sync path"))?;
         let mut parent = Self::open_root_dir(root)?;
@@ -630,8 +744,10 @@ impl RootedTarget {
                         0o755,
                     )
                 };
-                if made < 0
-                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists
+                if made == 0 {
+                    created.rooted.push((parent.try_clone()?, name.clone()));
+                } else if std::io::Error::last_os_error().kind()
+                    != std::io::ErrorKind::AlreadyExists
                 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -738,7 +854,7 @@ impl RootedTarget {
         }
     }
 
-    pub(super) fn move_no_replace(&self, to: &Self, size: u64, hash: &str) -> std::io::Result<()> {
+    fn rename_entry_no_replace(&self, to: &Self) -> std::io::Result<()> {
         use std::os::fd::AsRawFd;
         let from_fd = self.parent.as_raw_fd();
         let to_fd = to.parent.as_raw_fd();
@@ -766,31 +882,43 @@ impl RootedTarget {
         };
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let moved = -1;
-        if moved < 0 {
-            let error = std::io::Error::last_os_error();
-            if !matches!(
-                error.raw_os_error(),
-                Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
-            ) {
-                return Err(error);
-            }
-            // SAFETY: both parent Files remain open and both names are NUL-terminated.
-            if unsafe { libc::linkat(from_fd, self.name.as_ptr(), to_fd, to.name.as_ptr(), 0) } < 0
-            {
-                return Err(std::io::Error::last_os_error());
-            }
-            if let Err(error) = self.unlink(&self.name) {
-                let _ = to.unlink(&to.name);
-                return Err(error);
-            }
+        if moved == 0 {
+            return Ok(());
         }
-        let actual = to.fingerprint(&to.name)?;
-        if fingerprint_matches(&actual, size, hash) {
-            Ok(())
-        } else {
-            Err(invalid_data(
-                "rooted journal move failed final verification",
-            ))
+        let error = std::io::Error::last_os_error();
+        if !matches!(
+            error.raw_os_error(),
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
+        ) {
+            return Err(error);
+        }
+        // SAFETY: both parent Files remain open and both names are NUL-terminated.
+        if unsafe { libc::linkat(from_fd, self.name.as_ptr(), to_fd, to.name.as_ptr(), 0) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if let Err(error) = self.unlink(&self.name) {
+            let _ = to.unlink(&to.name);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Move only the expected bytes. If a writer changed the source between
+    /// the caller's check and the move, move it back and report
+    /// [`is_source_changed`]; never strand the new bytes in recovery storage.
+    pub(super) fn move_no_replace(&self, to: &Self, size: u64, hash: &str) -> std::io::Result<()> {
+        #[cfg(test)]
+        run_before_move_hook();
+        self.rename_entry_no_replace(to)?;
+        match to.fingerprint(&to.name) {
+            Ok(actual) if fingerprint_matches(&actual, size, hash) => Ok(()),
+            _ => match to.rename_entry_no_replace(self) {
+                Ok(()) => Err(source_changed()),
+                Err(restore) => Err(invalid_data(format!(
+                    "rooted move failed final verification; moved bytes kept at {}: {restore}",
+                    to.display.display()
+                ))),
+            },
         }
     }
 
@@ -846,6 +974,23 @@ impl RootedTarget {
         use std::os::fd::AsRawFd;
         // SAFETY: the held parent and name are valid; no directory recursion or link traversal.
         if unsafe { libc::unlinkat(self.parent.as_raw_fd(), self.name.as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.parent.sync_all()
+    }
+
+    /// Remove this entry only if it is an empty directory.
+    pub(crate) fn remove_empty_dir(&self) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: the held parent and name are valid; AT_REMOVEDIR never recurses.
+        if unsafe {
+            libc::unlinkat(
+                self.parent.as_raw_fd(),
+                self.name.as_ptr(),
+                libc::AT_REMOVEDIR,
+            )
+        } != 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         self.parent.sync_all()
@@ -913,8 +1058,9 @@ impl RootedTarget {
 }
 
 pub struct StagedReceive {
-    staged: StagedFile,
+    // Close the candidate handle before the staged file removes it.
     file: std::fs::File,
+    staged: StagedFile,
     hasher: ContentHasher,
     max_bytes: u64,
     expected_size: Option<u64>,
@@ -1031,9 +1177,13 @@ impl StagedFile {
         expected_size: Option<u64>,
         expected_hash: Option<&str>,
     ) -> Result<StagedReceive, ReceiveError> {
+        let mut created = CreatedDirs::default();
+        // The Windows guard creates missing ancestors itself; record them first.
+        #[cfg(windows)]
+        created.paths.extend(missing_parents(target));
         #[cfg(windows)]
         let parents = WindowsParentGuard::acquire(target, true).map_err(ReceiveError::Write)?;
-        ensure_real_parent(target).map_err(ReceiveError::Write)?;
+        ensure_real_parent_tracked(target, &mut created).map_err(ReceiveError::Write)?;
         let mut opened = None;
         for _ in 0..16 {
             let path = candidate_path(target);
@@ -1074,6 +1224,7 @@ impl StagedFile {
                 preserve: false,
                 #[cfg(unix)]
                 rooted: None,
+                _created: created,
             },
             file,
             hasher: ContentHasher::new(),
@@ -1091,7 +1242,9 @@ impl StagedFile {
         expected_size: Option<u64>,
         expected_hash: Option<&str>,
     ) -> Result<StagedReceive, ReceiveError> {
-        let target = RootedTarget::resolve(root, rel, true).map_err(ReceiveError::Write)?;
+        let mut created = CreatedDirs::default();
+        let target = RootedTarget::resolve_tracked(root, rel, true, &mut created)
+            .map_err(ReceiveError::Write)?;
         for _ in 0..16 {
             let path = candidate_path(&target.display);
             let candidate = std::ffi::CString::new(
@@ -1113,6 +1266,7 @@ impl StagedFile {
                                 parent: target.parent,
                                 candidate,
                             }),
+                            _created: created,
                         },
                         file,
                         hasher: ContentHasher::new(),
@@ -1224,11 +1378,13 @@ impl StagedFile {
         let target_path = safe_join_confined(root, rel)
             .ok_or_else(|| invalid_data("unsafe replacement target"))?;
         let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+        // One held parent serves the check, metadata copy, move and restore.
+        #[cfg(unix)]
+        let source = RootedTarget::resolve(root, rel, false)?;
         let from = {
             #[cfg(unix)]
             {
-                RootedTarget::resolve(root, rel, false)?
-                    .fingerprint(&RootedTarget::resolve(root, rel, false)?.name)?
+                source.fingerprint(&source.name)?
             }
             #[cfg(not(unix))]
             {
@@ -1240,7 +1396,7 @@ impl StagedFile {
         }
         #[cfg(unix)]
         {
-            let original = RootedTarget::resolve(root, rel, false)?.open_read()?;
+            let original = source.open_read()?;
             let candidate = if let Some(rooted) = &self.rooted {
                 {
                     use std::os::fd::{AsRawFd, FromRawFd};
@@ -1276,11 +1432,9 @@ impl StagedFile {
                 name,
             );
             #[cfg(unix)]
-            let move_result = {
-                let source = RootedTarget::resolve(root, rel, false)?;
-                let tomb = RootedTarget::resolve(root, &tomb_rel, true)?;
-                source.move_no_replace(&tomb, expected_size, expected_hash)
-            };
+            let tomb = RootedTarget::resolve(root, &tomb_rel, true)?;
+            #[cfg(unix)]
+            let move_result = source.move_no_replace(&tomb, expected_size, expected_hash);
             #[cfg(not(unix))]
             let move_result = {
                 let tomb = safe_join(root, &tomb_rel)
@@ -1292,11 +1446,7 @@ impl StagedFile {
                     let publish = self.commit(&target_path);
                     if publish.is_err() {
                         #[cfg(unix)]
-                        let restored = {
-                            let tomb = RootedTarget::resolve(root, &tomb_rel, false)?;
-                            let target = RootedTarget::resolve(root, rel, false)?;
-                            tomb.move_no_replace(&target, expected_size, expected_hash)
-                        };
+                        let restored = tomb.move_no_replace(&source, expected_size, expected_hash);
                         #[cfg(not(unix))]
                         let restored = {
                             let tomb = safe_join(root, &tomb_rel)
@@ -1310,6 +1460,9 @@ impl StagedFile {
                         }
                     }
                     return publish;
+                }
+                Err(error) if is_source_changed(&error) => {
+                    return Err(collision_error(&target_path))
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),

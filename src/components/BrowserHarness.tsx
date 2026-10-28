@@ -60,26 +60,29 @@ export function BrowserHarness({ externalNav, onClose }: {
   const [error, setError] = useState("");
   const [styleFailures, setStyleFailures] = useState(0);
   const [archiveStatus, setArchiveStatus] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
+  // `agent` marks pages Pi opened: they read through Pi's cookie jar, never the user's.
+  const [history, setHistory] = useState<{ url: string; agent: boolean }[]>([]);
   const [position, setPosition] = useState(-1);
   const generation = useRef(0);
   const iframe = useRef<HTMLIFrameElement>(null);
   const latestExternal = useRef(0);
   const archiveBusy = useRef(false);
+  const agentPage = useRef(false);
 
-  async function fetchPage(target: string): Promise<BrowsePage> {
-    if (IN_TAURI) return invoke<BrowsePage>("browse_fetch", { url: target });
+  async function fetchPage(target: string, agent = agentPage.current): Promise<BrowsePage> {
+    if (IN_TAURI) return invoke<BrowsePage>("browse_fetch", { url: target, agent });
     // Browser demo has no native network broker; it never embeds remote pages.
     throw new Error("Web reading requires the desktop app.");
   }
 
-  async function load(target: string) {
+  async function load(target: string, agent: boolean) {
     const current = ++generation.current;
+    agentPage.current = agent;
     setUrl(target); setPage(null); setHtml(""); setError(""); setArchiveStatus(""); setStyleFailures(0);
     if (!target) { setLoading(false); return; }
     setLoading(true);
     try {
-      const result = await fetchPage(target);
+      const result = await fetchPage(target, agent);
       if (current !== generation.current) {
         if (result.subresourceToken) void invoke("browse_resource_session", { token: result.subresourceToken }).catch(() => {});
         return;
@@ -100,18 +103,18 @@ export function BrowserHarness({ externalNav, onClose }: {
     }
   }
 
-  function navigate(value: string) {
+  function navigate(value: string, agent = false) {
     const target = resolveNavTarget(value);
     if (!target) return;
-    setHistory(previous => [...previous.slice(0, position + 1), target]);
-    setPosition(position + 1); setInput(""); void load(target);
+    setHistory(previous => [...previous.slice(0, position + 1), { url: target, agent }]);
+    setPosition(position + 1); setInput(""); void load(target, agent);
   }
   const latestNavigate = useRef(navigate);
   latestNavigate.current = navigate;
 
   function move(next: number) {
     if (next < 0 || next >= history.length) return;
-    setPosition(next); void load(history[next]);
+    setPosition(next); void load(history[next].url, history[next].agent);
   }
 
   useEffect(() => () => { generation.current++; }, []);
@@ -136,14 +139,15 @@ export function BrowserHarness({ externalNav, onClose }: {
   useEffect(() => {
     if (!externalNav || externalNav.seq === latestExternal.current) return;
     latestExternal.current = externalNav.seq;
-    navigate(externalNav.url);
+    navigate(externalNav.url, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Sequence owns one navigation per request.
   }, [externalNav]);
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       if (event.source !== iframe.current?.contentWindow) return;
       const target = (event.data as { __mesaBrowse?: { url?: unknown } } | null)?.__mesaBrowse?.url;
-      if (typeof target === "string" && /^https?:\/\//i.test(target)) latestNavigate.current(target);
+      // A link inside a Pi-opened page stays on Pi's cookie jar.
+      if (typeof target === "string" && /^https?:\/\//i.test(target)) latestNavigate.current(target, agentPage.current);
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
@@ -178,8 +182,8 @@ export function BrowserHarness({ externalNav, onClose }: {
       <div className="browser-nav-group">
         <button className="browser-nav-btn" aria-label="Back" title="Back" disabled={position <= 0} onClick={() => move(position - 1)}>←</button>
         <button className="browser-nav-btn" aria-label="Forward" title="Forward" disabled={position + 1 >= history.length} onClick={() => move(position + 1)}>→</button>
-        <button className="browser-nav-btn" aria-label="Reload" title="Reload" disabled={!url} onClick={() => void load(url)}>↻</button>
-        <button className="browser-nav-btn" aria-label="Home" title="Home" onClick={() => void load("")}>⌂</button>
+        <button className="browser-nav-btn" aria-label="Reload" title="Reload" disabled={!url} onClick={() => void load(url, agentPage.current)}>↻</button>
+        <button className="browser-nav-btn" aria-label="Home" title="Home" onClick={() => void load("", false)}>⌂</button>
       </div>
       <input className="text-input browser-url-input" aria-label="Search or page URL" placeholder={url || "Search the web or enter a URL"} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter") navigate(input); }} />
       <button className="browser-nav-btn" aria-label="Read page" title="Read page" onClick={() => navigate(input)}>→</button>

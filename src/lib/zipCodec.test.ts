@@ -66,3 +66,26 @@ describe("ZIP import preflight", () => {
     await expect(unzipForImport(archive, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 });
+
+describe("ZIP entry name encoding", () => {
+  it("reads a Latin-1 name the way fflate keys the decoded entry when flag bit 11 is clear", async () => {
+    // Windows' built-in compressor writes code-page names without the UTF-8 flag.
+    const archive = zipSync({ "cafe.md": new TextEncoder().encode("hi") }, { level: 0 });
+    const name = new TextEncoder().encode("cafe.md");
+    for (let at = 0; at + name.length <= archive.length; at++) {
+      if (name.every((byte, k) => archive[at + k] === byte)) archive[at + 3] = 0xe9;
+    }
+    const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength);
+    const central = archive.findIndex((_, at) => view.getUint32(at, true) === 0x02014b50);
+    expect(view.getUint16(central + 8, true) & 0x0800).toBe(0);
+    const [entry] = inspectZipForImport(archive);
+    expect(entry.name).toBe("café.md");
+    const entries = await unzipForImport(archive);
+    expect(Object.keys(entries)).toEqual([entry.name]);
+  });
+
+  it("reads UTF-8 names when flag bit 11 is set", () => {
+    const archive = zipSync({ "café.md": new TextEncoder().encode("hi") });
+    expect(inspectZipForImport(archive)[0].name).toBe("café.md");
+  });
+});

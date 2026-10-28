@@ -121,12 +121,35 @@ pub(crate) fn private(file: &File) -> io::Result<()> {
         let error = io::Error::last_os_error();
         acl_free(acl);
         if result != 0 {
-            return Err(error);
+            return acl_unsupported_is_absent(error);
         }
     }
     Ok(())
 }
+
+/// A filesystem without extended ACL support (FAT, exFAT, many SMB shares)
+/// cannot hold an inherited grant, so there is nothing to remove.
+#[cfg(target_os = "macos")]
+fn acl_unsupported_is_absent(error: io::Error) -> io::Result<()> {
+    match error.raw_os_error() {
+        Some(code) if code == libc::ENOTSUP || code == libc::EOPNOTSUPP => Ok(()),
+        _ => Err(error),
+    }
+}
 #[cfg(all(unix, not(target_os = "macos")))]
 pub(crate) fn private(_file: &File) -> io::Result<()> {
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_treats_unsupported_acls_as_absent() {
+        assert!(acl_unsupported_is_absent(io::Error::from_raw_os_error(libc::ENOTSUP)).is_ok());
+        assert!(acl_unsupported_is_absent(io::Error::from_raw_os_error(libc::EOPNOTSUPP)).is_ok());
+        let denied = acl_unsupported_is_absent(io::Error::from_raw_os_error(libc::EACCES));
+        assert_eq!(denied.unwrap_err().raw_os_error(), Some(libc::EACCES));
+    }
 }

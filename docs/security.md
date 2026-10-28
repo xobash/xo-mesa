@@ -120,7 +120,11 @@ app script policy is not relaxed. See [saved HTML](saved-html.md).
 
 The demo nginx policy has the same directive/source sets with native IPC and
 asset sources removed. The production build checks this parity; demo scripts
-cannot run arbitrary inline code or connect/frame arbitrary HTTPS origins.
+cannot run arbitrary inline code or connect/frame arbitrary HTTPS origins. The
+demo server also hides its version (`server_tokens off`), denies camera,
+microphone, location, payment and device APIs through `Permissions-Policy`, and
+sets `Cross-Origin-Opener-Policy: same-origin`. All headers are set at server
+level; a location block with its own `add_header` would drop them.
 
 Saved HTML has an additional policy placed before its markup. Offline mode blocks
 scripts, remote resources, network connections, forms and navigation. Online-resource mode requires per-document/version consent and retains an
