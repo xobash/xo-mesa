@@ -29,6 +29,13 @@ pub(crate) fn require_main(label: &str) -> Result<(), String> {
         Err("This operation belongs to the main workspace".into())
     }
 }
+pub(crate) fn require_document_surface(label: &str) -> Result<(), String> {
+    if label == "main" || label.starts_with("doc-") || label.starts_with("panel-") {
+        Ok(())
+    } else {
+        Err("This operation belongs to a Mesa document surface".into())
+    }
+}
 pub(crate) fn require_agent_surface(label: &str) -> Result<(), String> {
     if label == "main" || label.starts_with("agent-") {
         Ok(())

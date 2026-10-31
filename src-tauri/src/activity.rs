@@ -311,6 +311,10 @@ fn body_error_status(error: BodyError) -> u16 {
     }
 }
 
+fn read_research_body(req: &mut Request) -> Result<String, u16> {
+    read_bounded_body(req, ACTIVITY_BODY_CAP).map_err(body_error_status)
+}
+
 #[derive(Clone, Serialize)]
 pub struct ActivityInfo {
     pub port: u16,
@@ -762,21 +766,15 @@ fn handle_request(
     // The frontend owns validation. A correlated finish waits for its decision
     // so the model sees rejection as its tool result, not terminal keystrokes.
     if url == "/deep-research" && method == Method::Post {
-        let mut body = String::new();
-        if req
-            .as_reader()
-            .take(1_048_577)
-            .read_to_string(&mut body)
-            .is_err()
-        {
-            let _ = req.respond(Response::from_string("read error").with_status_code(400));
-            return;
-        }
-        if body.len() > 1_048_576 {
-            let _ = req
-                .respond(Response::from_string("research payload too large").with_status_code(413));
-            return;
-        }
+        let body = match read_research_body(&mut req) {
+            Ok(body) => body,
+            Err(status) => {
+                let _ = req.respond(
+                    Response::from_string("invalid research payload").with_status_code(status),
+                );
+                return;
+            }
+        };
         let parsed = match serde_json::from_str::<serde_json::Value>(&body) {
             Ok(value) => value,
             Err(_) => {
@@ -1078,6 +1076,40 @@ mod tests {
         let mut body = std::io::Cursor::new(b"hello".to_vec());
         assert_eq!(read_bounded_utf8(&mut body, None, 5).unwrap(), "hello");
         assert_eq!(body_error_status(BodyError::TooLarge), 413);
+    }
+
+    #[test]
+    fn research_bridge_rejects_declared_oversize_and_invalid_utf8_bodies() {
+        use std::io::Write;
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+        let status = |head: String, body: &[u8]| {
+            let mut client = std::net::TcpStream::connect(addr).unwrap();
+            client.write_all(head.as_bytes()).unwrap();
+            client.write_all(body).unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut req = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            read_research_body(&mut req).err()
+        };
+        let declared = ACTIVITY_BODY_CAP + 1;
+        assert_eq!(
+            status(
+                format!("POST /deep-research HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {declared}\r\n\r\n"),
+                b"{}",
+            ),
+            Some(413)
+        );
+        assert_eq!(
+            status(
+                "POST /deep-research HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\r\n"
+                    .into(),
+                &[0xff, 0xfe],
+            ),
+            Some(400)
+        );
     }
 
     #[test]

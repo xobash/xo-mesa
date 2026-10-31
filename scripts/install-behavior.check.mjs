@@ -138,6 +138,51 @@ describe('pinned POSIX Node bootstrap', { skip: process.platform === 'win32' }, 
   });
 });
 
+describe('pinned POSIX Rust bootstrap', { skip: process.platform === 'win32' }, () => {
+  // Fake cargo/rustc/curl/uname and a fake rustup-init; only system tools stay on PATH.
+  function rustFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'mesa-rust-bootstrap-')); folders.push(root);
+    const bin = join(root, 'bin'), home = join(root, 'home'), log = join(root, 'calls'), installer = join(root, 'rustup-init');
+    mkdirSync(bin); mkdirSync(home);
+    writeFileSync(join(bin, 'uname'), '#!/bin/bash\nif [[ "$1" == "-m" ]]; then printf "x86_64\\n"; else printf "Linux\\n"; fi\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'curl'), '#!/bin/bash\nprintf "curl %s\\n" "${@: -3:1}" >> "$TEST_LOG"\nwhile [[ "$1" != "-o" ]]; do shift; done\ncp "$TEST_INSTALLER" "$2"\n', { mode: 0o755 });
+    // The fake installer writes a rustup-managed ~/.cargo with the requested toolchain.
+    writeFileSync(installer, '#!/bin/bash\nprintf "rustup-init %s\\n" "$*" >> "$TEST_LOG"\nmkdir -p "$HOME/.cargo/bin"\nfor tool in cargo rustc rustup; do printf "#!/bin/bash\\nprintf \\"%s 1.96.0 (pinned)\\\\n\\"\\n" "$tool" > "$HOME/.cargo/bin/$tool"; chmod 755 "$HOME/.cargo/bin/$tool"; done\nprintf "export PATH=\\"\\$HOME/.cargo/bin:\\$PATH\\"\\n" > "$HOME/.cargo/env"\n', { mode: 0o755 });
+    const script = readFileSync(resolve('scripts/posix-rust.sh'), 'utf8');
+    const reviewedDigest = /x86_64-unknown-linux-gnu ([0-9a-f]{64})/.exec(script)[1];
+    writeFileSync(join(root, 'reviewed.sh'), script.replace(reviewedDigest, createHash('sha256').update(readFileSync(installer)).digest('hex')));
+    const system = (version) => {
+      writeFileSync(join(bin, 'cargo'), `#!/bin/bash\nprintf "cargo ${version}\\n"\n`, { mode: 0o755 });
+      writeFileSync(join(bin, 'rustc'), `#!/bin/bash\nprintf "rustc ${version} (system)\\n"\n`, { mode: 0o755 });
+    };
+    const run = () => spawnSync('/bin/bash', ['-c', 'set -euo pipefail; source "$1"; source "$2"; mesa_ensure_rust 1.96.0; rustc --version', 'rust-bootstrap', resolve('scripts/bootstrap-download.sh'), join(root, 'reviewed.sh')], { env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TEST_LOG: log, TEST_INSTALLER: installer }, encoding: 'utf8' });
+    const calls = () => { try { return readFileSync(log, 'utf8'); } catch { return ''; } };
+    return { bin, system, run, calls };
+  }
+  it('installs pinned rustup beside a different system Rust without removing it', () => {
+    const f = rustFixture(); f.system('1.80.0');
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /^rustc 1\.96\.0 \(pinned\)\n$/);
+    assert.match(f.calls(), /curl https:\/\/static\.rust-lang\.org\/rustup\/archive\/1\.28\.2\/x86_64-unknown-linux-gnu\/rustup-init/);
+    assert.match(f.calls(), /rustup-init -y --no-modify-path --default-toolchain 1\.96\.0/);
+    assert.ok(existsSync(join(f.bin, 'rustc'))); assert.match(result.stderr, /Rust 1\.80\.0 without rustup/);
+  });
+  it('keeps a system Rust that is exactly the pin, and any rustup install', () => {
+    const exact = rustFixture(); exact.system('1.96.0');
+    const kept = exact.run();
+    assert.equal(kept.status, 0, kept.stderr); assert.match(kept.stdout, /\(system\)/); assert.equal(exact.calls(), '');
+    const managed = rustFixture(); managed.system('1.80.0');
+    writeFileSync(join(managed.bin, 'rustup'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+    const proxied = managed.run();
+    assert.equal(proxied.status, 0, proxied.stderr); assert.equal(managed.calls(), '');
+  });
+  it('installs pinned rustup when no Rust is present', () => {
+    const f = rustFixture(); const result = f.run();
+    assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /\(pinned\)/);
+    assert.match(f.calls(), /rustup-init -y --no-modify-path --default-toolchain 1\.96\.0/);
+  });
+});
+
 it('release guide bootstrap checksums match the complete installer bytes', () => {
   const guide = readFileSync(resolve('docs/release.md'), 'utf8');
   for (const file of ['install.sh', 'install.ps1']) {

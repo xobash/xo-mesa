@@ -688,8 +688,13 @@ pub async fn serve_subresource(
 }
 
 #[tauri::command(async)]
-pub fn browse_open_saved_html(app: tauri::AppHandle, path: String) -> Result<(), String> {
+pub fn browse_open_saved_html(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    path: String,
+) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
+    crate::require_document_surface(window.label())?;
     let checked = crate::vaultscope::require_approved_file(&app, &path)?;
     if !checked
         .extension()
@@ -711,6 +716,16 @@ pub(crate) fn revoke_resource_window(owner: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn saved_html_opening_is_limited_to_document_surfaces() {
+        for label in ["main", "doc-1", "panel-graph"] {
+            assert!(crate::require_document_surface(label).is_ok(), "{label}");
+        }
+        for label in ["agent-x", "research-1", "graph", ""] {
+            assert!(crate::require_document_surface(label).is_err(), "{label}");
+        }
+    }
+
     #[tokio::test]
     async fn connection_error_classification_preserves_dns_rejection() {
         let error = super::client_for_agent(false)

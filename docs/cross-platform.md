@@ -105,7 +105,10 @@ it offline on later starts: `%LOCALAPPDATA%\Mesa\toolchains` on Windows,
 `${XDG_DATA_HOME:-~/.local/share}/mesa/toolchains` on Linux. `run.sh` does not
 install or modify nvm; it can use an nvm copy of the exact version by path.
 `run.cmd` keeps the pinned Node ahead of later PATH changes and checks
-`node -v` again before `npm ci`. The wrappers verify versions before launch.
+`node -v` again before `npm ci`. `run.sh` accepts a Rust without Rustup only when
+`rustc` is exactly the pin; otherwise it installs Rustup user-locally from the
+reviewed `rustup-init` digest, puts `~/.cargo/bin` first on PATH and leaves the
+system Rust installed. The wrappers verify versions before launch.
 Lockfiles plus fixed tools reduce drift; OS SDKs and system packages remain
 external inputs, so builds are not bit-for-bit reproducible.
 `npm run test:toolchains` checks those contracts.

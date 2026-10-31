@@ -317,43 +317,52 @@ it('retains a supported icon-font fallback when old EOT or remote alternatives a
 
 describe("linear saved-HTML scanning", () => {
   const KB200 = 200 * 1024;
-  const fast = (run: () => unknown) => {
-    const start = performance.now();
-    run();
-    return performance.now() - start;
+  // Equal total input per side (eight eighth-size runs, one full-size run), each
+  // side at least about 20 ms and interleaved, so machine load slows both alike.
+  // Linear scanning gives a ratio near 1; quadratic scanning gives about 8.
+  const expectLinear = async (input: (size: number) => string, run: (text: string) => unknown) => {
+    const small = input(KB200 / 8), large = input(KB200);
+    const work = async (text: string, reps: number) => {
+      const start = performance.now();
+      for (let i = 0; i < reps; i++) await run(text);
+      return performance.now() - start;
+    };
+    const reps = Math.ceil(20 / Math.max(await work(large, 1), 0.1));
+    let smallBest = Infinity, largeBest = Infinity;
+    for (let round = 0; round < 5; round++) {
+      smallBest = Math.min(smallBest, await work(small, 8 * reps));
+      largeBest = Math.min(largeBest, await work(large, reps));
+    }
+    expect(largeBest / smallBest).toBeLessThan(4);
   };
-  // Measured near 1 ms; the bound only separates linear from quadratic work.
-  const BOUND_MS = 200;
 
-  it("reads saved-from comments in linear time", () => {
-    expect(fast(() => savedFromUrl(`<!-- saved from url=(1)a${" ".repeat(KB200)}`))).toBeLessThan(BOUND_MS);
-    expect(fast(() => savedFromUrl("<!-- saved from url=(1)".repeat(KB200 / 23)))).toBeLessThan(BOUND_MS);
+  it("reads saved-from comments in linear time", async () => {
+    await expectLinear((size) => `<!-- saved from url=(1)a${" ".repeat(size)}`, savedFromUrl);
+    await expectLinear((size) => "<!-- saved from url=(1)".repeat(size / 23), savedFromUrl);
     expect(savedFromUrl("<!-- saved from url=(1)x --><!-- saved from url=(0019)https://a.example/ -->")).toBeNull();
     expect(savedFromUrl("<!-- saved from url=(2)> --><!-- saved from url=(0019) https://a.example/p  -->")).toBe("https://a.example/p");
-  });
+  }, 30000);
 
-  it("strips handlers and scripts in linear time", () => {
-    for (const input of [" ".repeat(KB200), "<script>".repeat(KB200 / 8), "<a onx=".repeat(KB200 / 7), '<a b="'.repeat(KB200 / 6), "<!--".repeat(KB200 / 4)]) {
-      expect(fast(() => stripSavedHtmlPreviewCode(input))).toBeLessThan(BOUND_MS);
+  it("strips handlers and scripts in linear time", async () => {
+    for (const input of [(size: number) => " ".repeat(size), (size: number) => "<script>".repeat(size / 8), (size: number) => "<a onx=".repeat(size / 7), (size: number) => '<a b="'.repeat(size / 6), (size: number) => "<!--".repeat(size / 4)]) {
+      await expectLinear(input, stripSavedHtmlPreviewCode);
     }
-  });
+  }, 30000);
 
-  it("rewrites CSS url() tokens in linear time and keeps whitespace outside the value", () => {
-    for (const input of [`url(a${" ".repeat(KB200)}`, "url(a".repeat(KB200 / 5), 'url("'.repeat(KB200 / 5), "@import a".repeat(KB200 / 9)]) {
-      expect(fast(() => rewriteCssAssetUrls(input, "/vault/a.css", asset))).toBeLessThan(BOUND_MS);
+  it("rewrites CSS url() tokens in linear time and keeps whitespace outside the value", async () => {
+    for (const input of [(size: number) => `url(a${" ".repeat(size)}`, (size: number) => "url(a".repeat(size / 5), (size: number) => 'url("'.repeat(size / 5), (size: number) => "@import a".repeat(size / 9)]) {
+      await expectLinear(input, (text) => rewriteCssAssetUrls(text, "/vault/a.css", asset));
     }
     expect(rewriteCssAssetUrls('a{b:url(  img/x.png  )} c{d:url( "y z.png" )} e{f:url(\n\'w.png\'\t)}', "/vault/s/a.css", asset))
       .toBe('a{b:url(asset://localhost/vault/s/img/x.png)} c{d:url("asset://localhost/vault/s/y z.png")} e{f:url(\'asset://localhost/vault/s/w.png\')}');
     expect(rewriteCssAssetUrls('a{b:url("x.png" y)}', "/vault/a.css", asset)).toBe('a{b:url("x.png" y)}');
-  });
+  }, 30000);
 
   it("hydrates stylesheets, links and imports in linear time", async () => {
-    for (const input of ["<link ".repeat(KB200 / 6), "<style>".repeat(KB200 / 7), "</style ".repeat(KB200 / 8), `<style>${"@import a".repeat(KB200 / 9)}</style>`, "<base ".repeat(KB200 / 6)]) {
-      const start = performance.now();
-      await hydrateSavedHtml(input, "/vault/page.html", asset, async () => "", { scripts: false });
-      expect(performance.now() - start).toBeLessThan(BOUND_MS);
+    for (const input of [(size: number) => "<link ".repeat(size / 6), (size: number) => "<style>".repeat(size / 7), (size: number) => "</style ".repeat(size / 8), (size: number) => `<style>${"@import a".repeat(size / 9)}</style>`, (size: number) => "<base ".repeat(size / 6)]) {
+      await expectLinear(input, (text) => hydrateSavedHtml(text, "/vault/page.html", asset, async () => "", { scripts: false }));
     }
-  });
+  }, 30000);
 
   it("closes a style element at an end tag with attributes and leaves an unclosed one alone", async () => {
     const closed = await hydrateSavedHtml('<style>p{background:url(a.png)}</style data-x><p style="color:red">x</p>', "/vault/page.html", asset, async () => "", { scripts: false });

@@ -79,6 +79,7 @@ scripts/native-acceptance-contract.mjs
 scripts/native-acceptance-template.mjs
 scripts/native-advisory-check.mjs
 scripts/posix-node.sh
+scripts/posix-rust.sh
 scripts/public-files.txt
 scripts/public-release-audit.check.mjs
 scripts/public-release-audit.mjs

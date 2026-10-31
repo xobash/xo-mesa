@@ -131,11 +131,14 @@ it('keeps dirty-window reporting and owned undo shortcuts during a render fallba
 });
 
 it('commits text replacement through the editor byte queue', async () => {
+  mock.invoke.mockResolvedValue(undefined);
   mock.renderError = '';
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
   try {
     await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
+    // Pass the 120 ms warm-start delay so the native cover opens, as on a busy machine.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)); });
     await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent?.includes('Edit PDF'))!.click());
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Edit existing text"]')!.click());
     expect(host.querySelector('[role=note]')).toBeNull();

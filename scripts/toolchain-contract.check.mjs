@@ -29,6 +29,8 @@ test('development, CI and release use the exact reviewed toolchains', () => {
   for (const file of ['.github/workflows/build.yml', '.github/workflows/release-candidate.yml', '.github/workflows/release.yml']) {
     for (const [line] of read(file).matchAll(/^\s+- run: npm (?:ci|install)\b.*$/gm)) assert.match(line, /npm ci --ignore-scripts$/, `${file} runs dependency install scripts`);
   }
+  const dockerInstalls = [...read('Dockerfile').matchAll(/^RUN npm (?!run ).*$/gm)].map(([line]) => line);
+  assert.deepEqual(dockerInstalls, ['RUN npm ci --ignore-scripts', 'RUN npm rebuild esbuild'], 'Dockerfile runs dependency install scripts');
   // Jobs that hold signing secrets or id-token must not restore shared caches.
   for (const file of ['.github/workflows/release-candidate.yml', '.github/workflows/release.yml']) {
     const workflow = read(file);
@@ -38,6 +40,7 @@ test('development, CI and release use the exact reviewed toolchains', () => {
   assert.match(read('run.sh'), /MESA_NODE_VERSION="\$\(cat \.node-version\)"/);
   assert.match(read('run.sh'), /source scripts\/posix-node\.sh\n[^\n]*\nmesa_ensure_node "\$MESA_NODE_VERSION"/);
   assert.doesNotMatch(read('run.sh'), /\bnvm\b/, 'run.sh must not install or modify nvm');
+  assert.match(read('run.sh'), /source scripts\/posix-rust\.sh\nMESA_RUST_VERSION="[^\n]*rust-toolchain\.toml\)"\nmesa_ensure_rust "\$MESA_RUST_VERSION"/);
   // Changing .node-version must fail until each platform digest is re-reviewed.
   const posixNode = read('scripts/posix-node.sh');
   assert.match(posixNode, new RegExp(`\\[ "\\$version" = "${nodePin}" \\]`));

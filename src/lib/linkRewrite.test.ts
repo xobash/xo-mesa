@@ -106,14 +106,33 @@ it("matches NFD and NFC spellings of the renamed file and keeps a leading ./", (
 
 it("scans malformed link runs in linear time and still repairs the following links", () => {
   const resolve = (target: string) => target.toLowerCase().replace(/\.md$/, "") === "note" ? "Note.md" : null;
-  // Measured near 10 ms; the bound separates linear from quadratic work.
-  for (const noise of ["![".repeat(100_000), "[[".repeat(100_000), "[](".repeat(66_000), "[![a](b)".repeat(25_000), `${"[[a".repeat(66_000)}]x`]) {
+  const tail = "\n[n](Note.md) [[Note]] [![i](p.png)](Note.md)";
+  const rewrite = (noise: string) => rewriteInboundLinks("a.md", `${noise}${tail}`, "Note.md", "New.md", resolve, true, true);
+  const work = (noise: string, reps: number) => {
     const start = performance.now();
-    const result = rewriteInboundLinks("a.md", `${noise}\n[n](Note.md) [[Note]] [![i](p.png)](Note.md)`, "Note.md", "New.md", resolve, true, true);
-    expect(performance.now() - start).toBeLessThan(200);
-    expect(result.text.endsWith("\n[n](New.md) [[New]] [![i](p.png)](New.md)")).toBe(true);
+    for (let i = 0; i < reps; i++) rewrite(noise);
+    return performance.now() - start;
+  };
+  const patterns: ((count: number) => string)[] = [
+    (count) => "![".repeat(count), (count) => "[[".repeat(count), (count) => "[](".repeat(count),
+    (count) => "[![a](b)".repeat(count), (count) => `${"[[a".repeat(count)}]x`,
+  ];
+  for (const noise of patterns) {
+    const small = noise(12_500);
+    const large = noise(100_000);
+    expect(rewrite(large).text.endsWith("\n[n](New.md) [[New]] [![i](p.png)](New.md)")).toBe(true);
+    // Equal total input per side (8 small runs, 1 large run), each side at least
+    // about 20 ms, interleaved: machine load slows both sides alike.
+    const reps = Math.ceil(20 / Math.max(work(large, 1), 0.1));
+    let smallBest = Infinity, largeBest = Infinity;
+    for (let round = 0; round < 5; round++) {
+      smallBest = Math.min(smallBest, work(small, 8 * reps));
+      largeBest = Math.min(largeBest, work(large, reps));
+    }
+    // Linear scanning gives about 1; quadratic scanning gives about 8.
+    expect(largeBest / smallBest).toBeLessThan(4);
   }
-});
+}, 30000);
 
 it("keeps wiki-link edge cases: a single bracket ends a candidate, an embedded [[ starts the body", () => {
   const resolve = (target: string) => target.toLowerCase() === "note" ? "Note.md" : null;

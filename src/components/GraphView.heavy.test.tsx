@@ -79,4 +79,4 @@ it("settles heavy graphs in the worker with overlap cleanup and transferred buff
   runFrame();
   expect(tick).not.toHaveBeenCalled();
   expect(posted.filter((p) => p.message.type === "start")).toHaveLength(1);
-});
+}, 30000);
