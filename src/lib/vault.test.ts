@@ -439,3 +439,29 @@ describe("writeNote fails closed on non-text files", () => {
     expect(await readNote(note)).toBe("# written");
   });
 });
+
+describe("normalizeVaultRelPath: indexed known-path fallback", () => {
+  // The previous fallback: the first listed path that is a `/`-bounded suffix.
+  const linear = (raw: string, known: string[]): string => {
+    const lower = raw.replace(/\\/g, "/").toLowerCase();
+    for (const candidate of known) {
+      const rel = candidate.replace(/\\/g, "/").replace(/^\/+/, "");
+      if (rel && lower.endsWith(`/${rel.toLowerCase()}`)) return rel;
+    }
+    return "";
+  };
+
+  it("returns the same first match as a linear scan of the list", () => {
+    let seed = 7;
+    const pick = <T,>(items: T[]): T => items[(seed = (seed * 1103515245 + 12345) % 2147483648) % items.length];
+    const parts = ["a", "A", "b", "notes", "Notes", "x.md", "X.MD", "deep", "Ä", "ä"];
+    const rel = () => Array.from({ length: 1 + (pick([0, 1, 2]) as number) }, () => pick(parts)).join(pick(["/", "\\"]));
+    for (let round = 0; round < 200; round++) {
+      const known = Array.from({ length: 12 }, () => pick(["", "/", "//"]) + rel());
+      for (let probe = 0; probe < 10; probe++) {
+        const raw = `${pick(["/mirror", "D:/other", "/private/v"])}/${rel()}${pick(["", "/"])}`;
+        expect(normalizeVaultRelPath(raw, "/vault", known)).toBe(linear(raw, known));
+      }
+    }
+  });
+});

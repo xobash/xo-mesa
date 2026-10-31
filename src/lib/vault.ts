@@ -268,15 +268,32 @@ export function normalizeVaultRelPath(
   }
   const rel = raw.replace(/^\.\/+/, "").replace(/^\/+/, "");
   if (!raw.startsWith("/") && !/^[a-zA-Z]:\//.test(raw)) return rel;
+  if (!knownRelPaths.length) return "";
+  // The first listed path that is a `/`-bounded suffix of the raw path.
+  const index = suffixIndexFor(knownRelPaths);
   const rawLower = raw.toLowerCase();
-  for (const candidate of knownRelPaths) {
-    const relCandidate = candidate.replace(/\\/g, "/").replace(/^\/+/, "");
-    if (!relCandidate) continue;
-    if (rawLower.endsWith(`/${relCandidate.toLowerCase()}`)) {
-      return relCandidate;
-    }
+  let best: { order: number; rel: string } | undefined;
+  for (let i = rawLower.indexOf("/"); i >= 0; i = rawLower.indexOf("/", i + 1)) {
+    const hit = index.get(rawLower.slice(i + 1));
+    if (hit && (!best || hit.order < best.order)) best = hit;
   }
-  return "";
+  return best?.rel ?? "";
+}
+
+/** Lowercased path → its first position in a known-path list, cached per list
+ *  identity so a watcher batch does not rescan the whole catalogue per path. */
+const suffixIndexes = new WeakMap<readonly string[], Map<string, { order: number; rel: string }>>();
+function suffixIndexFor(knownRelPaths: readonly string[]): Map<string, { order: number; rel: string }> {
+  let index = suffixIndexes.get(knownRelPaths);
+  if (index) return index;
+  index = new Map();
+  knownRelPaths.forEach((candidate, order) => {
+    const rel = candidate.replace(/\\/g, "/").replace(/^\/+/, "");
+    const key = rel.toLowerCase();
+    if (rel && !index!.has(key)) index!.set(key, { order, rel });
+  });
+  suffixIndexes.set(knownRelPaths, index);
+  return index;
 }
 export function stripExt(name: string): string {
   return name.replace(/\.[^.]+$/, "");
