@@ -40,21 +40,32 @@ export function buildNotes(
   const notes: Record<string, NoteMeta> = {};
   for (const f of files) {
     if (!isTextualVaultFile(f) || (only && !only.has(f.relPath))) continue;
-    const src = contents.get(f.relPath) ?? "";
-    // One wiki scan feeds both the links and the thumbnail image.
-    const { links: rawLinks, references: rawReferences, firstImage } = extractLinksAndFirstImage(src, !!f.isMarkdown);
-    const firstImagePath = firstImage ? resolveImage(firstImage) : undefined;
-    notes[f.relPath] = {
+    notes[f.relPath] = noteMetaFor(f, contents.get(f.relPath) ?? "", resolveImage).note;
+  }
+  return notes;
+}
+
+/** One document's `buildNotes` metadata plus its raw first-image target.
+ *  Batch callers share one whole-vault `resolveImage` across batches. */
+export function noteMetaFor(
+  f: VaultFile,
+  src: string,
+  resolveImage: (target: string) => string | undefined
+): { note: NoteMeta; firstImage: string | null } {
+  // One wiki scan feeds both the links and the thumbnail image.
+  const { links: rawLinks, references: rawReferences, firstImage } = extractLinksAndFirstImage(src, !!f.isMarkdown);
+  return {
+    note: {
       relPath: f.relPath,
       title: f.name,
       rawLinks,
       rawReferences,
       tags: extractTags(src, !!f.isMarkdown),
       aliases: extractAliases(src),
-      firstImagePath,
-    };
-  }
-  return notes;
+      firstImagePath: firstImage ? resolveImage(firstImage) : undefined,
+    },
+    firstImage,
+  };
 }
 
 function sameStrings(a: string[], b: string[]): boolean {

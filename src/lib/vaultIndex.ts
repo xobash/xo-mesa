@@ -1,7 +1,6 @@
 import { vaultStorageId, privateImagePath, restoreImagePath, VAULT_INDEX_STORAGE_VERSION } from "./vaultStorage";
-import { extractLinksAndFirstImage } from "./markdownExtract";
 import type { NoteMeta, VaultFile } from '../types';
-import { buildNotes, createImageResolver } from './graph';
+import { createImageResolver, noteMetaFor } from './graph';
 import { isTextualVaultFile } from './vault';
 import type { TextReadOutcome } from './vault';
 import { indexedContentCache, type IndexedDocument } from './documentWorkingSet';
@@ -230,14 +229,14 @@ export async function loadIndexedNotes(options: {
       return [];
     });
     if (!successful.length) continue;
-    const metadata = buildNotes(files, new Map(successful.map(({ file, text }) => [file.relPath, text])), new Set(successful.map(({ file }) => file.relPath)));
+    const metadata = successful.map(({ file, text }) => noteMetaFor(file, text, resolveImage));
     const documents = await runCancellableBackgroundWork("index", () => codec.encode(successful.map(({ text }) => text), successful.map(({ file }) => !!file.isMarkdown)), stopped);
     if (stopped()) break;
     for (let i = 0; i < successful.length; i++) {
       const { file, text } = successful[i];
       let sha = '';
       try { sha = await fingerprintText(text); } catch { /* not persisted/reused */ }
-      const entry = { digest: sha, document: documents[i], note: metadata[file.relPath], integrity: '', imageTarget: extractLinksAndFirstImage(text, !!file.isMarkdown).firstImage ?? undefined };
+      const entry = { digest: sha, document: documents[i], note: metadata[i].note, integrity: '', imageTarget: metadata[i].firstImage ?? undefined };
       try { entry.integrity = await integrity(entry); } catch { /* cache unavailable */ }
       entries.set(file.relPath, entry); reads++;
       if (options.onCached) changed.set(file.relPath, text);
