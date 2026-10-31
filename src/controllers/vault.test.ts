@@ -218,6 +218,23 @@ it('removes every known file under a folder that vanished in a modify event', as
   f.controller.dispose();
 });
 
+it('still recognizes known folders after a create storm switches to the folder index', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const files = [file('notes/a.md'), file('notes/deep/b.md'), file('notesy.md')];
+  f.state.setState({ files, fileFor: rel => f.state.getState().files.find(entry => entry.relPath === rel) });
+  io.read.mockReset().mockResolvedValue({ ok: true, text: 'new' });
+  io.exists.mockReset().mockImplementation(async (path: string) => path !== '/v/notes/deep');
+  const additions = Array.from({ length: 30 }, (_, i) => `/v/New-${i}.md`);
+  f.change([{ kind: 'create', paths: [...additions, '/v/note'] }, { kind: 'modify', paths: ['/v/notes', '/v/notes/deep'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files).toHaveLength(33));
+  const rels = f.state.getState().files.map(entry => entry.relPath);
+  expect(rels).toContain('note');
+  expect(rels).toContain('notes/a.md');
+  expect(rels).not.toContain('notes/deep/b.md');
+  expect(rels).not.toContain('notes');
+  f.controller.dispose();
+});
+
 it('refreshes reference metadata from an external edit so a later rename can repair the new embed', async () => {
   const f = watcherFixture(); await f.controller.actions.openVault('/v');
   const files = [file('a.md')];

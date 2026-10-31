@@ -364,6 +364,28 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       }
       return knownRelPaths;
     };
+    // Folders that hold a known file. A create storm probes every new path,
+    // so after a few linear scans of one catalogue the folder set is cheaper.
+    let foldersFrom: string[] | null = null;
+    let folderProbes = 0;
+    let knownFolders: Set<string> | null = null;
+    const isKnownFolder = (rel: string): boolean => {
+      const rels = knownRels();
+      if (foldersFrom !== rels) {
+        foldersFrom = rels;
+        folderProbes = 0;
+        knownFolders = null;
+      }
+      if (!knownFolders && ++folderProbes > 16) {
+        knownFolders = new Set();
+        for (const known of rels) {
+          for (let i = known.indexOf("/"); i >= 0; i = known.indexOf("/", i + 1)) knownFolders.add(known.slice(0, i));
+        }
+      }
+      if (knownFolders) return knownFolders.has(rel);
+      const prefix = `${rel}/`;
+      return rels.some((known) => known.startsWith(prefix));
+    };
     // A full rescan is `scanVault` over the whole vault. One per batch picks up
     // everything on disk at that moment, so a second one inside the same loop
     // can only repeat work; anything created after it is left to the debounced
@@ -499,7 +521,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             // modify event for the folder path. Never catalogue a folder as a
             // file; drop its known subtree when it is gone from disk.
             const prefix = `${rel}/`;
-            if (knownRels().some((known) => known.startsWith(prefix))) {
+            if (isKnownFolder(rel)) {
               const gone = await vanishedFromDisk(vaultFileFor(rootRaw, rel).path);
               if (!isCurrent()) return;
               if (gone) {
