@@ -25,3 +25,29 @@ export function relPathsOf(files: readonly VaultFile[]): string[] {
   }
   return list;
 }
+
+/** Linear scans of one relPath list before a folder set costs less than more scans. */
+export const KNOWN_FOLDER_SCANS_BEFORE_SET = 16;
+/** Whether `rel` is a folder that holds a listed path. Scans the list for the
+ *  first few probes, then builds a folder set for that list identity. */
+export function createKnownFolderCheck(): (rels: readonly string[], rel: string) => boolean {
+  let source: readonly string[] | null = null;
+  let probes = 0;
+  let folders: Set<string> | null = null;
+  return (rels, rel) => {
+    if (source !== rels) {
+      source = rels;
+      probes = 0;
+      folders = null;
+    }
+    if (!folders && ++probes > KNOWN_FOLDER_SCANS_BEFORE_SET) {
+      folders = new Set();
+      for (const known of rels) {
+        for (let i = known.indexOf("/"); i >= 0; i = known.indexOf("/", i + 1)) folders.add(known.slice(0, i));
+      }
+    }
+    if (folders) return folders.has(rel);
+    const prefix = `${rel}/`;
+    return rels.some((known) => known.startsWith(prefix));
+  };
+}

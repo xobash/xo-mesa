@@ -47,7 +47,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
 import { exists, stat } from "@tauri-apps/plugin-fs";
 import { forEachConcurrent } from "../lib/concurrency";
-import { relPathsOf } from "../lib/fileIndex";
+import { createKnownFolderCheck, relPathsOf } from "../lib/fileIndex";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { invalidatePdfThumb } from "../lib/pdfThumbInvalidation";
 import { rememberRecentVaultNative, type RecentVaultState } from "../lib/persistedUi";
@@ -357,28 +357,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     // Build alias-path lookup lists only when needed. `relPathsOf` caches by
     // files-array identity across batches, so path lookup indexes survive too.
     const knownRels = (): string[] => relPathsOf(get().files);
-    // Folders that hold a known file. A create storm probes every new path,
-    // so after a few linear scans of one catalogue the folder set is cheaper.
-    let foldersFrom: string[] | null = null;
-    let folderProbes = 0;
-    let knownFolders: Set<string> | null = null;
-    const isKnownFolder = (rel: string): boolean => {
-      const rels = knownRels();
-      if (foldersFrom !== rels) {
-        foldersFrom = rels;
-        folderProbes = 0;
-        knownFolders = null;
-      }
-      if (!knownFolders && ++folderProbes > 16) {
-        knownFolders = new Set();
-        for (const known of rels) {
-          for (let i = known.indexOf("/"); i >= 0; i = known.indexOf("/", i + 1)) knownFolders.add(known.slice(0, i));
-        }
-      }
-      if (knownFolders) return knownFolders.has(rel);
-      const prefix = `${rel}/`;
-      return rels.some((known) => known.startsWith(prefix));
-    };
+    // A create storm probes every new path; the check switches to a folder set.
+    const knownFolder = createKnownFolderCheck();
+    const isKnownFolder = (rel: string): boolean => knownFolder(knownRels(), rel);
     // A full rescan is `scanVault` over the whole vault. One per batch picks up
     // everything on disk at that moment, so a second one inside the same loop
     // can only repeat work; anything created after it is left to the debounced
