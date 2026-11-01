@@ -47,6 +47,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
 import { exists, stat } from "@tauri-apps/plugin-fs";
 import { forEachConcurrent } from "../lib/concurrency";
+import { relPathsOf } from "../lib/fileIndex";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { invalidatePdfThumb } from "../lib/pdfThumbInvalidation";
 import { rememberRecentVaultNative, type RecentVaultState } from "../lib/persistedUi";
@@ -353,17 +354,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     const created = new Map<string, VaultFile>();
     const pendingNotes = new Map<string, NoteMeta>();
     let filesDirty = false;
-    // Build alias-path lookup lists only when needed; cache by files-array identity.
-    let knownFrom: VaultFile[] | null = null;
-    let knownRelPaths: string[] = [];
-    const knownRels = (): string[] => {
-      const cur = get().files;
-      if (knownFrom !== cur) {
-        knownFrom = cur;
-        knownRelPaths = cur.map((f) => f.relPath);
-      }
-      return knownRelPaths;
-    };
+    // Build alias-path lookup lists only when needed. `relPathsOf` caches by
+    // files-array identity across batches, so path lookup indexes survive too.
+    const knownRels = (): string[] => relPathsOf(get().files);
     // Folders that hold a known file. A create storm probes every new path,
     // so after a few linear scans of one catalogue the folder set is cheaper.
     let foldersFrom: string[] | null = null;
