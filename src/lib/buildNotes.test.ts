@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildNotes, createImageResolver, noteMetaFor } from "./graph";
+import { buildNotes } from "./graph";
 import { extractLinks, extractLinksAndFirstImage } from "./markdownExtract";
 import type { VaultFile } from "../types";
 
@@ -40,16 +40,6 @@ describe("buildNotes", () => {
     const files = [file("note.md"), file("assets/pic.png", false)];
     const notes = buildNotes(files, new Map([["note.md", "text ![[pic.png]] more"]]));
     expect(notes["note.md"].firstImagePath).toBe("/v/assets/pic.png");
-  });
-
-  it("matches buildNotes per document with one shared vault image resolver", () => {
-    const files = [file("a.md"), file("b.md"), file("c.md"), file("assets/pic.png", false), file("img/pic2.png", false)];
-    const contents = new Map([["a.md", "![[pic.png]] [[b]]"], ["b.md", "#tag ![](img/pic2.png)"], ["c.md", "[[a]]"]]);
-    const resolveImage = createImageResolver(files);
-    const whole = buildNotes(files, contents);
-    for (const f of files.slice(0, 3)) expect(noteMetaFor(f, contents.get(f.relPath)!, resolveImage).note).toEqual(whole[f.relPath]);
-    expect(noteMetaFor(files[1], contents.get("b.md")!, resolveImage).firstImage).toBe("img/pic2.png");
-    expect(whole["b.md"].firstImagePath).toBe("/v/img/pic2.png");
   });
 
   it("leaves firstImagePath undefined without an embedded image", () => {

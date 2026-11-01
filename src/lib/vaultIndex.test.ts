@@ -18,6 +18,38 @@ describe("persisted vault-index accounting", () => {
   });
 });
 
+describe("cold index batches", () => {
+  it("records links, tags and first images for documents in every 128-file batch", async () => {
+    const notes = Array.from({ length: 140 }, (_, i) => `n/Note ${i}.md`);
+    const files: VaultFile[] = [
+      ...notes.map((relPath) => ({ path: `/v/${relPath}`, relPath, name: relPath.slice(2, -3), ext: "md", isMarkdown: true })),
+      { path: "/v/assets/pic.png", relPath: "assets/pic.png", name: "pic", ext: "png", isMarkdown: false },
+      { path: "/v/img/b.png", relPath: "img/b.png", name: "b", ext: "png", isMarkdown: false },
+    ];
+    const disk: Record<string, string> = Object.fromEntries(notes.map((rel, i) => [rel, `[[Note ${(i + 1) % 140}]] #t${i % 3}`]));
+    disk["n/Note 1.md"] = "![](img/b.png) [[Note 2]]";
+    disk["n/Note 135.md"] = "#late ![[pic.png]]";
+    let stored: Parameters<VaultIndexStorage["save"]>[0] | null = null;
+    const storage: VaultIndexStorage = { load: async () => stored && structuredClone(stored), save: async (snapshot) => { stored = structuredClone(snapshot); } };
+    const open = () => loadIndexedNotes({
+      root: "/v", files, stopped: () => false, storage,
+      read: async (batch) => batch.map((file) => ({ kind: "content" as const, text: disk[file.relPath] })),
+      fingerprints: (rels) => Promise.all(rels.map((rel) => fingerprintText(disk[rel]))),
+    });
+    const cold = await open();
+    expect(cold.read).toBe(140);
+    expect(cold.notes["n/Note 1.md"]).toMatchObject({ rawLinks: ["Note 2"], tags: [], firstImagePath: "/v/img/b.png" });
+    expect(cold.notes["n/Note 135.md"]).toMatchObject({ rawLinks: [], tags: ["late"], firstImagePath: "/v/assets/pic.png" });
+    expect(cold.notes["n/Note 139.md"]).toMatchObject({ rawLinks: ["Note 0"], tags: ["t1"], firstImagePath: undefined });
+    // The stored image target must resolve again when the index is reused.
+    await vi.waitFor(() => expect(stored).not.toBeNull());
+    const warm = await open();
+    expect(warm).toMatchObject({ read: 0, reused: 140 });
+    expect(warm.notes["n/Note 135.md"].firstImagePath).toBe("/v/assets/pic.png");
+    expect(warm.notes["n/Note 1.md"].firstImagePath).toBe("/v/img/b.png");
+  });
+});
+
 describe("reopening an indexed vault", () => {
   const files: VaultFile[] = ["A.md", "B.md", "C.txt"].map((relPath) => ({
     path: `/v/${relPath}`, relPath, name: relPath.replace(/\.\w+$/, ""), ext: relPath.split(".").pop()!, isMarkdown: relPath.endsWith(".md"),
