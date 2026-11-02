@@ -183,7 +183,7 @@ export interface DeepResearchRunState {
   seq: number;
 }
 
-/** `swatch` is [surface, accent] for the picker chip; keep in sync with styles.css. */
+/** `swatch` is [surface, accent] for the picker chip; keep in sync with the theme tokens in styles/tokens.css. */
 export const THEMES: { id: ThemeId; label: string; blurb: string; swatch: [string, string] }[] = [
   { id: "system", label: "System", blurb: "Neutral, follows OS light/dark", swatch: ["#1c1d21", "#aab4c5"] },
   { id: "void", label: "Void", blurb: "Violet pulse on black", swatch: ["#08080a", "#7259cc"] },

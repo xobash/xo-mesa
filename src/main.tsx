@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "@xterm/xterm/css/xterm.css";
-import "./styles.css";
+import "./styles/index.css";
 import { observeMesaLongTasks } from "./lib/mesaPerf";
 
 observeMesaLongTasks();

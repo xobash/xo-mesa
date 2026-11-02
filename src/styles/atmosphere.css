@@ -1,0 +1,108 @@
+/* ============================================================
+   Atmosphere & motion — give Void/Darkroom depth and life
+   (a drifting nebula in the graph, a soft light bloom behind
+   panes, a faint brand pulse). All honor the animations toggle
+   and prefers-reduced-motion via the global motion guard in chrome.css.
+   ============================================================ */
+.sidebar{
+  background-image: var(--pane-atmos, none);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+.graph-canvas {
+  position: relative;
+  z-index: 1;
+}
+.graph-wrap::before {
+  content: "";
+  position: absolute;
+  inset: -25%;
+  z-index: 0;
+  pointer-events: none;
+  /* Only the top bloom (atmos-a) drifts over the graph — the bottom spark is
+     dropped and overall opacity halved so the canvas reads calm, matching the
+     gentle top halo of the empty preview rather than a busy nebula. */
+  background: var(--graph-atmos, var(--atmos-a, transparent));
+  opacity: 0.28;
+  filter: blur(10px);
+  animation:
+    graph-breathe 8.2s ease-in-out infinite,
+    nebula-drift 26s ease-in-out infinite alternate;
+  will-change: opacity, filter, transform;
+}
+.graph-wrap::after {
+  content: "";
+  position: absolute;
+  inset: -12%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      52% 40% at 50% 38%,
+      rgba(255, 255, 255, 0.045),
+      transparent 72%
+    ),
+    radial-gradient(
+      38% 28% at 50% 46%,
+      rgba(255, 255, 255, 0.035),
+      transparent 78%
+    );
+  mix-blend-mode: screen;
+  opacity: 0.22;
+  filter: blur(18px);
+  animation: graph-core-breathe 7.4s ease-in-out infinite alternate;
+  will-change: opacity, filter, transform;
+}
+@keyframes graph-breathe {
+  0%,
+  100% {
+    opacity: 0.16;
+    filter: blur(7px) saturate(1);
+  }
+  50% {
+    opacity: 0.32;
+    filter: blur(10px) saturate(1.1);
+  }
+}
+@keyframes nebula-drift {
+  0% {
+    transform: translate3d(-3%, -2%, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(4%, 3%, 0) scale(1.08);
+  }
+}
+@keyframes graph-core-breathe {
+  0% {
+    opacity: 0.14;
+    transform: scale(0.985);
+    filter: blur(16px);
+  }
+  50% {
+    opacity: 0.28;
+    transform: scale(1.02);
+    filter: blur(20px);
+  }
+  100% {
+    opacity: 0.18;
+    transform: scale(1.035);
+    filter: blur(17px);
+  }
+}
+:root[data-theme="void"] .brand-mark,
+:root[data-theme="darkroom"] .brand-mark {
+  animation: mark-pulse 3.4s ease-in-out infinite;
+}
+:root[data-theme="void"] .brand-mark {
+  text-shadow: 0 0 10px rgba(128, 82, 255, 0.55);
+}
+@keyframes mark-pulse {
+  0%,
+  100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+

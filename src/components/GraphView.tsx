@@ -38,9 +38,6 @@ interface ActivityCard {
 const ACTIVITY_CAP = 4; // most cards shown at once, strongest first
 const ACTIVITY_LINGER_MS = 1000;
 const ACTIVITY_FADE_MS = 240;
-const clamp = (v: number, lo: number, hi: number) =>
-  Math.max(lo, Math.min(v, hi));
-
 const CARD_W = 360;
 const CARD_H = 300;
 const ACTIVE_FRAME_MS = 1000 / 60;
@@ -79,99 +76,12 @@ function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): nu
   return IDLE_FRAME_MS;
 }
 
-function rectContains(
-  r: { x: number; y: number; w: number; h: number },
-  x: number,
-  y: number
-): boolean {
-  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-}
-
-function rectLinePenalty(
-  r: { x: number; y: number; w: number; h: number },
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number
-): number {
-  const steps = 12;
-  let hits = 0;
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    if (rectContains(r, ax + (bx - ax) * t, ay + (by - ay) * t)) hits++;
-  }
-  return hits;
-}
-
-import { GraphHitIndex, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { GraphHitIndex, clamp, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, rectContains, rectLinePenalty, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { isSyntheticNode, nodeFill, readGraphColors, type GraphColors } from "./graphColors";
+import { GearIcon, GraphRangeRow, GraphSettingRow, GraphSettingSection, TimelapseIcon } from "./GraphSettingsControls";
 import { createGraphSimulation, graphPhysicsTransferables, graphSimulationTier, snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
 import { markMesaPerf } from "../lib/mesaPerf";
 export { resolveOverlaps } from "./graphGeometry";
-
-/** Tag and phantom nodes are synthetic — they have no backing file, so they
- *  can't be opened or previewed like a real note. */
-function isSyntheticNode(n: GraphNode): boolean {
-  return n.kind === "tag" || n.kind === "phantom";
-}
-
-/** Pick the fill colour for a graph node. */
-function nodeFill(n: GraphNode, c: GraphColors): string {
-  switch (n.kind) {
-    case "note":
-      return n.degree > 0 ? c.node : c.nodeIsolated;
-    case "tag":
-      return c.nodeTag;
-    case "phantom":
-      return c.nodePhantom;
-    case "attachment":
-      return c.nodeAttachment;
-  }
-}
-
-interface GraphColors {
-  node: string;
-  nodeActive: string;
-  nodeIsolated: string;
-  link: string;
-  linkActive: string;
-  flickerRgb: string; // "r,g,b" so we can vary alpha for the glow
-  bloomAlpha: number;
-  label: string;
-  labelHalo: string; // outline behind labels so they read over anything
-  thumbBorder: string;
-  nodeTag: string;
-  nodePhantom: string;
-  nodeAttachment: string;
-}
-
-function readGraphColors(): GraphColors {
-  const cs = getComputedStyle(document.documentElement);
-  const g = (name: string, fallback: string) => {
-    const v = cs.getPropertyValue(name).trim();
-    return v || fallback;
-  };
-  const n = (name: string, fallback: number) => {
-    const value = Number.parseFloat(cs.getPropertyValue(name).trim());
-    return Number.isFinite(value) ? value : fallback;
-  };
-  return {
-    node: g("--graph-node", "#7d8bb0"),
-    nodeActive: g("--graph-node-active", "#58a6ff"),
-    nodeIsolated: g("--graph-node-isolated", "#55607d"),
-    link: g("--graph-link", "rgba(120,134,170,0.18)"),
-    linkActive: g("--graph-link-active", "rgba(88,166,255,0.55)"),
-    flickerRgb: g("--graph-flicker-rgb", "122,230,168"),
-    bloomAlpha: n("--graph-bloom-alpha", 1),
-    label: g("--graph-label", "rgba(220,228,245,0.92)"),
-    labelHalo: g("--graph-label-halo", "rgba(0,0,0,0.55)"),
-    thumbBorder: g("--graph-thumb-border", "rgba(203,230,255,0.5)"),
-    nodeTag: g("--graph-node-tag", "#3fb6c9"),
-    nodePhantom: g("--graph-node-phantom", "#4a4a55"),
-    // Obsidian's attachment ring reads as a warm yellow-green dot field.
-    nodeAttachment: g("--graph-node-attachment", "#c9c96a"),
-  };
-}
-
 interface Transform {
   x: number;
   y: number;
@@ -187,129 +97,6 @@ interface DragState {
   offsetY?: number;
   /** Configured collide passes, restored when a moved node drag ends. */
   collideIterations?: number;
-}
-
-/** A gear glyph for the graph-settings button. */
-function GearIcon() {
-  return (
-    <svg
-      className="graph-gear-icon"
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="3.2" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
-/** Obsidian-style timelapse wand glyph. */
-function TimelapseIcon() {
-  return (
-    <svg
-      className="graph-timelapse-icon"
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m5 19 9.8-9.8" />
-      <path d="m7.2 16.8 2.2 2.2" />
-      <path d="m14.8 4.2.5 1.8 1.8.5-1.8.5-.5 1.8-.5-1.8-1.8-.5 1.8-.5.5-1.8Z" />
-      <path d="m19.1 11.2.3 1.2 1.2.3-1.2.3-.3 1.2-.3-1.2-1.2-.3 1.2-.3.3-1.2Z" />
-    </svg>
-  );
-}
-
-/** One labelled on/off row in the graph-settings popover. */
-function GraphSettingRow({
-  label,
-  on,
-  onChange,
-}: {
-  label: string;
-  on: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="graph-set-row">
-      <span className="graph-set-label">{label}</span>
-      <button
-        type="button"
-        className={"toggle" + (on ? " on" : "")}
-        role="switch"
-        aria-checked={on}
-        aria-label={label}
-        onClick={() => onChange(!on)}
-      >
-        <span className="toggle-knob" />
-      </button>
-    </div>
-  );
-}
-
-function GraphSettingSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="graph-settings-section">
-      <div className="graph-settings-section-title">{title}</div>
-      {children}
-    </section>
-  );
-}
-
-function GraphRangeRow({
-  label,
-  value,
-  min,
-  max,
-  step,
-  formatValue,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  formatValue?: (value: number) => string;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <label className="graph-range-row">
-      <span className="graph-range-label">{label}</span>
-      <output>{formatValue ? formatValue(value) : value}</output>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-       value={value}
-       aria-label={label}
-        onChange={(e) => {
-          const next = Number(e.target.value);
-          if (Number.isFinite(next)) onChange(clamp(next, min, max));
-        }}
-     />
-    </label>
-  );
 }
 
 export function GraphView() {

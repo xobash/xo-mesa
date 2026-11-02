@@ -196,3 +196,30 @@ export class GraphHitIndex {
     return best < 0 ? null : this.nodes[best];
   }
 }
+
+export const clamp = (v: number, lo: number, hi: number) =>
+  Math.max(lo, Math.min(v, hi));
+
+export function rectContains(
+  r: { x: number; y: number; w: number; h: number },
+  x: number,
+  y: number
+): boolean {
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+export function rectLinePenalty(
+  r: { x: number; y: number; w: number; h: number },
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): number {
+  const steps = 12;
+  let hits = 0;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    if (rectContains(r, ax + (bx - ax) * t, ay + (by - ay) * t)) hits++;
+  }
+  return hits;
+}

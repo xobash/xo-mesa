@@ -5,7 +5,7 @@
 import React from 'react';
 import {createRoot} from 'react-dom/client';
 import {MarkdownView} from '/src/components/MarkdownView.tsx';
-import '/src/styles.css';
+import '/src/styles/index.css';
 const paragraphs = Array.from({length:2000}, (_, i) => `Paragraph ${i}: a stable block with **bold** text and [a reference][r].`);
 const source = () => '# Markdown regression\n\n> [!note] Preview contract\n> Shared references, tasks, raw HTML and Unicode: 雪山.\n\n- [x] Completed\n- [ ] Pending\n\n' + paragraphs.join('\n\n') + '\n\n[r]: https://example.com\n\n<div>\n\n**Nested HTML**\n\n</div>\n\n<img onerror="window.fixtureUnsafe=true">';
 function Fixture() {

@@ -1,0 +1,210 @@
+/* ---------- unified sidebar labels ---------- */
+.sidebar-header,
+.tag-header,
+.sync-section-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.sidebar-header {
+  min-height: 36px;
+  padding: 0 12px 0 18px;
+  color: var(--text-faint);
+}
+.tag-header {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+}
+.sidebar-header-tools .sort-btn {
+  color: var(--text-faint);
+}
+.sidebar-header-tools .sort-btn:hover,
+.tag-header:hover {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text);
+}
+.tag-section-count {
+  font-family: var(--mono);
+  letter-spacing: 0.08em;
+}
+
+/* ---------- Mesa visual-language unification pass ---------- */
+.modal,
+.hover-card,
+.theme-pop,
+.context-menu,
+.vault-menu,
+.drop-card,
+.sync-section,
+.peer-card,
+.nearby-peer,
+.ov-win,
+.ov-help-card,
+.ov-tour-card,
+.agent-surface {
+  background: var(--surface-panel);
+  border: 1px solid var(--surface-rule);
+  border-radius: var(--surface-radius);
+  box-shadow: var(--pop-shadow);
+}
+
+.modal-head,
+.center-head,
+.stack-head,
+.search-input-row,
+.agent-context,
+.agent-browser-bar,
+.ov-win-bar,
+.ov-help-head,
+.ov-help-foot {
+  background: var(--surface-header);
+  border-color: var(--surface-rule);
+}
+
+.btn,
+.icon-btn,
+.seg,
+.seg-btn,
+.text-input,
+.palette-input,
+.search-item,
+.theme-opt,
+.context-item,
+.tree-ext,
+.tag-chip,
+.search-count,
+.task-kind,
+.peer-health,
+.agent-context > div,
+.graph-controls,
+.vault-name {
+  border-radius: var(--control-radius);
+}
+
+.modal-head,
+.center-head,
+.stack-head,
+.sidebar-header,
+.tag-header,
+.vault-menu-kicker,
+.vault-menu-label,
+.sync-section-title,
+.ov-win-title {
+  font-family: var(--mono);
+  letter-spacing: var(--eyebrow);
+}
+
+.vault-menu {
+  width: min(360px, calc(100vw - 18px));
+  padding: 7px;
+  background: var(--surface-panel);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.35);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.35);
+}
+.vault-menu-current {
+  margin: 0 0 7px;
+  padding: 11px 12px 12px;
+  border: 1px solid var(--surface-rule);
+  border-radius: max(0px, calc(var(--surface-radius) - 3px));
+  background: var(--surface-header);
+}
+.vault-menu-current-head,
+.vault-menu-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.vault-menu-kicker,
+.vault-menu-label {
+  font-size: 9.5px;
+  font-weight: 650;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+.vault-menu-current-name {
+  margin-top: 5px;
+  font-size: 15px;
+  font-weight: 680;
+}
+.vault-menu-path {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.vault-menu-label {
+  padding: 7px 7px 5px;
+}
+.vault-menu-item {
+  flex: 1;
+  padding: 9px 10px;
+  border-radius: max(0px, calc(var(--surface-radius) - 4px));
+}
+.vault-menu-item:hover {
+  background: var(--surface-control-hover);
+}
+.vault-menu-forget {
+  flex: 0 0 auto;
+  align-self: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.vault-menu-forget:hover {
+  background: var(--surface-control-hover);
+  color: var(--text-strong);
+}
+.vault-menu-name {
+  font-size: 13px;
+}
+.vault-menu-open {
+  margin: 7px 0 0;
+  padding: 9px 11px;
+  border: 1px solid var(--surface-rule);
+  border-radius: var(--control-radius);
+  background: var(--surface-control);
+  color: var(--text);
+}
+.vault-menu-open:hover {
+  background: var(--surface-control-hover);
+  color: var(--text-strong);
+}
+
+.settings-body {
+  padding: 8px 18px 12px;
+}
+.setting-row {
+  min-height: 0;
+  border-color: var(--surface-rule);
+}
+.setting-name {
+  font-weight: 650;
+}
+.setting-desc {
+  line-height: 1.35;
+}
+
+
+
+
+
+
+@media (max-width: 760px) {
+  .cal2-year {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .ov-dock-label {
+    display: none;
+  }
+}
+

@@ -7,7 +7,7 @@ import { createRoot } from 'react-dom/client';
 import App from '/src/App.tsx';
 import { useAppStore } from '/src/store.ts';
 import { createNote, DEMO_ROOT } from '/src/lib/vault.ts';
-import '/src/styles.css';
+import '/src/styles/index.css';
 if (!import.meta.env.DEV) throw new Error('Acceptance fixture is development-only');
 localStorage.setItem('mesa:toured', '1');
 await createNote(DEMO_ROOT, 'Acceptance.md', 'Original text\n');

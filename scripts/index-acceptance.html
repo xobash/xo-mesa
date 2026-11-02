@@ -8,7 +8,7 @@ import App from '../src/App';
 import { useAppStore } from '../src/store';
 import { DEMO_ROOT } from '../src/lib/vault';
 import { workingSetStats } from '../src/lib/documentWorkingSet';
-import '../src/styles.css';
+import '../src/styles/index.css';
 localStorage.setItem('mesa:toured', '1');
 const fixtureRoot = new URL(location.href).searchParams.get('vault') || DEMO_ROOT;
 document.querySelector('#reopen').textContent = 'Reopen test vault';

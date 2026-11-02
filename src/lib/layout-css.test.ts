@@ -1,7 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { readStylesheet } from '../styles/source';
 import { expect, it } from 'vitest';
 
-const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+const css = readStylesheet().replace(/\/\*[\s\S]*?\*\//g, '');
 const declarations = (selector: string) => {
   const result: Record<string, string> = {};
   for (const block of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {

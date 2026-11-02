@@ -7,7 +7,6 @@ const QUIT_REQUESTED_EVENT = "mesa://quit-requested";
 import {
   Fragment,
   Suspense,
-  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -16,8 +15,8 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
-import { useAppStore, getStore, type VaultUnavailableState } from "./store";
-import type { AppState, DeepResearchRunState } from "./store";
+import { useAppStore, getStore } from "./store";
+import type { AppState } from "./store";
 import { IN_TAURI, DEMO_ROOT, fileKind, isEditableTextExt, isTextualVaultFile } from "./lib/vault";
 import { MediaView } from "./components/MediaView";
 import { CodeView } from "./components/CodeView";
@@ -37,11 +36,9 @@ import {
   DOCUMENT_CATALOG_REQUEST_EVENT,
 } from "./components/DocumentView";
 import { DropOverlay } from "./components/DropOverlay";
-import { PreviewCard } from "./components/PreviewCard";
 import { startViewDrag } from "./components/panelDrag";
 import { useApplyTheme } from "./components/useApplyTheme";
 import { useTrayStatus } from "./components/useTrayStatus";
-import { SORT_LABELS } from "./lib/sort";
 import {
   adjacentPath,
   clampKeyboardFocus,
@@ -66,21 +63,16 @@ import {
   notePlainShiftTabKeyUp,
   resetPlainShiftTabChord,
 } from "./lib/shortcuts";
-import type { SortMode, RightPanel, WorkspaceView } from "./types";
+import type { RightPanel, WorkspaceView } from "./types";
 import { consumeGraphWindowBootstrap } from "./lib/graphWindowBootstrap";
-import {
-  AGENT_CONTEXT_EVENT,
-  AGENT_WINDOW_READY_EVENT,
-} from "./lib/piSessionBridge";
+import { AGENT_CONTEXT_EVENT } from "./lib/piSessionBridge";
 import {
   DEEP_RESEARCH_STATE_EVENT,
   DEEP_RESEARCH_STATE_REQUEST_EVENT,
 } from "./lib/deepResearchWindow";
-import { DeepResearchPhaseChipWithRun } from "./components/DeepResearchPhaseChip";
 import {
   buildAgentContext,
   contextPrompt,
-  type AgentContext,
 } from "./lib/agent";
 import {
   LatestWinsQueue,
@@ -88,131 +80,17 @@ import {
 } from "./lib/latestWinsQueue";
 import { backgroundWork } from "./lib/backgroundWorkGovernor";
 import { autoSyncBaseDelayMs, nextAutoSyncDelayMs } from "./lib/syncAutoSchedule";
-
-// The CodeMirror editor stack (~590 kB min across codemirror + @lezer) is the
-// entry chunk's largest resident, and only the main window's DocPane ever
-// renders it — popout windows (?doc / ?panel / ?agent) boot the same entry
-// chunk and never mount the editor. Load it lazily so the shell (and every
-// popout) parses half as much JS; same stance as the pdf-lib and xterm splits.
-const Editor = lazy(() =>
-  import("./components/Editor").then((m) => ({ default: m.Editor }))
-);
-
-// Graph is not part of the default Editor + Preview workspace, but its canvas
-// renderer and d3-force stack were paid by every main/popout startup. Keep the
-// same component boundary while loading it only when a graph surface mounts.
-const LazyGraphView = lazy(() =>
-  import("./components/GraphView").then((m) => ({ default: m.GraphView }))
-);
-
-const LazyAgentSurface = lazy(() =>
-  import("./components/AgentPanel").then((m) => ({ default: m.AgentSurface }))
-);
-const LazyAgentPanel = lazy(() =>
-  import("./components/AgentPanel").then((m) => ({ default: m.AgentPanel }))
-);
-const LazyAgentOverlay = lazy(() =>
-  import("./components/AgentPanel").then((m) => ({ default: m.AgentOverlay }))
-);
-const LazyDeepResearchPanel = lazy(() =>
-  import("./components/DeepResearchPanel").then((m) => ({ default: m.DeepResearchPanel }))
-);
-const LazyOverlay = lazy(() =>
-  import("./components/Overlay").then((m) => ({ default: m.Overlay }))
-);
-const LazyCommandPalette = lazy(() =>
-  import("./components/CommandPalette").then((m) => ({ default: m.CommandPalette }))
-);
-const LazySearchPanel = lazy(() =>
-  import("./components/SearchPanel").then((m) => ({ default: m.SearchPanel }))
-);
-const LazySettingsModal = lazy(() =>
-  import("./components/SettingsModal").then((m) => ({ default: m.SettingsModal }))
-);
-const LazyDiagnosticsModal = lazy(() =>
-  import("./components/DiagnosticsModal").then((m) => ({ default: m.DiagnosticsModal }))
-);
-const LazySyncModal = lazy(() =>
-  import("./components/SyncModal").then((m) => ({ default: m.SyncModal }))
-);
-// Only ever mounted behind `connectOpen`, so it does no work while closed and
-// nothing but the welcome screen's "connect" button can reach it — 8.8 kB of
-// pairing/discovery UI that the entry chunk was carrying for every launch.
-const LazyConnectVaultModal = lazy(() =>
-  import("./components/ConnectVaultModal").then((m) => ({
-    default: m.ConnectVaultModal,
-  }))
-);
+import { AgentSurface, AgentWindows, Editor, EphemeralModals, GraphView, OverlayBoundary } from "./components/LazySurfaces";
+import { AgentWindow, ResearchWindow } from "./components/DetachedWindows";
+import { DragGhostLayer, PreviewLayer } from "./components/FloatingLayers";
+import { Tabs } from "./components/Tabs";
+import { SortMenu } from "./components/SortMenu";
+import { Welcome } from "./components/Welcome";
 
 // Main-workspace context changes can be faster than Tauri IPC completion
 // (e.g. keyboard navigation through notes). Serialize them and skip queued
 // stale values so Rust's per-turn context can never settle on an older view.
 const PI_CONTEXT_PUBLISH_QUEUE = new LatestWinsQueue<string, void>();
-
-function GraphView() {
-  return (
-    <Suspense fallback={<div className="graph-wrap" aria-busy="true" />}>
-      <LazyGraphView />
-    </Suspense>
-  );
-}
-
-function AgentSurface(props: React.ComponentProps<typeof LazyAgentSurface>) {
-  return (
-    <Suspense fallback={<div className="agent-surface" aria-busy="true" />}>
-      <LazyAgentSurface {...props} />
-    </Suspense>
-  );
-}
-
-/** Closed Pi windows should not pull the terminal/harness surface tree into
- * startup. Their store flags already own visibility, so gate the lazy module
- * at the same boundary. */
-function AgentWindows() {
-  const agentOpen = useAppStore((s) => s.agentOpen);
-  const piOverlayOpen = useAppStore((s) => s.piOverlayOpen);
-  if (!agentOpen && !piOverlayOpen) return null;
-  return (
-    <Suspense fallback={null}>
-      {agentOpen && <LazyAgentPanel />}
-      {piOverlayOpen && <LazyAgentOverlay />}
-    </Suspense>
-  );
-}
-
-/** Load the Mesa overlay only on first use, then keep it mounted forever so
- * Overlay's existing 240 ms close animation can finish after `open` flips. */
-function OverlayBoundary() {
-  const open = useAppStore((s) => s.overlayOpen);
-  const [loaded, setLoaded] = useState(open);
-  useEffect(() => {
-    if (open) setLoaded(true);
-  }, [open]);
-  if (!loaded && !open) return null;
-  return (
-    <Suspense fallback={null}>
-      <LazyOverlay />
-    </Suspense>
-  );
-}
-
-function EphemeralModals() {
-  const paletteOpen = useAppStore((s) => s.paletteOpen);
-  const searchOpen = useAppStore((s) => s.searchOpen);
-  const settingsOpen = useAppStore((s) => s.settingsOpen);
-  const diagnosticsOpen = useAppStore((s) => s.diagnosticsOpen);
-  const syncOpen = useAppStore((s) => s.syncOpen);
-  if (!paletteOpen && !searchOpen && !settingsOpen && !diagnosticsOpen && !syncOpen) return null;
-  return (
-    <Suspense fallback={null}>
-      {paletteOpen && <LazyCommandPalette />}
-      {searchOpen && <LazySearchPanel />}
-      {settingsOpen && <LazySettingsModal />}
-      {diagnosticsOpen && <LazyDiagnosticsModal />}
-      {syncOpen && <LazySyncModal />}
-    </Suspense>
-  );
-}
 
 const initialRouteParams = new URLSearchParams(location.search);
 let graphWindowBootstrapped = false;
@@ -325,7 +203,7 @@ function panelContent(kind: RightPanel) {
 
 function viewContent(
   kind: WorkspaceView,
-  agentProps: Partial<React.ComponentProps<typeof LazyAgentSurface>> = {}
+  agentProps: Partial<React.ComponentProps<typeof AgentSurface>> = {}
 ) {
   if (kind === "empty") {
     return (
@@ -618,539 +496,6 @@ function PanelWindow({ kind }: { kind: RightPanel }) {
           <div className="editor-empty">Loading…</div>
         )}
       </div>
-    </div>
-  );
-}
-
-function AgentWindow() {
-  const vaultPath = useAppStore((s) => s.vaultPath);
-  const selectFile = useAppStore((s) => s.selectFile);
-  const routeParams = useMemo(() => new URLSearchParams(location.search), []);
-  const sel = routeParams.get("sel");
-  const requestedVault = routeParams.get("vault") ?? "";
-  // The detached realm opens and scans the vault in the background, but PTY
-  // adoption must not wait for that potentially expensive scan. The launch
-  // URL came from the already-open main vault and is sufficient to bind the
-  // complete AgentSurface to the existing backend session immediately.
-  const agentVaultPath = vaultPath || requestedVault;
-  const agentLabel = routeParams.get("agentLabel") ?? "";
-  const titleOverlay = routeParams.get("titleOverlay") === "1";
-  const [contextOverride, setContextOverride] = useState<AgentContext | null>(null);
-  // The live Pi session id handed off by the window this was popped out
-  // from (see `openAgentWindow` in store.ts). This window is a separate
-  // Tauri WebviewWindow/JS realm, so without carrying this across explicitly
-  // AgentSurface has no way to know a `pi` process is already running for
-  // this vault and would spawn a second, contextless one.
-  const attachSessionId = routeParams.get("piSession");
-  const announceReady = useCallback(
-    async (sessionId: string) => {
-      if (!agentLabel) return;
-      await emit(AGENT_WINDOW_READY_EVENT, {
-        label: agentLabel,
-        sessionId,
-      }).catch((error) => {
-        console.warn("[mesa] detached Pi ready acknowledgement failed:", error);
-      });
-    },
-    [agentLabel]
-  );
-  useEffect(() => {
-    if (vaultPath && sel) void selectFile(sel);
-  }, [vaultPath, sel, selectFile]);
-  useEffect(() => {
-    let alive = true;
-    let unlisten: (() => void) | null = null;
-    void listen<AgentContext>(AGENT_CONTEXT_EVENT, (event) => {
-      if (alive && event.payload && typeof event.payload === "object") {
-        setContextOverride(event.payload);
-      }
-    }).then((off) => {
-      if (alive) unlisten = off;
-      else off();
-    });
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
-  }, []);
-  const dockAgentWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget) return;
-    if (!isWindowTransferShortcut(event)) return;
-    claimKeyboardShortcut(event.nativeEvent);
-    void dockIntoMainWindow({ kind: "agent" });
-  };
-  useEffect(() => {
-    let dispose: (() => void) | undefined;
-    void installNativeDragDock(
-      { kind: "agent" },
-      { requireUserDragArm: true }
-    )
-      .then((cleanup) => (dispose = cleanup))
-      .catch((error) => console.warn("[mesa] native Pi docking unavailable:", error));
-    return () => dispose?.();
-  }, []);
-
-  return (
-    <div className={"agent-window" + (titleOverlay ? " titlebar-overlay" : "")}>
-      {agentVaultPath ? (
-        <AgentSurface
-          embedded
-          attachSessionId={attachSessionId}
-          vaultPathOverride={agentVaultPath}
-          contextOverride={contextOverride}
-          windowTitle="Pi agent"
-          nativeDragRegion
-          onTitleBarKeyDown={dockAgentWithKeyboard}
-          titleBarHint="Drag over Mesa or press Ctrl/Cmd+Shift+Enter to dock"
-          onSessionReady={announceReady}
-          onClose={() => void closeCurrentPopoutWindow()}
-        />
-      ) : (
-        <div className="editor-empty">Loading Pi session…</div>
-      )}
-    </div>
-  );
-}
-
-function ResearchWindow() {
-  const routeParams = useMemo(() => new URLSearchParams(location.search), []);
-  const requestedVault = routeParams.get("vault") ?? "";
-  const researchLabel = routeParams.get("researchLabel") ?? "";
-  const localRun = useAppStore((s) => s.deepResearch);
-  const [remoteRun, setRemoteRun] = useState<DeepResearchRunState | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    let unlisten: (() => void) | null = null;
-    void (async () => {
-      const off = await listen<DeepResearchRunState>(DEEP_RESEARCH_STATE_EVENT, (event) => {
-        if (alive && event.payload && typeof event.payload === "object") {
-          setRemoteRun(event.payload);
-        }
-      });
-      if (!alive) {
-        off();
-        return;
-      }
-      unlisten = off;
-      await emit(DEEP_RESEARCH_STATE_REQUEST_EVENT, { label: researchLabel });
-    })().catch((error) => {
-      if (alive) console.warn("[mesa] detached Deep Research state relay failed:", error);
-    });
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
-  }, [researchLabel]);
-
-  useEffect(() => {
-    let dispose: (() => void) | undefined;
-    void installNativeDragDock({ kind: "research" }, { requireUserDragArm: true })
-      .then((cleanup) => (dispose = cleanup))
-      .catch((error) => console.warn("[mesa] native Deep Research docking unavailable:", error));
-    return () => dispose?.();
-  }, []);
-
-  const dockResearchWithKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.target !== event.currentTarget) return;
-    if (!isWindowTransferShortcut(event)) return;
-    claimKeyboardShortcut(event.nativeEvent);
-    void dockIntoMainWindow({ kind: "research" });
-  };
-
-  return (
-    <div className="research-window">
-      <header
-        className="doc-window-bar"
-        data-tauri-drag-region=""
-        tabIndex={0}
-        aria-label="Deep Research window. Drag over Mesa or press Control or Command plus Shift plus Enter to dock."
-        title="Drag over Mesa · Ctrl/Cmd+Shift+Enter docks"
-        onKeyDown={dockResearchWithKeyboard}
-      >
-        <span data-tauri-drag-region="">Deep Research</span>
-        <DeepResearchPhaseChipWithRun runOverride={remoteRun ?? localRun} />
-        <span className="research-window-hint">Drag over Mesa · Ctrl/Cmd+Shift+Enter docks</span>
-        <button className="icon-btn" onClick={() => void closeCurrentPopoutWindow()} aria-label="Close Deep Research window">
-          ×
-        </button>
-      </header>
-      <div className="research-window-body">
-        {requestedVault || remoteRun ? (
-          <Suspense fallback={<div className="editor-empty">Loading Deep Research…</div>}>
-            <LazyDeepResearchPanel runOverride={remoteRun ?? localRun} readOnly />
-          </Suspense>
-        ) : (
-          <div className="editor-empty">Waiting for the active Deep Research run…</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Single floating preview card for sidebar files/folders and tag chips. */
-function PreviewLayer() {
-  const preview = useAppStore((s) => s.hoverPreview);
-  if (!preview) return null;
-  return (
-    <div className="preview-layer">
-      <PreviewCard target={preview.target} x={preview.x} y={preview.y} fixed />
-    </div>
-  );
-}
-
-function DragGhostLayer() {
-  const ghost = useAppStore((s) => s.dragGhost);
-  if (!ghost) return null;
-  return (
-    <div
-      className={"drag-ghost " + ghost.kind}
-      style={{ transform: `translate3d(${ghost.x + 14}px, ${ghost.y + 14}px, 0)` }}
-    >
-      {ghost.kind === "file" ? "File" : "Move"} · {ghost.label}
-    </div>
-  );
-}
-
-function Tabs() {
-  const enableTabs = useAppStore((s) => s.settings.enableTabs);
-  const openTabs = useAppStore((s) => s.openTabs);
-  const activePath = useAppStore((s) => s.activePath);
-  const notes = useAppStore((s) => s.notes);
-  const selectFile = useAppStore((s) => s.selectFile);
-  const closeTab = useAppStore((s) => s.closeTab);
-  const openDocWindow = useAppStore((s) => s.openDocWindow);
-  const fileFor = useAppStore((s) => s.fileFor);
-  const stripRef = useRef<HTMLDivElement | null>(null);
-  const activeTabRef = useRef<HTMLDivElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
-
-  // Keep the active tab scrolled into view when it changes.
-  useEffect(() => {
-    if (!enableTabs) return;
-    activeTabRef.current?.scrollIntoView({ inline: "nearest", block: "nearest" });
-  }, [enableTabs, openTabs, activePath]);
-
-  // Close the overflow menu on an outside click.
-  useEffect(() => {
-    if (!enableTabs || !menuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node))
-        setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [enableTabs, menuOpen]);
-
-  // Pointer-based drag (NOT html5 draggable, which would trigger Tauri's native
-  // file-drop overlay). Drag a tab out of the strip → pop it into its own window.
-  const onTabPointerDown = (id: string, e: React.PointerEvent) => {
-    if (e.button !== 0) return; // left button only; middle-click closes (onAuxClick)
-    const start = { x: e.clientX, y: e.clientY };
-    let moved = false;
-    const move = (ev: PointerEvent) => {
-      if (Math.abs(ev.clientX - start.x) + Math.abs(ev.clientY - start.y) > 6)
-        moved = true;
-    };
-    const up = (ev: PointerEvent) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      const strip = stripRef.current;
-      if (moved && strip) {
-        const r = strip.getBoundingClientRect();
-        const outside =
-          ev.clientY > r.bottom + 20 ||
-          ev.clientY < r.top - 20 ||
-          ev.clientX < r.left - 20 ||
-          ev.clientX > r.right + 20;
-        if (outside) {
-          void openDocWindow(id);
-          closeTab(id);
-          return;
-        }
-      }
-      void selectFile(id); // click or in-strip drag → just select
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
-
-  const title = (id: string) => notes[id]?.title ?? fileFor(id)?.name ?? id;
-
-  if (!enableTabs) return null;
-
-  if (openTabs.length === 0)
-    return (
-      <div className="tabs-wrap empty">
-        <div className="tabs" ref={stripRef} />
-      </div>
-    );
-
-  return (
-    <div className="tabs-wrap">
-      <div className="tabs" ref={stripRef}>
-        {openTabs.map((id) => (
-          <div
-            key={id}
-            ref={id === activePath ? activeTabRef : undefined}
-            className={"tab" + (id === activePath ? " active" : "")}
-            onPointerDown={(e) => onTabPointerDown(id, e)}
-            onAuxClick={(e) => {
-              if (e.button === 1) {
-                e.preventDefault();
-                closeTab(id);
-              }
-            }}
-            title="Drag out to open in its own window · middle-click to close"
-          >
-            <span className="tab-title">{title(id)}</span>
-            <button
-              className="tab-close"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                const strip = stripRef.current;
-                const index = openTabs.indexOf(id);
-                closeTab(id);
-                // Keep keyboard focus in the strip instead of dropping it to the page.
-                requestAnimationFrame(() => {
-                  const closes = strip?.querySelectorAll<HTMLButtonElement>(".tab-close");
-                  closes?.[Math.min(index, closes.length - 1)]?.focus();
-                });
-              }}
-              title="Close"
-              aria-label={`Close ${title(id)}`}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-      </div>
-      <div className="tab-overflow" ref={menuRef}>
-        <button
-          className="tab-overflow-btn"
-          onClick={() => setMenuOpen((v) => !v)}
-          title="All open tabs"
-          aria-label="All open tabs"
-        >
-          ▾
-        </button>
-        {menuOpen && (
-          <div className="tab-menu">
-            {openTabs.map((id) => (
-              <div
-                key={id}
-                className={"tab-menu-item" + (id === activePath ? " active" : "")}
-              >
-                <button
-                  className="tab-menu-pick"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void selectFile(id);
-                  }}
-                >
-                  {title(id)}
-                </button>
-                <button
-                  className="tab-menu-close"
-                  onClick={() => closeTab(id)}
-                  title="Close"
-                  aria-label={`Close ${title(id)}`}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function SortMenu() {
-  const sortMode = useAppStore((s) => s.settings.sortMode);
-  const sortDir = useAppStore((s) => s.settings.sortDir);
-  const typeFilter = useAppStore((s) => s.settings.typeFilter);
-  const files = useAppStore((s) => s.files);
-  const setSetting = useAppStore((s) => s.setSetting);
-  const [open, setOpen] = useState(false);
-  const [typeOpen, setTypeOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  const presentTypes = useMemo(() => {
-    const set = new Set<string>();
-    for (const f of files) set.add(f.ext.toLowerCase());
-    return [...set].sort();
-  }, [files]);
-
-  const modes: SortMode[] = ["name", "modified", "size", "links", "type"];
-  const active = typeFilter !== "all";
-  return (
-    <div className="sort-menu" ref={ref}>
-      <button
-        className={"sort-btn" + (active ? " on" : "")}
-        onClick={() => setOpen((v) => !v)}
-        title={"Sort: " + SORT_LABELS[sortMode]}
-      >
-        ⇅
-      </button>
-      {open && (
-        <div className="theme-pop sort-pop">
-          <div className="sort-pop-label">Sort by</div>
-          {modes.map((m) => (
-            <button
-              key={m}
-              className={"theme-opt" + (m === sortMode ? " on" : "")}
-              onClick={() => setSetting("sortMode", m)}
-            >
-              {SORT_LABELS[m]}
-            </button>
-          ))}
-          <div className="sort-pop-row">
-            <button
-              className={"seg-btn" + (sortDir === "asc" ? " on" : "")}
-              onClick={() => setSetting("sortDir", "asc")}
-              title="Ascending / natural order"
-            >
-              ↑ Asc
-            </button>
-            <button
-              className={"seg-btn" + (sortDir === "desc" ? " on" : "")}
-              onClick={() => setSetting("sortDir", "desc")}
-              title="Descending / reversed"
-            >
-              ↓ Desc
-            </button>
-          </div>
-          <button
-            className="theme-opt sort-accordion"
-            onClick={() => setTypeOpen((v) => !v)}
-            aria-expanded={typeOpen}
-          >
-            <span className={"tag-caret" + (typeOpen ? "" : " collapsed")}>▾</span>
-            File type
-            <span className="sort-type-current">
-              {typeFilter === "all" ? "All" : "." + typeFilter}
-            </span>
-          </button>
-          {typeOpen && (
-            <div className="sort-type-list">
-              <button
-                className={"theme-opt" + (typeFilter === "all" ? " on" : "")}
-                onClick={() => setSetting("typeFilter", "all")}
-              >
-                All types
-              </button>
-              {presentTypes.map((t) => (
-                <button
-                  key={t}
-                  className={"theme-opt" + (typeFilter === t ? " on" : "")}
-                  onClick={() => setSetting("typeFilter", t)}
-                >
-                  .{t}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Welcome({
-  onOpen,
-  onRetry,
-  unavailableVault,
-}: {
-  onOpen: () => void;
-  onRetry: () => void;
-  unavailableVault: VaultUnavailableState | null;
-}) {
-  // Read transient open progress here, not in App: status and loading change
-  // throughout a vault open and import, and App re-renders the whole shell.
-  const loading = useAppStore((s) => s.loading);
-  const status = useAppStore((s) => s.status);
-  const [connectOpen, setConnectOpen] = useState(false);
-  const approvalNeeded = unavailableVault?.reason.includes(
-    "vault folder has not been selected in Mesa",
-  );
-  return (
-    <div className="welcome">
-      <div className="welcome-card">
-        <div className="welcome-mark">✦</div>
-        <h1>Mesa</h1>
-        <p>
-          A local-first vault workspace with a living graph, snap-in views,
-          saved webpage rendering, Shift+Tab tools, and a Pi terminal that
-          starts with path-only context.
-        </p>
-        {unavailableVault && (
-          <div className="welcome-unavailable" role="alert">
-            <strong>
-              {approvalNeeded
-                ? `${unavailableVault.name} needs folder approval`
-                : `${unavailableVault.name} is not connected`}
-            </strong>
-            <span>
-              {approvalNeeded
-                ? "Select the folder again once so Mesa can restore its native file access."
-                : "Mesa kept this vault selected and did not open it as an empty workspace. Reconnect the drive; Mesa retries automatically while this window is open."}
-            </span>
-            <code title={unavailableVault.reason}>{unavailableVault.root}</code>
-          </div>
-        )}
-        <div className="welcome-actions">
-          {unavailableVault && (
-            <button className="btn primary" onClick={onRetry} disabled={loading}>
-              {loading
-                ? "Retrying…"
-                : approvalNeeded
-                  ? "Select this vault again"
-                  : "Retry now"}
-            </button>
-          )}
-          <button className={"btn " + (unavailableVault ? "welcome-secondary" : "primary")} onClick={onOpen} disabled={loading}>
-            {unavailableVault ? "Choose another vault" : loading ? "Opening…" : "Open vault folder"}
-          </button>
-          {IN_TAURI && (
-            <button
-              className="btn welcome-secondary"
-              onClick={() => setConnectOpen(true)}
-              disabled={loading}
-            >
-              Open a shared vault
-            </button>
-          )}
-        </div>
-        {loading && (
-          <div className="welcome-progress" role="status" aria-live="polite">
-            <span className="welcome-progress-dot" aria-hidden="true" />
-            <span>{status || "Getting things ready…"}</span>
-          </div>
-        )}
-        {IN_TAURI && (
-          <p className="welcome-hint">
-            Pick any folder for a new vault, or pull one from another device
-            that's sharing it. Notes are plain <code>.md</code> files.
-          </p>
-        )}
-      </div>
-      <Suspense fallback={null}>
-        {connectOpen && (
-          <LazyConnectVaultModal onClose={() => setConnectOpen(false)} />
-        )}
-      </Suspense>
     </div>
   );
 }

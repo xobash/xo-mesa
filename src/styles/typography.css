@@ -1,0 +1,155 @@
+/* ============================================================
+   Design language — faithful touches from the references:
+   Void (Dala), Darkroom (monopo saigon).
+   Driven entirely by the per-theme tokens in tokens.css.
+   ============================================================ */
+
+/* Frosted glass on every floating surface (Apple's signature; reads as
+   premium depth on the dark themes too). Solid-ish fallback via --glass alpha. */
+.modal,
+.hover-card,
+.theme-pop,
+.context-menu {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.4);
+}
+.modal-overlay {
+  background: var(--scrim);
+}
+
+/* Eyebrow / kicker labels — small, tracked-out, quiet (all three use these). */
+.sidebar-header,
+.backlinks-title {
+  letter-spacing: var(--eyebrow);
+  color: var(--eyebrow-color);
+}
+
+/* UI letter-spacing per theme (airy editorial for Darkroom, tight for Apple). */
+.brand,
+.tab-title,
+.statusbar,
+.seg-btn,
+.btn {
+  letter-spacing: var(--ui-letter);
+}
+
+/* Editorial reading measure — content is centered in a comfortable column,
+   the way both monopo and Apple set body copy. */
+.preview .markdown-body,
+.doc-window-body .markdown-body {
+  max-width: var(--measure);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Chiseled display headline (weight + negative tracking are the signatures). */
+.markdown-body h1,
+.welcome-card h1,
+.doc-window-bar {
+  font-weight: var(--display-weight);
+  letter-spacing: var(--display-tracking);
+}
+.markdown-body h1 {
+  font-size: 1.95em;
+  line-height: 1.12;
+}
+
+/* Animated underline that thickens on hover — quiet until you reach for it. */
+.markdown-body a:not(.wikilink) {
+  text-decoration: none;
+  background-image: linear-gradient(var(--link-underline), var(--link-underline));
+  background-size: 100% 1px;
+  background-position: 0 1.05em;
+  background-repeat: no-repeat;
+  transition: background-size 0.12s ease;
+}
+.markdown-body a:not(.wikilink):hover {
+  background-size: 100% 2px;
+}
+
+/* Refined long-form elements. */
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.8em 0;
+}
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.4em;
+}
+.markdown-body li {
+  margin: 0.25em 0;
+}
+.markdown-body input[type="checkbox"] {
+  margin-right: 8px;
+  accent-color: var(--accent);
+  transform: translateY(1px);
+}
+.markdown-body ul.task-list {
+  list-style: none;
+  padding-left: 0.3em;
+}
+
+/* Obsidian-style callouts: > [!note] Title */
+.markdown-body .callout {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--cl-accent, var(--accent));
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  padding: 10px 14px 2px;
+  margin: 1.1em 0;
+}
+.markdown-body .callout-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--cl-accent, var(--accent));
+  margin-bottom: 2px;
+}
+.markdown-body .callout[data-callout="warning"],
+.markdown-body .callout[data-callout="caution"],
+.markdown-body .callout[data-callout="danger"] {
+  --cl-accent: var(--danger);
+}
+.markdown-body .callout[data-callout="tip"],
+.markdown-body .callout[data-callout="success"],
+.markdown-body .callout[data-callout="note"] {
+  --cl-accent: var(--spark-3);
+}
+
+/* Frontmatter rendered as a quiet Properties block (Obsidian Properties). */
+.markdown-body .properties {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  padding: 8px 12px;
+  margin: 0 0 1.2em;
+  font-size: 0.86em;
+}
+.markdown-body .properties .prop {
+  display: flex;
+  gap: 10px;
+  padding: 2px 0;
+}
+.markdown-body .properties .prop-key {
+  color: var(--text-faint);
+  min-width: 90px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.markdown-body .properties .prop-val {
+  color: var(--text-dim);
+}
+
+/* Darkroom wants monumental, whisper-weight headlines. */
+:root[data-theme="darkroom"] .markdown-body h1 {
+  font-size: 2.25em;
+}
+:root[data-theme="darkroom"] .brand {
+  text-transform: uppercase;
+  font-weight: 400;
+}
+
+

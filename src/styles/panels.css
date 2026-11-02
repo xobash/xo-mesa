@@ -1,0 +1,510 @@
+/* ---------- tasks dashboard ---------- */
+.modal.tasks {
+  width: min(1040px, 94vw);
+}
+.tasks-body {
+  padding: 6px 14px 14px;
+  overflow-y: auto;
+  max-height: 64vh;
+}
+.tasks-body.board {
+  padding: 12px;
+}
+.task-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  margin: 12px 4px 4px;
+}
+.task-group-title.danger {
+  color: var(--danger);
+}
+.task-group-title.accent {
+  color: var(--accent);
+}
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  font-size: 13.5px;
+}
+.task-row:hover {
+  background: var(--bg-3);
+}
+.task-more {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+.task-more:hover,
+.task-more:focus-visible {
+  background: var(--bg-3);
+}
+.task-box {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-faint);
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.task-box.done {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.task-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-text.done {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+.task-due {
+  font-size: 11px;
+  color: var(--accent);
+  font-family: var(--mono);
+}
+.task-kind {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--accent-contrast);
+  background: var(--accent);
+}
+/* let the Tasks header hold its filter segmented control in the middle */
+.modal-head .seg {
+  margin-left: auto;
+  margin-right: 12px;
+}
+/* add-a-personal-task row */
+.task-add {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.task-add input {
+  flex: 1;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  color: var(--text);
+  padding: 6px 12px;
+  font-size: 13px;
+  font-family: var(--font);
+}
+.task-add input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(160px, 1fr));
+  gap: 10px;
+  min-width: 840px;
+}
+.kanban-column {
+  min-height: 260px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  display: flex;
+  flex-direction: column;
+}
+.kanban-column-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.kanban-column.overdue .kanban-column-head {
+  color: var(--danger);
+}
+.kanban-column.today .kanban-column-head {
+  color: var(--accent);
+}
+.kanban-column-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.kanban-card {
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  padding: 8px;
+}
+.kanban-card.done {
+  opacity: 0.68;
+}
+.kanban-card-main {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.kanban-card-text {
+  display: block;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.kanban-card.done .kanban-card-text {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+.kanban-card-source {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+.mini-btn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  background: transparent;
+  color: var(--text-dim);
+  padding: 2px 7px;
+  font: 11px/1.3 var(--font);
+  cursor: pointer;
+}
+.mini-btn:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+}
+.kanban-empty {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 8px 2px;
+}
+/* richer sort popover */
+.sort-pop {
+  max-height: 64vh;
+  overflow-y: auto;
+}
+.sort-pop-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: var(--eyebrow);
+  color: var(--text-faint);
+  padding: 8px 10px 2px;
+}
+.sort-pop-row {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+}
+.sort-pop-row .seg-btn {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+}
+.task-note {
+  font-size: 11px;
+  color: var(--text-faint);
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- calendar ---------- */
+.modal.calendar {
+  width: min(420px, 94vw);
+}
+
+/* ---------- guide / onboarding ---------- */
+.modal.guide {
+  width: min(460px, 94vw);
+  padding: 0;
+}
+.guide-card-inner {
+  padding: 30px 30px 8px;
+  text-align: center;
+  animation: guide-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes guide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.guide-art-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.guide-art {
+  width: 96px;
+  height: 72px;
+}
+.guide-art-wrap.small .guide-art {
+  width: 56px;
+  height: 42px;
+}
+.guide-pulse {
+  animation: guide-pulse 1.8s ease-in-out infinite;
+  transform-origin: center;
+}
+@keyframes guide-pulse {
+  0%,
+  100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+.guide-title {
+  font-size: 19px;
+  margin: 0 0 8px;
+  font-weight: var(--head-weight);
+  letter-spacing: var(--head-tracking);
+}
+.guide-title.small {
+  font-size: 15px;
+  margin-bottom: 2px;
+}
+.guide-body {
+  color: var(--text-dim);
+  line-height: 1.6;
+  font-size: 14px;
+  margin: 0;
+}
+.guide-dots {
+  display: flex;
+  justify-content: center;
+  gap: 7px;
+  padding: 16px 0 4px;
+}
+.guide-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bg-3);
+}
+.guide-dot.on {
+  background: var(--accent);
+}
+.guide-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px 18px;
+}
+.guide-actions-right {
+  display: flex;
+  gap: 8px;
+}
+.guide.help {
+  width: min(540px, 94vw);
+}
+.guide-list {
+  padding: 8px 18px 18px;
+  overflow-y: auto;
+  max-height: 70vh;
+}
+.guide-list-item {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.guide-list-item:last-child {
+  border-bottom: none;
+}
+
+/* ---------- non-markdown files in the sidebar + media viewer ---------- */
+.tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-file.other {
+  color: var(--text-faint);
+}
+/* FileTree supplies per-extension hue; themes control saturation and lightness. */
+.tree-ext {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: hsl(var(--ext-hue, 0) var(--ext-sat) var(--ext-light));
+  border: 1px solid hsl(var(--ext-hue, 0) var(--ext-sat) var(--ext-light) / 0.32);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+/* Green-hued extensions stay neutral instead of tinting every theme. */
+.tree-ext-neutral {
+  --ext-sat: 0%;
+}
+
+.doc-media {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto;
+  border-radius: var(--radius);
+}
+.doc-pdf {
+  width: 100%;
+  height: 78vh;
+  border: none;
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+/* ---------- richer status bar ---------- */
+.sb-path {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 38vw;
+}
+.sb-sort {
+  color: var(--text-faint);
+}
+.sb-status {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30vw;
+}
+.sb-status.err {
+  color: var(--danger);
+}
+.sb-save-issues {
+  flex: 0 0 auto;
+  color: var(--danger);
+}
+.sb-save-issues > summary {
+  cursor: pointer;
+  list-style: none;
+  white-space: nowrap;
+}
+.sb-save-issues > summary::-webkit-details-marker {
+  display: none;
+}
+.sb-save-issues > summary:focus-visible,
+.sb-save-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.sb-save-issue-list {
+  position: fixed;
+  z-index: 80;
+  left: 14px;
+  bottom: 32px;
+  width: min(520px, calc(100vw - 28px));
+  max-height: min(50vh, 320px);
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--bg-1) 74%, transparent);
+}
+.sb-save-issue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+}
+.sb-save-issue + .sb-save-issue {
+  border-top: 1px solid var(--border);
+}
+.sb-save-copy {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+.sb-save-copy strong,
+.sb-save-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-save-copy strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.sb-save-copy span {
+  color: var(--text-dim);
+}
+.sb-save-action {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.sb-save-action:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-3);
+}
+.sb-save-action.danger {
+  color: var(--danger);
+}
+.sb-save-action:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+.sb-sync {
+  color: var(--accent);
+}
+

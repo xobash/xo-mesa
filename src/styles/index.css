@@ -1,0 +1,20 @@
+/* Mesa stylesheet entry. The partials are consecutive sections of one
+   stylesheet, so import order is cascade order: tokens first, interface
+   styles last. A rule in an earlier partial loses to an equal-specificity
+   rule in a later one; check later partials before adding a rule. */
+@import "./tokens.css";
+@import "./shell.css";
+@import "./content.css";
+@import "./welcome.css";
+@import "./chrome.css";
+@import "./typography.css";
+@import "./sync.css";
+@import "./panels.css";
+@import "./atmosphere.css";
+@import "./viewers.css";
+@import "./graph-search.css";
+@import "./pi.css";
+@import "./overlay.css";
+@import "./unification.css";
+@import "./deep-research.css";
+@import "./interface-styles.css";

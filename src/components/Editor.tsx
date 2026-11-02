@@ -7,7 +7,7 @@ import { tags as t } from "@lezer/highlight";
 import { useAppStore, getStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
 
-// Token colors are CSS variables (--syn-*) set per theme in styles.css, so the
+// Token colors are CSS variables (--syn-*) set per theme in styles/tokens.css, so the
 // source view never falls back to CodeMirror's fixed default palette.
 const themedHighlight = HighlightStyle.define([
   { tag: t.heading, color: "var(--syn-heading)", fontWeight: "600" },
@@ -30,7 +30,7 @@ const themedHighlight = HighlightStyle.define([
 const editableCompartment = new Compartment();
 
 // Only structural styling lives here; all colors come from CSS variables in
-// styles.css (.cm-editor rules) so the editor follows the active theme.
+// the stylesheet (.cm-editor rules) so the editor follows the active theme.
 const editorLayout = EditorView.theme({
   "&": { height: "100%", fontSize: "15px" },
   ".cm-scroller": { overflow: "auto" },

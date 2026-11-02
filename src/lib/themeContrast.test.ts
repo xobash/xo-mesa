@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readStylesheet } from '../styles/source';
 import { expect, it } from 'vitest';
 
 const linear = (c: number) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
@@ -11,7 +11,7 @@ const contrast = (a: string, b: string) => {
   return (x + 0.05) / (y + 0.05);
 };
 const palettes = new Map<string, Record<string, string>>();
-const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+const css = readStylesheet().replace(/\/\*[\s\S]*?\*\//g, '');
 for (const block of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
   for (const selector of block[1].split(',')) {
     const key = selector.trim();

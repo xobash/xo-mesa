@@ -233,7 +233,7 @@ function getSharedPiTerminal(): Promise<Terminal> {
 
 async function createSharedPiTerminal(): Promise<Terminal> {
   // NOTE: xterm.css stays statically imported in main.tsx — it must sit
-  // BEFORE styles.css in the cascade (Mesa's .xterm-host overrides win by
+  // BEFORE the Mesa stylesheet in the cascade (Mesa's .xterm-host overrides win by
   // order at equal specificity, e.g. viewport overflow-y). Only the JS is
   // deferred; the stylesheet is ~2 kB gzipped.
   const [{ Terminal }, { FitAddon }] = await Promise.all([

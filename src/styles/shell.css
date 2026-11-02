@@ -1,0 +1,1196 @@
+/* ---------- app shell ---------- */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 12px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  user-select: none;
+}
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap; /* header is always a single row */
+}
+.topbar .btn,
+.topbar .seg {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.vault-name,
+.status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 22vw;
+}
+.brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 650;
+  letter-spacing: var(--head-tracking);
+  color: var(--text);
+  white-space: nowrap;
+}
+.brand-mark {
+  color: var(--accent);
+}
+.vault-switcher {
+  position: relative;
+  display: inline-flex;
+}
+.vault-name {
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-btn, 8px);
+  max-width: 22vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vault-name:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.vault-caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.vault-menu {
+  position: fixed;
+  z-index: 60;
+  width: min(420px, calc(100vw - 16px));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--bg-1) 96%, transparent), var(--bg-1)),
+    var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--pop-shadow);
+  padding: 0;
+  overflow: hidden;
+}
+.vault-menu-current {
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--border);
+  background:
+    radial-gradient(280px 90px at 15% 0%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 70%),
+    var(--bg-2);
+}
+.vault-menu-kicker {
+  margin-bottom: 5px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.vault-menu-current-name {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vault-menu-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-faint);
+  padding: 12px 14px 6px;
+  font-family: var(--mono);
+}
+.vault-menu-item,
+.vault-menu-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 0;
+  cursor: pointer;
+  gap: 3px;
+}
+.vault-menu-item:hover,
+.vault-menu-open:hover {
+  background: var(--bg-3);
+  border-color: transparent;
+}
+.vault-menu-name {
+  font-size: 13.5px;
+  font-weight: 650;
+}
+.vault-menu-path {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.vault-menu-open {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 650;
+}
+.status,
+.demo-badge {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.demo-badge {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--accent-2);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  padding: 6px 13px;
+  font-size: 13px;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.btn:hover {
+  background: var(--bg-3);
+}
+.btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+  padding: 10px 18px;
+}
+.btn.primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.search-top-btn {
+  width: 34px;
+  height: 34px;
+  justify-content: center;
+  padding: 0;
+}
+.search-top-icon {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.seg {
+  display: flex;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  overflow: hidden;
+}
+/* The ONE segmented-control button style (top bar, editor mode, settings,
+   tasks, PDF toolbar, …). Do not redefine `.seg-btn` later in the stylesheet — a
+   second equal-specificity block silently wins the cascade app-wide. */
+.seg-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 5px 11px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+.seg-btn.on {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------- theme menu ---------- */
+.theme-pop {
+  position: absolute;
+  right: 0;
+  top: 40px;
+  min-width: 210px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px;
+  z-index: 60;
+  box-shadow: var(--pop-shadow);
+}
+.theme-opt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  border-radius: calc(var(--radius) - 1px);
+}
+.theme-opt:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.theme-opt.on {
+  color: var(--accent);
+}
+
+/* ---------- layout ---------- */
+.layout {
+  position: relative;
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: var(--sidebar-slot-w, 240px) minmax(0, 1fr) var(--right-w, 380px);
+  min-height: 0;
+}
+/* Explicit placement so the center never collapses regardless of whether the
+   sidebar element is present (fixes hiding the sidebar blanking the center). */
+.layout > .sidebar {
+  grid-column: 1;
+}
+.layout > .center {
+  grid-column: 2;
+}
+.layout > .right-stack {
+  grid-column: 3;
+}
+/* Dock-left swaps center/stack columns. Closed and auto-hidden sidebars must release their grid slot. */
+.layout.dock-left {
+  grid-template-columns: var(--sidebar-slot-w, 240px) var(--right-w, 380px) minmax(0, 1fr);
+}
+.layout.dock-left > .center {
+  grid-column: 3;
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+.layout.dock-left > .center:has(.center-head.empty) {
+  border-left-color: transparent;
+}
+.layout.dock-left > .right-stack {
+  grid-column: 2;
+}
+.layout.dock-left .splitter-right {
+  right: auto;
+  left: calc(var(--sidebar-slot-w, 240px) + var(--right-w, 380px) - 3px);
+}
+.layout.no-sidebar {
+  grid-template-columns: 0 minmax(0, 1fr) var(--right-w, 380px);
+}
+.layout.no-sidebar > .sidebar {
+  visibility: hidden;
+  pointer-events: none;
+  overflow: hidden;
+  border-right-color: transparent;
+  opacity: 0;
+  transform: translateX(-100%);
+  transition:
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.16s ease,
+    visibility 0s linear 0.22s;
+}
+.layout.no-right {
+  grid-template-columns: var(--sidebar-slot-w, 240px) minmax(0, 1fr) 0;
+}
+.layout.no-sidebar.no-right {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+.layout.no-right > .right-stack {
+  display: none;
+}
+.layout.no-right > .center {
+  border-right: none;
+}
+.layout.no-right > .center:has(.center-head.empty) {
+  border-color: transparent;
+  box-shadow: none;
+}
+:root[data-anim="on"] .layout {
+  transition: grid-template-columns 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+:root[data-anim="on"] .center,
+:root[data-anim="on"] .right-stack,
+:root[data-anim="on"] .stack-pane,
+:root[data-anim="on"] .stack-head,
+:root[data-anim="on"] .center-head {
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease,
+    transform 0.16s ease,
+    flex-grow 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* center editor region */
+.center {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+.center:has(.center-head.empty) {
+  border-right-color: transparent;
+}
+.center.drop-target {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.center.kbd-focus {
+  box-shadow: none;
+}
+.center.kbd-focus:has(.center-head.empty):not(.drop-target) {
+  box-shadow: none;
+}
+.center-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  flex: 0 0 auto;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: grab;
+  user-select: none;
+}
+.center-head:active {
+  cursor: grabbing;
+}
+.center-head.empty,
+.center-head.empty:active {
+  cursor: default;
+}
+.center-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Marks the live document for view capture without adding a layout box. */
+.doc-live-view {
+  display: contents;
+}
+
+/* right region: a vertical stack of panels */
+.right-stack {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+.right-stack.drop-target {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.right-stack.kbd-focus {
+  box-shadow: none;
+}
+.stack-empty {
+  margin: auto;
+  padding: 24px;
+  max-width: 220px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.stack-pane {
+  flex: 1 1 0;
+  min-height: 64px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.right-stack:has(.stack-pane .agent-surface) {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.stack-pane:has(.agent-surface) {
+  min-height: 300px;
+  flex-shrink: 0;
+}
+.stack-pane:has(.dr-browser-nested) {
+  min-height: 620px;
+}
+.stack-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 8px;
+  flex: 0 0 auto;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: grab;
+  user-select: none;
+}
+.stack-head:active {
+  cursor: grabbing;
+}
+.stack-head.kbd-focus {
+  color: var(--text-strong);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-1));
+}
+.region-grip {
+  letter-spacing: -2px;
+  opacity: 0.6;
+}
+.stack-title {
+  flex: 1 1 auto;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.stack-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 5px;
+  cursor: pointer;
+  border-radius: 5px;
+}
+.stack-btn:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.stack-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.stack-divider {
+  height: 6px;
+  flex: 0 0 auto;
+  cursor: row-resize;
+  background: var(--border);
+}
+.stack-divider:hover {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.region-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-size: 13px;
+}
+.full-graph {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* draggable pane borders */
+.splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 8;
+  cursor: col-resize;
+  background: transparent;
+  transition: background-color 0.12s ease;
+}
+.splitter:hover {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.splitter-left {
+  left: calc(var(--sidebar-slot-w, 240px) - 3px);
+}
+.splitter-right {
+  right: calc(var(--right-w, 380px) - 3px);
+}
+.sidebar-header-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sidebar-recovery {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 24px);
+  margin: 0 12px 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-btn);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar > .sidebar-recovery {
+  position: sticky;
+  top: 36px;
+  z-index: 2;
+  background: var(--bg-1);
+}
+.sidebar-recovery:hover,
+.sidebar-recovery:focus-visible {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.sidebar-new-btn {
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+/* Responsive: the full 3-pane grid needs ~960px. As the window narrows, shrink
+   the columns, then shed the right pane, then the sidebar — so content never
+   overflows the viewport or clips toolbar controls off-screen. */
+@media (max-width: 1080px) {
+  /* below this, fall back to fixed responsive columns; manual resize is off */
+  .splitter {
+    display: none;
+  }
+}
+@media (max-width: 900px) {
+  /* let every toolbar control wrap onto a second row so none are unreachable */
+  .topbar {
+    height: auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding-bottom: 6px;
+  }
+  .topbar-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+@media (max-width: 820px) {
+  .layout,
+  .layout.no-sidebar {
+    grid-template-columns: var(--sidebar-slot-w, 200px) minmax(0, 1fr);
+  }
+  .layout.no-right,
+  .layout.no-sidebar.no-right {
+    grid-template-columns: var(--sidebar-slot-w, 200px) minmax(0, 1fr);
+  }
+  .layout > .right-stack {
+    display: none;
+  }
+  .layout.dock-left,
+  .layout.dock-left.no-sidebar,
+  .layout.dock-left.auto-hide {
+    grid-template-columns: var(--sidebar-slot-w, 200px) minmax(0, 1fr);
+  }
+  .layout.dock-left > .center {
+    grid-column: 2;
+    border-left: none;
+  }
+  .center {
+    border-right: none;
+  }
+}
+@media (max-width: 560px) {
+  .topbar {
+    align-items: flex-start;
+  }
+  .sidebar-toggle {
+    display: none;
+  }
+  .modal.settings .setting-row:not(.theme-setting-row) {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .modal.settings .setting-row .seg {
+    width: 100%;
+  }
+  .modal.settings .setting-row .seg-btn {
+    flex: 1 1 0;
+  }
+  .topbar-left,
+  .topbar-right {
+    flex: 0 1 100%;
+    width: 100%;
+    min-width: 0;
+  }
+  .topbar-right {
+    justify-content: flex-start;
+  }
+  .layout,
+  .layout.no-sidebar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .layout.dock-left,
+  .layout.dock-left.no-sidebar,
+  .layout.dock-left.auto-hide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .layout > .sidebar {
+    display: none;
+  }
+  .layout > .center {
+    grid-column: 1;
+  }
+  .layout.dock-left > .center {
+    grid-column: 1;
+  }
+}
+
+.sidebar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--sidebar-w, 240px);
+  z-index: 1;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  min-height: 0;
+  opacity: 1;
+  transform: translateX(0);
+  will-change: transform, opacity;
+  visibility: visible;
+  transition:
+    transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.16s ease,
+    visibility 0s linear 0s;
+}
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 12px 11px 14px;
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.sidebar > .sidebar-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-1);
+}
+.sort-menu {
+  position: relative;
+}
+.sort-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.sort-btn:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.sort-btn.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.theme-pop.sort-pop {
+  left: auto;
+  right: 0;
+  top: 28px;
+  min-width: 160px;
+}
+
+/* Windowed row list: `FileTree` sets the container height to the full row
+   count and positions each mounted row by index, so the scrollbar and every
+   scroll offset match a fully-mounted tree while only the visible rows exist.
+   The trailing gap is a margin, not padding, so it never eats into that
+   measured height (`box-sizing: border-box` applies to everything here). */
+.file-tree {
+  position: relative;
+  margin-bottom: 16px;
+}
+.tree-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+.tree-folder,
+.tree-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 4px 10px;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* folders read as the structural layer: brighter + bold, accent caret;
+   files sit quieter beneath them. */
+.tree-folder {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.tree-folder .caret {
+  width: 12px;
+  display: inline-block;
+  color: var(--accent);
+  font-size: 10px;
+}
+.tree-folder:hover {
+  background: var(--bg-2);
+}
+.tree-file {
+  color: var(--text-dim);
+}
+.tree-file:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+.tree-file.active {
+  background: var(--bg-3);
+  color: var(--accent-text);
+}
+.tree-empty,
+.preview-empty,
+.editor-empty {
+  color: var(--text-faint);
+  padding: 24px;
+  font-size: 13px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.tabs-wrap {
+  display: flex;
+  align-items: stretch;
+  height: 36px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+.tabs.empty {
+  height: 36px;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  max-width: 200px;
+  color: var(--text-dim);
+  border-right: 1px solid var(--border);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab.active {
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-close {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+.tab-close:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+
+.editor-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.editor-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+.editor-workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.editor-workspace.live {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.95fr);
+}
+.editor-load-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+.doc-load-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
+}
+
+.graph-index-status {
+  position: absolute;
+  inset: 8px auto auto 8px;
+  z-index: 2;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.editor-workspace.with-outline {
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 280px);
+}
+.editor-workspace.live.with-outline {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.95fr) minmax(180px, 280px);
+}
+.editor-outline {
+  min-width: 180px;
+  max-width: 280px;
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  background: var(--bg-1);
+  padding: 6px 0;
+}
+.editor-outline-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  text-align: left;
+  line-height: 1.4;
+  padding-block: 5px;
+  padding-inline-end: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-outline-item:hover,
+.editor-outline-item:focus-visible { color: var(--text); background: var(--bg-2); }
+.editor-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.editor-workspace > .editor-host {
+  min-width: 0;
+}
+.editor-live-preview {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  padding: 18px 22px 50px;
+}
+.editor-live-preview .markdown-body {
+  max-width: 760px;
+  margin: 0 auto;
+}
+.editor-host .cm-editor,
+.editor-host .cm-scroller {
+  height: 100%;
+}
+.editor-host .cm-scroller {
+  overflow: auto;
+}
+/* Side-by-side documents: the non-live pane shows its file read-only and
+   becomes the live editor on click (lib/docSplit.ts). */
+.doc-slot-idle {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  cursor: text;
+}
+/* Text in the idle pane reads like the editor it becomes: wrapped, editor
+   type, no code-viewer chrome. Windowed large-file rows keep fixed height. */
+.doc-slot-idle .code-view:not(:has(.code-virtual-scroll)) .code-bar,
+.doc-slot-idle .code-scroll:not(.code-virtual-scroll) > .code-gutter {
+  display: none;
+}
+.doc-slot-idle .code-scroll:not(.code-virtual-scroll) {
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.doc-slot-idle .code-scroll:not(.code-virtual-scroll) > .code-pre {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 16px 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+:root[data-ui="vault"] .doc-slot-idle .code-scroll:not(.code-virtual-scroll) {
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.65;
+}
+:root[data-ui="vault"] .doc-slot-idle .code-scroll:not(.code-virtual-scroll) > .code-pre {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 24px;
+}
+.stack-title.doc-live::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.editor-wrap > .editor-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+@media (max-width: 860px) {
+  .editor-workspace.live {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .editor-live-preview {
+    display: none;
+  }
+}
+
+/* CodeMirror — colors driven by theme variables */
+.cm-editor {
+  height: 100%;
+  background: transparent;
+  color: var(--text);
+}
+.cm-editor .cm-scroller {
+  font-family: var(--mono);
+  font-size: 15px;
+  line-height: 1.6;
+}
+.cm-editor .cm-content {
+  padding: 16px 20px;
+  caret-color: var(--accent);
+}
+.cm-editor .cm-cursor,
+.cm-editor.cm-focused .cm-cursor {
+  border-left-color: var(--accent);
+}
+.cm-editor .cm-gutters {
+  background: var(--bg);
+  color: var(--text-faint);
+  border: none;
+}
+.cm-editor .cm-activeLine {
+  background: var(--active-line);
+}
+.cm-editor .cm-activeLineGutter {
+  background: transparent;
+  color: var(--text-dim);
+}
+.cm-editor .cm-selectionBackground,
+.cm-editor.cm-focused .cm-selectionBackground,
+.cm-editor .cm-content ::selection {
+  background: var(--selection) !important;
+}
+.cm-editor .cm-foldPlaceholder {
+  background: var(--bg-2);
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+/* shared toolbar for docked Tasks / Calendar panels */
+.panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+/* a panel popped into its own OS window */
+.panel-window {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.panel-window-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Chromeless variant: graph fills the entire window, no header bar. */
+.panel-window-chromeless {
+  position: relative;
+}
+.panel-window-chromeless .panel-window-body {
+  overflow: visible;
+}
+.pane-handle {
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.pane-handle:active {
+  cursor: grabbing;
+}
+body.is-dragging,
+body.is-dragging * {
+  cursor: grabbing !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+body.is-dragging iframe {
+  pointer-events: none;
+}
+.drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 450;
+  max-width: min(360px, calc(100vw - 24px));
+  pointer-events: none;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
+  border-radius: var(--radius-btn);
+  background: color-mix(in srgb, var(--bg-1) 86%, transparent);
+  color: var(--text-strong);
+  box-shadow: var(--pop-shadow);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  will-change: transform;
+  transition: transform 65ms linear;
+}
+.drag-ghost.file {
+  border-color: color-mix(in srgb, var(--accent-2) 62%, var(--border));
+}
+
+.preview {
+  overflow-y: auto;
+  padding: 22px 26px 60px;
+}
+
