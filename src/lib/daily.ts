@@ -256,3 +256,18 @@ export const MONTH_NAMES = [
   "November",
   "December",
 ];
+
+/** Markdown templates inside the configured templates folder (vault-relative,
+ *  nested folders included), sorted by path. An empty folder setting means none. */
+export function templatePaths(
+  files: ReadonlyArray<{ relPath: string; isMarkdown?: boolean }>,
+  folder: string
+): string[] {
+  const dir = folder.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  if (!dir) return [];
+  const prefix = `${dir.toLowerCase()}/`;
+  return files
+    .filter((file) => file.isMarkdown && file.relPath.toLowerCase().startsWith(prefix))
+    .map((file) => file.relPath)
+    .sort((a, b) => a.localeCompare(b));
+}

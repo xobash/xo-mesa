@@ -16,6 +16,8 @@ const expectedLazyPrefixes = [
   "Editor-",
   "GraphView-",
   "HtmlView-",
+  "markdownMath-",
+  "markdownMermaid-",
   "Overlay-",
   "SearchPanel-",
   "SettingsModal-",
@@ -48,6 +50,7 @@ const forbiddenInitialPrefixes = [
   "terminal-vendor-",
   "pdf-lib-vendor-",
   "pdfjs-vendor-",
+  "katex-vendor-",
 ];
 const violations = [...visited]
   .map((file) => basename(file))

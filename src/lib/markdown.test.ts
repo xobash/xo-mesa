@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // renderMarkdown sanitizes its output through DOMPurify, which needs a DOM;
 // the extraction tests below are DOM-agnostic and run fine under jsdom too.
+import DOMPurify from "dompurify";
 import MarkdownIt from "markdown-it";
 import { describe, it, expect } from "vitest";
 import { renderMarkdown, sanitizeHtml } from "./markdown";
@@ -125,6 +126,15 @@ describe("renderMarkdown", () => {
 });
 
 describe("sanitizeHtml / renderMarkdown XSS defense", () => {
+  it("ignores hooks other libraries leave on the shared DOMPurify", () => {
+    // Mermaid adds hooks to the default instance and never removes them.
+    DOMPurify.addHook("afterSanitizeAttributes", (node) => node.setAttribute("onclick", "alert(1)"));
+    try {
+      expect(sanitizeHtml('<p>safe</p>')).toBe("<p>safe</p>");
+    } finally {
+      DOMPurify.removeAllHooks();
+    }
+  });
   // The rendered HTML is injected with dangerouslySetInnerHTML into the trusted
   // Tauri app document, where an inline handler could call
   // window.__TAURI_INTERNALS__.invoke (arbitrary fs under the ** scope). Notes

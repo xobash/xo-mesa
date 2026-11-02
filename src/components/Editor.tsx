@@ -3,9 +3,11 @@ import { EditorView, basicSetup } from "codemirror";
 import { EditorState, Compartment } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { openSearchPanel, search } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
 import { useAppStore, getStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
+import { focusEditorCommands, registerEditorCommands, type EditorCommandTarget } from "../lib/editorCommands";
 
 // Token colors are CSS variables (--syn-*) set per theme in styles/tokens.css, so the
 // source view never falls back to CodeMirror's fixed default palette.
@@ -65,6 +67,8 @@ function makeState(doc: string, onUserEdit: (text: string, activity: EditorActiv
       ...(doc.includes("\r\n") && !/\r(?!\n)/.test(doc) && !doc.replace(/\r\n/g, "").includes("\n")
         ? [EditorState.lineSeparator.of("\r\n")] : []),
       basicSetup,
+      // Find and replace (Mod-F) opens above the note, like other editors.
+      search({ top: true }),
       markdown(),
       syntaxHighlighting(themedHighlight),
       editorLayout,
@@ -157,7 +161,28 @@ export function Editor() {
     });
     if (initial) view.scrollDOM.scrollTop = initial.scrollTop;
     viewRef.current = view;
+    const commands: EditorCommandTarget = {
+      path: () => docPathRef.current,
+      openFind: () => {
+        if (!docPathRef.current) return false;
+        openSearchPanel(view);
+        return true;
+      },
+      insertText: (text) => {
+        const store = getStore();
+        if (!docPathRef.current || !view.state.facet(EditorView.editable) ||
+          docKeyRef.current !== `${store.vaultPath ?? ""}\0${store.activePath ?? ""}`) return false;
+        view.dispatch(view.state.replaceSelection(text), { scrollIntoView: true, userEvent: "input.paste" });
+        view.focus();
+        return true;
+      },
+    };
+    const unregister = registerEditorCommands(commands);
+    const onFocus = () => focusEditorCommands(commands);
+    view.contentDOM.addEventListener("focus", onFocus);
     return () => {
+      view.contentDOM.removeEventListener("focus", onFocus);
+      unregister();
       if (docPathRef.current) rememberSession(docKeyRef.current, view.state, view.scrollDOM.scrollTop);
       view.destroy();
       viewRef.current = null;
@@ -218,6 +243,15 @@ export function Editor() {
           disabled={!activePath}
         >
           History
+        </button>
+        <button
+          className="seg-btn"
+          onClick={() => { const view = viewRef.current; if (view) openSearchPanel(view); }}
+          title="Find and replace in this note (Ctrl/Cmd+F)"
+          aria-keyshortcuts="Control+F Meta+F"
+          disabled={!activePath || activeContentState !== "ready"}
+        >
+          Find
         </button>
         <button
           className={"seg-btn" + (outlineOpen ? " on" : "")}

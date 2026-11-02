@@ -26,11 +26,15 @@ export const READER_BRIDGE = `<script>
 
 export const READER_SCRIPT_HASH = "sha256-gG7q72k24KbGKHD4BRn9xaUok2022yKslwchcGrrnvA=";
 
+let readerPurifier: ReturnType<typeof DOMPurify> | undefined;
+
 export function buildReaderHtml(rawHtml: string, baseUrl: string, fragment = new URL(baseUrl).hash.slice(1)): string {
-  if (!DOMPurify.isSupported) throw new Error("Safe page rendering is unavailable.");
+  // A private instance, so hooks other libraries add to the default never apply.
+  readerPurifier ??= typeof window === "undefined" ? undefined : DOMPurify(window);
+  if (!readerPurifier?.isSupported) throw new Error("Safe page rendering is unavailable.");
   const url = new URL(baseUrl);
   if (!/^https?:$/.test(url.protocol)) throw new Error("Unsupported page URL.");
-  const markup = DOMPurify.sanitize(unwrapScriptFallbacks(rawHtml), {
+  const markup = readerPurifier.sanitize(unwrapScriptFallbacks(rawHtml), {
     WHOLE_DOCUMENT: true,
     ADD_TAGS: ["style"],
     ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|mesa-web):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,

@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useAppStore, getStore, THEMES, UI_STYLES } from "../store";
-import { localISO } from "../lib/daily";
+import { useAppStore, getStore } from "../store";
+import { templatePaths } from "../lib/daily";
+import { formatHotkey } from "../lib/hotkeys";
+import { activeEditorCommands } from "../lib/editorCommands";
+import { PALETTE_COMMANDS } from "./paletteCommands";
 import { Modal } from "./Modal";
 
-interface Cmd {
-  id: string;
-  label: string;
-  hint?: string;
-  run: () => void;
+/** Fill a template for the open note and insert it at the editor selection. */
+async function insertTemplate(relPath: string) {
+  const text = await getStore().renderTemplate(relPath);
+  if (text === null) return;
+  if (!activeEditorCommands()?.insertText(text)) {
+    useAppStore.setState({ status: "Open an editable note to insert a template." });
+  }
 }
 
 /** Subsequence fuzzy score (higher = better, 0 = no match). */
@@ -34,8 +39,10 @@ function fuzzy(q: string, text: string): number {
 
 export function CommandPalette() {
   const open = useAppStore((s) => s.paletteOpen);
+  const mode = useAppStore((s) => s.paletteMode);
   const setPalette = useAppStore((s) => s.setPalette);
   const files = useAppStore((s) => s.files);
+  const templatesFolder = useAppStore((s) => s.settings.templatesFolder);
   const selectFile = useAppStore((s) => s.selectFile);
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -48,68 +55,25 @@ export function CommandPalette() {
       setSel(0);
       setTimeout(() => inputRef.current?.focus(), 0);
     }
-  }, [open]);
+  }, [open, mode]);
 
-  const isCmd = q.startsWith(">");
+  const isTemplates = mode === "templates";
+  const isCmd = !isTemplates && q.startsWith(">");
 
-  const commands: Cmd[] = useMemo(
-    () => [
-      { id: "new", label: "New note", hint: "⌘N", run: () => void getStore().newNote() },
-      { id: "search", label: "Search in all notes", hint: "⌘⇧F", run: () => getStore().openSearch("") },
-      { id: "tasks", label: "Open tasks dashboard", run: () => getStore().setTasksOpen(true) },
-      { id: "sync", label: "Open device sync", run: () => getStore().setSyncOpen(true) },
-      { id: "diagnostics", label: "Open diagnostics", run: () => getStore().setDiagnosticsOpen(true) },
-      { id: "recovery", label: "Open recovery storage", run: () => getStore().openRecovery() },
-      { id: "revisions", label: "Open revision history", run: () => getStore().openRevisionHistory() },
-      {
-        id: "calendar",
-        label: "Open calendar (overlay)",
-        hint: "⇧Tab",
-        run: () => getStore().setOverlayOpen(true),
-      },
-      {
-        id: "overlay-search",
-        label: "Open overlay search",
-        hint: "⇧Tab",
-        run: () => {
-          getStore().setOverlayOpen(true);
-          getStore().openSearch("");
-        },
-      },
-      { id: "pi", label: "Open Pi agent", run: () => getStore().setAgentOpen(true) },
-      { id: "research", label: "Start Deep Research", run: () => getStore().openDeepResearch(true) },
-      {
-        id: "today",
-        label: "Open today's daily note",
-        run: () => void getStore().openDailyNote(localISO()),
-      },
-      { id: "help", label: "Help & guide", run: () => getStore().setHelpOpen(true) },
-      { id: "settings", label: "Open settings", hint: "⌘,", run: () => getStore().setSettingsOpen(true) },
-      { id: "graph", label: "Toggle full graph", run: () => getStore().toggleGraphFull() },
-      {
-        id: "theme",
-        label: "Cycle theme",
-        run: () => {
-          const s = getStore();
-          const order = THEMES.map((t) => t.id);
-          s.setTheme(order[(order.indexOf(s.theme) + 1) % order.length]);
-        },
-      },
-      {
-        id: "ui-style",
-        label: "Cycle interface style",
-        run: () => {
-          const s = getStore();
-          const order = UI_STYLES.map((u) => u.id);
-          s.setUiStyle(order[(order.indexOf(s.uiStyle) + 1) % order.length]);
-        },
-      },
-      { id: "vault", label: "Open vault…", run: () => void getStore().openVault() },
-    ],
-    []
-  );
+  const commands = PALETTE_COMMANDS;
+  const hotkeys = useAppStore((s) => s.settings.hotkeys);
+
+  const templateResults = useMemo(() => {
+    if (!isTemplates) return [];
+    return templatePaths(files, templatesFolder)
+      .map((relPath) => ({ relPath, score: fuzzy(q, relPath) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.relPath);
+  }, [isTemplates, q, files, templatesFolder]);
 
   const fileResults = useMemo(() => {
+    if (isTemplates) return [];
     return files
       .filter((f) => f.isMarkdown)
       .map((f) => ({ f, score: fuzzy(q, f.name) + 0.4 * fuzzy(q, f.relPath) }))
@@ -117,7 +81,7 @@ export function CommandPalette() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 50)
       .map((x) => x.f);
-  }, [q, files]);
+  }, [isTemplates, q, files]);
 
   const cmdResults = useMemo(() => {
     const qq = q.slice(1).trim();
@@ -128,10 +92,16 @@ export function CommandPalette() {
       .map((x) => x.c);
   }, [q, commands]);
 
-  const count = isCmd ? cmdResults.length : fileResults.length;
+  const count = isTemplates ? templateResults.length : isCmd ? cmdResults.length : fileResults.length;
 
   function exec(i: number) {
-    if (isCmd) {
+    if (isTemplates) {
+      const relPath = templateResults[i];
+      if (relPath) {
+        setPalette(false);
+        void insertTemplate(relPath);
+      }
+    } else if (isCmd) {
       const c = cmdResults[i];
       if (c) {
         setPalette(false);
@@ -171,7 +141,8 @@ export function CommandPalette() {
       <input
         ref={inputRef}
         className="palette-input"
-        placeholder="Search notes…  (type > for commands)"
+        placeholder={isTemplates ? "Insert template…" : "Search notes…  (type > for commands)"}
+        aria-label={isTemplates ? "Search templates" : "Search notes and commands"}
         value={q}
         onChange={(e) => {
           setQ(e.target.value);
@@ -180,7 +151,19 @@ export function CommandPalette() {
         onKeyDown={onKey}
       />
       <div className="palette-list" ref={listRef}>
-        {isCmd
+        {isTemplates
+          ? templateResults.map((relPath, i) => (
+              <button
+                key={relPath}
+                className={"palette-item" + (i === sel ? " sel" : "")}
+                onMouseEnter={() => setSel(i)}
+                onClick={() => exec(i)}
+              >
+                <span className="palette-name">{relPath.split("/").pop()!.replace(/\.(md|markdown)$/i, "")}</span>
+                <span className="palette-hint">{relPath}</span>
+              </button>
+            ))
+          : isCmd
           ? cmdResults.map((c, i) => (
               <button
                 key={c.id}
@@ -189,7 +172,9 @@ export function CommandPalette() {
                 onClick={() => exec(i)}
               >
                 <span>{c.label}</span>
-                {c.hint && <span className="palette-hint">{c.hint}</span>}
+                {(hotkeys?.[c.id] || c.hint) && (
+                  <span className="palette-hint">{hotkeys?.[c.id] ? formatHotkey(hotkeys[c.id]) : c.hint}</span>
+                )}
               </button>
             ))
           : fileResults.map((f, i) => (
@@ -203,7 +188,13 @@ export function CommandPalette() {
                 <span className="palette-hint">{f.relPath}</span>
               </button>
             ))}
-        {count === 0 && <div className="palette-empty">No matches</div>}
+        {count === 0 && (
+          <div className="palette-empty">
+            {isTemplates && !templatePaths(files, templatesFolder).length
+              ? `No templates found. Add Markdown notes to the “${templatesFolder.trim() || "Templates"}” folder (set it in Settings).`
+              : "No matches"}
+          </div>
+        )}
       </div>
     </Modal>
   );

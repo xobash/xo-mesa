@@ -367,6 +367,12 @@ export interface AppState {
   applyDeepResearch: () => Promise<void>;
   discardDeepResearch: () => void;
   openDailyNote: (dateISO: string) => Promise<void>;
+  /** Turn one unlinked mention in `sourceRel` into a wiki link to `targetRel`
+   * through the verified text-save queue. False when the text changed or the
+   * write failed (the failure is reported through `status`). */
+  linkUnlinkedMention: (sourceRel: string, mention: { start: number; end: number; text: string }, targetRel: string) => Promise<boolean>;
+  /** Read a template note and fill `{{date}}`, `{{time}}` and `{{title}}` for the active note. */
+  renderTemplate: (templateRel: string) => Promise<string | null>;
   addCalendarEvent: (date: string, title: string) => Promise<void>;
   removeCalendarEvent: (date: string, title: string) => Promise<void>;
   /** Resolves true once the task is in the vault or its pending save; false when it was not added. */
@@ -376,6 +382,9 @@ export interface AppState {
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   loadSyncSecrets: () => Promise<void>;
   setPalette: (open: boolean) => void;
+  /** What the open palette lists: files (and `>` commands) or templates to insert. */
+  paletteMode: "files" | "templates";
+  openTemplatePicker: () => void;
   openSearch: (seed?: string) => void;
   setSearch: (open: boolean) => void;
   setSearchSeed: (s: string) => void;
@@ -747,6 +756,7 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     },
     paletteOpen: false,
+    paletteMode: "files",
     searchOpen: false,
     searchSeed: "",
     settingsOpen: false,
@@ -872,7 +882,8 @@ export const useAppStore = create<AppState>((set, get) => {
       }
     },
 
-    setPalette: (open) => set({ paletteOpen: open }),
+    setPalette: (open) => set({ paletteOpen: open, paletteMode: "files" }),
+    openTemplatePicker: () => set({ paletteOpen: true, paletteMode: "templates" }),
     openSearch: (seed = "") => {
       if (get().overlayOpen) {
         set({
@@ -1357,6 +1368,46 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!file || !current()) return;
       documents.addNote(file, body);
       await get().selectFile(rel);
+    },
+
+    linkUnlinkedMention: async (sourceRel, mention, targetRel) => {
+      const root = get().vaultPath;
+      if (!root) return false;
+      const generation = vault.generation;
+      const current = () => get().vaultPath === root && vault.generation === generation;
+      let linked = false;
+      await reportingFailure("Link mention", async () => {
+        const { linkMention, linkTextFor } = await import("./lib/unlinkedMentions");
+        const loaded = await get().ensureContent(sourceRel);
+        if (!current()) return;
+        const file = get().fileFor(sourceRel);
+        const target = get().notes[targetRel];
+        if (!file || !target) throw new Error(`${!file ? sourceRel : targetRel} is no longer available.`);
+        const prev = get().contentCache[sourceRel] ?? loaded;
+        const linkText = linkTextFor(targetRel, target.title, makeResolver(get().notes));
+        if (linkText === null) throw new Error(`${targetRel} has a name a wiki link cannot hold (# | ^ [ ]).`);
+        const content = linkMention(prev, mention, linkText);
+        if (content === null) throw new Error(`${sourceRel} changed; refresh unlinked mentions and try again.`);
+        set({
+          content: get().activePath === sourceRel ? content : get().content,
+          contentCache: forkContentCache(get().contentCache, { [sourceRel]: content }),
+        });
+        await saveTextMutation(file, content, prev);
+        // A failed write stays dirty and is shown by the save-recovery UI.
+        linked = !textSaves.isDirty(file.path);
+      });
+      return linked;
+    },
+
+    renderTemplate: async (templateRel) => {
+      const root = get().vaultPath;
+      if (!root || !get().fileFor(templateRel)) return null;
+      const generation = vault.generation;
+      const template = await get().ensureContent(templateRel);
+      if (get().vaultPath !== root || vault.generation !== generation) return null;
+      const active = get().activePath;
+      const title = active ? get().notes[active]?.title ?? (active.split("/").pop() ?? active).replace(/\.[^.]+$/, "") : "";
+      return applyTemplate(template, { date: localISO(), time: localTime(), title });
     },
 
     // Calendar events persist in calendar.json at the vault root.

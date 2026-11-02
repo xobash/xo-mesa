@@ -15,6 +15,8 @@ import { rewriteSrcset, useRemoteImageRewrite, type RemoteImageRewrite } from ".
  * `files`/`onWikiClick` default to the global store, but can be supplied so the
  * popout document windows can render against their own vault scan.
  */
+/** Renderer placeholders that markdownEnhance typesets after insertion. */
+const ENHANCED = ".math, .mermaid-block";
 /** Keep sanitized URL markers so reused blocks can revoke consent before paint. */
 const REMOTE_ATTRIBUTES = ["src", "poster", "background", "data", "href", "xlink:href", "srcset"];
 const REMOTE_SELECTOR = REMOTE_ATTRIBUTES.map(name => `[data-remote-${name.replace(":", "-")}]`).join(",");
@@ -98,7 +100,12 @@ export function MarkdownView({
     void Promise.all([import("../lib/markdownRender"), import("../lib/markdownDom")]).then(([{ createMarkdownRenderer }, { createMarkdownDom }]) => {
       if (!alive || !ref.current) return;
       const dom = createMarkdownDom(ref.current, {
-        onInsert: resolveImages,
+        onInsert: (nodes) => {
+          resolveImages(nodes);
+          // Math and diagrams load their renderers only when a note has them.
+          if (nodes.some((node) => node instanceof Element && (node.matches(ENHANCED) || node.querySelector(ENHANCED))))
+            void import("../lib/markdownEnhance").then(({ enhanceMarkdown }) => enhanceMarkdown(nodes)).catch(() => undefined);
+        },
         onComplete: (stats) => {
           if (!alive) return;
           setError(""); setRevision(value => value + 1);
@@ -137,6 +144,15 @@ export function MarkdownView({
       if (!anchor || !el.contains(anchor)) return;
       e.preventDefault();
       const href = anchor.getAttribute("href") ?? "";
+      if (href.startsWith("#")) {
+        // In-note anchors (footnotes) resolve inside this preview only, so
+        // two open previews never jump to each other's ids.
+        let id = href.slice(1);
+        try { id = decodeURIComponent(id); } catch { /* keep the raw id */ }
+        const target = id ? [...el.querySelectorAll("[id]")].find((node) => node.id === id) : undefined;
+        target?.scrollIntoView({ block: "center", inline: "nearest" });
+        return;
+      }
       if (/^https?:\/\//i.test(href)) {
         (onExternalLink ?? openExternalInReader)(href);
       } else if (!/^[a-z][a-z0-9+.-]*:|^\/\/|^#/i.test(href)) {

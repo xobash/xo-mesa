@@ -23,23 +23,31 @@ const SANITIZE_CONFIG: Config = {
  * same policy. Refuse to render if DOMPurify cannot sanitize in this realm.
  */
 export function sanitizeHtml(html: string): string {
-  if (!DOMPurify.isSupported) throw new Error("HTML sanitizer is unavailable");
-  DOMPurify.addHook("uponSanitizeAttribute", keepRendererClasses);
-  DOMPurify.addHook("afterSanitizeAttributes", deferRemoteMedia);
-  try {
-    return DOMPurify.sanitize(html, SANITIZE_CONFIG);
-  } finally {
-    DOMPurify.removeHook("afterSanitizeAttributes", deferRemoteMedia);
-    DOMPurify.removeHook("uponSanitizeAttribute", keepRendererClasses);
+  const purifier = notePurifier();
+  if (!purifier?.isSupported) throw new Error("HTML sanitizer is unavailable");
+  return purifier.sanitize(html, SANITIZE_CONFIG);
+}
+
+// A private instance: libraries such as Mermaid add hooks to the shared default
+// DOMPurify and never remove them.
+let purifier: ReturnType<typeof DOMPurify> | undefined;
+function notePurifier() {
+  if (!purifier && typeof window !== "undefined") {
+    purifier = DOMPurify(window);
+    purifier.addHook("uponSanitizeAttribute", keepRendererClasses);
+    purifier.addHook("afterSanitizeAttributes", deferRemoteMedia);
   }
+  return purifier;
 }
 
 // Classes emitted by markdownParser.ts (wiki links, embeds, tasks, callouts,
-// properties) and markdown-it's fenced-code `language-*`. Authored HTML must not
+// properties, math, footnotes) and markdown-it's fenced-code `language-*`. Authored HTML must not
 // borrow app classes such as `modal-overlay` to draw fixed-position UI.
 const RENDERER_CLASSES = new Set([
   "wikilink", "embed", "md-embed", "task-list", "callout", "callout-title",
   "properties", "prop", "prop-key", "prop-val",
+  "math", "math-inline", "math-display", "math-block", "mermaid-block",
+  "footnote-ref", "footnotes-sep", "footnotes", "footnotes-list", "footnote-item", "footnote-backref",
 ]);
 const RENDERER_CLASS_PATTERN = /^language-[^\s]+$/;
 

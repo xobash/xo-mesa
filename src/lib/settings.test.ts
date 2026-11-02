@@ -85,3 +85,14 @@ it('starts offline and never resumes network discovery from saved settings', () 
   expect(normalizeSettings({ syncDiscovery: true, syncEnabled: true }).syncDiscovery).toBe(false);
   expect(normalizeSettings({ syncEnabled: true }).syncEnabled).toBe(true);
 });
+
+describe('hotkey settings', () => {
+  it('keeps only valid, unreserved, unique hotkeys and never shares the default object', () => {
+    const normalized = normalizeSettings({ hotkeys: { theme: 'cmd+shift+t', graph: 'Mod+Shift+T', today: 'Mod+P', 'x y': 'Mod+J' } });
+    expect(normalized.hotkeys).toEqual({ theme: 'Mod+Shift+T' });
+    expect(normalizeSettings({ hotkeys: 'Mod+K' }).hotkeys).toEqual({});
+    expect(normalizeSettings(null).hotkeys).not.toBe(DEFAULT_SETTINGS.hotkeys);
+    const target = storage(); persistSettings(normalized, target);
+    expect(loadSettings(target).settings.hotkeys).toEqual({ theme: 'Mod+Shift+T' });
+  });
+});

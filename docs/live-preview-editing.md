@@ -12,6 +12,10 @@ The rendered pane is read-only; edits stay in CodeMirror and preserve the
 original Markdown syntax. Edits from other Mesa surfaces, such as Kanban task movement, refresh the
 active CodeMirror document as long as they modify the same note.
 
+The preview also renders math (KaTeX), Mermaid diagrams and footnotes, and
+the toolbar's **Find** opens find and replace for the note. See
+[note-features.md](note-features.md).
+
 Wiki links can open every text file Mesa supports. An exact target such as
 `[[Notes/Log.txt]]` opens that file without changing its extension. A bare
 target first uses a Markdown file when names are ambiguous. It then uses another

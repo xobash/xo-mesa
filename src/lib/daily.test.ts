@@ -163,3 +163,18 @@ describe("editCalendarJson", () => {
     expect(editCalendarJson("[", { add: { date: "2026-01-01", title: "A" } })).toBeNull();
   });
 });
+
+describe("templatePaths", () => {
+  it("lists Markdown notes inside the templates folder, case-insensitively and sorted", async () => {
+    const { templatePaths } = await import("./daily");
+    const files = [
+      { relPath: "Templates/Meeting.md", isMarkdown: true },
+      { relPath: "templates/sub/Daily.md", isMarkdown: true },
+      { relPath: "Templates/logo.png", isMarkdown: false },
+      { relPath: "TemplatesOld/Other.md", isMarkdown: true },
+      { relPath: "Notes/Meeting.md", isMarkdown: true },
+    ];
+    expect(templatePaths(files, " /Templates/ ")).toEqual(["Templates/Meeting.md", "templates/sub/Daily.md"]);
+    expect(templatePaths(files, "")).toEqual([]);
+  });
+});

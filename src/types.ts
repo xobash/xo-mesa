@@ -109,6 +109,8 @@ export interface Settings {
   dailyFolder: string;
   /** Folder Mesa looks in for note templates. */
   templatesFolder: string;
+  /** Command-palette command id -> canonical chord ("Mod+Shift+K"); see lib/hotkeys.ts. */
+  hotkeys?: Record<string, string>;
   /** Note file where the user's personal (+ added) tasks live. */
   tasksFile: string;
   /** Vault folder Deep Research writes generated notes into. */

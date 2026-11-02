@@ -6,6 +6,7 @@ import {
   type RecoveryEntry,
 } from "../lib/vault";
 import { Modal } from "./Modal";
+import { HotkeySettings } from "./HotkeySettings";
 
 const RECOVERY_PAGE_SIZE = 20;
 const REVISION_PAGE_SIZE = 10;
@@ -362,6 +363,24 @@ export function SettingsModal() {
         </div>
 
         <div className="setting-row"><div className="setting-meta"><div className="setting-name">Hide generated files</div><div className="setting-desc">Hide archives and conflict copies in the sidebar. Search still finds them.</div></div><Toggle label="Hide generated files" on={settings.hideGeneratedFiles} onChange={value => setSetting("hideGeneratedFiles", value)} /></div>
+
+        <div className="setting-row">
+          <div className="setting-meta">
+            <div className="setting-name">Templates folder</div>
+            <div className="setting-desc">
+              Notes in this folder appear in Insert template. Use {"{{date}}"}, {"{{time}}"} and {"{{title}}"} as placeholders.
+            </div>
+          </div>
+          <input
+            className="text-input"
+            aria-label="Templates folder"
+            placeholder="Templates"
+            value={settings.templatesFolder}
+            onChange={(event) => setSetting("templatesFolder", event.target.value)}
+          />
+        </div>
+
+        <HotkeySettings />
         </>}
         {section === "deleted" && <div className="setting-row recovery-setting-row">
           <div className="setting-meta">

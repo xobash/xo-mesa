@@ -66,6 +66,15 @@ own classes or open top-layer UI to overlay or hide Mesa's interface. It keeps
 Mesa's links, callouts, tasks and benign formatting. `markdown.test.ts` tests both rejection and retained markup;
 `markdownNode.test.ts` checks the missing-DOM path.
 
+Math and Mermaid diagrams render after this sanitization, from escaped
+placeholders. KaTeX runs with `trust: false`, so TeX cannot add links, classes
+or remote loads. Mermaid runs in strict mode with SVG labels and locked
+directive settings; `sanitizeMermaidSvg` then removes scripts, handlers, links,
+images, `foreignObject`, animation elements and external `url()` references
+before insertion. Both load lazily and contact no server. Tests:
+`markdownMath.test.ts`, `markdownMermaid.test.ts`. See
+[note-features.md](note-features.md).
+
 Remote images and media (`http:`, `https:`, `//` sources) are not requested when a
 note renders or a hover preview opens, because the request would tell a third
 party that you opened the note. All sanitized tags are checked for URL carriers,

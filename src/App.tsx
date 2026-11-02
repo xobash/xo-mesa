@@ -39,6 +39,7 @@ import { DropOverlay } from "./components/DropOverlay";
 import { startViewDrag } from "./components/panelDrag";
 import { useApplyTheme } from "./components/useApplyTheme";
 import { useTrayStatus } from "./components/useTrayStatus";
+import { useCustomHotkeys } from "./components/useCustomHotkeys";
 import {
   adjacentPath,
   clampKeyboardFocus,
@@ -595,6 +596,7 @@ export default function App() {
 
   useApplyTheme(theme, uiStyle);
   useTrayStatus(IN_TAURI && !docMode && !panelMode && !agentMode && !researchMode);
+  useCustomHotkeys(!docMode && !panelMode && !agentMode && !researchMode);
 
   // Detached documents reuse the main renderer's live file catalog. They
   // read only their selected document and never start another vault walk.

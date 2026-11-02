@@ -58,7 +58,12 @@ in `src/lib/keyboardNav.test.ts`.
 `Ctrl/Cmd+P` opens the palette for note jumping. Type `>` to switch to task
 commands. Command mode includes real workflow entries for search, tasks, sync,
 diagnostics, recovery storage, revision history, Pi, Deep Research, settings,
-graph, themes, daily notes, and opening a vault.
+graph, themes, daily notes, and opening a vault. It also has "Find and replace
+in current note" (`Ctrl/Cmd+F` in the editor) and "Insert template…".
+
+Settings → Hotkeys assigns your own shortcut to any of these commands; the
+palette shows it beside the command. See [note-features.md](note-features.md)
+for the rules and the reserved shortcuts.
 
 ## Overlay Calendar
 

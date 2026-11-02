@@ -2,6 +2,7 @@ import type { Settings, SyncPeer } from "../types";
 import { normalizeAutoSyncMinutes } from "./syncAutoSchedule";
 import { generateDeviceName } from "./deviceName";
 import { normalizeSyncPort } from "./pairing";
+import { normalizeHotkeys } from "./hotkeys";
 export const SETTINGS_KEY = "mesa:settings";
 export const DEFAULT_SETTINGS: Settings = {
   hoverDelayMs: 450,
@@ -24,6 +25,7 @@ export const DEFAULT_SETTINGS: Settings = {
   hideGeneratedFiles: false,
   dailyFolder: "Daily",
   templatesFolder: "Templates",
+  hotkeys: {},
   tasksFile: "Tasks.md",
   researchFolder: "Research",
   researchDepth: "standard",
@@ -72,7 +74,7 @@ function withoutLegacyAgentSettings(value: Record<string, unknown>): { value: Re
 
 /** Validate persisted shape without changing any valid setting or its numeric value. */
 export function normalizeSettings(value: unknown): Settings {
-  const next: Settings = { ...DEFAULT_SETTINGS, peers: [], bookmarks: [], rightStack: [...DEFAULT_SETTINGS.rightStack] };
+  const next: Settings = { ...DEFAULT_SETTINGS, peers: [], bookmarks: [], hotkeys: {}, rightStack: [...DEFAULT_SETTINGS.rightStack] };
   if (!record(value)) return next;
   for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
     const candidate = value[key], fallback = DEFAULT_SETTINGS[key];
@@ -90,6 +92,7 @@ export function normalizeSettings(value: unknown): Settings {
     const k = key as keyof Settings;
     if (!allowed.includes(String(next[k]))) Object.assign(next, { [k]: k === 'centerView' && next[k] === 'doc2' ? 'doc' : DEFAULT_SETTINGS[k] });
   }
+  next.hotkeys = normalizeHotkeys(value.hotkeys);
   if (Array.isArray(value.bookmarks)) next.bookmarks = value.bookmarks.filter((v): v is string => typeof v === 'string');
   if (Array.isArray(value.retiredSyncPeers)) next.retiredSyncPeers = [...new Set(value.retiredSyncPeers.filter((v): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v)))];
   // Split view: keep one side pane, never a duplicate of the center view.

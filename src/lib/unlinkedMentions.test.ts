@@ -1,0 +1,93 @@
+import { describe, expect, it } from "vitest";
+import { createMentionScan, findUnlinkedMentions, linkMention, linkTextFor, mentionNames } from "./unlinkedMentions";
+
+const texts = (source: string, names: string[]) => findUnlinkedMentions(source, names).map((m) => m.text);
+
+describe("mentionNames", () => {
+  it("uses the title and aliases, longest first, without duplicates or single characters", () => {
+    expect(mentionNames({ title: "New York", aliases: ["NYC", "new york", "N", "New York City"] }))
+      .toEqual(["New York City", "New York", "NYC"]);
+  });
+});
+
+describe("findUnlinkedMentions", () => {
+  it("matches whole words case-insensitively", () => {
+    expect(texts("Alpha, alpha and ALPHA. Alphabet and pre-alpha.", ["Alpha"])).toEqual(["Alpha", "alpha", "ALPHA", "alpha"]);
+    expect(texts("Café menu and cafés", ["Café"])).toEqual(["Café"]);
+  });
+
+  it("skips text that is already a link, code, a URL, markup, math or frontmatter", () => {
+    const source = [
+      "---", "title: Alpha", "---",
+      "[[Alpha]] and [[Other|Alpha]] and ![[Alpha.png]]",
+      "[Alpha](Alpha.md) [x][Alpha] <span title=\"Alpha\">x</span>",
+      "`Alpha` and https://example.com/Alpha $Alpha$",
+      "```", "Alpha", "```",
+      "[Alpha]: https://example.com",
+      "Plain Alpha here.",
+    ].join("\n");
+    const found = findUnlinkedMentions(source, ["Alpha"]);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ text: "Alpha", before: "Plain ", after: " here." });
+    expect(source.slice(found[0].start, found[0].end)).toBe("Alpha");
+  });
+
+  it("prefers the longest overlapping name", () => {
+    expect(texts("I live in New York City.", ["New York City", "New York"])).toEqual(["New York City"]);
+  });
+
+  it("escapes regular-expression characters in names", () => {
+    expect(texts("Use C++ (fast) daily; C+ is not it.", ["C++ (fast)"])).toEqual(["C++ (fast)"]);
+  });
+
+  it("bounds the result count", () => {
+    expect(findUnlinkedMentions("x ".repeat(10).replace(/x/g, "Al"), ["Al"], 3)).toHaveLength(3);
+  });
+});
+
+describe("linkMention", () => {
+  it("inserts a plain link when the text matches the link text and an alias link otherwise", () => {
+    expect(linkMention("Met Alpha.", { start: 4, end: 9, text: "Alpha" }, "Alpha")).toBe("Met [[Alpha]].");
+    expect(linkMention("Met alpha.", { start: 4, end: 9, text: "alpha" }, "Alpha")).toBe("Met [[Alpha|alpha]].");
+  });
+
+  it("refuses when the text at the offsets changed", () => {
+    expect(linkMention("Met Beta.", { start: 4, end: 9, text: "Alpha" }, "Alpha")).toBeNull();
+  });
+});
+
+describe("mentions inside markup", () => {
+  it("skips tags and footnote references", () => {
+    expect(texts("See #project and [^project] about project.", ["project"])).toEqual(["project"]);
+    expect(findUnlinkedMentions("See #project and [^project] about project.", ["project"])[0].start).toBe(34);
+  });
+  it("refuses an aliased link in a table row but allows an exact one", () => {
+    expect(() => linkMention("| alpha | 1 |", { start: 2, end: 7, text: "alpha" }, "Alpha")).toThrow(/table row/);
+    expect(linkMention("| Alpha | 1 |", { start: 2, end: 7, text: "Alpha" }, "Alpha")).toBe("| [[Alpha]] | 1 |");
+  });
+});
+
+describe("linkTextFor", () => {
+  it("uses the title when it resolves to the target, otherwise the vault path", () => {
+    const resolve = (target: string) => (target === "Alpha" ? "Alpha.md" : null);
+    expect(linkTextFor("Alpha.md", "Alpha", resolve)).toBe("Alpha");
+    expect(linkTextFor("Archive/Alpha.md", "Alpha", resolve)).toBe("Archive/Alpha");
+  });
+  it("never writes a target that link syntax would split", () => {
+    const resolve = () => "C# notes.md";
+    expect(linkTextFor("C# notes.md", "C# notes", resolve)).toBeNull();
+    expect(linkTextFor("Lang/C notes.md", "C|notes", () => null)).toBe("Lang/C notes");
+  });
+});
+
+describe("createMentionScan", () => {
+  it("scans in slices, counts unread notes, and reports only notes with mentions", () => {
+    let clock = 0;
+    const text: Record<string, string | undefined> = { "a.md": "Alpha here", "b.md": "nothing", "c.md": undefined, "d.md": "and alpha" };
+    const scan = createMentionScan(Object.keys(text), (rel) => text[rel], ["Alpha"], () => (clock += 5));
+    expect(scan.advance(4)).toBe(false);
+    while (!scan.advance(4)) { /* next slice */ }
+    expect(scan.results().map((r) => r.relPath)).toEqual(["a.md", "d.md"]);
+    expect(scan.unread()).toBe(1);
+  });
+});

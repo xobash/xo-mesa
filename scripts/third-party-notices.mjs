@@ -35,6 +35,16 @@ function notice(name, version, license, files, base, fallback) {
   }
   return value;
 }
+// Packages whose manifest omits `license` but ship a license file. Each entry is
+// pinned to one version and checked against that file's text.
+const NPM_LICENSE_OVERRIDES = { 'khroma@2.1.0': { license: 'MIT', file: 'license', text: 'The MIT License (MIT)' } };
+function npmLicense(dir, name, version, declared) {
+  if (declared) return declared;
+  const override = NPM_LICENSE_OVERRIDES[`${name}@${version}`];
+  if (!override) return undefined;
+  if (!readFileSync(join(dir, override.file), 'utf8').startsWith(override.text)) throw new Error(`License override no longer matches: ${name}@${version}`);
+  return override.license;
+}
 function npmNotices() {
   const lock = JSON.parse(npmLock);
   const entries = Object.entries(lock.packages).filter(([path, meta]) =>
@@ -44,7 +54,7 @@ function npmNotices() {
     const pkg = JSON.parse(readFileSync(join(dir, 'package.json')));
     if (pkg.version !== meta.version) throw new Error(`Installed version differs from lock: ${path}`);
     const files = licenseFiles(dir, pkg.name === 'pdfjs-dist' ? ['cmaps', 'standard_fonts'] : []);
-    return notice(pkg.name, meta.version, meta.license ?? pkg.license, files, dir, false);
+    return notice(pkg.name, meta.version, npmLicense(dir, pkg.name, meta.version, meta.license ?? pkg.license), files, dir, false);
   }).join('');
 }
 function cargoMetadata(triple) {

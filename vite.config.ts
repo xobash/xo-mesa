@@ -39,7 +39,8 @@ export default defineConfig({
           if (id.includes("/pdfjs-dist/")) return "pdfjs-vendor";
           if (id.includes("/pdf-lib/")) return "pdf-lib-vendor";
           if (id.includes("/@xterm/")) return "terminal-vendor";
-          if (id.includes("/markdown-it/") || id.includes("/mdurl/") || id.includes("/linkify-it/")) return "markdown-vendor";
+          if (id.includes("/katex/")) return "katex-vendor";
+          if (id.includes("/markdown-it/") || id.includes("/mdurl/") || id.includes("/linkify-it/") || id.includes("/markdown-it-footnote/")) return "markdown-vendor";
           return undefined;
         },
       },

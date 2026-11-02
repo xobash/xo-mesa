@@ -1,10 +1,12 @@
 // Worker-safe parsing. Output is untrusted until sanitizeHtml runs in the DOM realm.
 import MarkdownIt from "markdown-it";
+import footnote from "markdown-it-footnote";
+import type StateBlock from "markdown-it/lib/rules_block/state_block.mjs";
 import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
 import type Token from "markdown-it/lib/token.mjs";
 import { IMAGE_EXT, parseFrontmatter } from "./markdownExtract";
 
-const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false });
+const md = new MarkdownIt({ html: true, linkify: true, breaks: false, typographer: false }).use(footnote);
 
 // --- inline rule: wiki links & embeds -------------------------------------
 function wikilink(state: StateInline, silent: boolean): boolean {
@@ -69,6 +71,86 @@ md.renderer.rules.wiki_embed = (tokens: Token[], idx: number): string => {
   const t = tokens[idx];
   const target = md.utils.escapeHtml(t.content);
   return `<span class="wikilink embed" data-target="${target}">⧉ ${target}</span>`;
+};
+
+// --- math: $inline$, $$display$$ and $$ blocks ---------------------------
+// Pandoc/Obsidian delimiters: an opening `$` is not followed by whitespace, a
+// closing `$` is not preceded by whitespace or followed by a digit, so prices
+// such as "$5 and $10" stay text. The parser emits escaped TeX only;
+// markdownEnhance.ts typesets it with KaTeX after sanitization.
+function mathInline(state: StateInline, silent: boolean): boolean {
+  const src = state.src, start = state.pos;
+  if (src.charCodeAt(start) !== 0x24 /* $ */) return false;
+  const display = src.charCodeAt(start + 1) === 0x24;
+  const open = start + (display ? 2 : 1);
+  if (open >= state.posMax) return false;
+  if (!display && /\s/.test(src[open])) return false;
+  let close = open;
+  for (;;) {
+    close = src.indexOf(display ? "$$" : "$", close);
+    if (close < 0 || close >= state.posMax) return false;
+    let slashes = 0;
+    for (let at = close - 1; at >= open && src.charCodeAt(at) === 0x5c; at--) slashes++;
+    if (slashes % 2 === 0 && close > open &&
+      (display || (!/\s/.test(src[close - 1]) && !/[0-9]/.test(src[close + 1] ?? "")))) break;
+    close++;
+  }
+  if (!silent) {
+    const token = state.push(display ? "math_display" : "math_inline", "span", 0);
+    token.content = src.slice(open, close);
+    token.markup = display ? "$$" : "$";
+  }
+  state.pos = close + (display ? 2 : 1);
+  return true;
+}
+
+function mathBlock(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
+  const lineText = (line: number) => state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]);
+  if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+  const first = lineText(startLine);
+  if (!first.startsWith("$$")) return false;
+  const rest = first.slice(2);
+  let content: string, last = startLine;
+  if (rest.trim().endsWith("$$")) {
+    // One-line `$$ x $$`; trailing text after the closing fence is not math.
+    content = rest.trim().slice(0, -2);
+  } else {
+    if (rest.trim().length) return false;
+    const lines: string[] = [];
+    for (last = startLine + 1; last < endLine; last++) {
+      const text = lineText(last);
+      if (text.trim().endsWith("$$")) { lines.push(text.trim().slice(0, -2)); break; }
+      lines.push(state.src.slice(state.bMarks[last], state.eMarks[last]));
+    }
+    if (last >= endLine) return false;
+    content = lines.join("\n");
+  }
+  if (silent) return true;
+  const token = state.push("math_block", "div", 0);
+  token.block = true;
+  token.content = content.trim();
+  token.map = [startLine, last + 1];
+  token.markup = "$$";
+  state.line = last + 1;
+  return true;
+}
+
+md.inline.ruler.after("escape", "math_inline", mathInline);
+md.block.ruler.before("fence", "math_block", mathBlock, { alt: ["paragraph", "reference", "blockquote", "list"] });
+md.renderer.rules.math_inline = (tokens, idx) =>
+  `<span class="math math-inline">${md.utils.escapeHtml(tokens[idx].content)}</span>`;
+md.renderer.rules.math_display = (tokens, idx) =>
+  `<span class="math math-display">${md.utils.escapeHtml(tokens[idx].content)}</span>`;
+md.renderer.rules.math_block = (tokens, idx) =>
+  `<div class="math math-block">${md.utils.escapeHtml(tokens[idx].content)}</div>\n`;
+
+// Mermaid fences keep their escaped source in a stable top-level wrapper, so
+// markdownEnhance.ts can swap only the inner node for a sanitized diagram.
+const renderFence = md.renderer.rules.fence!;
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const html = renderFence(tokens, idx, options, env, self);
+  return tokens[idx].info.trim().split(/\s+/)[0].toLowerCase() === "mermaid"
+    ? `<div class="mermaid-block">${html}</div>\n` : html;
 };
 
 // Convert task markers during parsing rather than walking every rendered list.

@@ -1,0 +1,211 @@
+/* Note features: math, Mermaid, footnotes, in-note find/replace and
+   unlinked mentions. Token colors only; see DESIGN.md Tokens. */
+
+/* ---------- math (KaTeX) ---------- */
+.markdown-body .math-block,
+.markdown-body .math-display {
+  display: block;
+  margin: 0.8em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown-body .math-display .katex-display,
+.markdown-body .math-block .katex-display {
+  margin: 0;
+}
+/* Untypeset placeholders keep the TeX source readable while KaTeX loads. */
+.markdown-body .math:not(:has(.katex)) {
+  font-family: var(--mono);
+  color: var(--text-dim);
+}
+
+/* ---------- Mermaid diagrams ---------- */
+.markdown-body .mermaid-block {
+  margin: 0.8em 0;
+}
+.markdown-body .mermaid-diagram {
+  overflow-x: auto;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-1);
+}
+.markdown-body .mermaid-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+.markdown-body .mermaid-error {
+  margin-top: 6px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* ---------- footnotes ---------- */
+.markdown-body .footnote-ref a {
+  color: var(--accent-text);
+  font-size: 0.8em;
+}
+.markdown-body .footnotes-sep {
+  margin-top: 2em;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.markdown-body .footnotes {
+  color: var(--text-dim);
+  font-size: 0.9em;
+}
+.markdown-body .footnote-backref {
+  color: var(--text-faint);
+}
+
+/* ---------- in-note find and replace (CodeMirror search panel) ---------- */
+.cm-editor .cm-panels {
+  background: var(--bg-1);
+  color: var(--text);
+  border-color: var(--border);
+}
+.cm-editor .cm-panels-bottom {
+  border-top: 1px solid var(--border);
+}
+.cm-editor .cm-panels-top {
+  border-bottom: 1px solid var(--border);
+}
+.cm-editor .cm-search {
+  font-family: var(--font);
+  font-size: 12px;
+}
+.cm-editor .cm-search input.cm-textfield {
+  background: var(--bg-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  padding: 3px 6px;
+}
+.cm-editor .cm-search input.cm-textfield:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+.cm-editor .cm-search .cm-button {
+  background: var(--bg-2);
+  background-image: none;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  padding: 3px 8px;
+}
+.cm-editor .cm-search .cm-button:hover {
+  border-color: var(--accent);
+}
+.cm-editor .cm-search label {
+  color: var(--text-dim);
+}
+.cm-editor .cm-search button[name="close"] {
+  color: var(--text-faint);
+}
+.cm-editor .cm-searchMatch {
+  background: var(--ui-hover);
+  outline: 1px solid var(--border);
+}
+.cm-editor .cm-searchMatch-selected {
+  background: var(--ui-selected);
+  outline-color: var(--accent);
+}
+
+/* ---------- unlinked mentions ---------- */
+.backlinks-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 18px 0 8px;
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.backlinks-section-toggle:hover {
+  color: var(--text);
+}
+.backlinks-section-toggle .count {
+  color: var(--accent);
+}
+.unlinked-mention {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 8px;
+  align-items: start;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 11px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.unlinked-mention-open {
+  grid-column: 1 / -1;
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.unlinked-mention-open:hover {
+  color: var(--text);
+}
+.unlinked-mention-snippet {
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+.unlinked-mention-snippet mark {
+  background: var(--ui-selected);
+  color: var(--text);
+  border-radius: 3px;
+}
+.unlinked-mention .seg-btn {
+  align-self: center;
+}
+
+/* ---------- hotkey settings ---------- */
+.setting-row.hotkey-settings {
+  flex-direction: column;
+  align-items: stretch;
+}
+.hotkey-list {
+  width: 100%;
+}
+.hotkey-row {
+  flex-wrap: wrap;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.hotkey-row kbd {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-btn);
+  padding: 1px 6px;
+}
+.hotkey-row .hotkey-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.hotkey-conflict {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: 12px;
+}
