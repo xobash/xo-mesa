@@ -57,6 +57,26 @@ describe('mermaid fences', () => {
 });
 
 describe('sanitizeMermaidSvg', () => {
+  it('redraws a rendered diagram from its source when the theme palette changes', async () => {
+    document.documentElement.dataset.theme = 'midnight';
+    render.mockResolvedValueOnce({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>dark</text></svg>' })
+      .mockResolvedValueOnce({ svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>light</text></svg>' });
+    const host = preview('```mermaid\ngraph TD; A-->B\n```');
+    document.body.append(host);
+    try {
+      await enhanceMarkdown([...host.childNodes]);
+      expect(host.querySelector('.mermaid-diagram')?.textContent).toBe('dark');
+      document.documentElement.dataset.theme = 'paper';
+      await vi.waitFor(() => expect(host.querySelector('.mermaid-diagram')?.textContent).toBe('light'));
+      expect(render).toHaveBeenCalledTimes(2);
+      expect(render.mock.calls[1][1]).toBe('graph TD; A-->B\n');
+      expect(initialize.mock.calls.at(-1)?.[0]).toMatchObject({ theme: 'neutral' });
+    } finally {
+      host.remove();
+      delete document.documentElement.dataset.theme;
+    }
+  });
+
   it('removes scripts, handlers, links, images, foreignObject and remote URLs', () => {
     const clean = sanitizeMermaidSvg(
       '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">' +
@@ -78,7 +98,21 @@ describe('sanitizeMermaidSvg', () => {
 
   it('keeps Mermaid-scoped styles', () => {
     const clean = sanitizeMermaidSvg('<svg xmlns="http://www.w3.org/2000/svg" id="m1"><style>#m1 .node rect{fill:#333;}</style><g class="node"><rect /></g></svg>');
-    expect(clean).toContain('#m1 .node rect');
+    expect(clean).toContain('#m1 .mmd-node rect');
+    expect(clean).toContain('class="mmd-node"');
+  });
+
+  it('prefixes note-supplied classes so app styles never match them', () => {
+    // `A:::modal-overlay` in a flowchart puts that class on the node.
+    const clean = sanitizeMermaidSvg('<svg xmlns="http://www.w3.org/2000/svg" id="m1" class="flowchart"><style>#m1 .modal-overlay > rect, #m1 [data-x=".keep"]{fill:red;}</style><g class="node modal-overlay"><rect /></g></svg>');
+    const host = document.createElement('div');
+    host.innerHTML = clean;
+    expect(host.querySelector('.modal-overlay, .node, .flowchart')).toBeNull();
+    expect(host.querySelector('svg')?.getAttribute('class')).toBe('mmd-flowchart');
+    expect(host.querySelector('g')?.getAttribute('class')).toBe('mmd-node mmd-modal-overlay');
+    const css = host.querySelector('style')?.textContent ?? '';
+    expect(css).toContain('#m1 .mmd-modal-overlay > rect');
+    expect(css).toContain('".keep"');
   });
 
   it('drops style rules that reach outside the diagram', () => {
@@ -87,7 +121,7 @@ describe('sanitizeMermaidSvg', () => {
       '#m1 .a{fill:red;} body{display:none;} #m10 .b{fill:blue;} #m1 .c, .modal-overlay{opacity:0;} ' +
       '@media screen{#m1 .d{fill:green;}} #m1 .e{background:image-set("https://evil.example/x.png" 1x);}' +
       '</style><g /></svg>');
-    expect(clean).toContain('#m1 .a');
+    expect(clean).toContain('#m1 .mmd-a');
     for (const text of ['body', '#m10', 'modal-overlay', '@media', 'evil.example']) expect(clean).not.toContain(text);
   });
 

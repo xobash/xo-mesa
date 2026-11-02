@@ -36,8 +36,8 @@ export function Backlinks() {
       const names = mentionNames({ title: namesKey.split("\n")[0], aliases: namesKey.split("\n").slice(1) });
       if (!names.length) { setScan({ key: scanKey, results: [], unread: 0, done: true }); return; }
       const state = getStore();
-      const linking = new Set(linksKey ? linksKey.split("\n") : []);
-      const candidates = Object.keys(state.notes).filter((rel) => rel !== activePath && !linking.has(rel) && isMarkdownPath(rel));
+      // Notes that already link here are scanned too: their other plain mentions still count.
+      const candidates = Object.keys(state.notes).filter((rel) => rel !== activePath && isMarkdownPath(rel));
       const cache = state.contentCache;
       const job = createMentionScan(candidates, (rel) => cache[rel], names);
       const step = () => {

@@ -57,6 +57,12 @@ export function sanitizeMermaidSvg(svg: string): string {
     template.innerHTML = clean;
     const root = template.content.firstElementChild;
     if (!root || root.localName !== "svg") return "";
+    // Diagram classes come from note text (`classDef`); prefix them so app CSS
+    // never matches them. The scoped sheets below use the same prefix.
+    for (const element of [root, ...root.querySelectorAll("[class]")]) {
+      const tokens = (element.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+      if (tokens.length) element.setAttribute("class", tokens.map((token) => DIAGRAM_CLASS_PREFIX + token).join(" "));
+    }
     // CSS inside inline SVG applies to the whole document. Keep only rules
     // scoped to this diagram's id, re-serialized by the CSS parser.
     for (const sheet of root.querySelectorAll("style")) {
@@ -74,8 +80,15 @@ export function sanitizeMermaidSvg(svg: string): string {
   }
 }
 
+const DIAGRAM_CLASS_PREFIX = "mmd-";
+// Class selectors outside quoted attribute values.
+const prefixClasses = (selector: string) =>
+  selector.replace(/("[^"]*"|'[^']*')|\.(-?[_a-zA-Z][\w-]*)/g, (_match, quoted: string | undefined, name: string | undefined) =>
+    quoted ?? `.${DIAGRAM_CLASS_PREFIX}${name}`);
+
 /** `css` reduced to style rules whose every selector starts with `#id`, plus
- * keyframes, without any rule that could load a resource; null when none remain. */
+ * keyframes, without any rule that could load a resource; null when none remain.
+ * Class selectors get the diagram class prefix. */
 export function scopedDiagramCss(css: string, id: string): string | null {
   if (!/^[A-Za-z][\w-]*$/.test(id) || typeof CSSStyleSheet !== "function") return null;
   const sheet = new CSSStyleSheet();
@@ -88,7 +101,7 @@ export function scopedDiagramCss(css: string, id: string): string | null {
   const loads = (text: string) => /@import|expression\(|image-set\(|src\(/i.test(text) || EXTERNAL_URL.test(text);
   const kept = Array.from(sheet.cssRules)
     .filter((rule) => (rule instanceof CSSStyleRule && rule.selectorText.split(",").every(scoped)) || rule instanceof CSSKeyframesRule)
-    .map((rule) => rule.cssText)
+    .map((rule) => rule instanceof CSSStyleRule ? `${prefixClasses(rule.selectorText)} { ${rule.style.cssText} }` : rule.cssText)
     .filter((text) => !loads(text));
   return kept.length ? kept.join("\n") : null;
 }

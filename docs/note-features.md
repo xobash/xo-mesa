@@ -38,9 +38,11 @@ Mermaid loads only when a note has a diagram. It runs with `securityLevel:
 change security, CSS, label or theme settings. Mesa sanitizes the SVG before
 it enters the page: no scripts, event handlers, links, images,
 `foreignObject`, animation elements or external `url()` references. Diagram
-styles keep only rules scoped to that diagram, so they cannot restyle Mesa. A diagram
+styles keep only rules scoped to that diagram, and its class names get a
+`mmd-` prefix, so a diagram cannot restyle Mesa or borrow its styles. A diagram
 that cannot render keeps its source and shows the error below it. Paper and
 light System use Mermaid's light palette; the other themes use the dark palette.
+Rendered diagrams redraw when the theme switches palette.
 
 ## Footnotes
 
@@ -60,7 +62,7 @@ and the normal verified save.
 
 Below **Linked mentions**, the **Unlinked mentions** section lists other
 Markdown notes that contain the current note's title or an alias as plain
-text. Notes that already link to the current note are not listed. The section stays
+text, including notes that already link to it elsewhere. The section stays
 closed until you open it, and it scans indexed notes in short
 slices so typing stays responsive. Matches are whole words and ignore case.
 Mesa skips text that is already a link, a tag, a footnote reference, code, a
@@ -115,6 +117,4 @@ are stored in Mesa's settings, not in the vault.
 
 - Link, tag and task extraction does not know about math. A `[[link]]` written
   inside `$...$` still counts as a link in the graph and backlinks.
-- Rendered diagrams keep the palette that was active when they rendered; they
-  update when the note renders again.
 - Unlinked mentions skip notes whose text is not indexed yet and say how many.

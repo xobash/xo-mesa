@@ -3,6 +3,10 @@
 // diagrams loads neither.
 
 const done = new WeakSet<Element>();
+// Rendered diagrams and the palette they used, so a theme change redraws them.
+const diagramSources = new WeakMap<Element, string>();
+const renderedDiagrams = new Map<HTMLElement, "dark" | "neutral">();
+let themeObserver: MutationObserver | null = null;
 
 type MathModule = typeof import("./markdownMath");
 type MermaidModule = typeof import("./markdownMermaid");
@@ -36,6 +40,45 @@ function showError(block: HTMLElement, message: string) {
   block.append(note);
 }
 
+async function renderDiagram(block: HTMLElement, renderMermaid: MermaidModule["renderMermaid"]): Promise<void> {
+  const source = diagramSources.get(block) ?? block.querySelector("pre code")?.textContent ?? "";
+  if (!source.trim()) return;
+  diagramSources.set(block, source);
+  const theme = mermaidTheme();
+  try {
+    const svg = await renderMermaid(source, theme);
+    if (!svg) throw new Error("the diagram produced no image.");
+    const figure = block.ownerDocument.createElement("div");
+    figure.className = "mermaid-diagram";
+    figure.setAttribute("role", "img");
+    figure.setAttribute("aria-label", "Mermaid diagram");
+    // `svg` comes from sanitizeMermaidSvg; it never contains raw note HTML.
+    figure.innerHTML = svg;
+    block.replaceChildren(figure);
+    for (const old of renderedDiagrams.keys()) if (!old.isConnected) renderedDiagrams.delete(old);
+    renderedDiagrams.set(block, theme);
+    watchTheme();
+  } catch (error) {
+    showError(block, error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Redraw rendered diagrams when the Mesa theme switches between light and dark palettes. */
+function watchTheme() {
+  if (themeObserver || typeof MutationObserver === "undefined") return;
+  themeObserver = new MutationObserver(() => {
+    const theme = mermaidTheme();
+    const stale: HTMLElement[] = [];
+    for (const [block, used] of renderedDiagrams) {
+      if (!block.isConnected) renderedDiagrams.delete(block);
+      else if (used !== theme) stale.push(block);
+    }
+    if (!stale.length) return;
+    void loadMermaid().then(({ renderMermaid }) => Promise.all(stale.map((block) => renderDiagram(block, renderMermaid))), () => undefined);
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-mode"] });
+}
+
 /** Render math and Mermaid placeholders inside newly inserted preview nodes.
  * Elements are changed in place (never replaced at top level), so the DOM
  * controller's node identity and reuse stay valid. */
@@ -53,23 +96,7 @@ export async function enhanceMarkdown(nodes: readonly Node[]): Promise<void> {
   }
   if (diagrams.length) {
     for (const block of diagrams) done.add(block);
-    work.push(loadMermaid().then(({ renderMermaid }) => Promise.all(diagrams.map(async (block) => {
-      const source = block.querySelector("pre code")?.textContent ?? "";
-      if (!source.trim()) return;
-      try {
-        const svg = await renderMermaid(source, mermaidTheme());
-        if (!svg) throw new Error("the diagram produced no image.");
-        const figure = block.ownerDocument.createElement("div");
-        figure.className = "mermaid-diagram";
-        figure.setAttribute("role", "img");
-        figure.setAttribute("aria-label", "Mermaid diagram");
-        // `svg` comes from sanitizeMermaidSvg; it never contains raw note HTML.
-        figure.innerHTML = svg;
-        block.replaceChildren(figure);
-      } catch (error) {
-        showError(block, error instanceof Error ? error.message : String(error));
-      }
-    })).then(() => undefined), (error) => {
+    work.push(loadMermaid().then(({ renderMermaid }) => Promise.all(diagrams.map((block) => renderDiagram(block, renderMermaid))).then(() => undefined), (error) => {
       for (const block of diagrams) showError(block, String(error));
     }));
   }

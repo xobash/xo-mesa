@@ -38,20 +38,21 @@ afterEach(() => {
 
 const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.includes(label))!;
 
-it("keeps unlinked mentions collapsed until asked, then lists only notes that do not link", async () => {
+it("keeps unlinked mentions collapsed until asked, then lists plain mentions, also in notes that link", async () => {
   act(() => root.render(<Backlinks />));
   expect(host.querySelector(".backlinks-title")?.textContent).toBe("Linked mentions 1");
   expect(host.querySelector(".unlinked-mention")).toBeNull();
   const toggle = button("Unlinked mentions");
   expect(toggle.getAttribute("aria-expanded")).toBe("false");
   act(() => toggle.click());
-  await vi.waitFor(() => expect(host.querySelectorAll(".unlinked-mention")).toHaveLength(1));
-  expect(host.querySelector(".unlinked-mention-open")?.textContent).toBe("Mentions");
-  expect(host.querySelector(".unlinked-mention mark")?.textContent).toBe("alpha");
+  await vi.waitFor(() => expect(host.querySelectorAll(".unlinked-mention")).toHaveLength(2));
+  expect([...host.querySelectorAll(".unlinked-mention-open")].map((b) => b.textContent)).toEqual(["Linked", "Mentions"]);
+  expect([...host.querySelectorAll(".unlinked-mention mark")].map((m) => m.textContent)).toEqual(["Alpha", "alpha"]);
   expect(host.textContent).toContain("1 notes are not indexed yet");
 });
 
 it("links a mention through the store and rescans", async () => {
+  useAppStore.setState({ contentCache: { ...useAppStore.getState().contentCache, "Linked.md": "[[Alpha]]" } });
   const link = vi.fn(async () => {
     useAppStore.setState({ contentCache: { ...useAppStore.getState().contentCache, "Mentions.md": "The [[Alpha|alpha]] plan." } });
     return true;
