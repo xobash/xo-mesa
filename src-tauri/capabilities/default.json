@@ -9,7 +9,9 @@
     "agent-*"
   ],
   "permissions": [
-    "core:default",
+    "core:path:default",
+    "core:app:default",
+    "core:resources:default",
     "core:event:default",
     "core:window:default",
     "core:window:allow-close",

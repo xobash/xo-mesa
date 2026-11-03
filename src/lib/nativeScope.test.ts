@@ -36,6 +36,15 @@ describe("native filesystem and remote-browser scopes", () => {
   });
 });
 
+it("grants no window the menu, tray or native image APIs", () => {
+  // `core:default` bundles them; a renderer could replace the app menu (and its
+  // guarded quit) or read image files outside the vault.
+  const ids = capabilities.flatMap((capability) => capability.permissions ?? [])
+    .map((permission) => (typeof permission === "string" ? permission : permission.identifier));
+  expect(ids).not.toContain("core:default");
+  expect(ids.filter((id) => /^core:(menu|tray|image):/.test(id))).toEqual([]);
+});
+
 describe("main workspace authority", () => {
   const grants = (label: string) => capabilities.filter(c => c.windows?.some(p => matchesWindow(p, label))).flatMap(c => c.permissions ?? []).filter(p => typeof p === "string");
   it("keeps destructive file, credential and sync operations out of document/panel windows", () => {
