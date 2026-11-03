@@ -161,3 +161,31 @@ describe("file extension badge palette", () => {
     expect(pdfBadge.classList.contains("tree-ext-neutral")).toBe(false);
   });
 });
+
+describe("file tree order", () => {
+  // Sorted folder children are cached per tree node; toggles and sort changes
+  // must still show exactly the order a fresh sort gives.
+  it("keeps the sorted order across collapse toggles and re-sorts on a sort change", () => {
+    const sized = (relPath: string, size: number) => ({ ...file(relPath), size });
+    act(() => {
+      useAppStore.setState({
+        files: [sized("x/b.md", 1), sized("x/a.md", 3), sized("x/y/c.md", 2), sized("z.md", 9), sized("m.md", 0)],
+        collapsedFolders: {},
+      });
+      root.render(<FileTree />);
+    });
+    const order = () => [...host.querySelectorAll("[data-rel]")].map((row) => row.getAttribute("data-rel"));
+    const byName = ["x/y/c.md", "x/a.md", "x/b.md", "m.md", "z.md"];
+    const bySize = ["x/y/c.md", "x/a.md", "x/b.md", "z.md", "m.md"];
+    expect(order()).toEqual(byName);
+    act(() => useAppStore.getState().toggleFolder("x/y"));
+    expect(order()).toEqual(["x/a.md", "x/b.md", "m.md", "z.md"]);
+    act(() => useAppStore.getState().toggleFolder("x/y"));
+    expect(order()).toEqual(byName);
+    act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, sortMode: "size" } }));
+    expect(order()).toEqual(bySize);
+    act(() => useAppStore.getState().toggleFolder("x"));
+    act(() => useAppStore.getState().toggleFolder("x"));
+    expect(order()).toEqual(bySize);
+  });
+});

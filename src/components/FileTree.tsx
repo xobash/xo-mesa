@@ -166,6 +166,17 @@ function makeNodeCompare(
 const sortedChildren = (node: TreeNode, cmp: NodeCmp): TreeNode[] =>
   [...node.children.values()].sort(cmp);
 
+/** `sortedChildren` remembered per folder for one tree and comparator, so a
+ * collapse toggle does not re-sort every expanded folder. */
+function childSorter(cmp: NodeCmp): (node: TreeNode) => TreeNode[] {
+  const sorted = new WeakMap<TreeNode, TreeNode[]>();
+  return (node) => {
+    let children = sorted.get(node);
+    if (!children) sorted.set(node, (children = sortedChildren(node, cmp)));
+    return children;
+  };
+}
+
 /** One visible row: the node plus the indent level it renders at. */
 interface FlatRow {
   node: TreeNode;
@@ -177,13 +188,13 @@ function flattenRows(
   nodes: TreeNode[],
   depth: number,
   collapsed: Record<string, boolean>,
-  cmp: NodeCmp,
+  children: (node: TreeNode) => TreeNode[],
   out: FlatRow[]
 ): void {
   for (const n of nodes) {
     out.push({ node: n, depth });
     if (!n.file && !collapsed[n.path]) {
-      flattenRows(sortedChildren(n, cmp), depth + 1, collapsed, cmp, out);
+      flattenRows(children(n), depth + 1, collapsed, children, out);
     }
   }
 }
@@ -453,14 +464,16 @@ export const FileTree = memo(function FileTree() {
     () => makeNodeCompare(sortMode, sortDir, foldersFirst, notes),
     [sortMode, sortDir, foldersFirst, notes]
   );
+  // Entries are keyed by folder node, and every tree build makes new nodes.
+  const children = useMemo(() => childSorter(cmp), [cmp]);
   // The visible tree as a flat, indexable row list — the same nodes in the same
   // order the recursive renderer produced, minus the ones inside collapsed
   // folders.
   const rows = useMemo(() => {
     const out: FlatRow[] = [];
-    flattenRows(sortedChildren(tree, cmp), 0, collapsedFolders, cmp, out);
+    flattenRows(children(tree), 0, collapsedFolders, children, out);
     return out;
-  }, [tree, cmp, collapsedFolders]);
+  }, [tree, children, collapsedFolders]);
 
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
