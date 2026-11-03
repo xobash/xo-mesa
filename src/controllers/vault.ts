@@ -325,13 +325,22 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
   function removeExternalFiles(rels: ReadonlySet<string>): void {
     if (!rels.size) return;
     const files = get().files.filter((f) => !rels.has(f.relPath));
-    const notes = { ...get().notes };
-    const contentCache = forkContentCache(get().contentCache);
-    for (const rel of rels) {
-      delete notes[rel];
-      delete contentCache[rel];
+    // Copy a map only when it holds a removed path: deleting images or PDFs
+    // must not republish notes or text, which rebuilds graph and backlinks.
+    const holds = (map: object) => [...rels].some((rel) => Object.prototype.hasOwnProperty.call(map, rel));
+    let notes: AppState["notes"] | undefined;
+    if (holds(get().notes)) {
+      notes = { ...get().notes };
+      for (const rel of rels) delete notes[rel];
     }
-    const openTabs = get().openTabs.filter((t) => !rels.has(t));
+    let contentCache: AppState["contentCache"] | undefined;
+    if (holds(get().contentCache)) {
+      contentCache = forkContentCache(get().contentCache);
+      for (const rel of rels) delete contentCache[rel];
+    }
+    const openTabs = get().openTabs.some((t) => rels.has(t))
+      ? get().openTabs.filter((t) => !rels.has(t))
+      : undefined;
     let activePath = get().activePath;
     const wasActive = activePath !== null && rels.has(activePath);
     if (wasActive) activePath = null;
@@ -339,9 +348,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     set({
       files,
       ...(docSplit.other !== null && rels.has(docSplit.other) ? { docSplit: { ...docSplit, other: null } } : {}),
-      notes,
-      contentCache,
-      openTabs,
+      ...(notes ? { notes } : {}),
+      ...(contentCache ? { contentCache } : {}),
+      ...(openTabs ? { openTabs } : {}),
       activePath,
       ...(wasActive ? { content: "" } : {}),
       ...(rels.has(CALENDAR_FILE) ? { calendarEvents: [] } : {}),
@@ -682,15 +691,20 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         const present = new Set(get().files.map(file => file.relPath));
         const fresh = additions.filter(file => !present.has(file.relPath));
         if (fresh.length) {
-          const notes = { ...get().notes };
-          const cache = forkContentCache(get().contentCache);
-          for (const file of fresh) {
-            const text = texts.get(file.relPath);
-            if (text === undefined) continue;
-            cache[file.relPath] = text;
-            notes[file.relPath] = { relPath: file.relPath, title: file.name, rawLinks: extractLinks(text, isMarkdownPath(file.relPath)), tags: extractTags(text, isMarkdownPath(file.relPath)), aliases: extractAliases(text), firstImagePath: undefined };
-          }
-          set({ files: [...get().files, ...fresh].sort((a,b) => fileOrder(a.relPath,b.relPath)), notes, contentCache: cache });
+          const sorted = [...get().files, ...fresh].sort((a,b) => fileOrder(a.relPath,b.relPath));
+          // Binary-only creates leave notes and text untouched; republishing
+          // them would rebuild the graph and backlink index for nothing.
+          if (fresh.some(file => texts.has(file.relPath))) {
+            const notes = { ...get().notes };
+            const cache = forkContentCache(get().contentCache);
+            for (const file of fresh) {
+              const text = texts.get(file.relPath);
+              if (text === undefined) continue;
+              cache[file.relPath] = text;
+              notes[file.relPath] = { relPath: file.relPath, title: file.name, rawLinks: extractLinks(text, isMarkdownPath(file.relPath)), tags: extractTags(text, isMarkdownPath(file.relPath)), aliases: extractAliases(text), firstImagePath: undefined };
+            }
+            set({ files: sorted, notes, contentCache: cache });
+          } else set({ files: sorted });
           for (const file of fresh) {
             const text = texts.get(file.relPath) ?? "";
             bumpActivityAmount(file.relPath, 1.3, "create", undefined, text.slice(0,160), { added: changedLineStats("",text).added, removed: 0 });

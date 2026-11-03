@@ -186,6 +186,34 @@ it('removes 300 external deletes with one catalogue commit and clears their tabs
   stop(); f.controller.dispose();
 });
 
+it('keeps notes, text and tabs identity when only binary files are deleted or created', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const png = (rel: string): VaultFile => ({ path: `/v/${rel}`, relPath: rel, name: rel, ext: 'png', isMarkdown: false });
+  f.state.setState({ files: [file('a.md'), png('old.png')], openTabs: ['a.md'], contentCache: { 'a.md': 'text' },
+    notes: { 'a.md': { relPath: 'a.md', title: 'a', rawLinks: [], tags: [], aliases: [] } },
+    fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });
+  const { notes, contentCache, openTabs } = f.state.getState();
+  io.exists.mockResolvedValue(false);
+  f.change([{ kind: 'remove', paths: ['/v/old.png'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files.map(file => file.relPath)).toEqual(['a.md']));
+  expect(f.state.getState()).toMatchObject({ notes, contentCache, openTabs });
+  expect(f.state.getState().notes).toBe(notes);
+  expect(f.state.getState().contentCache).toBe(contentCache);
+  expect(f.state.getState().openTabs).toBe(openTabs);
+  io.exists.mockResolvedValue(true); io.read.mockClear();
+  f.change([{ kind: 'create', paths: ['/v/new.png'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files.map(file => file.relPath)).toEqual(['a.md', 'new.png']));
+  expect(io.read).not.toHaveBeenCalled();
+  expect(f.state.getState().notes).toBe(notes);
+  expect(f.state.getState().contentCache).toBe(contentCache);
+  f.change([{ kind: 'remove', paths: ['/v/a.md'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files.map(file => file.relPath)).toEqual(['new.png']));
+  expect(f.state.getState().notes).toEqual({});
+  expect(f.state.getState().contentCache['a.md']).toBeUndefined();
+  expect(f.state.getState().openTabs).toEqual([]);
+  f.controller.dispose();
+});
+
 it('removes the old name of an external rename reported as one modify event', async () => {
   const f = watcherFixture(); await f.controller.actions.openVault('/v');
   const old = file('old.md'); const kept = file('kept.md');
