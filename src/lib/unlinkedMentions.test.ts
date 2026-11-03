@@ -45,6 +45,30 @@ describe("findUnlinkedMentions", () => {
   });
 });
 
+describe("mention masking cost", () => {
+  // Note bytes are untrusted (sync, import, Pi). Equal total input per side
+  // (8 small runs, 1 large run), interleaved, best of five: linear scanning
+  // gives about 1, quadratic scanning about 8.
+  it("masks unclosed links, footnotes and tags on one line in linear time", () => {
+    const work = (text: string, reps: number) => {
+      const start = performance.now();
+      for (let i = 0; i < reps; i++) findUnlinkedMentions(`${text} Alpha`, ["Alpha"]);
+      return performance.now() - start;
+    };
+    for (const unit of ["[](", "[^", "<", "[[", "[]["]) {
+      const small = unit.repeat(5_000), large = unit.repeat(40_000);
+      expect(texts(`${large} Alpha`, ["Alpha"])).toEqual(["Alpha"]);
+      const reps = Math.ceil(20 / Math.max(work(large, 1), 0.1));
+      let smallBest = Infinity, largeBest = Infinity;
+      for (let round = 0; round < 5; round++) {
+        smallBest = Math.min(smallBest, work(small, 8 * reps));
+        largeBest = Math.min(largeBest, work(large, reps));
+      }
+      expect(largeBest / smallBest).toBeLessThan(4);
+    }
+  }, 30000);
+});
+
 describe("linkMention", () => {
   it("inserts a plain link when the text matches the link text and an alias link otherwise", () => {
     expect(linkMention("Met Alpha.", { start: 4, end: 9, text: "Alpha" }, "Alpha")).toBe("Met [[Alpha]].");

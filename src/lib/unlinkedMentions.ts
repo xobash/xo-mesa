@@ -30,13 +30,13 @@ const blank = (text: string) => text.replace(/[^\n]/g, " ");
 // Places where a title is already a link, a URL or markup rather than prose.
 const NOT_PROSE = [
   /^---\r?\n[\s\S]*?\r?\n---(?=\r?\n|$)/, // frontmatter
-  /!?\[\[[^\]\n]*\]\]/g, // wiki links and embeds
-  /!?\[[^\]\n]*\]\([^)\n]*\)/g, // Markdown links and images
-  /!?\[[^\]\n]*\]\[[^\]\n]*\]/g, // reference links
-  /\[\^[^\]\n]*\]/g, // footnote references
+  /!?\[\[[^\][\n]*\]\]/g, // wiki links and embeds
+  /!?\[[^\][\n]*\]\([^)[\n]*\)/g, // Markdown links and images
+  /!?\[[^\][\n]*\]\[[^\][\n]*\]/g, // reference links
+  /\[\^[^\][\n]*\]/g, // footnote references
   /(?<![\p{L}\p{N}_&/])#[\p{L}\p{N}_/-]+/gu, // tags
   /^\s{0,3}\[[^\]\n]+\]:.*$/gm, // reference definitions
-  /<[^>\n]+>/g, // HTML tags and autolinks
+  /<[^<>\n]+>/g, // HTML tags and autolinks
   /\b(?:https?|mailto|file):[^\s)>\]]+/gi, // bare URLs
   /\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, // math
 ];
