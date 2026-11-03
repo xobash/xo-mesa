@@ -83,6 +83,19 @@ describe("parsePeerInput", () => {
     expect(parsePeerInput("http://192.0.2.2:8787/")).toBe("http://192.0.2.2:8787");
   });
 
+  it("keeps hyphenated names hostnames instead of truncating them to an IP", () => {
+    expect(parsePeerInput("home-pc1")).toBe("home-pc1:8787");
+    expect(parsePeerInput("nas-box2")).toBe("nas-box2:8787");
+    expect(decodePairing("home-pc1")).toBeNull();
+    expect(decodePairing("ZZZZ-ZZZZ-ZZ")).toBeNull();
+    expect(parsePeerInput("#ZZZ-ZZZZ")).toBeNull();
+    for (const [host, port] of [["255.255.255.255", 8787], ["255.255.255.255", 65535], ["0.0.0.0", 9000], ["198.51.100.5", 8787]] as const) {
+      const code = encodePairing(host, port)!;
+      expect(decodePairing(code)).toEqual({ host, port });
+      expect(parsePeerInput(code)).toBe(`${host}:${port}`);
+    }
+  });
+
   it("returns null for empty or malformed input", () => {
     expect(parsePeerInput("   ")).toBeNull();
     expect(parsePeerInput("not a valid host !!!")).toBeNull();

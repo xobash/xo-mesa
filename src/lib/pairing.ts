@@ -100,7 +100,9 @@ export function decodePairing(
   const clean = cleanCode(code);
   if (clean.length !== 7 && clean.length !== 10) return null;
   const n = fromBase32(clean);
-  if (n === null) return null;
+  // 7 chars carry 35 bits and 10 carry 50; a real code never sets the spare
+  // high bits, so a name such as `home-pc1` is not silently truncated to an IP.
+  if (n === null || n >> (clean.length === 7 ? 32n : 48n)) return null;
   const port = clean.length === 7 ? defaultPort : Number(n & 0xffffn);
   let rest = clean.length === 7 ? n : n >> 16n;
   const octets: number[] = [];
@@ -159,7 +161,8 @@ export function parsePeerInput(input: string, defaultPort = 8787): string | null
   const safeDefaultPort = normalizeSyncPort(defaultPort);
   if (isPairingCode(t)) {
     const d = decodePairing(t, safeDefaultPort);
-    return d && isValidSyncPort(d.port) ? `${d.host}:${d.port}` : null;
+    if (d) return isValidSyncPort(d.port) ? `${d.host}:${d.port}` : null;
+    // Not a valid code: a hyphenated name such as `home-pc1` stays a hostname.
   }
   // URL form — keep as-is (sync layer will normalise the scheme), but reject
   // credentials, malformed hosts, and unusable explicit ports.
