@@ -7,6 +7,7 @@ import {
   keyboardFileOrder,
   moveKeyboardFocus,
 } from "./keyboardNav";
+import { fileComparator } from "./sort";
 
 const baseSettings: Settings = {
   hoverDelayMs: 450,
@@ -66,6 +67,31 @@ describe("keyboard navigation", () => {
       typeFilter: "md",
     });
     expect(ordered.map((f) => f.relPath)).toEqual(["A.md", "B.md"]);
+  });
+
+  it("memoizes the order on input identity and matches a fresh sort for every mode", () => {
+    const many: VaultFile[] = Array.from({ length: 60 }, (_, i) => ({
+      path: `/vault/n${(i * 37) % 60}.${i % 3 ? "md" : "pdf"}`, relPath: `n${(i * 37) % 60}.${i % 3 ? "md" : "pdf"}`,
+      name: `n${(i * 37) % 60}`, ext: i % 3 ? "md" : "pdf", isMarkdown: i % 3 !== 0,
+      size: (i * 7) % 5, mtime: (i * 11) % 4,
+    }));
+    const linked: Record<string, NoteMeta> = Object.fromEntries(many.map((f, i) =>
+      [f.relPath, { relPath: f.relPath, title: f.name, rawLinks: Array(i % 4).fill("x"), tags: [], aliases: [] }]));
+    for (const sortMode of ["name", "modified", "size", "links", "type"] as const) {
+      for (const sortDir of ["asc", "desc"] as const) {
+        for (const typeFilter of ["all", "md"]) {
+          const settings = { ...baseSettings, sortMode, sortDir, typeFilter };
+          const ordered = keyboardFileOrder(many, linked, settings);
+          const sign = sortDir === "desc" ? -1 : 1;
+          const compare = fileComparator(sortMode, linked);
+          const fresh = many.filter((f) => typeFilter === "all" || f.ext === typeFilter)
+            .sort((a, b) => sign * compare(a, b));
+          expect(ordered).toEqual(fresh);
+          expect(keyboardFileOrder(many, linked, { ...settings })).toBe(ordered);
+          expect(keyboardFileOrder([...many], linked, settings)).not.toBe(ordered);
+        }
+      }
+    }
   });
 
   it("finds adjacent and edge paths without wrapping unexpectedly", () => {

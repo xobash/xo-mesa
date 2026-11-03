@@ -8,17 +8,37 @@ export interface KeyboardFocus {
   rightIndex: number;
 }
 
+let lastOrder: {
+  files: VaultFile[];
+  notes: Record<string, NoteMeta>;
+  sortMode: Settings["sortMode"];
+  sortDir: Settings["sortDir"];
+  typeFilter: Settings["typeFilter"];
+  ordered: VaultFile[];
+} | null = null;
+
+/** The sidebar's file order. Held j/k repeats with unchanged inputs, so the
+ * whole-vault sort is memoized on input identity; treat the result as read-only. */
 export function keyboardFileOrder(
   files: VaultFile[],
   notes: Record<string, NoteMeta>,
   settings: Settings
 ): VaultFile[] {
+  const { sortMode, sortDir, typeFilter } = settings;
+  if (
+    lastOrder && lastOrder.files === files && lastOrder.notes === notes &&
+    lastOrder.sortMode === sortMode && lastOrder.sortDir === sortDir &&
+    lastOrder.typeFilter === typeFilter
+  ) return lastOrder.ordered;
   const shown =
-    !settings.typeFilter || settings.typeFilter === "all"
+    !typeFilter || typeFilter === "all"
       ? files
-      : files.filter((f) => f.ext.toLowerCase() === settings.typeFilter);
-  const sign = settings.sortDir === "desc" ? -1 : 1;
-  return [...shown].sort((a, b) => sign * fileComparator(settings.sortMode, notes)(a, b));
+      : files.filter((f) => f.ext.toLowerCase() === typeFilter);
+  const sign = sortDir === "desc" ? -1 : 1;
+  const compare = fileComparator(sortMode, notes);
+  const ordered = [...shown].sort((a, b) => sign * compare(a, b));
+  lastOrder = { files, notes, sortMode, sortDir, typeFilter, ordered };
+  return ordered;
 }
 
 export function adjacentPath(
