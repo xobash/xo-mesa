@@ -596,8 +596,12 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
               if (get().contentCache[rel] !== undefined) {
                 historyItems.push({ relPath: rel, content: old, source: "external" });
               }
+              // Unchanged metadata must not republish `notes`: a new identity
+              // rebuilds the graph and backlink index for a prose-only edit.
               const cur = get().notes[rel];
-              if (cur) pendingNotes.set(rel, refreshedNoteMeta(cur, text) ?? cur);
+              const meta = cur && refreshedNoteMeta(cur, text);
+              if (meta) pendingNotes.set(rel, meta);
+              else pendingNotes.delete(rel);
               pendingContent.set(rel, text);
             } else {
               watcherWarning = true;
