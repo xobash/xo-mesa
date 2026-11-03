@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use notify_debouncer_full::notify::event::{AccessKind, AccessMode};
 use notify_debouncer_full::notify::{EventKind, RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, Debouncer, RecommendedCache};
 use serde::Serialize;
@@ -54,6 +55,21 @@ fn coarse_kind(kind: &EventKind) -> &'static str {
         EventKind::Remove(_) => "remove",
         _ => "modify",
     }
+}
+
+/// Opens and read-only closes change no bytes. Linux inotify reports them for
+/// every reader, Mesa's own watcher reads included, so passing them on as
+/// "modify" re-reads each file and feeds the next window indefinitely.
+/// `Close(Write)` and ambiguous access kinds stay "modify".
+fn is_read_only_access(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Access(
+            AccessKind::Open(_)
+                | AccessKind::Read
+                | AccessKind::Close(AccessMode::Read | AccessMode::Execute)
+        )
+    )
 }
 
 /// Map an absolute path under root to forward-slashed relative form.
@@ -125,6 +141,9 @@ fn build_batch(
         batch.push(rescan_entry(root));
     }
     for (kind, paths) in events {
+        if is_read_only_access(kind) {
+            continue;
+        }
         let mut kept: Vec<String> = Vec::new();
         for abs in paths {
             match rel_under_root(root, abs) {
@@ -338,6 +357,33 @@ mod tests {
         assert_eq!(coarse_kind(&EventKind::Access(AccessKind::Any)), "modify");
         assert_eq!(coarse_kind(&EventKind::Any), "modify");
         assert_eq!(coarse_kind(&EventKind::Other), "modify");
+    }
+
+    #[test]
+    fn read_only_access_never_reaches_the_frontend() {
+        let root = p("/vault");
+        let read = |kind| (kind, vec![p("/vault/a.md")]);
+        let opens = [
+            read(EventKind::Access(AccessKind::Open(AccessMode::Any))),
+            read(EventKind::Access(AccessKind::Read)),
+            read(EventKind::Access(AccessKind::Close(AccessMode::Read))),
+            read(EventKind::Access(AccessKind::Close(AccessMode::Execute))),
+        ];
+        assert!(build_batch(&root, &opens, false).is_empty());
+        for kind in [
+            EventKind::Access(AccessKind::Close(AccessMode::Write)),
+            EventKind::Access(AccessKind::Close(AccessMode::Any)),
+            EventKind::Access(AccessKind::Any),
+            EventKind::Access(AccessKind::Other),
+        ] {
+            let batch = build_batch(&root, &[read(kind)], false);
+            assert_eq!(batch.len(), 1);
+            assert_eq!(batch[0].kind, "modify");
+            assert_eq!(batch[0].paths, vec!["/vault/a.md".to_string()]);
+        }
+        // A pathless access event still means lost events.
+        let lost = [(EventKind::Access(AccessKind::Open(AccessMode::Any)), vec![])];
+        assert_eq!(build_batch(&root, &lost, false)[0].kind, RESCAN_KIND);
     }
 
     #[test]
