@@ -190,3 +190,17 @@ it('builds the source archive and scope-labeled SBOMs from the clean release com
   } finally { rmSync(root, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true }); }
   assert.throws(() => labelSbom('{"bomFormat":"SPDX"}', 'scope', '/x'), /CycloneDX/);
 });
+
+it('removes transient signing material before any release build runs', () => {
+  const windows = readFileSync(fileURLToPath(new URL('./release-windows.ps1', import.meta.url)), 'utf8');
+  const build = windows.indexOf('npm run mesa:build');
+  assert.ok(build > 0);
+  for (const step of ['Remove-Item -LiteralPath $pfx -Force', '$password = $null', 'Remove-Item Env:WINDOWS_CERTIFICATE_BASE64, Env:WINDOWS_CERTIFICATE_PASSWORD']) {
+    const at = windows.indexOf(step);
+    assert.ok(at > windows.indexOf('Signing identity mismatch') && at < build, step);
+  }
+  const candidate = readFileSync(fileURLToPath(new URL('../.github/workflows/release-candidate.yml', import.meta.url)), 'utf8');
+  const removed = candidate.indexOf('rm -f "$RUNNER_TEMP/mesa-release.p12"\n');
+  assert.ok(removed > candidate.indexOf('security import "$RUNNER_TEMP/mesa-release.p12"'));
+  assert.ok(removed < candidate.indexOf('scripts/release-macos.sh'));
+});

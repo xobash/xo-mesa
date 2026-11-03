@@ -13,6 +13,10 @@ try {
   $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
   $certificate = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
   if ($certificate.Thumbprint -ne $env:WINDOWS_SIGNING_THUMBPRINT -or -not $certificate.HasPrivateKey) { throw 'Signing identity mismatch' }
+  # The store holds the key now; build children never see the PFX or its password.
+  Remove-Item -LiteralPath $pfx -Force
+  $password = $null
+  Remove-Item Env:WINDOWS_CERTIFICATE_BASE64, Env:WINDOWS_CERTIFICATE_PASSWORD
   @{ bundle = @{ windows = @{ certificateThumbprint = $certificate.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = 'https://timestamp.digicert.com'; tsp = $true } } } | ConvertTo-Json -Depth 5 | Set-Content $config
   & npm run mesa:build -- --bundles msi,nsis --config $config
   if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed' }

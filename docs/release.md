@@ -240,7 +240,8 @@ missing from this table.
 Windows signing requires protected `WINDOWS_CERTIFICATE_BASE64` and
 `WINDOWS_CERTIFICATE_PASSWORD` secrets and the reviewed
 `WINDOWS_SIGNING_THUMBPRINT` environment variable. `scripts/release-windows.ps1`
-imports the certificate into the temporary runner, configures Tauri signing,
+imports the certificate into the temporary runner, deletes the PFX file and
+clears both secret variables before the build starts, configures Tauri signing,
 verifies both installer formats and their timestamp certificates, then removes
 the imported identity. A certificate-backed signing service may replace this
 adapter when its provider requires hardware-backed keys; keep the same signer
