@@ -895,7 +895,7 @@ export function redactResearchContent(content: string): { content: string; redac
     "[REDACTED PRIVATE KEY]"
   );
   replace(
-    /^(\s*(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|sync[_ -]?key|secret|password|private[_ -]?key)\s*[:=]\s*)(\S.*)$/gim,
+    /^([^\S\r\n\u2028\u2029]*(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|sync[_ -]?key|secret|password|private[_ -]?key)\s*[:=]\s*)(\S.*)$/gim,
     (...args) => `${args[1]}[REDACTED]`
   );
   replace(

@@ -489,6 +489,34 @@ describe("redactResearchContent", () => {
   });
 });
 
+describe("redactResearchContent cost", () => {
+  // Equal total input per side (8 small runs, 1 large run), interleaved, best
+  // of five: linear scanning gives about 1, quadratic scanning about 8.
+  it("redacts notes made of blank lines in linear time", () => {
+    const work = (text: string, reps: number) => {
+      const start = performance.now();
+      for (let i = 0; i < reps; i++) redactResearchContent(text);
+      return performance.now() - start;
+    };
+    for (const unit of ["\n", "\r", " \n", "\u2028"]) {
+      const small = `${unit.repeat(5_000)}x`, large = `${unit.repeat(40_000)}x`;
+      expect(redactResearchContent(`${large}\npassword: hunter2`).content.endsWith("password: [REDACTED]")).toBe(true);
+      const reps = Math.ceil(20 / Math.max(work(large, 1), 0.1));
+      let smallBest = Infinity, largeBest = Infinity;
+      for (let round = 0; round < 5; round++) {
+        smallBest = Math.min(smallBest, work(small, 8 * reps));
+        largeBest = Math.min(largeBest, work(large, reps));
+      }
+      expect(largeBest / smallBest).toBeLessThan(4);
+    }
+  }, 30000);
+  it("keeps indented and next-line credential values redacted", () => {
+    expect(redactResearchContent("intro\n\n  API_KEY = abc123\nrest").content).toBe("intro\n\n  API_KEY = [REDACTED]\nrest");
+    expect(redactResearchContent("\u00a0secret: s3cret").content).toBe("\u00a0secret: [REDACTED]");
+    expect(redactResearchContent("password\n: value").content).toBe("password\n: [REDACTED]");
+  });
+});
+
 describe("UTF-8 byte limits", () => {
   it("truncates on code-point boundaries by bytes, not JavaScript code units", () => {
     expect(utf8ByteLength("😀a")).toBe(5);
