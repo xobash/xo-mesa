@@ -1,7 +1,8 @@
 import {
   bumpActivityAmount,
   changedLineStats,
-  changedSnippet
+  changedSnippet,
+  type ActivityOp
 } from "../lib/activity";
 import {
   parseEvents,
@@ -100,7 +101,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
   let externalRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   async function registerExternalFile(
     rel: string,
-    isCurrent: () => boolean = () => true
+    isCurrent: () => boolean = () => true,
+    allowMissing = true
   ): Promise<void> {
     const root = get().vaultPath;
     if (!root || get().fileFor(rel) || !isCurrent()) return;
@@ -112,6 +114,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
       // A failed read may be a create announced before its write; the file
       // stays catalogue-only until a watcher change or an open reads it.
       const read = await readWatchedText(file);
+      if (!allowMissing && !read.ok && !read.tooLarge) return;
       if (get().fileFor(rel) || !isCurrent()) return; // lost a race — already added
       const content = read.ok ? read.text : "";
       set({
@@ -143,6 +146,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         file.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
       } catch {
         /* stat unavailable — name-based sorting still works */
+        if (!allowMissing) return;
       }
       if (get().fileFor(rel) || !isCurrent()) return; // lost a race
       set({
@@ -151,6 +155,28 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         ),
       });
     }
+  }
+
+  // Pi reports a path before (or instead of) touching it. Known paths resolve
+  // without I/O; only a create or write may register a file that is not there
+  // yet; an unresolved path gets one debounced catalog refresh per burst, never
+  // a full scan per event. Returns "" when the path is not a vault file.
+  async function resolveActivityPath(
+    rawPath: string,
+    op: ActivityOp,
+    root: string,
+    isCurrent: () => boolean
+  ): Promise<string> {
+    const rel = normalizeVaultRelPath(rawPath, root) ||
+      normalizeVaultRelPath(rawPath, root, relPathsOf(get().files));
+    if (!rel) {
+      scheduleExternalRefresh(root, isCurrent);
+      return "";
+    }
+    if (get().fileFor(rel)) return rel;
+    if (!isIndexableVaultRelPath(rel)) return "";
+    await registerExternalFile(rel, isCurrent, op === "create" || op === "write");
+    return isCurrent() && get().fileFor(rel) ? rel : "";
   }
 
   async function refreshMissingExternalFiles(
@@ -1089,7 +1115,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
 
   };
   return {
-    actions, get generation() { return vaultOpenGeneration; }, registerExternalFile, refreshMissingExternalFiles, scheduleExternalRefresh,
+    actions, get generation() { return vaultOpenGeneration; }, registerExternalFile, refreshMissingExternalFiles, scheduleExternalRefresh, resolveActivityPath,
     dispose() { vaultOpenRequest++; vaultOpenGeneration++; watcherSetupGeneration++; clearTimeout(externalRefreshTimer); unwatch?.(); unwatch = undefined; }
   };
 }

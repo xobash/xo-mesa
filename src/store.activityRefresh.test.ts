@@ -36,3 +36,37 @@ it('drops an activity registration whose read finishes after the vault changed',
   expect(useAppStore.getState().files).toEqual([]);
   expect(useAppStore.getState().notes).toEqual({});
 });
+
+it('registers an unknown path only for create or write; a read of a missing file adds nothing', async () => {
+  boundary.scan.mockResolvedValue([]);
+  await useAppStore.getState().openVault('/v');
+  boundary.invoke.mockImplementation(async (name: string, args?: unknown) => {
+    if (name !== 'vault_read_bytes') return undefined;
+    if ((args as { path: string }).path === '/v/Present.md') return new TextEncoder().encode('present').buffer;
+    throw new Error('missing');
+  });
+  const activity = boundary.handlers.get('activity')!;
+  await activity({ payload: { path: '/v/Missing.md', op: 'read', status: 'ok' } });
+  await activity({ payload: { path: '/v/Missing.md', op: 'edit', status: 'ok' } });
+  expect(useAppStore.getState().fileFor('Missing.md')).toBeUndefined();
+  await activity({ payload: { path: '/v/Present.md', op: 'read', status: 'ok' } });
+  expect(useAppStore.getState().fileFor('Present.md')).toBeDefined();
+  await activity({ payload: { path: '/v/Announced.md', op: 'create', status: 'ok' } });
+  expect(useAppStore.getState().fileFor('Announced.md')).toBeDefined();
+  boundary.invoke.mockImplementation(async () => undefined);
+});
+
+it('50 activity events outside the vault or in hidden folders cause at most one scan', async () => {
+  vi.useFakeTimers();
+  boundary.scan.mockResolvedValue([]);
+  await useAppStore.getState().openVault('/v'); await vi.advanceTimersByTimeAsync(2000);
+  boundary.scan.mockClear();
+  const activity = boundary.handlers.get('activity')!;
+  for (let i = 0; i < 25; i++) {
+    await activity({ payload: { path: `/elsewhere/x${i}.md`, op: 'read', status: 'ok' } });
+    await activity({ payload: { path: `/v/.git/x${i}`, op: 'write', status: 'ok' } });
+  }
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(boundary.scan.mock.calls.length).toBeLessThanOrEqual(1);
+  expect(useAppStore.getState().files).toEqual([]);
+});

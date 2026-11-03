@@ -46,7 +46,7 @@ import {
   type TextRevision
 } from "./lib/textRevisionHistory";
 import {
-  IN_TAURI, authorizeVaultRoot, copyVaultFile, createFolder, createNote, importDroppedPaths, isTextualVaultFile, normalizeVaultRelPath, pickVault, readNote,
+  IN_TAURI, authorizeVaultRoot, copyVaultFile, createFolder, createNote, importDroppedPaths, isTextualVaultFile, pickVault, readNote,
   readNoteResult, readReviewText, removeFile,
   removeVaultEntry, renameVaultFile, writeNote, writeVaultBinaryFile, writeVaultTextFile, type RecoveryEntry
 } from "./lib/vault";
@@ -73,7 +73,7 @@ import type {
   ResearchContextScope,
   ResearchDepth,
 } from "./lib/deepResearch";
-import { createFileIndex, relPathsOf } from "./lib/fileIndex";
+import { createFileIndex } from "./lib/fileIndex";
 import { normalizeRelativeTarget, referenceMayTarget, rewriteInboundLinks } from "./lib/linkRewrite";
 import {
   THEME_KEY,
@@ -619,28 +619,8 @@ export const useAppStore = create<AppState>((set, get) => {
           if (!rootRaw) return;
           const generation = vault.generation;
           const isCurrent = () => get().vaultPath === rootRaw && vault.generation === generation;
-          // Known-file lookup first; the catalog list is only for aliased roots.
-          const resolveRel = () => {
-            const rawPath = String(data.path ?? "");
-            return normalizeVaultRelPath(rawPath, rootRaw) ||
-              normalizeVaultRelPath(rawPath, rootRaw, relPathsOf(get().files));
-          };
-          let rel = resolveRel();
-          if (!rel) {
-            await vault.refreshMissingExternalFiles(rootRaw, isCurrent);
-            if (!isCurrent()) return;
-            rel = resolveRel();
-          }
+          const rel = await vault.resolveActivityPath(String(data.path ?? ""), op, rootRaw, isCurrent);
           if (!rel) return;
-          // an agent may reference a file we haven't scanned yet (e.g. one it
-          // just created) — register it so it gets a node and can flicker.
-          if (!get().fileFor(rel)) await vault.registerExternalFile(rel, isCurrent);
-          if (!isCurrent()) return;
-          if (!get().fileFor(rel)) {
-            await vault.refreshMissingExternalFiles(rootRaw, isCurrent);
-            if (!isCurrent()) return;
-          }
-          if (!get().fileFor(rel)) return; // still unknown (non-md / no vault)
           const amount = op === "read" ? 0.7 : op === "create" ? 1.3 : 1.0;
           bumpActivityAmount(rel, amount, op, status, detail, {
             added: Number.isFinite(added) ? added : 0,
