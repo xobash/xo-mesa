@@ -225,12 +225,11 @@ fn manifest_lock() -> &'static Mutex<()> {
 
 /// Cooperative cancel flag for the running `sync_run`, set by `sync_cancel`.
 fn cancel_flag() -> &'static AtomicBool {
-    static S: OnceLock<AtomicBool> = OnceLock::new();
-    S.get_or_init(|| AtomicBool::new(false))
+    &RUN_FLAGS.cancel
 }
 
 fn cancelled() -> bool {
-    cancel_flag().load(Ordering::Acquire)
+    RUN_FLAGS.cancelled()
 }
 fn cancelled_error() -> String {
     "cancelled".to_string()
@@ -257,27 +256,74 @@ async fn wait_for_cancel() {
 /// shared by every renderer. Keep the engine single-flight as well: otherwise
 /// a second `sync_run` would clear the first run's cancellation request, and a
 /// cancel from either run could stop the other run mid-transfer.
-fn sync_running() -> &'static AtomicBool {
-    static S: OnceLock<AtomicBool> = OnceLock::new();
-    S.get_or_init(|| AtomicBool::new(false))
+static RUN_FLAGS: RunFlags = RunFlags::new();
+
+/// A cancel belongs to one run: admission clears a stale one before the run
+/// waits for vault access, release clears it so a later identity or manifest
+/// probe is not refused, and a cancel with no run is ignored.
+pub(crate) struct RunFlags {
+    running: AtomicBool,
+    cancel: AtomicBool,
+}
+
+impl RunFlags {
+    pub(crate) const fn new() -> Self {
+        Self {
+            running: AtomicBool::new(false),
+            cancel: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn acquire(&self) -> bool {
+        let admitted = self
+            .running
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok();
+        if admitted {
+            self.cancel.store(false, Ordering::Release);
+        }
+        admitted
+    }
+
+    pub(crate) fn release(&self) {
+        self.running.store(false, Ordering::Release);
+        self.cancel.store(false, Ordering::Release);
+    }
+
+    /// Returns whether a run received the cancel.
+    pub(crate) fn request_cancel(&self) -> bool {
+        if !self.running.load(Ordering::Acquire) {
+            return false;
+        }
+        self.cancel.store(true, Ordering::Release);
+        // A run that ended between the two loads already cleared its flag.
+        if !self.running.load(Ordering::Acquire) {
+            self.cancel.store(false, Ordering::Release);
+            return false;
+        }
+        true
+    }
+
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
 }
 
 pub(crate) struct SyncRunGuard;
 
 impl SyncRunGuard {
     pub(crate) fn acquire() -> Result<Self, String> {
-        sync_running()
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .map(|_| Self)
-            .map_err(|_| {
-                "sync already in progress — wait for it to finish or cancel it".to_string()
-            })
+        if RUN_FLAGS.acquire() {
+            Ok(Self)
+        } else {
+            Err("sync already in progress — wait for it to finish or cancel it".to_string())
+        }
     }
 }
 
 impl Drop for SyncRunGuard {
     fn drop(&mut self) {
-        sync_running().store(false, Ordering::Release);
+        RUN_FLAGS.release();
     }
 }
 
@@ -1269,8 +1315,9 @@ async fn run_job_once(
 #[tauri::command]
 pub fn sync_cancel(window: tauri::Window) -> Result<(), String> {
     crate::require_main(window.label())?;
-    cancel_flag().store(true, Ordering::Release);
-    cancel_notify().notify_waiters();
+    if RUN_FLAGS.request_cancel() {
+        cancel_notify().notify_waiters();
+    }
     Ok(())
 }
 
@@ -1336,7 +1383,6 @@ pub async fn sync_run(
     let _run_guard = SyncRunGuard::acquire()?;
     let _access = crate::vaulttransaction::access(&root).await?;
     let started = Instant::now();
-    cancel_flag().store(false, Ordering::Relaxed);
     let base = base.trim_end_matches('/').to_string();
     let pin = normalize_pin(pin)?;
     let retry_set: Option<std::collections::HashSet<String>> = retry
@@ -1347,7 +1393,12 @@ pub async fn sync_run(
         })
         .filter(|rels: &std::collections::HashSet<String>| !rels.is_empty());
 
-    let result = run_sync(&app, root, base, token, pin, retry_set, peer_name, started).await;
+    // A cancel sent while this run waited for vault access stops it here.
+    let result = if cancelled() {
+        Err(cancelled_error())
+    } else {
+        run_sync(&app, root, base, token, pin, retry_set, peer_name, started).await
+    };
     settle_sync_run(result, started, cancelled(), |level, message| {
         emit_log(&app, level, message);
         emit_progress(&app, "done", 0, 0, "");

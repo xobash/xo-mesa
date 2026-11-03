@@ -354,7 +354,9 @@ A vault with hundreds or thousands of files syncs comfortably:
   reads, local work admission, retry waits, and upload/download streaming. An
   incomplete candidate is abandoned; a candidate already verified and published
   remains intact. The report marks the run cancelled and lists unfinished work
-  so a later sync retries it.
+  so a later sync retries it. A cancel applies only to the active run: one sent
+  while the run waits for vault access stops it before any peer contact, and a
+  finished run leaves no cancel behind for later identity or manifest probes.
 - **Bounded resources.** Concurrent manifest scans share at most two hashing
   workers with 64 KiB buffers. Transfer work is admitted in small batches,
   rather than creating one task per queued file. These are application safety

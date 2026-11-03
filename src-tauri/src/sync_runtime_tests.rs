@@ -806,7 +806,44 @@ fn sync_run_guard_rejects_overlap_and_releases_after_drop() {
     assert!(SyncRunGuard::acquire().is_err());
     drop(first);
     assert!(SyncRunGuard::acquire().is_ok());
-    sync_running().store(false, Ordering::Release);
+}
+
+#[test]
+fn cancel_without_a_run_is_ignored_and_a_finished_run_leaves_no_cancel() {
+    let flags = RunFlags::new();
+    assert!(!flags.request_cancel());
+    assert!(
+        !flags.cancelled(),
+        "a later identity or manifest probe must not see a cancel"
+    );
+    assert!(flags.acquire());
+    assert!(flags.request_cancel());
+    assert!(flags.cancelled());
+    flags.release();
+    assert!(!flags.cancelled());
+}
+
+#[tokio::test]
+async fn cancel_sent_while_a_run_waits_for_vault_access_is_kept() {
+    let flags = std::sync::Arc::new(RunFlags::new());
+    let access = std::sync::Arc::new(tokio::sync::RwLock::new(()));
+    let held = access.clone().write_owned().await;
+    assert!(flags.acquire());
+    let waiting = {
+        let (flags, access) = (flags.clone(), access.clone());
+        tokio::spawn(async move {
+            let _access = access.read().await;
+            flags.cancelled()
+        })
+    };
+    tokio::task::yield_now().await;
+    assert!(flags.request_cancel());
+    drop(held);
+    assert!(
+        waiting.await.unwrap(),
+        "the run sees the cancel once access is granted"
+    );
+    flags.release();
 }
 
 #[test]
