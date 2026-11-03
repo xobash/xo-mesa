@@ -225,8 +225,9 @@ export function PdfView({
   const nativeFrameWanted = !!renderError || showNativeFirstPaint;
   const nativePdfUrl = useMemo(() => {
     if (!nativeFrameWanted || !bytes) return null;
-    const data = new Uint8Array(bytes).buffer;
-    return URL.createObjectURL(new Blob([data], { type: "application/pdf" }));
+    // The Blob copies exactly the view's bytes; an extra full copy first would
+    // double the transient memory for a large document.
+    return URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: "application/pdf" }));
   }, [bytes, nativeFrameWanted]);
   const [nativeAdmission, setNativeAdmission] = useState<{ url: string; error?: string } | null>(null);
   useEffect(() => {

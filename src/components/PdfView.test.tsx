@@ -27,6 +27,21 @@ afterEach(() => {
 });
 const file: VaultFile = { path: '/vault/sample.pdf', relPath: 'sample.pdf', name: 'sample', ext: 'pdf', isMarkdown: false };
 
+it('hands the native frame a Blob holding exactly the open bytes, including a subarray view', async () => {
+  const pdf = new TextEncoder().encode('junk%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF');
+  mock.bytes = pdf.subarray(4);
+  let blob: Blob | undefined;
+  vi.stubGlobal('URL', class extends URL { static createObjectURL = vi.fn((b: Blob) => { blob = b; return 'blob:http://tauri.localhost/x'; }); static revokeObjectURL = vi.fn(); });
+  mock.invoke.mockResolvedValue(undefined);
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
+  expect(blob?.type).toBe('application/pdf');
+  expect([...new Uint8Array(await blob!.arrayBuffer())]).toEqual([...pdf.subarray(4)]);
+  await act(async () => root.unmount());
+  host.remove();
+});
+
 it('waits for native PDF admission and revokes on unmount', async () => {
   const blob = 'blob:http://tauri.localhost/00000000-0000-0000-0000-000000000000';
   const revoke = vi.fn();
