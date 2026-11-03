@@ -801,7 +801,8 @@ export function GraphView() {
       a2.push(i);
     }
     adjacencyRef.current = adj;
-    neighborsRef.current = buildNeighbors(links);
+    // Same links, never mutated: share the timeline map instead of rebuilding it.
+    neighborsRef.current = timelineNeighborsRef.current;
 
     reserveLinkEndpoints(links.length);
 
