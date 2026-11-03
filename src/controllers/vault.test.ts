@@ -252,6 +252,20 @@ it('keeps the notes identity for a prose-only external edit and replaces it when
   expect(f.state.getState().notes).not.toBe(notes);
   f.controller.dispose();
 });
+it('republishes files for a binary modify only when its stat changed', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const png = (rel: string, size: number): VaultFile => ({ path: `/v/${rel}`, relPath: rel, name: rel, ext: 'png', isMarkdown: false, size });
+  f.state.setState({ files: [png('same.png', 1), png('grown.png', 5)], contentCache: {}, notes: {},
+    fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });
+  const files = f.state.getState().files;
+  f.change([{ kind: 'modify', paths: ['/v/same.png'] }]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  expect(f.state.getState().files).toBe(files);
+  f.change([{ kind: 'modify', paths: ['/v/grown.png'] }]);
+  await vi.waitFor(() => expect(f.state.getState().files).not.toBe(files));
+  expect(f.state.getState().fileFor('grown.png')?.size).toBe(1);
+  f.controller.dispose();
+});
 it('refreshes reference metadata from an external edit so a later rename can repair the new embed', async () => {
   const f = watcherFixture(); await f.controller.actions.openVault('/v');
   const files = [file('a.md')];

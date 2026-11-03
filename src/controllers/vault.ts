@@ -642,10 +642,14 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             try {
               const s = await stat(file.path);
               if (!isCurrent()) return;
-              file.size = s.size;
-              file.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
-              // Re-render once for the batch, not once per file.
-              filesDirty = true;
+              const mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
+              // An unchanged stat (xattr or access event) must not republish
+              // `files`; re-render once for the batch, not once per file.
+              if (file.size !== s.size || file.mtime !== mtime) {
+                file.size = s.size;
+                file.mtime = mtime;
+                filesDirty = true;
+              }
             } catch {
               /* stat failed — leave as-is */
             }
