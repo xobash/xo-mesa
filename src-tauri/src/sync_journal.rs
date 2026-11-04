@@ -32,7 +32,7 @@ pub struct JournalOperation {
     pub hash: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum JournalOperationKind {
     Delete,
@@ -253,6 +253,7 @@ pub(super) fn migrate_legacy_journal(
         op.hash = migrated_hash(root, &rels, op.size, &op.hash)?;
     }
     let old_known = std::mem::take(&mut journal.known);
+    let mut index = OperationIndex::new(&journal.operations);
     for entry in old_known {
         let path = safe_join_confined(root, &entry.rel)
             .ok_or_else(|| invalid_data("unsafe old journal path"))?;
@@ -261,6 +262,7 @@ pub(super) fn migrate_legacy_journal(
                 let hash = migrated_hash(root, &[&entry.rel], entry.size, &entry.hash)?;
                 append_operation(
                     journal,
+                    &mut index,
                     JournalOperationKind::Delete,
                     entry.rel,
                     None,
@@ -727,26 +729,74 @@ pub fn save_journal(root: &Path, journal: &SyncJournal) -> std::io::Result<()> {
     save_journal_unlocked(root, journal).map(|_| ())
 }
 
+/// Exact-duplicate lookup for `append_operation`. Indices are bucketed by a
+/// hash of the compared fields (hash text ASCII-folded, as it is compared) and
+/// confirmed with the full comparison, so a reconcile of N changes over M
+/// operations costs O(N + M) instead of O(N x M).
+pub(super) struct OperationIndex(HashMap<u64, Vec<usize>>);
+
+impl OperationIndex {
+    pub(super) fn new(operations: &[JournalOperation]) -> Self {
+        let mut index = Self(HashMap::with_capacity(operations.len()));
+        for (at, op) in operations.iter().enumerate() {
+            let key = operation_key(&op.kind, &op.from, op.to.as_deref(), op.size, &op.hash);
+            index.0.entry(key).or_default().push(at);
+        }
+        index
+    }
+}
+
+fn operation_key(
+    kind: &JournalOperationKind,
+    from: &str,
+    to: Option<&str>,
+    size: u64,
+    hash: &str,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    kind.hash(&mut hasher);
+    from.hash(&mut hasher);
+    to.hash(&mut hasher);
+    size.hash(&mut hasher);
+    for byte in hash.bytes() {
+        byte.to_ascii_lowercase().hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// `index` must cover exactly `journal.operations`; appends keep it current.
 pub(super) fn append_operation(
     journal: &mut SyncJournal,
+    index: &mut OperationIndex,
     kind: JournalOperationKind,
     from: String,
     to: Option<String>,
     size: u64,
     hash: String,
 ) {
-    if journal.operations.iter().any(|op| {
-        op.kind == kind
-            && op.from == from
-            && op.to == to
-            && op.size == size
-            && op.hash.eq_ignore_ascii_case(&hash)
+    let key = operation_key(&kind, &from, to.as_deref(), size, &hash);
+    let operations = &journal.operations;
+    if index.0.get(&key).is_some_and(|bucket| {
+        bucket.iter().any(|&at| {
+            let op = &operations[at];
+            op.kind == kind
+                && op.from == from
+                && op.to == to
+                && op.size == size
+                && op.hash.eq_ignore_ascii_case(&hash)
+        })
     }) {
         return;
     }
     let sequence = journal.next_sequence;
     journal.next_sequence = journal.next_sequence.saturating_add(1);
     let device = journal.device.clone();
+    index
+        .0
+        .entry(key)
+        .or_default()
+        .push(journal.operations.len());
     journal.operations.push(JournalOperation {
         id: format!("{device}:{sequence}"),
         device,
@@ -786,9 +836,11 @@ pub fn reconcile_journal(root: &Path, manifest: &[ManifestEntry]) -> std::io::Re
                 .map(|_| (op.from.clone(), op.size, op.hash.clone()))
         })
         .collect();
+    let mut index = OperationIndex::new(&journal.operations);
     for (from, size, hash) in restores {
         append_operation(
             &mut journal,
+            &mut index,
             JournalOperationKind::Restore,
             from,
             None,
@@ -801,27 +853,31 @@ pub fn reconcile_journal(root: &Path, manifest: &[ManifestEntry]) -> std::io::Re
         .iter()
         .map(|entry| (entry.rel.as_str(), entry))
         .collect();
-    let mut added: Vec<&ManifestEntry> = manifest
+    // Same-byte candidates grouped by size and ASCII-folded hash. A group is
+    // consumed only when it holds exactly one candidate, as a unique rename.
+    let mut added: HashMap<(u64, String), Vec<&ManifestEntry>> = HashMap::new();
+    for entry in manifest
         .iter()
         .filter(|entry| !old.contains_key(entry.rel.as_str()))
-        .collect();
+    {
+        added
+            .entry((entry.size, entry.hash.to_ascii_lowercase()))
+            .or_default()
+            .push(entry);
+    }
     let prior_known = journal.known.clone();
     for entry in &prior_known {
         if current.contains_key(entry.rel.as_str()) {
             continue;
         }
-        let matches: Vec<usize> = added
-            .iter()
-            .enumerate()
-            .filter_map(|(index, candidate)| {
-                (candidate.size == entry.size && candidate.hash.eq_ignore_ascii_case(&entry.hash))
-                    .then_some(index)
-            })
-            .collect();
-        if matches.len() == 1 {
-            let candidate = added.swap_remove(matches[0]);
+        let unique = added
+            .get_mut(&(entry.size, entry.hash.to_ascii_lowercase()))
+            .filter(|matches| matches.len() == 1)
+            .and_then(Vec::pop);
+        if let Some(candidate) = unique {
             append_operation(
                 &mut journal,
+                &mut index,
                 JournalOperationKind::Rename,
                 entry.rel.clone(),
                 Some(candidate.rel.clone()),
@@ -831,6 +887,7 @@ pub fn reconcile_journal(root: &Path, manifest: &[ManifestEntry]) -> std::io::Re
         } else {
             append_operation(
                 &mut journal,
+                &mut index,
                 JournalOperationKind::Delete,
                 entry.rel.clone(),
                 None,

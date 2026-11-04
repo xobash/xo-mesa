@@ -171,11 +171,14 @@ fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
     // Regular files only, matching `vault_scan`'s `is_file` rule: a directory
     // or a device node named in `rels` must read as a failure, not hang.
     let file = open_regular(path)?;
-    if file.metadata()?.len() > max_text_file_bytes {
+    let len = file.metadata()?.len();
+    if len > max_text_file_bytes {
         return Ok(ReadResult::Skipped);
     }
-    // A file that grows after the size check still stops at the limit.
-    let mut bytes = Vec::new();
+    // A file that grows after the size check still stops at the limit. Sizing
+    // the buffer from the checked length avoids doubling copies and up to 2x
+    // slack held until the whole batch is encoded.
+    let mut bytes = Vec::with_capacity(len as usize);
     file.take(max_text_file_bytes + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max_text_file_bytes {
         return Ok(ReadResult::Skipped);
@@ -292,8 +295,11 @@ fn read_bounded(
         .map_err(|e| e.to_string())?;
     #[cfg(windows)]
     let file = crate::sync_core::open_file_no_follow(&root.join(rel)).map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    file.take((max_bytes + usize::from(require_complete)) as u64)
+    let limit = max_bytes + usize::from(require_complete);
+    // Capacity hint only; a failed stat keeps the growing buffer.
+    let expected = file.metadata().map_or(0, |m| m.len()).min(limit as u64);
+    let mut bytes = Vec::with_capacity(expected as usize);
+    file.take(limit as u64)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     if bytes.len() > max_bytes {
@@ -333,6 +339,22 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn reads_are_sized_from_the_file_length() {
+        let v = TempVault::new("presize");
+        let body: Vec<u8> = (0..65_537u32).map(|i| (i % 251) as u8).collect();
+        v.file("big.md", &body);
+        let Ok(ReadResult::Content(bytes)) = read_file(&v.0.join("big.md"), 8 * 1024 * 1024) else {
+            panic!("expected content");
+        };
+        assert_eq!(bytes, body);
+        // A growing buffer would hold up to twice the file until the batch is encoded.
+        assert_eq!(bytes.capacity(), body.len());
+        let bounded = read_bounded(&v.0, "big.md", 8 * 1024 * 1024, true).unwrap();
+        assert_eq!(bounded, body);
+        assert_eq!(bounded.capacity(), body.len());
     }
 
     /// Decode the wire format the way the frontend does, so the tests exercise

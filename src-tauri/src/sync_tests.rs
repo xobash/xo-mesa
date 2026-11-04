@@ -1493,6 +1493,122 @@ fn journal_recovers_delete_and_unique_rename_from_snapshot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn manifest_entry(rel: &str, size: u64, hash: &str) -> ManifestEntry {
+    ManifestEntry {
+        rel: rel.to_string(),
+        size,
+        hash: hash.to_string(),
+    }
+}
+
+#[test]
+fn journal_rename_matching_is_unique_case_folded_and_deduplicated() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-match-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+    let first = vec![
+        manifest_entry("old/one.md", 1, &a),
+        manifest_entry("old/two.md", 2, &b),
+        manifest_entry("old/three.md", 3, &c),
+        manifest_entry("old/twin.md", 3, &c),
+    ];
+    reconcile_journal(&dir, &first).unwrap();
+    // `one` reappears once with an upper-case hash: a rename. `two` has two
+    // same-byte candidates: ambiguous, so a delete. `three` takes the only
+    // copy of its bytes, which leaves `twin` nothing unique: a delete.
+    let second = vec![
+        manifest_entry("new/one.md", 1, &a.to_uppercase()),
+        manifest_entry("new/two-a.md", 2, &b),
+        manifest_entry("new/two-b.md", 2, &b),
+        manifest_entry("new/three.md", 3, &c),
+    ];
+    let journal = reconcile_journal(&dir, &second).unwrap();
+    let ops: Vec<(JournalOperationKind, &str, Option<&str>)> = journal
+        .operations
+        .iter()
+        .map(|op| (op.kind.clone(), op.from.as_str(), op.to.as_deref()))
+        .collect();
+    assert_eq!(
+        ops,
+        vec![
+            (
+                JournalOperationKind::Rename,
+                "old/one.md",
+                Some("new/one.md")
+            ),
+            (JournalOperationKind::Delete, "old/two.md", None),
+            (
+                JournalOperationKind::Rename,
+                "old/three.md",
+                Some("new/three.md")
+            ),
+            (JournalOperationKind::Delete, "old/twin.md", None),
+        ]
+    );
+    // Deleting and restoring a file records one restore, however often the
+    // unchanged vault is reconciled afterwards.
+    reconcile_journal(&dir, &second[1..]).unwrap();
+    for _ in 0..3 {
+        reconcile_journal(&dir, &second).unwrap();
+    }
+    let journal = load_journal(&dir).unwrap();
+    let restores = journal
+        .operations
+        .iter()
+        .filter(|op| op.kind == JournalOperationKind::Restore)
+        .count();
+    assert_eq!(restores, 1);
+    assert_eq!(journal.operations.len(), 6);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One folder move of `n` files: renames plus duplicate checks for every one.
+fn folder_move_reconcile_time(n: usize, run: usize) -> std::time::Duration {
+    let dir = std::env::temp_dir().join(format!(
+        "mesa-journal-linear-{}-{n}-{run}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let entries = |folder: &str| -> Vec<ManifestEntry> {
+        (0..n)
+            .map(|i| {
+                manifest_entry(
+                    &format!("{folder}/{i}.md"),
+                    (i % 7) as u64,
+                    &format!("{i:064x}"),
+                )
+            })
+            .collect()
+    };
+    reconcile_journal(&dir, &entries("a")).unwrap();
+    let moved = entries("b");
+    let started = std::time::Instant::now();
+    reconcile_journal(&dir, &moved).unwrap();
+    let elapsed = started.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    elapsed
+}
+
+#[test]
+fn journal_reconcile_of_a_folder_move_is_linear() {
+    // One large run against eight eighth-size runs, interleaved, best of five.
+    let (mut large, mut small) = (std::time::Duration::MAX, std::time::Duration::MAX);
+    for run in 0..5 {
+        large = large.min(folder_move_reconcile_time(12_000, run));
+        small = small.min(
+            (0..8)
+                .map(|part| folder_move_reconcile_time(1_500, run * 8 + part))
+                .sum(),
+        );
+    }
+    assert!(
+        large < small * 4,
+        "12,000-file move took {large:?}; eight 1,500-file moves took {small:?}"
+    );
+}
+
 #[test]
 fn journal_delete_preserves_changed_local_content() {
     let dir = std::env::temp_dir().join(format!("mesa-journal-conflict-{}", std::process::id()));
