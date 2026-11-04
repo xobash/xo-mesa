@@ -30,6 +30,20 @@ const expected = [
   "!src-tauri/Cargo.lock",
   "!src-tauri/tauri.conf.json",
   "**/*.local.*",
+  "**/.env",
+  "**/.env.*",
+  "**/.npmrc",
+  "**/*.pem",
+  "**/*.key",
+  "**/*.p12",
+  "**/*.pfx",
+  "**/*.p8",
+  "**/*.jks",
+  "**/*.keystore",
+  "**/id_rsa*",
+  "**/*.sqlite",
+  "**/.mesa-*",
+  "**/.*.mesa-*",
 ];
 if (JSON.stringify(rules) !== JSON.stringify(expected)) {
   throw new Error("Docker context must remain an explicit browser-build allowlist");

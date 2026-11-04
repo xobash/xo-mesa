@@ -22,3 +22,18 @@
 !src-tauri/Cargo.lock
 !src-tauri/tauri.conf.json
 **/*.local.*
+# Keep credentials and Mesa vault artifacts out of the allowlisted folders.
+**/.env
+**/.env.*
+**/.npmrc
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.p8
+**/*.jks
+**/*.keystore
+**/id_rsa*
+**/*.sqlite
+**/.mesa-*
+**/.*.mesa-*

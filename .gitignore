@@ -19,6 +19,12 @@ src-tauri/.build-cache-path
 *.key
 *.p12
 *.pfx
+*.p8
+*.jks
+*.keystore
+id_rsa*
+.npmrc
+*.sqlite
 
 # Logs / test output
 *.log
@@ -32,6 +38,10 @@ tmp/
 Thumbs.db
 .idea/
 .vscode/
+
+# Mesa vault metadata, trash and in-flight write artifacts
+.mesa-*
+.*.mesa-*
 
 # Local-only files
 *.local
