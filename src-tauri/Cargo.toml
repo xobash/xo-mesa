@@ -2,6 +2,8 @@
 name = "mesa"
 version = "0.1.0"
 description = "A local desktop workspace for research, documents, tools, and action."
+license = "MIT"
+repository = "https://github.com/xobash/xo-mesa"
 edition = "2021"
 rust-version = "1.89"
 
@@ -27,9 +29,7 @@ portable-pty = "0.9"
 # Sync uses rcgen identity certificates, Hyper/Tokio-Rustls server TLS, and reqwest certificate pinning.
 # tiny_http is loopback-only here; do not enable ssl-rustls.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
-# The sync engine (sync_run) runs transfers with bounded concurrency on the
-# Tauri tokio runtime; tokio itself was already in the tree via tauri/reqwest —
-# this enables the features used directly by the listener and sync engine.
+# Features used directly by the sync listener and engine on the Tauri runtime.
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "net"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "cookies", "stream"] }
@@ -48,8 +48,7 @@ pem = "3"
 bytes = "1"
 ring = "0.17"
 socket2 = "0.6"
-# Already in the tree through url/idna; sync uses NFC to detect names that
-# collide on normalization-insensitive filesystems.
+# Sync uses NFC to detect names that collide on normalization-insensitive filesystems.
 icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]

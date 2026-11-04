@@ -11,8 +11,8 @@ import {
 
 describe("normalizePeer", () => {
   it("defaults bare peers to HTTPS (sync is TLS-only)", () => {
-    expect(normalizePeer("mac-mini:8787")).toBe("https://mac-mini:8787");
-    expect(normalizePeer("mac-mini:8787", false)).toBe("http://mac-mini:8787");
+    expect(normalizePeer("notes-host:8787")).toBe("https://notes-host:8787");
+    expect(normalizePeer("notes-host:8787", false)).toBe("http://notes-host:8787");
   });
 
   it("preserves explicit schemes and strips trailing slashes", () => {
@@ -43,7 +43,7 @@ describe("peerFromDiscovery", () => {
   const base: DiscoveryPacket = {
     mesaDiscovery: true,
     version: "1.0",
-    name: "Studio iMac",
+    name: "Office iMac",
     host: "192.0.2.113",
     port: 8787,
     protocol: "https",

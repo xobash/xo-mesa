@@ -30,7 +30,7 @@ describe("the Unicode facts the fast path depends on", () => {
     for (let c = 0x80; c <= 0xffff; c++) {
       const ch = String.fromCharCode(c);
       const lo = ch.toLowerCase();
-      // eslint-disable-next-line no-control-regex
+      // eslint-disable-next-line no-control-regex -- the test enumerates the whole ASCII range
       if (lo !== ch && /^[\x00-\x7f]+$/.test(lo)) {
         found.push("U+" + c.toString(16).toUpperCase().padStart(4, "0"));
       }

@@ -76,8 +76,8 @@ describe("parsePeerInput", () => {
   it("passes through host:port and adds the default port", () => {
     expect(parsePeerInput("198.51.100.5:9000")).toBe("198.51.100.5:9000");
     expect(parsePeerInput("my-mac")).toBe("my-mac:8787");
-    expect(parsePeerInput("studio.tailnet.ts.net")).toBe(
-      "studio.tailnet.ts.net:8787"
+    expect(parsePeerInput("desk.example.ts.net")).toBe(
+      "desk.example.ts.net:8787"
     );
     expect(parsePeerInput("[::1]:9000")).toBe("[::1]:9000");
     expect(parsePeerInput("http://192.0.2.2:8787/")).toBe("http://192.0.2.2:8787");
@@ -125,7 +125,7 @@ describe("sync LAN discovery", () => {
         {
           mesaDiscovery: true,
           version: "1.0",
-          name: "Studio Mac",
+          name: "Office Mac",
           host: "198.51.100.12",
           port: 8787,
           protocol: "https",
@@ -136,7 +136,7 @@ describe("sync LAN discovery", () => {
       )
     ).toEqual({
       id: "abcdef12",
-      name: "Studio Mac",
+      name: "Office Mac",
       address: "198.51.100.12:8787",
       host: "198.51.100.12",
       port: 8787,

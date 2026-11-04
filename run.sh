@@ -100,7 +100,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5) Build and launch the optimized desktop app.
+# 4) Build and launch the optimized desktop app.
 # ─────────────────────────────────────────────────────────────────────────────
 if node scripts/launch-cache.mjs check-build; then
   ok "Mesa build is current"

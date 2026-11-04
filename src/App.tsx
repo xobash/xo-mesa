@@ -427,7 +427,7 @@ function PanelWindow({ kind }: { kind: RightPanel }) {
   const activePath = useAppStore((s) => s.activePath);
   const selectFile = useAppStore((s) => s.selectFile);
   const openVault = useAppStore((s) => s.openVault);
-  // The note this panel should follow (so a popped-out Preview shows the SAME
+  // The note this panel should follow (so a popped-out Preview shows the same
   // document as the pane it came from), passed as ?sel= in the URL.
   const sel = routeParams.get("sel");
   const requestedVault = routeParams.get("vault");

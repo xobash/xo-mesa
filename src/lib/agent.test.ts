@@ -51,7 +51,7 @@ const settings: Settings = {
 describe("Pi agent context", () => {
   it("uses only directly accessed vault-relative pathnames in the prompt", () => {
     const ctx = buildAgentContext({
-      vaultName: "Frontier",
+      vaultName: "Tidewater",
       vaultPath: "/vault",
       activePath: "Notes/Active.md",
       openTabs: ["Notes/Other.md"],
@@ -84,7 +84,7 @@ describe("Pi agent context", () => {
 
   it("keeps repeated context bounded while preserving the current document", () => {
     const ctx = buildAgentContext({
-      vaultName: "Frontier",
+      vaultName: "Tidewater",
       vaultPath: "/vault",
       activePath: "Notes/Active.md",
       openTabs: Array.from({ length: 40 }, (_, i) => `Notes/Open-${i}.md`),

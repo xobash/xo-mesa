@@ -729,8 +729,8 @@ fn conflict_prescan_finds_an_identical_numbered_copy() {
 #[test]
 fn host_of_base_strips_scheme_port_path() {
     assert_eq!(host_of_base("https://peer.example:8787"), "peer.example");
-    assert_eq!(host_of_base("http://mac-mini/x"), "mac-mini");
-    assert_eq!(host_of_base("mac-mini:8787"), "mac-mini");
+    assert_eq!(host_of_base("http://notes-host/x"), "notes-host");
+    assert_eq!(host_of_base("notes-host:8787"), "notes-host");
     assert_eq!(host_of_base("https://[2001:db8::1]:8787"), "2001-db8--1");
     assert_eq!(host_of_base("[2001:db8::2]:8787"), "2001-db8--2");
 }

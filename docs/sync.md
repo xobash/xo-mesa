@@ -17,9 +17,8 @@ control characters, reserved Windows device names (including superscript
 digit forms), and trailing dots or spaces. Vault scans report unsupported
 names and case-insensitive collisions as incomplete, with the affected paths;
 sync stops before planning deletes. Mesa leaves the original files untouched.
-Sync also rejects
-paths whose existing parent or target resolves through a symlink or junction
-outside the selected vault. Missing destinations are checked through their
+Sync also rejects paths whose existing parent or target resolves through a
+symlink or junction outside the selected vault. Missing destinations are checked through their
 canonical parent before a verified commit.
 
 On macOS and Linux, sync traverses vault directories with no-follow directory

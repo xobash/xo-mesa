@@ -154,7 +154,7 @@ export interface GraphFilterOptions {
   /** Show orphan text documents with no links. */
   showOrphans: boolean;
   /** Show attachment nodes — every non-text vault file. All attachments
-   *  join the same force layout as notes, exactly like Obsidian: linked ones
+   *  join the same force layout as notes: linked ones
    *  sit in the cluster, unlinked ones halo around it via shared repulsion. */
   showAttachments: boolean;
 }

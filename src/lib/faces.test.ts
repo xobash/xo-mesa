@@ -14,7 +14,7 @@ describe("faces", () => {
 
   it("every default phrase ends in an ellipsis (reads as ongoing)", () => {
     for (const op of OPS) {
-      for (const seed of ["a", "b", "c", "note-1", "Frontier/INDEX.md"]) {
+      for (const seed of ["a", "b", "c", "note-1", "Tidewater/INDEX.md"]) {
         expect(phraseFor(op, seed)).toMatch(/…$/);
       }
     }

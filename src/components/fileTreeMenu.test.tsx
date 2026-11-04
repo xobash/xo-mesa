@@ -8,8 +8,7 @@ import type { VaultFile } from "../types";
 
 /**
  * The file/folder context menu must dismiss on Escape like every native
- * context menu — it used to close only on click/blur, stranding keyboard
- * users with an open menu. The Escape keydown is consumed in the capture
+ * context menu, so keyboard users are never left with an open menu. The Escape keydown is consumed in the capture
  * phase so it cannot simultaneously close a modal stacked behind the menu.
  */
 

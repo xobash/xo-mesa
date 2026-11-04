@@ -59,8 +59,8 @@ interface SharedPiSessionState {
   lastOutputSeq: number;
 }
 
-// Fixed terminal ANSI palette, independent of the Mesa theme (a documented
-// raw-hex exception in DESIGN.md).
+// Fixed terminal ANSI palette, independent of the Mesa theme. This is the one
+// deliberate raw-hex palette outside the style tokens.
 const SHARED_PI_THEME = {
   background: "#050508",
   foreground: "#d8d8d2",
@@ -132,7 +132,7 @@ let resizeFocusListenerInstalled = false;
 // While a snapshot replays, `replayTerminalSnapshot` drives `terminal.resize()`
 // itself to reproduce the PTY's historical grid timeline; those synthetic sizes
 // must not be pushed back to the live PTY. Replay is async and spans many
-// frames, though, so a REAL resize (host layout settling, font change) can land
+// frames, though, so a real resize (host layout settling, font change) can land
 // in the same window — see `reconcileSharedPiSizeAfterReplay`.
 let replayingTerminalSnapshot = false;
 
@@ -233,7 +233,7 @@ function getSharedPiTerminal(): Promise<Terminal> {
 
 async function createSharedPiTerminal(): Promise<Terminal> {
   // NOTE: xterm.css stays statically imported in main.tsx — it must sit
-  // BEFORE the Mesa stylesheet in the cascade (Mesa's .xterm-host overrides win by
+  // before the Mesa stylesheet in the cascade (Mesa's .xterm-host overrides win by
   // order at equal specificity, e.g. viewport overflow-y). Only the JS is
   // deferred; the stylesheet is ~2 kB gzipped.
   const [{ Terminal }, { FitAddon }] = await Promise.all([
@@ -469,7 +469,7 @@ async function ensureSharedPiSession(
   SHARED_PI_SESSION.startingContextText = contextText;
   SHARED_PI_SESSION.startPromise = (async () => {
     terminal.reset();
-    // Deep Research: while a run is active, ALSO load the deep-research
+    // Deep Research: while a run is active, also load the deep-research
     // extension + mark the run so its fail-safe write/edit block engages for
     // the whole session. Read from the store (not props) so every Pi surface
     // sees the same active run.

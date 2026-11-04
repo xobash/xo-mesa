@@ -41,7 +41,7 @@ export interface NoteMeta {
 export interface SyncPeer {
   /** Stable local id. */
   id: string;
-  /** Friendly, user-chosen name (e.g. "Studio iMac"). */
+  /** Friendly, user-chosen name (e.g. "Office iMac"). */
   name: string;
   /** Address to reach it: host:port or an http(s) URL. */
   address: string;

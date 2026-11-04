@@ -423,7 +423,7 @@ export const FileTree = memo(function FileTree() {
   const enableTabs = useAppStore((s) => s.settings.enableTabs);
   const bookmarks = useAppStore((s) => s.settings.bookmarks);
   const revealTick = useAppStore((s) => s.revealTick);
-  // Subscribed ONCE here and passed to each row as a boolean — see `TreeRow`.
+  // Subscribed once here and passed to each row as a boolean — see `TreeRow`.
   const activePath = useAppStore((s) => s.activePath);
   const collapsedFolders = useAppStore((s) => s.collapsedFolders);
   const setCollapsedFolders = useAppStore((s) => s.setCollapsedFolders);
@@ -604,7 +604,7 @@ export const FileTree = memo(function FileTree() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Reveal is keyed by the explicit trigger and reads current store state.
   }, [revealTick]);
 
-  // Scroll by row INDEX, not `scrollIntoView` on a node: the target row is
+  // Scroll by row index, not `scrollIntoView` on a node: the target row is
   // normally unmounted, so there is no element to scroll to.
   useLayoutEffect(() => {
     if (!revealTarget) return;

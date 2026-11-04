@@ -32,7 +32,7 @@ function input(overrides: Partial<DiagnosticsInput> = {}): DiagnosticsInput {
     userAgent: "Mozilla/5.0 (Macintosh) MesaTest",
     vaultFileCount: 300,
     peer: {
-      name: "Studio iMac",
+      name: "Office iMac",
       address: "192.0.2.113:8787",
       fingerprint: "aabbccddeeff0011",
       lastStatus: "error",
@@ -92,7 +92,7 @@ describe("buildTroubleshootingPackage", () => {
     expect(pkg).toContain("Mesa version: 0.1.0");
     expect(pkg).toContain("Vault: 300 files (path withheld)");
     expect(pkg).toContain("Sync state: incomplete");
-    expect(pkg).toContain("Studio iMac");
+    expect(pkg).toContain("Office iMac");
     expect(pkg).toContain("192.0.2.113:8787");
     expect(pkg).toContain("↓12 pulled (2.0 MiB)");
     expect(pkg).toContain("↑3 pushed (2.0 KiB)");

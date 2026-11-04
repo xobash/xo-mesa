@@ -361,7 +361,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
           return;
         }
         // Preview/Tasks/Calendar follow the active note — carry it so the popped
-        // window shows the SAME document, not the vault's first note.
+        // window shows the same document, not the vault's first note.
         const active = get().activePath;
         const docParam = active ? `&sel=${encodeURIComponent(active)}` : "";
         const graphBootstrapSaved =

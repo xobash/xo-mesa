@@ -829,7 +829,7 @@ export function createResearchController({ get, set, getGeneration, registerExte
         return;
       }
 
-      // Arm the result listener BEFORE sending the prompt so a fast model
+      // Arm the result listener before sending the prompt so a fast model
       // can't finish before Mesa is listening.
       drPatch({ launchStage: "bridge-ready", piSessionId: sessionId });
       try {

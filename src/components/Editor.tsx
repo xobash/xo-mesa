@@ -93,9 +93,8 @@ export function Editor() {
   const viewRef = useRef<EditorView | null>(null);
   // The exact string we last pushed into the store from a user edit. When the
   // store echoes it back through the `content` subscription, we can skip the
-  // doc-swap effect entirely — before this, EVERY keystroke serialized the
-  // whole document a second time (view.state.sliceDoc()) just to discover
-  // nothing changed, which made typing in large notes feel sluggish.
+  // doc-swap effect, so a keystroke never serializes the whole document a
+  // second time just to find that nothing changed.
   const lastEditorTextRef = useRef<string | null>(null);
   const [mode, setMode] = useState<"source" | "live">("source");
   const [outlineOpen, setOutlineOpen] = useState(false);
@@ -230,7 +229,7 @@ export function Editor() {
     )) });
   }, [key, activePath, activeContentState]);
 
-  // The host div is ALWAYS rendered so CodeMirror can mount even before the
+  // The host div is always rendered so CodeMirror can mount even before the
   // first note is selected (the vault picks the first note a tick after the
   // editor mounts). The empty-state is an overlay, not a replacement.
   return (

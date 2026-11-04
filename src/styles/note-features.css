@@ -1,5 +1,5 @@
 /* Note features: math, Mermaid, footnotes, in-note find/replace and
-   unlinked mentions. Token colors only; see DESIGN.md Tokens. */
+   unlinked mentions. Token colors only (src/styles/tokens.css). */
 
 /* ---------- math (KaTeX) ---------- */
 .markdown-body .math-block,

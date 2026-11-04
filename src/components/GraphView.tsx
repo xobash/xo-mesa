@@ -773,11 +773,9 @@ export function GraphView() {
       }
     }
     nodesRef.current = nodes;
-    // EVERY node — notes, tags, phantoms, and all attachments — joins the one
-    // force simulation, exactly like Obsidian. (Unlinked attachments used to
-    // be static "field" ring nodes for performance, but that made them
-    // undraggable and visually rigid; Barnes-Hut charge + the sim settling to
-    // rest keeps even multi-thousand-node vaults responsive.)
+    // Every node (notes, tags, phantoms and attachments) joins one force
+    // simulation, so all of them can be dragged. Barnes-Hut charge and
+    // settling to rest keep multi-thousand-node vaults responsive.
     const forceNodes = nodes;
     forceNodesRef.current = forceNodes;
 
@@ -853,8 +851,7 @@ export function GraphView() {
       needsRedrawRef.current = true;
       resumeRef.current();
     }
-  // Force settings are retuned by the following effect without rebuilding nodes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the next effect retunes force settings without rebuilding nodes
   }, [
     notes,
     files,
@@ -923,8 +920,7 @@ export function GraphView() {
     layoutSettledRef.current = false;
     needsRedrawRef.current = true;
     resumeRef.current();
-  // stopDragPhysics only reads refs; graph settings drive this effect.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- stopDragPhysics only reads refs; graph settings drive this effect
   }, [
     graphNodeSize,
     graphCenterForce,
