@@ -76,7 +76,7 @@ function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): nu
   return IDLE_FRAME_MS;
 }
 
-import { GraphHitIndex, clamp, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, rectContains, rectLinePenalty, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { GraphHitIndex, clamp, graphLinkNodeId, incidentLinkIndices, nearestNodeLinear, nodeRadius, phaseFromId, rectContains, rectLinePenalty, resolveOverlaps, timelineSortValue } from "./graphGeometry";
 import { isSyntheticNode, nodeFill, readGraphColors, type GraphColors } from "./graphColors";
 import { GearIcon, GraphRangeRow, GraphSettingRow, GraphSettingSection, TimelapseIcon } from "./GraphSettingsControls";
 import { createGraphSimulation, graphPhysicsTransferables, graphSimulationTier, snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
@@ -1412,7 +1412,9 @@ export function GraphView() {
       const hotColor = `rgba(${c.flickerRgb},${(0.14 + 0.3 * focusK).toFixed(3)})`;
       const activeColor = `rgba(${c.flickerRgb},${(0.22 * activeFade).toFixed(3)})`;
       const dragColor = `rgba(${c.flickerRgb},0.22)`;
-      for (let i = 0; i < lc; i++) {
+      // Batches 2 and 3 visit only links incident to their nodes, in link order.
+      const adjacency = adjacencyRef.current;
+      for (const i of incidentLinkIndices(adjacency, [active, hoverId, dragId])) {
         const sId = le.sId[i], tId = le.tId[i];
         if (actMap.has(sId) || actMap.has(tId)) continue;
         const touchActive =
@@ -1442,7 +1444,7 @@ export function GraphView() {
 
       // Batch 3: active (flickering) links — each needs its own style so
       // can't be fully batched, but we skip viewport-culled ones.
-      for (let i = 0; i < lc; i++) {
+      for (const i of actMap.size ? incidentLinkIndices(adjacency, actMap.keys()) : []) {
         const sId = le.sId[i], tId = le.tId[i];
         const sa = actMap.get(sId);
         const ta = actMap.get(tId);

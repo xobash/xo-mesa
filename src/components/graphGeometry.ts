@@ -20,6 +20,26 @@ export function graphLinkNodeId(node: string | GraphNode): string {
   return typeof node === "string" ? node : node.id;
 }
 
+/**
+ * Ascending, de-duplicated link indices incident to any of `ids`, so a frame
+ * can draw only the highlighted links, in the same order as a full scan.
+ */
+export function incidentLinkIndices(
+  adjacency: ReadonlyMap<string, readonly number[]>,
+  ids: Iterable<string | null>
+): number[] {
+  const out: number[] = [];
+  for (const id of ids) {
+    const indices = id == null ? undefined : adjacency.get(id);
+    if (indices) for (const i of indices) out.push(i);
+  }
+  out.sort((a, b) => a - b);
+  let w = 0;
+  for (let i = 0; i < out.length; i++) if (i === 0 || out[i] !== out[i - 1]) out[w++] = out[i];
+  out.length = w;
+  return out;
+}
+
 export function timelineSortValue(n: GraphNode): number {
   return Number.isFinite(n.timelineTime) ? n.timelineTime! : Number.POSITIVE_INFINITY;
 }

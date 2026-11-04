@@ -1,5 +1,6 @@
 import { deflateSync } from "fflate";
 import { parseTasks, type TaskItem } from "./taskParsing";
+import { trigramBit } from "./trigramBloom";
 
 /** UTF-8 for normal text; exact UTF-16 preserves unfinished surrogate pairs. */
 export interface IndexedDocument {
@@ -8,12 +9,6 @@ export interface IndexedDocument {
   chars: number;
   bloom: Uint8Array;
   tasks: TaskItem[];
-}
-
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
-  return h >>> 0;
 }
 
 /** `markdown` is false for other text files, whose tasks follow plain-text code rules. */
@@ -48,7 +43,7 @@ export function encodeDocument(text: string, markdown = true): IndexedDocument {
   const bloom = new Uint8Array(512);
   const lower = text.toLowerCase();
   for (let i = 0; i + 2 < lower.length; i++) {
-    const bit = hash(lower.slice(i, i + 3)) % 4096;
+    const bit = trigramBit(lower, i);
     bloom[bit >>> 3] |= 1 << (bit & 7);
   }
   return {

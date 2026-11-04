@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { GraphNode } from "../types";
-import { GraphHitIndex, nearestNodeLinear, nodeRadius, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { GraphHitIndex, incidentLinkIndices, nearestNodeLinear, nodeRadius, resolveOverlaps, timelineSortValue } from "./graphGeometry";
 
 it("separates idle nodes while keeping a pinned node fixed", () => {
   const fixed = { id: "fixed", degree: 0, x: 0, y: 0, fx: 0, fy: 0 } as GraphNode;
@@ -47,4 +47,20 @@ it("resolves overlaps with numeric grid keys and skips non-finite positions", ()
   resolveOverlaps([p, q], () => 2, 1, 1, (n) => (n === p ? 0 : Math.PI));
   expect(p.x).toBeGreaterThan(5);
   expect(p.y).toBeCloseTo(5);
+});
+
+it("lists incident links exactly like a full ascending scan", () => {
+  let seed = 11;
+  const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const ids = Array.from({ length: 40 }, (_, i) => `n${i}`);
+  const links = Array.from({ length: 200 }, () => [ids[Math.floor(random() * 40)], ids[Math.floor(random() * 40)]] as const);
+  const adjacency = new Map<string, number[]>();
+  links.forEach(([s, t], i) => {
+    for (const id of [s, t]) adjacency.set(id, [...(adjacency.get(id) ?? []), i]);
+  });
+  for (const pick of [[], [null, "missing"], ["n1"], ["n1", "n1"], ["n3", null, "n7"], ids.slice(0, 9)]) {
+    const want = new Set(pick);
+    const scan = links.flatMap(([s, t], i) => (want.has(s) || want.has(t) ? [i] : []));
+    expect(incidentLinkIndices(adjacency, pick)).toEqual(scan);
+  }
 });

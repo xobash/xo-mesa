@@ -47,6 +47,24 @@ describe("background work governor", () => {
     expect(ran).toBe(false);
   });
 
+  it("stops polling for staleness once the job has started", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    let checks = 0;
+    const promise = runCancellableBackgroundWork(
+      "index",
+      () => new Promise<void>((resolve) => { release = resolve; }),
+      () => { checks++; return false; }
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const atStart = checks;
+    await vi.advanceTimersByTimeAsync(500);
+    expect(checks).toBe(atStart);
+    expect(vi.getTimerCount()).toBe(0);
+    release();
+    await promise;
+  });
+
   it("ages old low-priority work ahead of newer high-priority work", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);

@@ -1,6 +1,7 @@
 import { inflateSync } from 'fflate';
 import type { IndexedDocument } from "./documentCodec";
 import { isMarkdownPath } from "./markdownCode";
+import { trigramBit } from "./trigramBloom";
 import type { TaskItem } from "./taskParsing";
 export type { IndexedDocument } from "./documentCodec";
 
@@ -120,7 +121,7 @@ function entryOf(cache: Record<string, string>, key: string): Entry | undefined 
 export function documentMayMatch(cache: Record<string, string>, key: string, term: string): boolean {
   const indexed = entryOf(cache, key)?.indexed;
   if (!indexed || term.length < 3) return true;
-  for (let i = 0; i + 2 < term.length; i++) { const bit = hash(term.slice(i, i + 3)) % 4096; if (!(indexed.bloom[bit >>> 3] & (1 << (bit & 7)))) return false; }
+  for (let i = 0; i + 2 < term.length; i++) { const bit = trigramBit(term, i); if (!(indexed.bloom[bit >>> 3] & (1 << (bit & 7)))) return false; }
   return true;
 }
 export function indexedDocumentTasks(cache: Record<string, string>, key: string): readonly TaskItem[] | undefined { return entryOf(cache, key)?.indexed?.tasks; }

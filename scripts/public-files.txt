@@ -509,6 +509,8 @@ src/lib/trayStatus.test.ts
 src/lib/trayStatus.ts
 src/lib/treeWindow.test.ts
 src/lib/treeWindow.ts
+src/lib/trigramBloom.test.ts
+src/lib/trigramBloom.ts
 src/lib/unlinkedMentions.test.ts
 src/lib/unlinkedMentions.ts
 src/lib/vault.test.ts

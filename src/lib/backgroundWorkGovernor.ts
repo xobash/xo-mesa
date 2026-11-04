@@ -167,7 +167,16 @@ export function runCancellableBackgroundWork<T>(
   message = "Background work cancelled before it started."
 ): Promise<T> {
   if (stopped()) return Promise.reject(new BackgroundWorkCancelledError(message));
+  // Poll for staleness only while queued: a started job cannot be cancelled.
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let started = false;
+  const stopPolling = () => {
+    if (timer !== undefined) clearInterval(timer);
+    timer = undefined;
+  };
   const handle = backgroundWork.enqueue(kind, async () => {
+    started = true;
+    stopPolling();
     if (stopped()) throw new BackgroundWorkCancelledError(message);
     return task();
   });
@@ -175,12 +184,6 @@ export function runCancellableBackgroundWork<T>(
   const check = () => {
     if (stopped()) handle.cancel(new BackgroundWorkCancelledError(message));
   };
-  const timer =
-    typeof window !== "undefined"
-      ? window.setInterval(check, 50)
-      : setInterval(check, 50);
-  return handle.promise.finally(() => {
-    if (typeof window !== "undefined") window.clearInterval(timer as number);
-    else clearInterval(timer as ReturnType<typeof setInterval>);
-  });
+  if (!started) timer = setInterval(check, 50);
+  return handle.promise.finally(stopPolling);
 }
