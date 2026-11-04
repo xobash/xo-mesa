@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { getStore, useAppStore } from "../store";
 import { backlinksFor } from "../lib/graph";
 import { isMarkdownPath } from "../lib/markdownCode";
@@ -7,7 +7,9 @@ import type { MentionScanResult, UnlinkedMention } from "../lib/unlinkedMentions
 const SCAN_SLICE_MS = 8;
 const MENTIONS_SHOWN_PER_NOTE = 5;
 
-export function Backlinks() {
+// No props: memo keeps it from re-rendering with Preview on every keystroke;
+// its own store subscriptions still update it.
+export const Backlinks = memo(function Backlinks() {
   const notes = useAppStore((s) => s.notes);
   const activePath = useAppStore((s) => s.activePath);
   const selectFile = useAppStore((s) => s.selectFile);
@@ -134,4 +136,4 @@ export function Backlinks() {
       )}
     </div>
   );
-}
+});

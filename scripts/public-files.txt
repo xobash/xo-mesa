@@ -245,6 +245,7 @@ src/components/fileTreeMenu.test.tsx
 src/components/graphColors.ts
 src/components/graphGeometry.test.ts
 src/components/graphGeometry.ts
+src/components/keystrokeRenders.test.tsx
 src/components/paletteCommands.ts
 src/components/paletteHotkeys.test.tsx
 src/components/panelDrag.test.ts

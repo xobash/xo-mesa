@@ -100,7 +100,9 @@ export function Editor() {
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [headings, setHeadings] = useState<Array<{ level: number; label: string; line: number }>>([]);
   useEffect(() => {
-    if (!outlineOpen || activeContentState !== "ready") { setHeadings([]); return; }
+    // Keep the same empty array: a fresh `[]` is a state change, and this effect
+    // runs on every keystroke while the outline is closed.
+    if (!outlineOpen || activeContentState !== "ready") { setHeadings((current) => current.length ? [] : current); return; }
     // The full outline is optional work. Run after the input event and coalesce
     // rapid edits instead of scanning the whole document in the render path.
     const timer = setTimeout(() => setHeadings(content.split("\n").flatMap((line, index) => {

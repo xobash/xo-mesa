@@ -9,7 +9,10 @@ vi.mock('../lib/graph', () => ({ backlinksFor: (_notes: unknown, id: string) => 
 import { Backlinks } from './Backlinks';
 
 let host: HTMLDivElement; let root: ReturnType<typeof createRoot>;
-const render = () => act(async () => root.render(<Backlinks />));
+// The mocked store has no subscriptions; a new key stands in for the store
+// update that re-renders the memoized component in the app.
+let renders = 0;
+const render = () => act(async () => root.render(<Backlinks key={renders++} />));
 beforeEach(() => {
   io.state = { notes: { 'A.md': { title: 'Alpha' } }, activePath: 'Hub.md', selectFile: vi.fn(async () => {}), indexingTextFiles: 0 };
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
