@@ -89,11 +89,12 @@ describe("text revision history", () => {
 });
 
 /** Transaction fixture retains staged writes until commit, including rollback. */
-function historyDatabase(entries: Array<Record<string, unknown>>, rejectWrite = false) {
+function historyDatabase(entries: Array<Record<string, unknown>>, rejectWrite = false, modes: string[] = []) {
   const records = new Map(entries.map(entry => [entry.id, entry]));
   const db = {
     close: () => {},
-    transaction: () => {
+    transaction: (_store: string, mode: string) => {
+      modes.push(mode);
       const staged = new Map(records);
       let aborted = false;
       const tx = {
@@ -175,4 +176,23 @@ it("coalesces autosaves without coalescing an external snapshot", async () => {
   expect((await listTextRevisionsAsync("/vault", "a.md")).map(entry => entry.content)).toEqual(["first"]);
   await recordTextRevisionAsync("/vault", "a.md", "external", 2001, { source: "external" });
   expect((await listTextRevisionsAsync("/vault", "a.md")).map(entry => entry.content)).toEqual(["external", "first"]);
+});
+it("answers coalesced autosaves from the file index without rewriting the whole history", async () => {
+  const modes: string[] = [];
+  const records = historyDatabase([
+    { id: "other", root: "/vault", relPath: "b.md", content: "kept", savedAt: 1, order: 0, source: "autosave" },
+  ], false, modes);
+  const first = await recordTextRevisionAsync("/vault", "a.md", "first", 10, { source: "autosave" });
+  const stored = new Map(records);
+  modes.length = 0;
+  const second = await recordTextRevisionAsync("/vault", "a.md", "second", 1010, { source: "autosave" });
+  expect(second).toEqual(first);
+  expect(modes).toEqual(["readonly"]);
+  expect(records).toEqual(stored);
+  // A different source and a save after the window still record new copies.
+  await recordTextRevisionAsync("/vault", "a.md", "external", 2010, { source: "external" });
+  await recordTextRevisionAsync("/vault", "a.md", "later", 2010, { source: "autosave" });
+  await recordTextRevisionAsync("/vault", "a.md", "much later", 70_000, { source: "autosave" });
+  expect((await listTextRevisionsAsync("/vault", "a.md")).map(entry => entry.content)).toEqual(["much later", "later", "external", "first"]);
+  expect(records.get("other")?.content).toBe("kept");
 });

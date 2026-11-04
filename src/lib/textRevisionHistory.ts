@@ -200,11 +200,16 @@ async function mutateDatabase<T>(
     tx.oncomplete = () => {
       if (settled) return;
       settled = true;
+      storeTrimmed = true;
       db.close();
       resolve(value);
     };
   });
 }
+
+/** True once a full transaction in this realm has trimmed the store. Every
+ * later writer trims too, except the startup namespace migration. */
+let storeTrimmed = false;
 
 export interface RevisionInput {
   relPath: string;
@@ -212,11 +217,15 @@ export interface RevisionInput {
   source: RevisionSource;
 }
 
+function coalescesWith(last: TextRevision | undefined, item: RevisionInput, now: number): last is TextRevision {
+  return !!last && (last.source ?? "restore") === item.source && (last.content === item.content ||
+    (item.source === "autosave" && now >= last.savedAt && now - last.savedAt < REVISION_COALESCE_MS));
+}
+
 function addRevision(entries: TextRevision[], root: string, item: RevisionInput, now: number): TextRevision | null {
   if (!root || !item.relPath || item.content.length > MAX_REVISION_CHARS) return null;
   const last = entries.filter(entry => entry.root === root && entry.relPath === item.relPath).sort(compareNewestFirst)[0];
-  if (last && (last.source ?? "restore") === item.source && (last.content === item.content ||
-      (item.source === "autosave" && now >= last.savedAt && now - last.savedAt < REVISION_COALESCE_MS))) return last;
+  if (coalescesWith(last, item, now)) return last;
   const revision: TextRevision = { id: revisionId(now), root, ...item, savedAt: now, order: nextOrder(entries) };
   entries.unshift(revision);
   return revision;
@@ -237,7 +246,34 @@ export function recordTextRevisionsAsync(root: string, items: RevisionInput[], n
     const result = mutation(readAll());
     return Promise.resolve(writeAll(result.entries) ? result.value : items.map(() => null));
   }
-  return mutateDatabase(mutation).catch(() => items.map(() => null));
+  return (items.length === 1 ? coalescedRevision(root, items[0], now).catch(() => undefined) : Promise.resolve(undefined))
+    .then(hit => hit ? [hit] : mutateDatabase(mutation))
+    .catch(() => items.map(() => null));
+}
+
+/** Autosaves inside the coalescing window change nothing. Answer them from the
+ * by-file index instead of reading, trimming and diffing every stored revision
+ * (the whole history, up to the protected budget) on each save. Trimming a
+ * trimmed store is a no-op, so the full transaction would return the same
+ * revision and write nothing. Undefined means "run the full transaction". */
+async function coalescedRevision(root: string, item: RevisionInput, now: number): Promise<TextRevision | undefined> {
+  if (!storeTrimmed || !root || !item.relPath || item.content.length > MAX_REVISION_CHARS) return undefined;
+  const db = await revisionDatabase();
+  try {
+    return await new Promise<TextRevision | undefined>((resolve, reject) => {
+      const tx = db.transaction(DATABASE_STORE, "readonly");
+      const request = tx.objectStore(DATABASE_STORE).index("by-file").getAll([root, item.relPath]);
+      let hit: TextRevision | undefined;
+      request.onsuccess = () => {
+        const last = (request.result as unknown[]).filter(isTextRevision).sort(compareNewestFirst)[0];
+        if (coalescesWith(last, item, now)) hit = last;
+      };
+      request.onerror = () => reject(request.error);
+      tx.oncomplete = () => resolve(hit);
+      tx.onabort = () => reject(tx.error);
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally { db.close(); }
 }
 
 export async function recordTextRevisionAsync(
@@ -323,6 +359,7 @@ function migrateTextRevisions(root: string, fromRelPath: string, toRelPath: stri
 
 export function clearTextRevisionsForTests(): void {
   fallbackSequence = 0;
+  storeTrimmed = false;
   if (typeof localStorage !== "undefined") localStorage.removeItem(STORAGE_KEY);
 }
 
@@ -344,6 +381,7 @@ export async function legacyRevisionRoots(): Promise<Set<string>> {
 export async function migrateRevisionNamespaces(identity: (root: string) => string): Promise<void> {
   const legacy = readAll();
   if (typeof indexedDB !== "undefined") {
+    storeTrimmed = false;
     const db = await revisionDatabase();
     try { await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(DATABASE_STORE, "readwrite");
