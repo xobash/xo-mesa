@@ -22,11 +22,12 @@ test('every creatable window kind can receive events and close itself', () => {
     assert.ok(grants(label, 'core:window:allow-close'), `${label} lacks close permission`);
   }
 });
-test('research viewers can snapshot but have no terminal or vault mutation authority', () => {
-  assert.ok(grants('research-probe', 'allow-terminal-snapshot'));
+test('research viewers can snapshot and export outside the vault but have no terminal or vault mutation authority', () => {
+  const allowed = ['allow-terminal-snapshot', 'allow-research-kit-save'];
+  for (const permission of allowed) assert.ok(grants('research-probe', permission));
   for (const cap of caps.filter(c => c.windows.some(w => matches(w, 'research-probe')))) {
     for (const permission of ids(cap).filter(p => p.startsWith('allow-') || p.startsWith('fs:'))) {
-      assert.equal(permission, 'allow-terminal-snapshot');
+      assert.ok(allowed.includes(permission), permission);
     }
   }
 });

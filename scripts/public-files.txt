@@ -104,6 +104,7 @@ src-tauri/build.rs
 src-tauri/capabilities/default.json
 src-tauri/capabilities/pi.json
 src-tauri/capabilities/research.json
+src-tauri/capabilities/tray.json
 src-tauri/capabilities/workspace.json
 src-tauri/icons/128x128.png
 src-tauri/icons/128x128@2x.png
@@ -332,6 +333,7 @@ src/lib/framePublisher.test.ts
 src/lib/framePublisher.ts
 src/lib/fsnames.test.ts
 src/lib/fsnames.ts
+src/lib/fuzzy.ts
 src/lib/graph.test.ts
 src/lib/graph.ts
 src/lib/graphPhysics.test.ts
@@ -445,8 +447,6 @@ src/lib/rtf.test.ts
 src/lib/rtf.ts
 src/lib/saveIssues.test.ts
 src/lib/saveIssues.ts
-src/lib/saveTextFile.test.ts
-src/lib/saveTextFile.ts
 src/lib/search.test.ts
 src/lib/search.ts
 src/lib/searchEligibility.test.ts
@@ -503,6 +503,8 @@ src/lib/textRevisionHistory.ts
 src/lib/textSaveCoordinator.test.ts
 src/lib/textSaveCoordinator.ts
 src/lib/themeContrast.test.ts
+src/lib/trayPopover.test.ts
+src/lib/trayPopover.ts
 src/lib/trayStatus.test.ts
 src/lib/trayStatus.ts
 src/lib/treeWindow.test.ts
@@ -583,8 +585,15 @@ src/styles/typography.css
 src/styles/unification.css
 src/styles/viewers.css
 src/styles/welcome.css
+src/tray/MiniGraph.tsx
+src/tray/TrayPopover.test.tsx
+src/tray/TrayPopover.tsx
+src/tray/icons.tsx
+src/tray/main.tsx
+src/tray/tray.css
 src/types.ts
 src/vite-env.d.ts
+tray.html
 tsconfig.json
 tsconfig.node.json
 vite.config.ts

@@ -774,20 +774,23 @@ export default function App() {
   }, [docMode]);
 
   // Tauri close requests are cancellable. Hold the main window open until all
-  // dirty paths finish verified writes; a failed save leaves the window and
-  // editor intact so the user can resolve the reported conflict.
+  // dirty paths finish verified writes, then hide it; a failed save leaves the
+  // window and editor intact so the user can resolve the reported conflict.
   useEffect(() => {
     if (docMode || panelMode || agentMode || researchMode || !IN_TAURI) return;
     let disposed = false;
     let stop: (() => void) | undefined;
     void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
       if (disposed) return;
+      const current = getCurrentWindow();
+      // Mesa keeps running in the menu bar; Quit (menu, popover, Cmd+Q) ends it.
       stop = installCloseGuard(
-        getCurrentWindow(),
+        current,
         flushAllEdits,
         hasPendingEdits,
         (status) => useAppStore.setState({ status }),
-        onBlocked
+        onBlocked,
+        () => current.hide()
       );
     }).catch((error) => {
       if (!disposed) useAppStore.setState({ status: `Close safety failed to start: ${String(error)}` });

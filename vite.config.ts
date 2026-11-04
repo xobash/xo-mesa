@@ -24,6 +24,8 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
+      // The menu bar popover is its own small page so it never loads the app shell.
+      input: { index: "index.html", tray: "tray.html" },
       output: {
         // Keep Rollup helpers and shared app code out of heavyweight vendor
         // chunks. Otherwise a helper first assigned to pdf-lib can make the

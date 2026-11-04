@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 RUN npm rebuild esbuild
-COPY index.html vite.config.ts tsconfig.json tsconfig.node.json Dockerfile nginx.conf .dockerignore ./
+COPY index.html tray.html vite.config.ts tsconfig.json tsconfig.node.json Dockerfile nginx.conf .dockerignore ./
 COPY scripts/third-party-notices.mjs scripts/docker-context.check.mjs scripts/bundle-boundaries.check.mjs ./scripts/
 COPY src-tauri/Cargo.lock src-tauri/tauri.conf.json ./src-tauri/
 COPY src ./src

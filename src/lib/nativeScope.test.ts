@@ -55,6 +55,12 @@ describe("main workspace authority", () => {
   });
 });
 
+it("gives the Deep Research export to Pi and research windows but no fs write or other window", () => {
+  const grants = (label: string) => capabilities.filter(c => c.windows?.some(p => matchesWindow(p, label))).flatMap(c => c.permissions ?? []);
+  for (const label of ["main", "agent-one", "research-one"]) expect(grants(label)).toContain("allow-research-kit-save");
+  for (const label of ["doc-one", "panel-one", "tray"]) expect(grants(label)).not.toContain("allow-research-kit-save");
+});
+
 describe("privileged application script policy", () => {
   it("permits no arbitrary inline script or remote script source", () => {
     const policy = tauriConfig.app.security.csp.split(';').find(d => d.trim().startsWith('script-src'))!;

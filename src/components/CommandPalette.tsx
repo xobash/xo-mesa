@@ -5,6 +5,7 @@ import { formatHotkey } from "../lib/hotkeys";
 import { activeEditorCommands } from "../lib/editorCommands";
 import { PALETTE_COMMANDS } from "./paletteCommands";
 import { Modal } from "./Modal";
+import { fuzzy } from "../lib/fuzzy";
 
 /** Fill a template for the open note and insert it at the editor selection. */
 async function insertTemplate(relPath: string) {
@@ -13,28 +14,6 @@ async function insertTemplate(relPath: string) {
   if (!activeEditorCommands()?.insertText(text)) {
     useAppStore.setState({ status: "Open an editable note to insert a template." });
   }
-}
-
-/** Subsequence fuzzy score (higher = better, 0 = no match). */
-function fuzzy(q: string, text: string): number {
-  if (!q) return 0.5;
-  const t = text.toLowerCase();
-  q = q.toLowerCase();
-  let qi = 0;
-  let streak = 0;
-  let score = 0;
-  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-    if (t[ti] === q[qi]) {
-      qi++;
-      streak++;
-      score += 1 + streak;
-    } else {
-      streak = 0;
-    }
-  }
-  if (qi < q.length) return 0;
-  if (t.startsWith(q)) score += 6;
-  return score / (1 + t.length * 0.04);
 }
 
 export function CommandPalette() {

@@ -7,19 +7,21 @@ import { DEFAULT_SETTINGS } from '../lib/settings';
 const io = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
+  emitTo: vi.fn(),
   subscribers: new Set<() => void>(),
   state: {} as Record<string, unknown>,
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke }));
-vi.mock('@tauri-apps/api/event', () => ({ listen: io.listen }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: io.listen, emitTo: io.emitTo }));
 vi.mock('../store', () => ({
   getStore: () => io.state,
   useAppStore: { subscribe: (fn: () => void) => { io.subscribers.add(fn); return () => io.subscribers.delete(fn); } },
 }));
 import { useTrayStatus } from './useTrayStatus';
 
-type Action = { payload: { action: string; rel?: string } };
+type Action = { payload: { action: string; rel?: string; id?: string; query?: string } };
 let action: ((event: Action) => void) | null = null;
+let popover: ((event: { payload: { query?: string } }) => void) | null = null;
 const unlisten = vi.fn();
 function Probe({ enabled }: { enabled: boolean }) { useTrayStatus(enabled); return null; }
 let host: HTMLDivElement; let root: ReturnType<typeof createRoot>;
@@ -30,17 +32,23 @@ const sent = () => io.invoke.mock.calls.map(([, args]) => (args as { snapshot: {
 beforeEach(() => {
   vi.useFakeTimers();
   io.invoke.mockResolvedValue(undefined);
-  io.listen.mockImplementation(async (_name: string, handler: (event: Action) => void) => { action = handler; return unlisten; });
+  io.emitTo.mockResolvedValue(undefined);
+  io.listen.mockImplementation(async (name: string, handler: unknown) => {
+    if (name === 'mesa://tray-action') action = handler as typeof action; else popover = handler as typeof popover;
+    return unlisten;
+  });
   io.state = {
     vaultPath: '/vault', vaultName: 'Synthetic', textSaveState: { pending: 0, saving: 0, failed: 0 },
     notes: {}, contentCache: {}, settings: { ...DEFAULT_SETTINGS }, deepResearch: null, syncBusy: false,
     openSearch: vi.fn(), setTasksOpen: vi.fn(), setSettingsOpen: vi.fn(), selectFile: vi.fn(async () => {}),
+    files: [], activePath: null, notesIndexPending: false, recentVaults: [], currentRecentVaultId: null, graphFull: false,
+    fileFor: (rel: string) => (io.state.files as { relPath: string }[]).find((f) => f.relPath === rel),
   };
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove();
-  vi.useRealTimers(); vi.clearAllMocks(); io.subscribers.clear(); action = null;
+  vi.useRealTimers(); vi.clearAllMocks(); io.subscribers.clear(); action = null; popover = null;
 });
 
 it('does nothing outside the main window', async () => {
@@ -77,6 +85,7 @@ it('resends after a failed native update', async () => {
 });
 
 it('routes tray actions to the store and stops on unmount', async () => {
+  io.state = { ...io.state, files: [{ relPath: 'Tasks.md' }] };
   await render(true);
   await act(async () => { await Promise.resolve(); });
   const st = io.state as Record<string, ReturnType<typeof vi.fn>>;
@@ -94,8 +103,67 @@ it('routes tray actions to the store and stops on unmount', async () => {
   root = createRoot(host);
   await act(async () => { vi.advanceTimersByTime(2000); });
   expect(sent()).toHaveLength(1);
-  expect(unlisten).toHaveBeenCalledOnce();
+  expect(unlisten).toHaveBeenCalledTimes(2);
   expect(io.subscribers.size).toBe(0);
+});
+
+const file = (relPath: string) => ({ relPath, path: `/vault/${relPath}`, name: relPath.replace(/^.*\//, '').replace(/\.md$/, ''), ext: 'md', isMarkdown: true });
+
+it('answers popover requests with recents, vaults, search results and a mini graph', async () => {
+  io.state = {
+    ...io.state,
+    files: [file('Projects/Alpha.md'), file('Beta.md')],
+    notes: {
+      'Projects/Alpha.md': { relPath: 'Projects/Alpha.md', title: 'Alpha', rawLinks: ['Beta'], tags: [], aliases: [] },
+      'Beta.md': { relPath: 'Beta.md', title: 'Beta', rawLinks: [], tags: [], aliases: [] },
+    },
+    recentVaults: [{ id: 'aa', label: 'Synthetic' }, { id: 'bb', label: 'Other' }], currentRecentVaultId: 'aa',
+  };
+  await render(true);
+  await act(async () => { await Promise.resolve(); });
+  change({ activePath: 'Beta.md' });
+  change({ activePath: 'Projects/Alpha.md' });
+  popover!({ payload: { query: 'alp' } });
+  const [label, event, state] = io.emitTo.mock.calls[0];
+  expect([label, event]).toEqual(['tray', 'mesa://tray-popover-state']);
+  expect(state.recents.map((f: { rel: string }) => f.rel)).toEqual(['Projects/Alpha.md', 'Beta.md']);
+  expect(state.results).toEqual([{ rel: 'Projects/Alpha.md', title: 'Alpha', folder: 'Projects' }]);
+  expect(state.vaults).toEqual([{ id: 'aa', label: 'Synthetic', current: true }, { id: 'bb', label: 'Other', current: false }]);
+  expect(state.graph.nodes).toHaveLength(2);
+  expect(state.graph.links).toHaveLength(1);
+  expect(state.graph.nodes[state.graph.active].id).toBe('Projects/Alpha.md');
+});
+
+it('routes popover actions to the store and ignores stale targets', async () => {
+  const st = {
+    newNote: vi.fn(async () => {}), openDailyNote: vi.fn(async () => {}), openRecentVault: vi.fn(async () => {}),
+    setSetting: vi.fn(), syncAll: vi.fn(async () => {}), setAgentOpen: vi.fn(), toggleGraphFull: vi.fn(),
+  };
+  io.state = { ...io.state, ...st, files: [file('Beta.md')], recentVaults: [{ id: 'aa', label: 'Synthetic' }] };
+  await render(true);
+  await act(async () => { await Promise.resolve(); });
+  const sel = io.state.selectFile as ReturnType<typeof vi.fn>;
+  action!({ payload: { action: 'note', rel: 'Beta.md' } });
+  action!({ payload: { action: 'note', rel: 'Gone.md' } });
+  action!({ payload: { action: 'vault', id: 'aa' } });
+  action!({ payload: { action: 'vault', id: 'zz' } });
+  action!({ payload: { action: 'search', query: 'beta' } });
+  action!({ payload: { action: 'new-note' } });
+  action!({ payload: { action: 'daily' } });
+  action!({ payload: { action: 'sync-toggle' } });
+  action!({ payload: { action: 'sync-now' } });
+  action!({ payload: { action: 'pi' } });
+  action!({ payload: { action: 'graph' } });
+  expect(sel).toHaveBeenCalledExactlyOnceWith('Beta.md');
+  expect(st.openRecentVault).toHaveBeenCalledExactlyOnceWith('aa');
+  expect(io.state.openSearch).toHaveBeenCalledWith('beta');
+  expect(st.newNote).toHaveBeenCalledOnce();
+  expect(st.openDailyNote).toHaveBeenCalledOnce();
+  expect(st.setSetting).toHaveBeenCalledWith('syncEnabled', !DEFAULT_SETTINGS.syncEnabled);
+  // Sync now only runs while sync is on.
+  expect(st.syncAll).toHaveBeenCalledTimes(DEFAULT_SETTINGS.syncEnabled ? 1 : 0);
+  expect(st.setAgentOpen).toHaveBeenCalledWith(true);
+  expect(st.toggleGraphFull).toHaveBeenCalledOnce();
 });
 
 it('removes a listener that resolves after unmount', async () => {

@@ -134,6 +134,15 @@ pub fn require_approved(app: &AppHandle, root: &str) -> Result<PathBuf, String> 
     require_approved_from(&approved_roots_path(app)?, root)
 }
 
+/// Every recorded approved root, uncanonicalized; unavailable roots stay listed.
+pub(crate) fn approved_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    Ok(load_approved_roots(&approved_roots_path(app)?)?
+        .roots
+        .into_iter()
+        .map(PathBuf::from)
+        .collect())
+}
+
 fn pi_process_allowed_from(approval_path: &Path, root: &Path) -> Result<bool, String> {
     let key = normalized_root(root.to_str().ok_or("vault root is not valid UTF-8")?)?;
     let approved = load_approved_roots(approval_path)?;

@@ -24,7 +24,6 @@ import {
   researchTroubleshootingTrigger,
 } from "../lib/deepResearchDiagnostics";
 import { currentPiSessionId } from "../lib/deepResearchRun";
-import { saveTextFile } from "../lib/saveTextFile";
 import { invoke } from "@tauri-apps/api/core";
 
 /** Shared Deep Research UI backed by one store run, with progress, evidence, and proposal review. */
@@ -101,21 +100,13 @@ async function copyText(text: string | Promise<string>): Promise<boolean> {
 
 async function saveKitToDisk(text: string, runId: string, completed: boolean): Promise<boolean> {
   if (!IN_TAURI) return false;
+  const safeRunId = runId.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 48) || "run";
   try {
-    const [{ save }, { writeTextFile }] = await Promise.all([
-      import("@tauri-apps/plugin-dialog"),
-      import("@tauri-apps/plugin-fs"),
-    ]);
-    const safeRunId = runId.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 48) || "run";
-    return await saveTextFile(
-      text,
-      {
-        title: completed ? "Save completed Deep Research log" : "Save Deep Research troubleshooting kit",
-        defaultPath: `mesa-deep-research-${safeRunId}-${completed ? "complete" : "troubleshooting"}.md`,
-        filters: [{ name: "Markdown", extensions: ["md"] }],
-      },
-      { save, writeTextFile }
-    );
+    // Native picks the path and refuses vault destinations; the renderer has no fs write grant.
+    return await invoke<boolean>("research_kit_save", {
+      name: `mesa-deep-research-${safeRunId}-${completed ? "complete" : "troubleshooting"}.md`,
+      content: text,
+    });
   } catch {
     return false;
   }

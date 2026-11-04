@@ -382,15 +382,19 @@ fn write_atomic_with_replace(
     Ok(())
 }
 
-fn export_copy(path: &Path, root: &Path, data: &[u8]) -> Result<(), String> {
+fn export_copy(path: &Path, vaults: &[PathBuf], data: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("copy has no parent")?
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
-    if parent.starts_with(&root) {
-        return Err("Choose a destination outside the current vault.".into());
+    // An unavailable vault cannot contain the existing, canonical parent.
+    if vaults
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| parent.starts_with(root))
+    {
+        return Err("Choose a destination outside the vault.".into());
     }
     let name = path.file_name().ok_or("copy has no filename")?;
     let target = parent.join(name);
@@ -398,9 +402,7 @@ fn export_copy(path: &Path, root: &Path, data: &[u8]) -> Result<(), String> {
     if file_hash(&target).map_err(|e| e.to_string())?
         != (Sha256::digest(data).into(), data.len() as u64)
     {
-        return Err(
-            "Recovery copy failed verification; keep editing and choose another path.".into(),
-        );
+        return Err("Saved copy failed verification; choose another path.".into());
     }
     sync_parent(&target).map_err(|e| e.to_string())
 }
@@ -438,7 +440,52 @@ pub async fn text_save_copy(
             return Ok(false);
         };
         let path = path.into_path().map_err(|e| e.to_string())?;
-        export_copy(&path, &root, content.as_bytes())?;
+        export_copy(&path, &[root], content.as_bytes())?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn research_export_caller(label: &str) -> bool {
+    label == "main" || label.starts_with("agent-") || label.starts_with("research-")
+}
+
+/// Deep Research exports leave Mesa only as a native user-selected, new file
+/// outside every approved vault; the renderer never names the destination.
+#[tauri::command]
+pub async fn research_kit_save(
+    app: AppHandle,
+    window: tauri::Window,
+    name: String,
+    content: String,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if !research_export_caller(window.label()) {
+        return Err("research exports belong to Pi and research windows".into());
+    }
+    if content.len() > 64 * 1024 * 1024 {
+        return Err("research export exceeds 64 MiB".into());
+    }
+    let vaults = crate::vaultscope::approved_roots(&app)?;
+    let name = Path::new(&name)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("mesa-deep-research.md")
+        .to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = app
+            .dialog()
+            .file()
+            .set_title("Save Deep Research export (choose a new file outside the vault)")
+            .add_filter("Markdown", &["md"])
+            .set_file_name(name)
+            .blocking_save_file()
+        else {
+            return Ok(false);
+        };
+        let path = path.into_path().map_err(|e| e.to_string())?;
+        export_copy(&path, &vaults, content.as_bytes())?;
         Ok(true)
     })
     .await
@@ -683,16 +730,38 @@ mod tests {
         let dir = test_folder("export");
         let root = dir.join("vault");
         fs::create_dir(&root).unwrap();
-        assert!(export_copy(&root.join("copy.md"), &root, b"draft").is_err());
+        let vaults = [root.clone()];
+        assert!(export_copy(&root.join("copy.md"), &vaults, b"draft").is_err());
         let target = dir.join("copy.md");
-        export_copy(&target, &root, b"draft").unwrap();
+        export_copy(&target, &vaults, b"draft").unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"draft");
-        assert!(export_copy(&target, &root, b"other").is_err());
+        assert!(export_copy(&target, &vaults, b"other").is_err());
         assert_eq!(fs::read(&target).unwrap(), b"draft");
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&root, dir.join("alias")).unwrap();
-            assert!(export_copy(&dir.join("alias/copy.md"), &root, b"draft").is_err());
+            assert!(export_copy(&dir.join("alias/copy.md"), &vaults, b"draft").is_err());
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn research_export_refuses_every_approved_vault_and_other_windows() {
+        let dir = test_folder("research-export");
+        let (first, second) = (dir.join("first"), dir.join("second"));
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let vaults = [dir.join("unplugged"), first, second.clone()];
+        let error = export_copy(&second.join("kit.md"), &vaults, b"kit").unwrap_err();
+        assert!(error.contains("outside the vault"));
+        assert!(!second.join("kit.md").exists());
+        export_copy(&dir.join("kit.md"), &vaults, b"kit").unwrap();
+        assert_eq!(fs::read(dir.join("kit.md")).unwrap(), b"kit");
+        for label in ["main", "agent-1", "research-1"] {
+            assert!(research_export_caller(label), "{label}");
+        }
+        for label in ["doc-1", "panel-graph", "tray", "pi-harness"] {
+            assert!(!research_export_caller(label), "{label}");
         }
         fs::remove_dir_all(dir).unwrap();
     }

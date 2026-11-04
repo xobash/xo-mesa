@@ -14,6 +14,7 @@ const expected = [
   "!package.json",
   "!package-lock.json",
   "!index.html",
+  "!tray.html",
   "!vite.config.ts",
   "!tsconfig.json",
   "!tsconfig.node.json",

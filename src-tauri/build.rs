@@ -51,6 +51,7 @@ fn main() {
             "vault_flush_file",
             "vault_write_atomic",
             "text_save_copy",
+            "research_kit_save",
             "vault_create_directory",
             "vault_move_to_recovery",
             "vault_restore_recovery",
@@ -66,6 +67,8 @@ fn main() {
             "vault_watch",
             "vault_unwatch",
             "tray_update",
+            "tray_popover_request",
+            "tray_popover_act",
         ]),
     ))
     .expect("failed to build Mesa permissions")

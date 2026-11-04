@@ -10,15 +10,11 @@ import type { DeepResearchEvent } from "../lib/deepResearchRun";
 
 const boundary = vi.hoisted(() => ({
   handlers: new Map<string, (event: { payload: unknown }) => void>(),
-  invoke: vi.fn(async (name: string, _args?: unknown) => name === "terminal_snapshot" ? { data: "retained Pi tool transcript" } : undefined),
+  invoke: vi.fn(async (name: string, _args?: unknown): Promise<unknown> => name === "terminal_snapshot" ? { data: "retained Pi tool transcript" } : name === "research_kit_save" ? true : undefined),
   copy: vi.fn(async (_value: string) => undefined),
-  save: vi.fn(async () => "/tmp/research-qa.md" as string | null),
-  writeText: vi.fn(async () => undefined),
   restart: vi.fn(async () => undefined),
 }));
 vi.mock("@tauri-apps/api/core", async (original) => ({ ...await original<object>(), invoke: boundary.invoke }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ save: boundary.save }));
-vi.mock("@tauri-apps/plugin-fs", async (original) => ({ ...await original<object>(), writeTextFile: boundary.writeText }));
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: async () => "test" }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (name: string, callback: (event: { payload: unknown }) => void) => {
@@ -65,7 +61,7 @@ function replies() { return boundary.invoke.mock.calls.filter(([name]) => name =
 
 beforeEach(async () => {
   vi.useFakeTimers();
-  boundary.handlers.clear(); boundary.invoke.mockClear(); boundary.copy.mockClear(); boundary.restart.mockClear(); boundary.save.mockClear(); boundary.writeText.mockClear();
+  boundary.handlers.clear(); boundary.invoke.mockClear(); boundary.copy.mockClear(); boundary.restart.mockClear();
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: boundary.copy } });
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   useAppStore.setState({ ...initial, vaultPath: "/test-vault", files: [], notes: {}, contentCache: {}, deepResearch: null });
@@ -158,25 +154,33 @@ describe("Deep Research validation and visible recovery", () => {
     expect(boundary.copy.mock.calls[0][0]).toContain("retained Pi tool transcript");
   });
 
-  it("uses the native save fallback when clipboard access fails and does not write on dialog cancellation", async () => {
+  it("falls back to the native export when clipboard access fails and reports a cancelled or refused save", async () => {
+    const saves = () => boundary.invoke.mock.calls.filter(([name]) => name === "research_kit_save");
     await start();
     await emit({ kind: "agent-end", reason: "No accepted finish" });
     boundary.copy.mockRejectedValueOnce(new Error("Clipboard denied"));
     await act(async () => {
       button("Copy troubleshooting kit")!.click();
-      await vi.waitFor(() => expect(boundary.writeText).toHaveBeenCalled());
+      await vi.waitFor(() => expect(saves()).toHaveLength(1));
     });
-    expect(boundary.save).toHaveBeenCalledTimes(1);
+    expect(saves()[0][1]).toEqual({
+      name: expect.stringMatching(/^mesa-deep-research-[\w-]+-troubleshooting\.md$/),
+      content: expect.stringContaining("retained Pi tool transcript"),
+    });
     expect(host.textContent).toContain("Saved to file");
     await act(async () => vi.advanceTimersByTimeAsync(2000));
-    boundary.copy.mockRejectedValueOnce(new Error("Clipboard denied"));
-    boundary.save.mockResolvedValueOnce(null);
-    await act(async () => {
-      button("Copy troubleshooting kit")!.click();
-      await vi.waitFor(() => expect(boundary.save).toHaveBeenCalledTimes(2));
-    });
-    expect(host.textContent).toContain("Copy failed");
-    expect(boundary.writeText).toHaveBeenCalledTimes(1);
+    for (const outcome of [async () => false, async () => { throw "Choose a destination outside the vault."; }]) {
+      boundary.copy.mockRejectedValueOnce(new Error("Clipboard denied"));
+      boundary.invoke.mockImplementationOnce(async (name: string) => name === "terminal_snapshot" ? { data: "" } : undefined);
+      boundary.invoke.mockImplementationOnce(outcome);
+      const before = saves().length;
+      await act(async () => {
+        button("Copy troubleshooting kit")!.click();
+        await vi.waitFor(() => expect(saves()).toHaveLength(before + 1));
+      });
+      expect(host.textContent).toContain("Copy failed");
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+    }
   });
 
   it("starts clipboard authorization in the click before the native snapshot resolves", async () => {
@@ -212,7 +216,7 @@ describe("Deep Research validation and visible recovery", () => {
     const text = new Promise<string>(resolve => { reader.onload = () => resolve(String(reader.result)); });
     reader.readAsText(blob);
     expect(await text).toContain("deferred retained transcript");
-    expect(boundary.save).not.toHaveBeenCalled();
+    expect(boundary.invoke).not.toHaveBeenCalledWith("research_kit_save", expect.anything());
   });
 
   it("stops after three rejected submissions and retains the rejected report and exact issues", async () => {

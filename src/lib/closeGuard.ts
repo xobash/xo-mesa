@@ -15,8 +15,12 @@ export async function flushBeforeClose(flush: () => Promise<void>): Promise<void
   } finally { clearTimeout(timer); }
 }
 
-/** A verified flush grants one close request, unless the user explicitly abandons edits. */
-export function installCloseGuard(window: CloseWindow, flush: () => Promise<void>, pending: () => boolean, error: (message: string) => void, onBlocked?: BlockedClose): () => void {
+/**
+ * A verified flush grants one close request, unless the user explicitly abandons edits.
+ * With `hide`, the window hides after the flush instead of closing, and every
+ * later close request flushes again (the app keeps running in the menu bar).
+ */
+export function installCloseGuard(window: CloseWindow, flush: () => Promise<void>, pending: () => boolean, error: (message: string) => void, onBlocked?: BlockedClose, hide?: () => Promise<void>): () => void {
   let disposed = false, flushing = false, authorized = false, forced = false;
   let unlisten: (() => void) | undefined;
   void window.onCloseRequested(async event => {
@@ -37,6 +41,7 @@ export function installCloseGuard(window: CloseWindow, flush: () => Promise<void
       }
       if (disposed) return;
       flushing = false;
+      if (hide) { forced = false; await hide(); return; }
       authorized = !forced;
       await window.close();
     } catch (reason) {

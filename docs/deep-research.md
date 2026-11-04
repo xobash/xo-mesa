@@ -357,8 +357,9 @@ absolute path and provider/API keys. Clipboard authorization starts in the click
 while the native terminal snapshot resolves through a deferred text item. This
 preserves WebKit user-gesture requirements without granting native clipboard or
 filesystem authority. If the desktop clipboard rejects the
-copy, Mesa opens a native save dialog and writes the same kit to the path the
-user selects. The fallback does not choose a vault path. Detached read-only
+copy, Mesa opens a native save dialog and writes the same kit to a new file the
+user selects outside the vault. Mesa chooses no path, refuses vault folders and
+existing files, and verifies the written bytes. Detached read-only
 Research windows expose the same diagnostic export and snapshot the run's
 original shared Pi session; they do not start a new session or gain apply controls.
 

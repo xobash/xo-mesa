@@ -52,6 +52,20 @@ const SAFE_QUIT_MENU_ID: &str = "mesa-safe-quit";
 #[derive(Default)]
 struct QuitGuard(std::sync::atomic::AtomicBool);
 
+/// Quit through the save-before-quit guard when main has armed it.
+pub(crate) fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::{Emitter, Manager};
+    if app
+        .state::<QuitGuard>()
+        .0
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        let _ = app.emit(QUIT_REQUESTED_EVENT, ());
+    } else {
+        app.exit(0);
+    }
+}
+
 #[tauri::command]
 fn quit_guard_arm(state: tauri::State<'_, QuitGuard>) {
     state.0.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -237,18 +251,8 @@ pub fn run() {
                 tray::handle_menu(app, id);
                 return;
             }
-            if id != SAFE_QUIT_MENU_ID && id != tray::QUIT_ID {
-                return;
-            }
-            use tauri::{Emitter, Manager};
-            if app
-                .state::<QuitGuard>()
-                .0
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
-                let _ = app.emit(QUIT_REQUESTED_EVENT, ());
-            } else {
-                app.exit(0);
+            if id == SAFE_QUIT_MENU_ID || id == tray::QUIT_ID {
+                request_quit(app);
             }
         })
         .setup(|app| {
@@ -343,6 +347,7 @@ pub fn run() {
             vaultscope::vault_flush_file,
             vaultwrite::vault_write_atomic,
             vaultwrite::text_save_copy,
+            vaultwrite::research_kit_save,
             vaultops::vault_create_directory,
             vaultops::vault_move_to_recovery,
             vaultops::vault_restore_recovery,
@@ -357,11 +362,37 @@ pub fn run() {
             quit_after_save,
             vaultwatch::vault_watch,
             vaultwatch::vault_unwatch,
-            tray::tray_update
+            tray::tray_update,
+            tray::tray_popover_request,
+            tray::tray_popover_act
         ])
         .build(tauri::generate_context!())
         .expect("error while running Mesa")
         .run(|app, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::Focused(false),
+                ..
+            } = &event
+            {
+                if label == tray::POPOVER_LABEL {
+                    tray::close_popover(app);
+                }
+            }
+            // Closing main hides it (Mesa keeps running in the menu bar); the
+            // Dock icon brings it back.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = &event
+            {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
             if let tauri::RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::Destroyed,

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-popover",
+  "description": "The menu bar popover reads state from main and asks main to act; it has no vault, window or file authority.",
+  "windows": [
+    "tray"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-tray-popover-request",
+    "allow-tray-popover-act"
+  ]
+}

@@ -28,6 +28,29 @@ describe('native close guard behavior', () => {
   it('does not close a disposed window after delayed saving', async () => {
     const save = deferred(), s = setup(vi.fn(() => save.promise)); const request = s.request(); s.dispose(); save.resolve(); await request.done; expect(s.window.close).not.toHaveBeenCalled(); await Promise.resolve(); expect(s.stop).toHaveBeenCalledOnce();
   });
+  it('hides instead of closing and flushes again on every later close', async () => {
+    let onClose!: (event: CloseRequest) => Promise<void>;
+    const close = vi.fn(async () => {}), hide = vi.fn(async () => {}), flush = vi.fn(async () => {});
+    installCloseGuard({ onCloseRequested: async (cb) => { onClose = cb; return () => {}; }, close }, flush, () => false, vi.fn(), undefined, hide);
+    await vi.waitFor(() => expect(onClose).toBeDefined());
+    for (let i = 1; i <= 2; i++) {
+      const event = { preventDefault: vi.fn() };
+      await onClose(event);
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+      expect(flush).toHaveBeenCalledTimes(i);
+      expect(hide).toHaveBeenCalledTimes(i);
+    }
+    expect(close).not.toHaveBeenCalled();
+  });
+  it('keeps a hide-on-close window visible when saving fails', async () => {
+    let onClose!: (event: CloseRequest) => Promise<void>;
+    const hide = vi.fn(async () => {}), error = vi.fn();
+    installCloseGuard({ onCloseRequested: async (cb) => { onClose = cb; return () => {}; }, close: vi.fn() }, async () => { throw new Error('disk full'); }, () => true, error, undefined, hide);
+    await vi.waitFor(() => expect(onClose).toBeDefined());
+    await onClose({ preventDefault: vi.fn() });
+    expect(hide).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('disk full'));
+  });
   it('reports listener registration failures', async () => {
     const error = vi.fn(); installCloseGuard({ onCloseRequested: async () => { throw new Error('permission'); }, close: async () => {} }, async () => {}, () => false, error);
     await vi.waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringContaining('Close safety failed to start')));

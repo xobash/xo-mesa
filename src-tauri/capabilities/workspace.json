@@ -18,6 +18,7 @@
     "allow-quit-guard-disarm",
     "allow-quit-after-save",
     "allow-tray-update",
+    "core:window:allow-hide",
     "allow-text-save-copy",
     "allow-vault-apply-research",
     "allow-vault-purge-recovery",
