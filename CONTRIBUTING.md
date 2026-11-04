@@ -63,5 +63,5 @@ Mesa does not merge external commits directly. The public audit admits only the
 owner's identity on reachable commits, so CI on a pull request from another
 author fails at `npm run audit:public`; this is expected. The owner reviews the
 change and, if accepted, lands it on main as a new owner-signed commit whose
-message credits the contributor's GitHub username and pull request. The audit
-also rejects `Co-Authored-By` trailers. The pull request is then closed.
+message credits the contributor's GitHub username and pull request. The pull
+request is then closed.

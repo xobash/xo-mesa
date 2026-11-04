@@ -150,7 +150,7 @@ repository refs before publishing:
 
 - `npm run audit:public` passes against the tracked repository payload.
 - No private names, local paths, vault names, screenshots, or machine records.
-- No internal assistant, provider, automation, or prompt metadata.
+- No internal tooling or prompt metadata.
 - No certificates, API keys, sync keys, tokens, or generated identity material.
 - The tracked tree matches the explicit public-file allowlist; local-only
   exclusions, session records, and measurement files are not published.
@@ -159,7 +159,7 @@ repository refs before publishing:
   policy or legal questions that need a qualified review without inventing
   business details or a compliance claim.
 - Review source and reachable history for exposed keys, personal paths,
-  assistant artifacts, obsolete comments, unused dependencies, weak tests,
+  obsolete comments, unused dependencies, weak tests,
   skipped checks, and commands that fail on their stated platform.
 
 ## Publishing
