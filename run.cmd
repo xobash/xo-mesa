@@ -288,8 +288,6 @@ if defined MESA_NODE_PINNED_DIR if exist "%MESA_NODE_PINNED_DIR%\" set "PATH=%ME
 exit /b
 
 :has_webview2
-set "MESA_WEBVIEW2_SEEN="
-set "MESA_WEBVIEW2_SEEN_MAJOR="
 REM WebView2 is installed per-machine or per-user and is not normally on PATH.
 REM Microsoft's documented registry signal covers a registered Evergreen runtime
 REM even when its versioned install folder differs from these common paths.
@@ -302,33 +300,16 @@ for %%K in (
   REM directly avoids the fragile findstr pattern that missed valid pv values.
   for /f "tokens=1,2,*" %%A in ('reg query "%%~K" /v pv 2^>nul') do (
     if /i "%%A"=="pv" if not "%%C"=="" if /i not "%%C"=="0.0.0.0" (
-      call :webview2_found "%%C"
+      call :webview2_version_ok "%%C"
       if not errorlevel 1 exit /b 0
     )
   )
 )
 REM Keep the executable checks as a fallback for runtimes without registration.
-for /d %%D in ("%ProgramFiles(x86)%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_found "%%~nxD" && exit /b 0
-for /d %%D in ("%ProgramFiles%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_found "%%~nxD" && exit /b 0
-for /d %%D in ("%LOCALAPPDATA%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_found "%%~nxD" && exit /b 0
-if defined MESA_WEBVIEW2_SEEN (
-  echo   ! The newest WebView2 found, %MESA_WEBVIEW2_SEEN%, is older than Mesa's required version %MESA_WEBVIEW2_MIN_MAJOR%.
-) else (
-  echo   ! Microsoft Edge WebView2 Runtime is not installed.
-)
-exit /b 1
-
-:webview2_found
-call :webview2_version_ok "%~1"
-if not errorlevel 1 exit /b 0
-REM Too old: remember the highest major version found for the message.
-setlocal
-set "MESA_FOUND_MAJOR="
-for /f "tokens=1 delims=." %%V in ("%~1") do set "MESA_FOUND_MAJOR=%%V"
-if not defined MESA_FOUND_MAJOR endlocal & exit /b 1
-for /f "delims=0123456789" %%V in ("%MESA_FOUND_MAJOR%") do endlocal & exit /b 1
-if defined MESA_WEBVIEW2_SEEN_MAJOR if %MESA_FOUND_MAJOR% LEQ %MESA_WEBVIEW2_SEEN_MAJOR% endlocal & exit /b 1
-endlocal & set "MESA_WEBVIEW2_SEEN=%~1" & set "MESA_WEBVIEW2_SEEN_MAJOR=%MESA_FOUND_MAJOR%"
+for /d %%D in ("%ProgramFiles(x86)%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_version_ok "%%~nxD" && exit /b 0
+for /d %%D in ("%ProgramFiles%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_version_ok "%%~nxD" && exit /b 0
+for /d %%D in ("%LOCALAPPDATA%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_version_ok "%%~nxD" && exit /b 0
+echo   ! Microsoft Edge WebView2 Runtime %MESA_WEBVIEW2_MIN_MAJOR% or newer was not found.
 exit /b 1
 
 :webview2_version_ok

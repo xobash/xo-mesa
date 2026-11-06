@@ -211,13 +211,10 @@ describe('Windows setup script contracts', () => {
     assert.match(run, /call :install_build_tools\n {4}if errorlevel 1 exit \/b 1/);
     assert.equal(run.match(/Microsoft\.VisualStudio\.2022\.BuildTools/g).length, 1);
   });
-  it('tells a missing WebView2 apart from an old one', () => {
+  it('gives advice that is right for a missing and an old WebView2', () => {
     const probe = label(text('run.cmd'), 'has_webview2');
-    assert.match(probe, /^\n:has_webview2\nset "MESA_WEBVIEW2_SEEN="/);
-    assert.match(probe, /if defined MESA_WEBVIEW2_SEEN \(\n {2}echo {3}! The newest WebView2 found, %MESA_WEBVIEW2_SEEN%, is older than[^\n]*\n\) else \(\n {2}echo {3}! Microsoft Edge WebView2 Runtime is not installed\.\n\)/);
-    assert.doesNotMatch(probe, /call :webview2_version_ok/);
-    // Only a higher major replaces the remembered version.
-    assert.match(label(text('run.cmd'), 'webview2_found'), /if defined MESA_WEBVIEW2_SEEN_MAJOR if %MESA_FOUND_MAJOR% LEQ %MESA_WEBVIEW2_SEEN_MAJOR% endlocal & exit \/b 1\nendlocal & set "MESA_WEBVIEW2_SEEN=%~1" & set "MESA_WEBVIEW2_SEEN_MAJOR=%MESA_FOUND_MAJOR%"/);
+    assert.match(probe, /echo {3}! Microsoft Edge WebView2 Runtime %MESA_WEBVIEW2_MIN_MAJOR% or newer was not found\./);
+    assert.doesNotMatch(probe, /installed but older/);
   });
   it('accepts only a cl.exe that builds for x64', () => {
     const run = text('run.cmd');

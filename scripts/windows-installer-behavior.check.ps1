@@ -269,22 +269,13 @@ if ((Get-Content 'expanded/payload.txt' -Raw).Trim() -ne 'archive payload') { th
   $env:ProgramFiles = $temporary
   ${env:ProgramFiles(x86)} = $temporary
   $env:LOCALAPPDATA = $temporary
-  # A missing runtime and an old one need different advice, and the message
-  # names the newest version found: registry 110 beats an older 105 folder
-  # that the executable fallback probes last.
-  $oldRuntime = Join-Path $temporary 'Microsoft\EdgeWebView\Application\105.0.0.0'
-  New-Item -ItemType Directory -Force $oldRuntime | Out-Null
-  Set-Content (Join-Path $oldRuntime 'msedgewebview2.exe') ''
-  foreach ($case in @(@('110.0.0.0', 1, 'newest WebView2 found, 110.0.0.0, is older than'), @('111.0.0.0', 0, ''), @('120.0.0.0', 0, ''), @('0.0.0.0', 1, 'newest WebView2 found, 105.0.0.0, is older than'))) {
+  foreach ($case in @(@('110.0.0.0', 1), @('111.0.0.0', 0), @('120.0.0.0', 0), @('0.0.0.0', 1))) {
     $env:MESA_TEST_WEBVIEW2_VERSION = $case[0]
-    $status = Invoke-Cmd "`"$probe`""
-    Assert-True ($status -eq $case[1]) "WebView2 probe returned $status for $($case[0])"
-    if ($case[2]) { Assert-True ($global:mesaCmdOutput.Contains($case[2])) "WebView2 probe for $($case[0]) said: $global:mesaCmdOutput" }
+    $output = & cmd.exe /d /c "`"$probe`"" | Out-String
+    Assert-True ($LASTEXITCODE -eq $case[1]) "WebView2 probe returned $LASTEXITCODE for $($case[0])"
+    # The same advice is right for a missing and an old runtime.
+    if ($case[1]) { Assert-True ($output.Contains('WebView2 Runtime 111 or newer was not found')) "WebView2 probe for $($case[0]) said: $output" }
   }
-  Remove-Item (Join-Path $temporary 'Microsoft') -Recurse -Force
-  $env:MESA_TEST_WEBVIEW2_VERSION = '0.0.0.0'
-  $status = Invoke-Cmd "`"$probe`""
-  Assert-True ($status -eq 1 -and $global:mesaCmdOutput.Contains('WebView2 Runtime is not installed')) "missing WebView2 said: $global:mesaCmdOutput"
   # An empty PATH has no Node, npm, Scoop or winget. The pinned download must
   # run first; winget with the exact pinned version is only the fallback.
   $ensureAt = $runScript.IndexOf("`n:ensure_node")
