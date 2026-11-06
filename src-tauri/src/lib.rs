@@ -551,18 +551,12 @@ mod authority_tests {
     }
 }
 
-#[cfg(all(test, not(target_os = "macos")))]
+#[cfg(all(test, target_os = "linux"))]
 mod app_menu_tests {
     fn app() -> tauri::App<tauri::test::MockRuntime> {
         super::with_app_menu(tauri::test::mock_builder())
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("mock app builds")
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_has_no_menubar_or_predefined_quit() {
-        assert!(app().menu().is_none());
     }
 
     #[cfg(target_os = "linux")]

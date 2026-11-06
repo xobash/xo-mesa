@@ -70,8 +70,10 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 webview2-com = "0.39"
 windows-core = "0.62"
 
-[dev-dependencies]
-# Mock runtime for app-builder tests (menu installation).
+# Mock runtime for the Linux menu test. Not on Windows: a test binary linked
+# with tauri's mock runtime has no common-controls manifest and fails to load
+# there (STATUS_ENTRYPOINT_NOT_FOUND), which stops every native test.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 
 [profile.release]

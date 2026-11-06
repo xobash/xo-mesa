@@ -467,4 +467,5 @@ it('replacement removes the original extractable text', async () => {
   const pdf = await getDocument({data:output.slice()}).promise;
   try { expect((await (await pdf.getPage(1)).getTextContent()).items.map(item => 'str' in item ? item.str : '').join(' ')).not.toContain('SECRET-123'); }
   finally { await pdf.destroy(); }
-});
+// The first pdf.js import is a cold module load: about 14 s on a Windows CI runner.
+}, 30_000);
