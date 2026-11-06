@@ -79,11 +79,11 @@ it('CI builds and tests Windows the way release does; the Windows frontend job c
   // The desktop job builds the release target triple and uploads from its folder.
   assert.match(build, new RegExp(`matrix\\.name == 'windows' && '--target ${WINDOWS_TARGET} --bundles msi,nsis'`));
   assert.ok(build.includes(`${releaseTargetDir('windows')}/bundle/**/*`));
-  // Stock Windows runs the JS gates, and the installer check runs under both shells.
+  // Stock Windows runs the JS gates, and the installer check runs under PowerShell 7.
   const windowsJob = build.slice(build.indexOf('\n  frontend-windows:\n'), build.indexOf('\n  rust:\n'));
   assert.match(windowsJob, /runs-on: windows-latest\n/);
   for (const step of ['npm test', 'npm run test:toolchains', 'npm run test:release']) assert.ok(windowsJob.includes(`- run: ${step}\n`), step);
-  for (const shell of ['pwsh', 'powershell']) assert.match(build, new RegExp(`shell: ${shell}\\n\\s+run: \\./scripts/windows-installer-behavior\\.check\\.ps1`), shell);
+  assert.match(build, /shell: pwsh\n\s+run: \.\/scripts\/windows-installer-behavior\.check\.ps1/);
   // The Windows frontend job is advisory. The gate admits only a run whose overall
   // conclusion is success, so the job must not be able to fail the workflow:
   // continue-on-error at job level, and no job waits on it.

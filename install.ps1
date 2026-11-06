@@ -25,32 +25,13 @@
   # OpenPGP fingerprints (40 uppercase hex characters); none yet.
   $releaseOpenPgpFingerprints = @()
   $currentDir = Get-Location
-  # Path prefix test that ignores case and needs a separator after the prefix.
-  function Test-PathUnder {
-    param([string]$Path, [string]$Root)
-    if ([string]::IsNullOrWhiteSpace($Root)) { return $false }
-    $prefix = $Root.TrimEnd('\', '/')
-    return $Path.Equals($prefix, [System.StringComparison]::OrdinalIgnoreCase) -or $Path.StartsWith("$prefix\", [System.StringComparison]::OrdinalIgnoreCase)
-  }
   $installDir = if ($env:MESA_DIR) {
     # Resolve against the PowerShell location, not the process directory.
     $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($env:MESA_DIR)
   } elseif ((Split-Path $currentDir -Leaf) -eq "xo-mesa" -and (Test-Path (Join-Path $currentDir ".git"))) {
     [string]$currentDir
-  } elseif ((Test-PathUnder ([string]$currentDir) $env:SystemRoot) -or (Test-PathUnder ([string]$currentDir) $env:ProgramFiles) -or (Test-PathUnder ([string]$currentDir) ${env:ProgramFiles(x86)})) {
-    # An elevated PowerShell starts in C:\Windows\System32; never put a source
-    # checkout inside Windows or Program Files.
-    Join-Path $env:USERPROFILE "xo-mesa"
   } else {
     Join-Path $currentDir "xo-mesa"
-  }
-  # OneDrive syncs and locks node_modules and the Rust target folder (several GB),
-  # which makes npm and Cargo fail with EBUSY or EPERM.
-  foreach ($oneDrive in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
-    if (Test-PathUnder $installDir $oneDrive) {
-      Write-Warning "Mesa will be installed in a OneDrive folder ($installDir). OneDrive sync can lock build files and make setup fail. To use another folder, set `$env:MESA_DIR (for example C:\dev\xo-mesa) and rerun the install command."
-      break
-    }
   }
 
   function Add-PathIfExists {
@@ -126,12 +107,6 @@
   }
 
   Ensure-Git
-
-  # SSH-signed release tags need Git 2.34 or newer to verify.
-  $gitVersionText = [string](& git --version)
-  if ($gitVersionText -notmatch '(\d+)\.(\d+)' -or [version]"$($Matches[1]).$($Matches[2])" -lt [version]"2.34") {
-    throw "Mesa needs Git 2.34 or newer to verify the signed release tag (found: $gitVersionText). Update Git (for example: winget upgrade --id Git.Git -e), then rerun the Mesa install command."
-  }
 
   # Windows caps paths at 260 characters unless LongPathsEnabled is set
   # machine-wide, and Git enforces that cap on its own unless core.longpaths is

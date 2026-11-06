@@ -1,9 +1,5 @@
 # Pinned user-local Node, shared by all Windows source launches.
 $ErrorActionPreference = 'Stop'
-# Windows PowerShell 5.1 downloads and extracts very slowly while it draws a
-# progress bar, and older Windows 10 builds do not offer TLS 1.2 by default.
-$ProgressPreference = 'SilentlyContinue'
-[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $version = (Get-Content (Join-Path $PSScriptRoot '../.node-version') -Raw).Trim()
 if ($version -ne '22.22.3') { throw 'Update reviewed Node digests when changing the toolchain.' }
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }

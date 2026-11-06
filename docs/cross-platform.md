@@ -87,22 +87,14 @@ reviewed installer checksum, and a tag signature from the pinned [release signin
 remain pending until that release exists. Never substitute mutable main or an
 unchecked `irm ... | iex` / `curl ... | bash` download. `install.sh` installs Git when needed, clones or fast-forwards the
 checkout, and then hands off to `run.sh`; `install.ps1` does the same before
-handing off to `run.cmd`. `install.ps1` needs Git 2.34 or newer to verify the
-signed tag. Without `MESA_DIR` it never clones into the Windows or Program
-Files folders (an elevated shell starts in `C:\Windows\System32`) and uses
-`%USERPROFILE%\xo-mesa` instead, and it warns when the folder is inside
-OneDrive, whose sync can lock `node_modules` and the Rust `target` folder.
-`run.cmd` installs Node.js from the pinned official archive (see below). For Git
-and Rust it uses existing Scoop and falls back to `winget`. The Microsoft C++
-Build Tools install with `--norestart`; when Windows needs a restart, setup stops
-and asks you to restart and re-run `run.cmd`. It executes `cargo --version` rather than
+handing off to `run.cmd`. `run.cmd` installs Node.js from the pinned official
+archive (see below). For Git and Rust it uses existing Scoop and falls back to
+`winget`. It executes `cargo --version` rather than
 trusting executable presence because Rustup can install a Cargo proxy before a
 default toolchain exists. If that check fails while Rustup is available,
 `run.cmd` configures the pinned `1.96.0-msvc` toolchain and verifies Cargo again. It also verifies
 Microsoft C++ Build Tools before launching Tauri, so setup stops at the missing
 dependency instead of failing later in `cargo metadata` or the Rust link step.
-A `cl.exe` on PATH counts only when it builds for x64; from an x86 or ARM64
-Developer Prompt, `run.cmd` loads the x64 tools instead.
 The setup scripts also clear a stale Rust build cache if the project folder was
 moved or renamed.
 
@@ -117,10 +109,8 @@ it offline on later starts: `%LOCALAPPDATA%\Mesa\toolchains` on Windows,
 `${XDG_DATA_HOME:-~/.local/share}/mesa/toolchains` on Linux. `run.sh` does not
 install or modify nvm; it can use an nvm copy of the exact version by path.
 `run.cmd` keeps the pinned Node ahead of later PATH changes and checks
-`node -v` again before `npm ci`. Only when the pinned download fails and no
-Node.js is in `%ProgramFiles%\nodejs` does it try `winget` for the same exact
-version, which installs Node.js for all users; it never lets `winget` replace an
-existing machine-wide Node.js. `npm run mesa` and `npm run mesa:build` stop
+`node -v` again before `npm ci`. When the pinned download fails it tries
+`winget` for the same exact version. `npm run mesa` and `npm run mesa:build` stop
 unless the running Node is exactly the `.node-version` pin (npm itself only
 warns about the `engines` range). `run.sh` accepts a Rust without Rustup only when
 `rustc` is exactly the pin; otherwise it installs Rustup user-locally from the
@@ -148,8 +138,7 @@ external inputs, so builds are not bit-for-bit reproducible.
    Linux-only run never compiles them. macOS is in the matrix so Rust tests and
    lints exercise the same platform family that ships the WKWebView desktop
    bundle, rather than only building it.
-   The Windows job also runs `scripts/windows-installer-behavior.check.ps1`
-   under both Windows PowerShell 5.1 and PowerShell 7.
+   The Windows job also runs `scripts/windows-installer-behavior.check.ps1`.
 3. **frontend (windows-latest)** — Vitest, toolchain, release, bootstrap,
    activity-API and notice checks on a stock Windows runner. It is advisory
    (`continue-on-error`) until it has passed on GitHub and is promoted to a

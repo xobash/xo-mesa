@@ -2,9 +2,7 @@
 REM Mesa setup and launch for Windows 10/11.
 REM Installs missing prerequisites and launches the desktop app.
 REM Run from this folder in a normal PowerShell/cmd window: run.cmd
-REM Delayed expansion stays off, even when the registry enables it: it would
-REM drop each "!" in user or project paths.
-setlocal disabledelayedexpansion
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 set "SCOOP_SHIMS=%USERPROFILE%\scoop\shims"
 set "CARGO_BIN=%USERPROFILE%\.cargo\bin"
@@ -116,8 +114,7 @@ if errorlevel 1 (
     exit /b 1
   ) else (
     echo   . Installing Microsoft C++ Build Tools via winget ^(UAC prompt^)...
-    call :install_build_tools
-    if errorlevel 1 exit /b 1
+    winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
   )
 )
 call :has_msvc_tools
@@ -133,7 +130,7 @@ call :has_webview2
 if not errorlevel 1 goto webview_ready
 where winget >nul 2>nul
 if errorlevel 1 (
-  echo   x winget is unavailable to install or update Microsoft Edge WebView2 Runtime.
+  echo   x Microsoft Edge WebView2 Runtime not found and winget is unavailable.
   echo     Install Microsoft Edge WebView2 Runtime, then re-run run.cmd.
   exit /b 1
 )
@@ -155,7 +152,8 @@ REM and the build fails. Stamp the build path; if it no longer matches, clear th
 REM cache once so it recompiles cleanly.
 set "STAMP=src-tauri\.build-cache-path"
 if exist "src-tauri\target" if exist "%STAMP%" call :checkmoved
-call :write_build_stamp
+REM Delayed expansion keeps "&" in the folder path from splitting the command.
+>"%STAMP%" echo !CD!
 
 REM Later PATH refreshes may add a system Node; npm must still run the pin.
 call :require_pinned_node
@@ -193,20 +191,12 @@ goto :eof
 :checkmoved
 set "LASTPATH="
 set /p LASTPATH=<"%STAMP%"
-REM Windows paths ignore case; a case-only difference is the same folder.
-if /i not "%LASTPATH%"=="%CD%" (
+if not "%LASTPATH%"=="%CD%" (
   echo   . Project folder moved since last build - clearing stale Rust cache...
   rmdir /s /q "src-tauri\target"
   if exist "src-tauri\gen" rmdir /s /q "src-tauri\gen"
 )
 exit /b
-
-:write_build_stamp
-REM Delayed expansion keeps "&" and "!" in the folder path literal.
-setlocal enabledelayedexpansion
->"%STAMP%" echo !CD!
-endlocal
-exit /b 0
 
 :check_long_paths
 REM Warn about long checkout paths without requiring an admin registry change.
@@ -217,7 +207,7 @@ if /i "%MESA_LONGPATHS%"=="0x1" exit /b 0
 REM Non-empty only when the path is at least 91 characters long.
 if "%CD:~90,1%"=="" exit /b 0
 echo   ! Long paths are disabled and this folder's path is long:
-echo       "%CD%"
+echo       %CD%
 echo     The Rust build writes files far below it and can fail with
 echo     "path too long". Either move the project somewhere short like
 echo     C:\dev\xo-mesa, or enable long paths once from an ADMIN terminal:
@@ -229,31 +219,23 @@ exit /b 0
 REM The pinned, hash-verified download is the primary Node.js source; winget
 REM with the same exact version is only the fallback.
 call :node_version
-if not "%MESA_NODE_ACTUAL%"=="v%MESA_NODE_VERSION%" (
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
   echo   . Installing pinned Node.js %MESA_NODE_VERSION%...
   call :install_pinned_node
   if not errorlevel 1 call :use_pinned_node
   call :node_version
 )
-if "%MESA_NODE_ACTUAL%"=="v%MESA_NODE_VERSION%" goto node_ready
-REM Winget's Node.js is a machine-wide MSI that replaces or downgrades a Node.js
-REM already installed there, so it is the fallback only when there is none.
-if exist "%ProgramFiles%\nodejs\node.exe" (
-  echo   x The pinned Node.js download failed. Winget would replace the Node.js in "%ProgramFiles%\nodejs", so Mesa did not use it.
-  echo     Check the network error above, then re-run run.cmd.
-  exit /b 1
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  echo   . The pinned Node.js download failed. Trying winget for Node.js %MESA_NODE_VERSION%...
+  call :install_winget OpenJS.NodeJS.22 "Node.js %MESA_NODE_VERSION%" %MESA_NODE_VERSION%
+  call :refresh_paths
+  call :node_version
 )
-echo   . The pinned Node.js download failed. Trying winget for Node.js %MESA_NODE_VERSION%...
-echo   ! Winget installs Node.js %MESA_NODE_VERSION% for all users in "%ProgramFiles%\nodejs".
-call :install_winget OpenJS.NodeJS.22 "Node.js %MESA_NODE_VERSION%" %MESA_NODE_VERSION%
-call :refresh_paths
-call :node_version
-if not "%MESA_NODE_ACTUAL%"=="v%MESA_NODE_VERSION%" (
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
   echo   x Node.js %MESA_NODE_VERSION% could not be installed or activated.
   echo     Check the network error above, or open a new terminal if winget just installed it, then re-run run.cmd.
   exit /b 1
 )
-:node_ready
 echo   ok Pinned Node.js present
 exit /b 0
 
@@ -271,8 +253,8 @@ exit /b 0
 
 :require_pinned_node
 call :node_version
-if not "%MESA_NODE_ACTUAL%"=="v%MESA_NODE_VERSION%" (
-  echo   x PATH now resolves Node.js %MESA_NODE_ACTUAL% instead of the pinned %MESA_NODE_VERSION%.
+if not "!MESA_NODE_ACTUAL!"=="v%MESA_NODE_VERSION%" (
+  echo   x PATH now resolves Node.js !MESA_NODE_ACTUAL! instead of the pinned %MESA_NODE_VERSION%.
   echo     Remove the other Node.js from PATH or re-run run.cmd in a new terminal.
   exit /b 1
 )
@@ -309,7 +291,7 @@ REM Keep the executable checks as a fallback for runtimes without registration.
 for /d %%D in ("%ProgramFiles(x86)%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_version_ok "%%~nxD" && exit /b 0
 for /d %%D in ("%ProgramFiles%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_version_ok "%%~nxD" && exit /b 0
 for /d %%D in ("%LOCALAPPDATA%\Microsoft\EdgeWebView\Application\*") do if exist "%%~fD\msedgewebview2.exe" call :webview2_version_ok "%%~nxD" && exit /b 0
-echo   ! Microsoft Edge WebView2 Runtime %MESA_WEBVIEW2_MIN_MAJOR% or newer was not found.
+echo   ! WebView2 is installed but older than Mesa's required version %MESA_WEBVIEW2_MIN_MAJOR%.
 exit /b 1
 
 :webview2_version_ok
@@ -321,14 +303,8 @@ if %MESA_WEBVIEW2_MAJOR% LSS %MESA_WEBVIEW2_MIN_MAJOR% exit /b 1
 endlocal & exit /b 0
 
 :has_msvc_tools
-REM An x86 or ARM64 Developer Prompt puts a cl.exe on PATH that cannot link
-REM the x64 build; load the x64 tools instead.
 where cl >nul 2>nul
-if errorlevel 1 goto find_msvc_tools
-call :cl_targets_x64
 if not errorlevel 1 exit /b 0
-echo   ! The cl.exe on PATH does not build for x64. Loading the x64 build tools...
-:find_msvc_tools
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" exit /b 1
 set "MESA_VS_PATH="
@@ -340,32 +316,7 @@ where cl >nul 2>nul
 if errorlevel 1 exit /b 1
 where link >nul 2>nul
 if errorlevel 1 exit /b 1
-call :cl_targets_x64
-exit /b %errorlevel%
-
-:cl_targets_x64
-REM VsDevCmd records the target; cl's banner names it last ("... for x64").
-if defined VSCMD_ARG_TGT_ARCH if /i not "%VSCMD_ARG_TGT_ARCH%"=="x64" exit /b 1
-cl 2>&1 | findstr /i /c:" x64" >nul
-exit /b %errorlevel%
-
-:install_build_tools
-REM --norestart: setup never reboots the machine. 3010 and 1641 (winget
-REM 0x8A150109) mean installed, restart to finish. Winget 0x8A15010A means a
-REM restart is needed before anything can be installed.
-call winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --override "--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-set "MESA_INSTALL_STATUS=%errorlevel%"
-if "%MESA_INSTALL_STATUS%"=="-1978334966" goto build_tools_restart_first
-for %%S in (3010 1641 -1978334967) do if "%MESA_INSTALL_STATUS%"=="%%S" goto build_tools_restart
 exit /b 0
-:build_tools_restart
-echo   x Microsoft C++ Build Tools were installed, but Windows must restart to finish.
-echo     Restart Windows, then re-run run.cmd.
-exit /b 1
-:build_tools_restart_first
-echo   x Windows must restart before Microsoft C++ Build Tools can be installed. Nothing was installed.
-echo     Restart Windows, then re-run run.cmd.
-exit /b 1
 
 :install_pinned_node
 REM PowerShell 7 passes incompatible module paths through cmd.exe.
