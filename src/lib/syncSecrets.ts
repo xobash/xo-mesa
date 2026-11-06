@@ -89,3 +89,11 @@ export async function nativeCredential(value: string): Promise<string> {
   if (value.startsWith('credential:')) return value;
   return invoke<string>('sync_secrets_import', { value });
 }
+
+/** First sentence of the native damaged-record error (`DAMAGED` in secrets.rs). */
+export const SYNC_KEYS_DAMAGED = 'Saved sync keys are damaged';
+
+/** Confirmed reset: the native store discards every saved key and returns the new device key's reference. */
+export async function resetNativeSyncSecrets(): Promise<string> {
+  return invoke<string>('sync_secrets_generate', { reset: true });
+}

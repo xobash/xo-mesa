@@ -13,10 +13,12 @@ export interface LeasedResourceDeps<C, H> {
  * own subscription; the resource runs with the newest live lease's config and
  * stops only when no lease remains. Setup and teardown run in one queue, so a
  * stop always precedes the next start and a released lease leaves nothing
- * behind, even when it is released before its setup completes.
+ * behind, even when it is released before its setup completes. `onStatus`
+ * tells a lease whether the shared resource is running for it or failed to start.
  */
+export type LeaseStatus = { ok: true } | { ok: false; error: unknown };
 export function createLeasedResource<C, H>(deps: LeasedResourceDeps<C, H>, onError: (error: unknown) => void = () => {}) {
-  interface Lease { config: C; disposed: boolean; unsubscribe?: () => void }
+  interface Lease { config: C; disposed: boolean; unsubscribe?: () => void; onStatus?: (status: LeaseStatus) => void }
   const live: Lease[] = [];
   let running: C | null = null;
   let tail = Promise.resolve();
@@ -28,12 +30,18 @@ export function createLeasedResource<C, H>(deps: LeasedResourceDeps<C, H>, onErr
       await deps.stop();
     }
     if (want !== null && running === null) {
-      await deps.start(want);
+      try {
+        await deps.start(want);
+      } catch (error) {
+        for (const lease of live) if (!lease.disposed) lease.onStatus?.({ ok: false, error });
+        throw error;
+      }
       running = want;
     }
+    if (running !== null) for (const lease of live) if (!lease.disposed) lease.onStatus?.({ ok: true });
   };
-  return (config: C, handler: H): (() => void) => {
-    const lease: Lease = { config, disposed: false };
+  return (config: C, handler: H, onStatus?: (status: LeaseStatus) => void): (() => void) => {
+    const lease: Lease = { config, disposed: false, onStatus };
     enqueue(async () => {
       if (lease.disposed) return;
       const unsubscribe = await deps.subscribe(handler);

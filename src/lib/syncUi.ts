@@ -18,6 +18,34 @@ export async function stopSyncDiscovery(): Promise<void> { if (IN_TAURI) await i
 export async function syncServerRunning(): Promise<boolean> { if (!IN_TAURI) return false; try { return await invoke<boolean>("sync_status"); } catch { return false; } }
 export async function localSyncAddr(): Promise<string | null> { if (!IN_TAURI) return null; try { return await invoke<string>("sync_local_addr"); } catch { return null; } }
 export async function syncIdentity(): Promise<string | null> { if (!IN_TAURI) return null; try { return await invoke<string>("sync_identity"); } catch { return null; } }
+export const IS_WINDOWS = typeof navigator !== "undefined" && /^Win/.test(navigator.platform || "");
+/** Quiet time before an empty nearby list suggests a firewall block: three announcement cycles. */
+export const DISCOVERY_QUIET_MS = 6_000;
+const UNREACHABLE = /couldn't reach that device|timed out reaching that device/i;
+/** Literal private or link-local address: the only peers a LAN firewall rule can explain. */
+export function isLanAddress(address: string): boolean {
+  let host = address.trim().replace(/^[a-z]+:\/\//i, "").replace(/\/.*$/, "");
+  if (host.startsWith("[")) host = host.slice(1, host.indexOf("]"));
+  else if ((host.match(/:/g) ?? []).length === 1) host = host.slice(0, host.indexOf(":"));
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  return host.includes(":") && /^(f[cd][0-9a-f]{0,2}|fe[89ab][0-9a-f]?):/i.test(host);
+}
+/**
+ * Windows Defender Firewall silently drops inbound sync and discovery on a
+ * Public network profile, or after its first-run prompt was dismissed. Offer
+ * that guidance only on Windows, and only when a bound discovery socket heard
+ * nobody or a LAN peer refused or timed out. Name resolution and internet
+ * failures are not firewall evidence.
+ */
+export function windowsFirewallHint(input: { windows: boolean; discoveryQuiet: boolean; nearbyCount: number; peers: readonly { address: string; lastStatus?: string; lastError?: string }[] }): boolean {
+  if (!input.windows) return false;
+  return (input.discoveryQuiet && input.nearbyCount === 0)
+    || input.peers.some(peer => peer.lastStatus === "error" && UNREACHABLE.test(peer.lastError ?? "") && isLanAddress(peer.address));
+}
 export interface RemoteVaultInfo { files: number; bytes: number; fingerprint: string; }
 export async function fetchRemoteVaultInfo(peer: string, token: string, pin?: string | null): Promise<RemoteVaultInfo> {
   token = await nativeCredential(token);

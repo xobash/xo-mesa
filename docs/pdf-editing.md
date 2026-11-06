@@ -39,6 +39,15 @@ the fallback always shows exactly the document Mesa has open — including
 unsaved edits — and cannot diverge from it. Invalid, empty, or mislabeled
 `.pdf` files show an explicit error instead of a blank white pane.
 
+Pages are drawn at the display's pixel ratio (125%, 150% and 200% scaling,
+Retina), so text stays sharp, and are redrawn when the ratio changes — for
+example when the window moves to a monitor with a different scale. The page's
+on-screen size, and every click, highlight, pencil stroke and text position, is
+measured in page coordinates and does not depend on the ratio. A page whose
+sharp bitmap would exceed 8 megapixels (very high zoom) is drawn at the largest
+ratio that fits, never coarser than its on-screen size. The whiteboard follows
+the same rule.
+
 A first page that is *genuinely* blank — a blank cover sheet, a separator, a
 "this page intentionally left blank" leaf, or a scanned document with an empty
 leading sheet — is not a failed render. Mesa asks pdf.js whether the page has

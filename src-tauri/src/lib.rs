@@ -21,6 +21,7 @@ mod vaultscope;
 mod vaulttransaction;
 mod vaultwatch;
 mod vaultwrite;
+mod webview_settings;
 
 pub(crate) fn require_main(label: &str) -> Result<(), String> {
     if label == "main" {
@@ -184,6 +185,65 @@ fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// macOS keeps the standard application menu with a Mesa-owned Quit that
+/// starts the save flush before Cocoa exits. Linux gets one File menu whose
+/// only item is that guarded Quit: its tray can be invisible (GNOME without
+/// AppIndicator). Windows gets no menubar: it would be drawn inside every
+/// window and its predefined Quit can end the process without the save guard;
+/// there the tray Quit is the app-level quit. Without a tray, closing main
+/// quits (`tray::main_close_hides`).
+fn with_app_menu<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    #[cfg(target_os = "linux")]
+    let builder = builder.menu(|app| {
+        let quit = tauri::menu::MenuItem::with_id(
+            app,
+            SAFE_QUIT_MENU_ID,
+            format!("Quit {}", app.package_info().name),
+            true,
+            Some("Ctrl+Q"),
+        )?;
+        let file = tauri::menu::SubmenuBuilder::new(app, "File")
+            .item(&quit)
+            .build()?;
+        tauri::menu::MenuBuilder::new(app).item(&file).build()
+    });
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(|app| {
+        let menu = tauri::menu::Menu::default(app)?;
+        let app_menu = menu
+            .items()?
+            .into_iter()
+            .next()
+            .and_then(|item| item.as_submenu().cloned())
+            .ok_or_else(|| tauri::Error::Io(std::io::Error::other("missing Mesa app menu")))?;
+        let default_quit = app_menu
+            .items()?
+            .into_iter()
+            .last()
+            .ok_or_else(|| tauri::Error::Io(std::io::Error::other("missing Quit item")))?;
+        app_menu.remove(&default_quit)?;
+        app_menu.append(&tauri::menu::MenuItem::with_id(
+            app,
+            SAFE_QUIT_MENU_ID,
+            format!("Quit {}", app.package_info().name),
+            true,
+            Some("Cmd+Q"),
+        )?)?;
+        Ok(menu)
+    });
+    builder.on_menu_event(|app, event| {
+        // Menu events are global: app menu and tray menu both arrive here.
+        let id = event.id().as_ref();
+        if id.starts_with(tray::MENU_PREFIX) && id != tray::QUIT_ID {
+            tray::handle_menu(app, id);
+            return;
+        }
+        if id == SAFE_QUIT_MENU_ID || id == tray::QUIT_ID {
+            request_quit(app);
+        }
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default().plugin(navigation_guard());
@@ -196,7 +256,9 @@ pub fn run() {
             let _ = window.set_focus();
         }
     }));
-    builder
+    #[cfg(windows)]
+    let builder = builder.plugin(webview_settings::plugin());
+    with_app_menu(builder)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(
@@ -216,44 +278,6 @@ pub fn run() {
             tauri::async_runtime::spawn_blocking(move || {
                 responder.respond(htmlrun::serve(&app, &owner, request))
             });
-        })
-        .menu(|app| {
-            let menu = tauri::menu::Menu::default(app)?;
-            #[cfg(target_os = "macos")]
-            {
-                let app_menu = menu
-                    .items()?
-                    .into_iter()
-                    .next()
-                    .and_then(|item| item.as_submenu().cloned())
-                    .ok_or_else(|| {
-                        tauri::Error::Io(std::io::Error::other("missing Mesa app menu"))
-                    })?;
-                let default_quit =
-                    app_menu.items()?.into_iter().last().ok_or_else(|| {
-                        tauri::Error::Io(std::io::Error::other("missing Quit item"))
-                    })?;
-                app_menu.remove(&default_quit)?;
-                app_menu.append(&tauri::menu::MenuItem::with_id(
-                    app,
-                    SAFE_QUIT_MENU_ID,
-                    format!("Quit {}", app.package_info().name),
-                    true,
-                    Some("Cmd+Q"),
-                )?)?;
-            }
-            Ok(menu)
-        })
-        .on_menu_event(|app, event| {
-            // Menu events are global: app menu and tray menu both arrive here.
-            let id = event.id().as_ref();
-            if id.starts_with(tray::MENU_PREFIX) && id != tray::QUIT_ID {
-                tray::handle_menu(app, id);
-                return;
-            }
-            if id == SAFE_QUIT_MENU_ID || id == tray::QUIT_ID {
-                request_quit(app);
-            }
         })
         .setup(|app| {
             std::thread::spawn(|| {
@@ -285,8 +309,12 @@ pub fn run() {
                 if let Err(err) = app.global_shortcut().register(shortcut) {
                     eprintln!("Mesa could not register global shortcut {shortcut}: {err}");
                 }
-                if let Err(err) = tray::create(app.handle()) {
-                    eprintln!("Mesa could not create its menu bar item: {err}");
+                match tray::create(app.handle()) {
+                    Ok(()) => {
+                        use tauri::Manager;
+                        app.state::<tray::TrayPresence>().mark_created();
+                    }
+                    Err(err) => eprintln!("Mesa could not create its tray icon: {err}"),
                 }
             }
             Ok(())
@@ -295,6 +323,7 @@ pub fn run() {
         .manage(vaultscope::VaultScopeState::default())
         .manage(QuitGuard::default())
         .manage(tray::TrayState::default())
+        .manage(tray::TrayPresence::default())
         .manage(vaultwatch::WatchState::default())
         .invoke_handler(tauri::generate_handler![
             navigation_pdf_preview,
@@ -363,6 +392,7 @@ pub fn run() {
             vaultwatch::vault_watch,
             vaultwatch::vault_unwatch,
             tray::tray_update,
+            tray::main_close_hides,
             tray::tray_popover_request,
             tray::tray_popover_act
         ])
@@ -379,7 +409,7 @@ pub fn run() {
                     tray::close_popover(app);
                 }
             }
-            // Closing main hides it (Mesa keeps running in the menu bar); the
+            // Closing main hides it (Mesa keeps running behind its menu bar icon); the
             // Dock icon brings it back.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {
@@ -518,5 +548,32 @@ mod authority_tests {
         assert!(super::require_agent_surface("main").is_ok());
         assert!(super::require_agent_surface("agent-one").is_ok());
         assert!(super::require_agent_surface("doc-one").is_err());
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod app_menu_tests {
+    fn app() -> tauri::App<tauri::test::MockRuntime> {
+        super::with_app_menu(tauri::test::mock_builder())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app builds")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_has_no_menubar_or_predefined_quit() {
+        assert!(app().menu().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_menubar_holds_only_the_guarded_quit() {
+        let menu = app().menu().expect("Linux keeps a Quit menu");
+        let items = menu.items().expect("menu items");
+        assert_eq!(items.len(), 1);
+        let file = items[0].as_submenu().expect("File submenu");
+        let entries = file.items().expect("File items");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id().as_ref(), super::SAFE_QUIT_MENU_ID);
     }
 }

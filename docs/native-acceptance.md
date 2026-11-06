@@ -66,6 +66,7 @@ for diagnosis, but they do not pass native acceptance rows.
 | One-command setup and rerun | Installs missing prerequisites, launches, preserves existing files and settings |
 | Interrupted setup or upgrade | Clear failure; rerunning the same command completes without losing local work |
 | Edit, rapid tab changes, quit | Every changed note reopens with the final saved bytes |
+| OneDrive online-only files (pending) | In a vault inside OneDrive with "Free up space" applied, opening the vault downloads nothing; search reports the online-only count; opening a note downloads and shows it; sync stops with the "available offline" message and changes nothing on either device; "Always keep on this device" lets sync complete |
 | Drive disconnect and reconnect | Failed saves retain edits; failed opens retain the prior workspace; retry succeeds |
 | Sleep, wake, and network loss | No duplicate discovery listeners; incomplete sync stays visible and retryable |
 | Two-device sync baseline | A real Mac/Windows or oldest/current-platform pair pairs, transfers both directions, restarts, and reruns with no duplicate or missing files |

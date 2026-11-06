@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { installCloseGuard, pendingEditGuard, type CloseRequest } from './closeGuard';
+import { hideOrQuitMain, installCloseGuard, pendingEditGuard, type CloseRequest } from './closeGuard';
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(r => resolve = r); return { promise, resolve }; };
 function setup(flush = vi.fn(async () => {}), onBlocked?: (reason: unknown) => Promise<"keep" | "discard">) {
   let callback!: (event: CloseRequest) => Promise<void>;
@@ -123,5 +123,19 @@ describe('pending edit guard', () => {
     state.dirtyBinaryPaths = [];
     expect(guard.pending()).toBe(false);
     await expect(guard.flush()).resolves.toBeUndefined();
+  });
+});
+
+describe('main window close without a visible tray', () => {
+  it('hides only when native code confirms Mesa stays reachable, and quits otherwise', async () => {
+    const hide = vi.fn(async () => {});
+    const quit = vi.fn(async () => {});
+    await hideOrQuitMain(async () => true, hide, quit);
+    expect([hide.mock.calls.length, quit.mock.calls.length]).toEqual([1, 0]);
+    await hideOrQuitMain(async () => false, hide, quit);
+    expect([hide.mock.calls.length, quit.mock.calls.length]).toEqual([1, 1]);
+    // An older native build without the command must not leave Mesa invisible.
+    await hideOrQuitMain(async () => { throw new Error('unknown command'); }, hide, quit);
+    expect([hide.mock.calls.length, quit.mock.calls.length]).toEqual([1, 2]);
   });
 });

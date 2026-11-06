@@ -54,8 +54,12 @@ The practical differences are platform dependencies and native window details:
 | Desktop build | Rust requires the MSVC compiler and linker. `run.cmd` activates the Visual Studio environment before launch. | Rust uses the installed Apple toolchain; the build script supports a universal binary. |
 | Pi launch | The resolver handles `PATHEXT`, `.cmd`/`.bat` wrappers, Node shebangs, and the shorter desktop PATH. | The normal executable and shell PATH are used. |
 | Native windows | Mesa-owned document, Pi, Research, Preview, Tasks, and Calendar windows use dark launch chrome; Graph follows the OS. Native creation failures restore the surface inside Mesa. | The same surfaces are available, with macOS title-bar treatment where needed; native creation failures also restore the surface inside Mesa. |
-| Local-network sync | Windows Firewall can block inbound pairing or discovery until the user allows Mesa. | The local firewall can impose the same kind of network permission. |
+| Local-network sync | Windows Firewall can block inbound pairing or discovery until the user allows Mesa, and always blocks them on a Public network profile; the Sync window says so when no device answers. | The local firewall can impose the same kind of network permission. |
+| Sync key storage | Credential Manager caps one entry at 2,560 bytes, so keys span several entries behind a verified index entry. | Keychain holds all keys in one item, so more peers never add Keychain prompts. |
 | Path limits | Long paths can require an administrator-enabled Windows setting; the bootstrap warns before the first Rust build. | No equivalent 260-character Windows limit applies. |
+| Browser keys and menus | WebView2's browser accelerator keys are off and its context menu keeps only Undo, Redo, Cut, Copy, Paste, Paste as plain text, Select all, Emoji, Copy link and Copy image, in every Mesa window. A capture-phase guard also stops Ctrl+R, Ctrl+Shift+R, F5 and F7; Ctrl+S saves pending edits now; Ctrl+P opens the palette in the main window and does nothing elsewhere. | WKWebView has no such browser keys; nothing is installed. |
+| Menus and Quit | Windows has no window menubar; Quit is the tray menu's Quit Mesa. Linux keeps one File menu with Quit (Ctrl+Q). Both use the same save-before-quit guard. Closing the main window hides it only behind a Windows tray icon; on Linux, or when the tray icon could not be created, closing it saves and quits. Tray labels show a literal `&`. | The application menu's Mesa-owned Cmd+Q and the menu bar item's Quit use the save-before-quit guard. |
+| Pi terminal | Ctrl+C copies when text is selected (the selection clears once the clipboard has it; the next Ctrl+C interrupts; a failed copy keeps the selection and says so). Ctrl+V and Ctrl+Shift+V paste. xterm is told it runs on ConPTY and whether that ConPTY reflows (Windows 11) or not (Windows 10). | Cmd+C and Cmd+V copy and paste; every Ctrl chord goes to Pi. |
 
 Windows should therefore be functionally comparable after its runtime and build
 prerequisites are present. CI compiles and tests the Windows Rust code and the
@@ -83,14 +87,22 @@ reviewed installer checksum, and a tag signature from the pinned [release signin
 remain pending until that release exists. Never substitute mutable main or an
 unchecked `irm ... | iex` / `curl ... | bash` download. `install.sh` installs Git when needed, clones or fast-forwards the
 checkout, and then hands off to `run.sh`; `install.ps1` does the same before
-handing off to `run.cmd`. `run.cmd` prefers user-local Scoop installs but falls
-back to `winget` for Node.js, Git, and Rust when Scoop cannot bootstrap in the
-current PowerShell environment. It executes `cargo --version` rather than
+handing off to `run.cmd`. `install.ps1` needs Git 2.34 or newer to verify the
+signed tag. Without `MESA_DIR` it never clones into the Windows or Program
+Files folders (an elevated shell starts in `C:\Windows\System32`) and uses
+`%USERPROFILE%\xo-mesa` instead, and it warns when the folder is inside
+OneDrive, whose sync can lock `node_modules` and the Rust `target` folder.
+`run.cmd` installs Node.js from the pinned official archive (see below). For Git
+and Rust it uses existing Scoop and falls back to `winget`. The Microsoft C++
+Build Tools install with `--norestart`; when Windows needs a restart, setup stops
+and asks you to restart and re-run `run.cmd`. It executes `cargo --version` rather than
 trusting executable presence because Rustup can install a Cargo proxy before a
 default toolchain exists. If that check fails while Rustup is available,
 `run.cmd` configures the pinned `1.96.0-msvc` toolchain and verifies Cargo again. It also verifies
 Microsoft C++ Build Tools before launching Tauri, so setup stops at the missing
 dependency instead of failing later in `cargo metadata` or the Rust link step.
+A `cl.exe` on PATH counts only when it builds for x64; from an x86 or ARM64
+Developer Prompt, `run.cmd` loads the x64 tools instead.
 The setup scripts also clear a stale Rust build cache if the project folder was
 moved or renamed.
 
@@ -105,10 +117,18 @@ it offline on later starts: `%LOCALAPPDATA%\Mesa\toolchains` on Windows,
 `${XDG_DATA_HOME:-~/.local/share}/mesa/toolchains` on Linux. `run.sh` does not
 install or modify nvm; it can use an nvm copy of the exact version by path.
 `run.cmd` keeps the pinned Node ahead of later PATH changes and checks
-`node -v` again before `npm ci`. `run.sh` accepts a Rust without Rustup only when
+`node -v` again before `npm ci`. Only when the pinned download fails and no
+Node.js is in `%ProgramFiles%\nodejs` does it try `winget` for the same exact
+version, which installs Node.js for all users; it never lets `winget` replace an
+existing machine-wide Node.js. `npm run mesa` and `npm run mesa:build` stop
+unless the running Node is exactly the `.node-version` pin (npm itself only
+warns about the `engines` range). `run.sh` accepts a Rust without Rustup only when
 `rustc` is exactly the pin; otherwise it installs Rustup user-locally from the
 reviewed `rustup-init` digest, puts `~/.cargo/bin` first on PATH and leaves the
 system Rust installed. The wrappers verify versions before launch.
+Windows on ARM64 runs `run.cmd` with the arm64 Node, but source and release
+builds target `x86_64-pc-windows-msvc`, so Mesa runs there as an emulated x64
+app. Mesa does not build or test native ARM64 Windows binaries.
 Lockfiles plus fixed tools reduce drift; OS SDKs and system packages remain
 external inputs, so builds are not bit-for-bit reproducible.
 `npm run test:toolchains` checks those contracts.
@@ -128,20 +148,27 @@ external inputs, so builds are not bit-for-bit reproducible.
    Linux-only run never compiles them. macOS is in the matrix so Rust tests and
    lints exercise the same platform family that ships the WKWebView desktop
    bundle, rather than only building it.
-   The Windows job also runs `scripts/windows-installer-behavior.check.ps1`.
-3. **rust-advisory** — `node scripts/native-advisory-check.mjs` (registry-backed
+   The Windows job also runs `scripts/windows-installer-behavior.check.ps1`
+   under both Windows PowerShell 5.1 and PowerShell 7.
+3. **frontend (windows-latest)** — Vitest, toolchain, release, bootstrap,
+   activity-API and notice checks on a stock Windows runner. It is advisory
+   (`continue-on-error`) until it has passed on GitHub and is promoted to a
+   required check; until then a failure shows on the run but does not fail the
+   workflow, branch rules or release admission.
+4. **rust-advisory** — `node scripts/native-advisory-check.mjs` (registry-backed
    `cargo audit` with the tracked exceptions) and the native notice check on
    Linux, so RustSec vulnerabilities gate the Rust dependency tree just as
    `npm audit` gates the web dependency tree. The weekly `advisory-review`
    workflow repeats the audit and fails seven days before the tracked
    exceptions expire.
-4. **desktop** — needs all gates above, then a matrix of `windows-latest`,
+5. **desktop** — needs the frontend, rust and rust-advisory jobs, then a matrix of `windows-latest`,
    `macos-latest`, `ubuntu-latest` using [`tauri-action`], uploading each
    platform's bundle as an artifact. `fail-fast: false` so one OS failing
    doesn't cancel the others.
 
 Linux runners install the WebKitGTK/GTK dev packages first; macOS builds a
-universal binary; Windows explicitly produces NSIS and MSI installers and uses
+universal binary; Windows builds the release target `x86_64-pc-windows-msvc`,
+explicitly produces NSIS and MSI installers and uses
 the Windows-specific Tauri config (`tauri.windows.conf.json`) with the small
 Evergreen download bootstrapper. Use
 `npm run mesa:build:windows:offline` only for disconnected deployment media;
@@ -181,6 +208,29 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   case-insensitively (vault filesystems are case-insensitive on Windows and by
   default on macOS) while requiring a real path-segment boundary, so the graph
   flickers and the watcher resolves files no matter how a tool spells the path.
+- **Verbatim paths (Windows)** — `fs::canonicalize` returns `\\?\C:\…` and
+  `\\?\UNC\server\share\…`. Mesa keeps that form only for in-process
+  checks. Paths it stores (recent vaults, approved roots), sends to the
+  frontend, or gives to another program (Pi's working folder, the system
+  opener) drop the prefix (`dunce` natively, `stripVerbatimPrefix` in
+  `lib/vault.ts`, `strip_verbatim_prefix` in `vaultscope.rs`); records written
+  by older builds are rewritten on first read. The native watcher sends
+  vault-relative paths, so it never depends on how the root is spelled. Saved
+  HTML asset paths keep a UNC `//server/share` or drive root and never climb
+  above it. On macOS and Linux none of this changes stored ids or keys.
+  One-time effect on Windows: the per-vault storage id is computed from the
+  root without the prefix, so a vault that an older build opened from the
+  recent list (which handed back the `\\?\` spelling) gets a new id once and
+  loses the per-vault state stored under the old id (UI state, caches and
+  draft recovery). Vault files are not affected. Opening it through the folder dialog already
+  used the plain spelling and keeps its state.
+- **Mapped drives and Pi (Windows)** — Pi starts in the spelling the user
+  opened (for example `Z:\Vault` on a mapped share) when that spelling still
+  resolves to the approved folder; otherwise in the resolved folder. The
+  cmd.exe launch route refuses a folder opened by its UNC path.
+- **Watcher paths** — the native watcher sends `./`-prefixed vault-relative
+  paths, so a first folder named like a drive (`C:`, legal on Unix) is never
+  read as an absolute path.
 - **File names** — `safeBaseName` (`lib/fsnames.ts`) sanitizes user-entered
   names on *every* platform to the Windows rules: strips `\ / : * ? " < > |`
   and control characters, trailing dots/spaces, and refuses reserved device
@@ -196,7 +246,12 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   launches Node shebang scripts through `node.exe`, and only falls back to
   `cmd.exe /d /c call` (with
   `NoDefaultCurrentDirectoryInExePath=1`) for `.cmd`/`.bat` wrappers when
-  necessary. That avoids
+  necessary. A standard npm `.cmd` shim is read and its Node entry started
+  directly with `node.exe`, because cmd.exe cannot use a UNC working folder (it
+  falls back to `C:\Windows`). If only the cmd.exe route remains and the vault
+  is on a UNC path, Pi does not start and the error says to map a drive or set
+  `MESA_PI_BIN`. Within one folder, `.exe`, `.com`, `.cmd` and `.bat` are tried
+  before other `PATHEXT` entries such as `.ps1` or `.js`. That avoids
   `CreateProcessW ... %1 is not a valid Win32 application` from Unix-style
   shims. When Mesa is launched from the desktop (not a terminal) it may inherit
   a minimal PATH, so the resolver also checks the standard Windows install
@@ -240,9 +295,46 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   run one `reg add` from an admin terminal). It reports rather than applies:
   that key is a machine-wide admin change, and it never blocks the run.
   The Windows CI job exercises the installer and WebView2 version probe.
+- **Private app storage (Windows)** — `vault-state` and the sync identity get a
+  protected DACL (current user, full control, inheritance off) through
+  `SetNamedSecurityInfoW`; files inside are reset to inherit only that entry.
+  No PowerShell or `icacls` process runs, so AppLocker, WDAC or a locked-down
+  script host cannot stop a vault from opening. The descriptor is read first
+  and written only when it differs, and the result is verified.
+- **Reparse points (Windows)** — OneDrive Files On-Demand placeholders are
+  reparse points. Mesa reads the reparse tag and accepts cloud, dedup and WOF
+  tags; links, junctions, mount points and unknown tags are refused (see
+  [vault-safety.md](vault-safety.md)).
+- **Online-only cloud files (Windows)** — a OneDrive Files On-Demand file that
+  is not on the device has `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` (or
+  `RECALL_ON_OPEN` / `OFFLINE`). Background text indexing does not read it, so
+  opening a vault never downloads the whole OneDrive folder; search matches it
+  by name and says how many files are online-only. Opening the note reads it
+  through the ordinary file read, which lets OneDrive download it, and then it
+  is indexed. Sync never hashes such a file and never leaves it out silently
+  (a peer could read a missing file as a deletion): the scan lists it and sync
+  stops before planning any change, with the remedy "make this folder
+  available offline". Acceptance with a real online-only OneDrive file is
+  pending ([native-acceptance.md](native-acceptance.md)).
+- **Transient file locks (Windows)** — saves and the sync journal retry
+  sharing/lock/access errors briefly (a real access denial fails after about
+  700 ms of retries); a read-only file gets a clear message.
+- **Release diagnostics (Windows)** — the release build has no console, so
+  `main.rs` sends stderr to `%LOCALAPPDATA%\dev.xo.mesa\logs\mesa.log`
+  (1 MiB, one rotated `mesa.1.log`). Stderr moves only after both log threads
+  run; output is queued in memory (256 KiB) and dropped with a count when the
+  disk is slow, so logging never blocks the app, and stderr falls back to `NUL`
+  if the pipe reader stops. A panic line keeps only the source file name and
+  line, never the payload. A console or redirected stderr is left alone. Log
+  lines are short operational errors; they never contain note bytes or sync keys.
+- **Windows shell files** — `desktop.ini`, `Thumbs.db`, `$RECYCLE.BIN` and
+  `System Volume Information` are skipped by walks, the index and sync on every
+  platform.
 - **App exit** — `lib.rs` handles `RunEvent::Exit` to kill every PTY child and
   stop the activity server. On Windows each ConPTY leader is assigned to a
-  kill-on-close Job Object immediately after spawn. Closing the Job Object
+  kill-on-close Job Object immediately after spawn. portable-pty owns the
+  `CreateProcessW` call, so the process cannot start suspended; a child it
+  spawns before the assignment (microseconds, before Node loads) would escape. Closing the Job Object
   takes its complete process tree with it, including a wrapper-launched Node or
   Pi grandchild that would otherwise keep vault/build files locked.
 - **UI-thread cost of IPC and events (Windows only)** — on every OS except

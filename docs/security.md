@@ -194,7 +194,8 @@ is unsupported because proxy DNS could bypass public-address validation.
 - **Pi:** native consent is required, but tool hooks do not sandbox shell commands
   or external extensions. The approved process remains unrestricted. Only Mesa's reviewed apply path supplies its transaction.
 - **Windows sync acceptance:** ancestor handles deny write/delete sharing and leaf
-  reads reject reparse points; these paths still require execution on Windows.
+  reads reject link-like and unknown reparse points (cloud placeholders pass);
+  these paths still require execution on Windows.
   Unix transfers use root-anchored directory handles.
 - **Persistence:** external writers are not locked out. Windows directory-metadata
   power-loss durability is unverified. Multi-file research updates are recoverable,

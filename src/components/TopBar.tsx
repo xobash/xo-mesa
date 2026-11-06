@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent }
 import { createPortal } from "react-dom";
 import { useAppStore } from "../store";
 import { IN_TAURI } from "../lib/vault";
+import { formatHotkey } from "../lib/hotkeys";
 import { vaultMenuPosition } from "../lib/vaultSwitcher";
 import { startViewDrag } from "./panelDrag";
 
@@ -224,7 +225,7 @@ export function TopBar() {
         <button
           className="btn icon search-top-btn"
           onClick={() => openSearch("")}
-          title="Search (⌘⇧F) — ⌘P for quick switcher"
+          title={`Search (${formatHotkey("Mod+Shift+F")}) — ${formatHotkey("Mod+P")} for quick switcher`}
           aria-label="Search"
         >
           <svg
@@ -304,7 +305,7 @@ export function TopBar() {
         <button
           className="btn icon"
           onClick={() => setSettingsOpen(true)}
-          title="Settings (⌘,)"
+          title={`Settings (${formatHotkey("Mod+,")})`}
           aria-label="Settings"
         >
           ⚙

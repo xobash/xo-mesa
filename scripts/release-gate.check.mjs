@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { verifyRelease, requiredChecks } from './release-gate.mjs';
 import { validateAcceptance, candidateProducts } from './release-acceptance.mjs';
 import { matrixTargets, requiredWorkflows } from './native-acceptance-contract.mjs';
+import { WINDOWS_TARGET, releaseTargetDir } from './tauri-targets.mjs';
 const sha = 'a'.repeat(40), tag = 'v0.1.0', hash = 'b'.repeat(64);
 function api(overrides = {}) {
   const responses = { [`contents/package.json?ref=${sha}`]: { content: Buffer.from(JSON.stringify({ version: "0.1.0" })).toString("base64") }, [`git/ref/tags/${tag}`]: { object: { type: 'tag', sha: 'c'.repeat(40) } }, [`git/tags/${'c'.repeat(40)}`]: { object: { type: 'commit', sha }, verification: { verified: true } }, 'branches/main': { protected: true, commit: { sha } }, [`compare/${sha}...${sha}`]: { status: 'identical' }, [`actions/workflows/build.yml/runs?head_sha=${sha}&status=success&per_page=100`]: { workflow_runs: [{ id: 1, head_sha: sha, head_branch: 'main', event: 'push', conclusion: 'success' }] }, 'actions/runs/1/jobs?per_page=100': { jobs: requiredChecks.map(name => ({ name, conclusion: 'success' })) }, ...overrides };
@@ -73,6 +74,27 @@ it('admits exact package inventories and rejects changed bytes or unapproved ext
 import { mkdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+it('CI builds and tests Windows the way release does; the Windows frontend job cannot fail the run', () => {
+  const build = readFileSync(fileURLToPath(new URL('../.github/workflows/build.yml', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
+  // The desktop job builds the release target triple and uploads from its folder.
+  assert.match(build, new RegExp(`matrix\\.name == 'windows' && '--target ${WINDOWS_TARGET} --bundles msi,nsis'`));
+  assert.ok(build.includes(`${releaseTargetDir('windows')}/bundle/**/*`));
+  // Stock Windows runs the JS gates, and the installer check runs under both shells.
+  const windowsJob = build.slice(build.indexOf('\n  frontend-windows:\n'), build.indexOf('\n  rust:\n'));
+  assert.match(windowsJob, /runs-on: windows-latest\n/);
+  for (const step of ['npm test', 'npm run test:toolchains', 'npm run test:release']) assert.ok(windowsJob.includes(`- run: ${step}\n`), step);
+  for (const shell of ['pwsh', 'powershell']) assert.match(build, new RegExp(`shell: ${shell}\\n\\s+run: \\./scripts/windows-installer-behavior\\.check\\.ps1`), shell);
+  // The Windows frontend job is advisory. The gate admits only a run whose overall
+  // conclusion is success, so the job must not be able to fail the workflow:
+  // continue-on-error at job level, and no job waits on it.
+  const job = windowsJob.split('\n    steps:\n')[0] + '\n';
+  assert.match(job, /\n    continue-on-error: true\n/);
+  assert.match(windowsJob, /fetch-depth: 0\n/);
+  assert.doesNotMatch(build, /needs:[^\n]*frontend-windows/);
+  assert.deepEqual(requiredChecks, ['frontend', 'rust (ubuntu-latest)', 'rust (windows-latest)', 'rust (macos-latest)', 'rust-advisory', 'desktop (macos-latest, macos)', 'desktop (ubuntu-latest, linux)', 'desktop (windows-latest, windows)']);
+  assert.match(readFileSync(fileURLToPath(new URL('./release-gate.mjs', import.meta.url)), 'utf8'), /run\.conclusion === 'success'/, 'if the gate stops requiring a successful run, revisit this job');
+});
+
 it('packages Windows products from the target-triple folder that the launcher builds into', () => {
   const root = mkdtempSync(join(tmpdir(), 'mesa-release-windows-'));
   try {
@@ -191,16 +213,23 @@ it('builds the source archive and scope-labeled SBOMs from the clean release com
   assert.throws(() => labelSbom('{"bomFormat":"SPDX"}', 'scope', '/x'), /CycloneDX/);
 });
 
-it('removes transient signing material before any release build runs', () => {
-  const windows = readFileSync(fileURLToPath(new URL('./release-windows.ps1', import.meta.url)), 'utf8');
+// A Windows checkout may turn LF into CRLF; these checks read text, not line endings.
+function checkSigningCleanup(windows, candidate) {
+  [windows, candidate] = [windows, candidate].map(text => text.replace(/\r\n/g, '\n'));
   const build = windows.indexOf('npm run mesa:build');
   assert.ok(build > 0);
   for (const step of ['Remove-Item -LiteralPath $pfx -Force', '$password = $null', 'Remove-Item Env:WINDOWS_CERTIFICATE_BASE64, Env:WINDOWS_CERTIFICATE_PASSWORD']) {
     const at = windows.indexOf(step);
     assert.ok(at > windows.indexOf('Signing identity mismatch') && at < build, step);
   }
-  const candidate = readFileSync(fileURLToPath(new URL('../.github/workflows/release-candidate.yml', import.meta.url)), 'utf8');
   const removed = candidate.indexOf('rm -f "$RUNNER_TEMP/mesa-release.p12"\n');
   assert.ok(removed > candidate.indexOf('security import "$RUNNER_TEMP/mesa-release.p12"'));
   assert.ok(removed < candidate.indexOf('scripts/release-macos.sh'));
+}
+it('removes transient signing material before any release build runs', () => {
+  const windows = readFileSync(fileURLToPath(new URL('./release-windows.ps1', import.meta.url)), 'utf8');
+  const candidate = readFileSync(fileURLToPath(new URL('../.github/workflows/release-candidate.yml', import.meta.url)), 'utf8');
+  checkSigningCleanup(windows, candidate);
+  const crlf = text => text.replace(/\r?\n/g, '\r\n');
+  checkSigningCleanup(crlf(windows), crlf(candidate));
 });

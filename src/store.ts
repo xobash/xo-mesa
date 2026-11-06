@@ -33,7 +33,7 @@ import {
   type PaneDrag
 } from "./lib/panes";
 import { loadSettings, persistSettings, scrubStoredSyncSecrets } from "./lib/settings";
-import { hydrateSyncSecrets, persistSyncSecrets, syncSecretSignature } from "./lib/syncSecrets";
+import { hydrateSyncSecrets, persistSyncSecrets, resetNativeSyncSecrets, syncSecretSignature } from "./lib/syncSecrets";
 import {
   type SyncLogEntry,
   type SyncProgress,
@@ -213,6 +213,8 @@ export interface VaultUnavailableState {
   reason: string;
 }
 
+export type UnreadableTextReason = "skipped" | "offline" | "failed";
+
 export interface AppState {
   vaultPath: string | null;
   vaultName: string;
@@ -321,7 +323,9 @@ export interface AppState {
   unindexedTextFiles: number;
   skippedTextFiles: number;
   failedTextFiles: number;
-  unreadableTextReasons: Record<string, "skipped" | "failed">;
+  /** Why a text file is matched by name only: over the size limit, online-only
+   *  in cloud storage (not downloaded by background indexing), or unreadable. */
+  unreadableTextReasons: Record<string, UnreadableTextReason>;
     /** Text files still awaiting background indexing after vault open.
    * Non-zero means search and other indexed views have incomplete coverage. */
   indexingTextFiles: number;
@@ -384,6 +388,8 @@ export interface AppState {
   updateTask: (relPath: string, line: number, patch: TaskLinePatch, expectedText?: string) => Promise<void>;
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   loadSyncSecrets: () => Promise<void>;
+  /** After typed confirmation: replace damaged saved keys with a new device key; every peer must pair again. */
+  resetSyncKeys: () => Promise<void>;
   setPalette: (open: boolean) => void;
   /** What the open palette lists: files (and `>` commands) or templates to insert. */
   paletteMode: "files" | "templates";
@@ -718,6 +724,14 @@ export const useAppStore = create<AppState>((set, get) => {
     settings: bootSettings.settings,
     settingsIssue: bootSettings.issue,
     loadSyncSecrets,
+    resetSyncKeys: async () => {
+      const key = await resetNativeSyncSecrets();
+      // The damaged record is gone; forget its failed load and error.
+      secretsLoad = null;
+      secretSaveError = "";
+      const current = get().settings;
+      commitSettings({ ...current, syncToken: key, peers: current.peers.map(peer => ({ ...peer, token: undefined })) });
+    },
     retrySettings: () => {
       commitSettings(get().settings);
       if (IN_TAURI) {

@@ -374,6 +374,19 @@ there is no in-place or destructive rename fallback. A later writer may still
 change either version through an existing file handle; Mesa does not claim to
 lock other editors. Crash recovery preserves rescue copies beside live targets.
 
+On Windows, antivirus, the search indexer and cloud sync clients often hold a
+file for a moment. ReplaceFile, every no-replace move (new files, renames,
+recovery and sync publication), read-back and the sync journal replace retry
+sharing, lock, access-denied and
+unable-to-remove-replaced errors up to five times (700 ms in all), and only
+while both files still have their original names. A read-only target fails at
+once with a `read-only:` message and the edits stay open. After the new bytes
+are published and read back, the save has succeeded: if the retained original
+cannot be removed, it stays as a rescue copy that recovery lists, and the save
+is not reported as failed. A real permission denial also reports
+access-denied, so it fails only after those retries, about 700 ms later. Other
+platforms never retry.
+
 Deleted files offers Permanently delete for an item and Empty recovery storage
 for the full loaded list, including items hidden by the search filter. The user
 must type DELETE or EMPTY in a confirmation that explains irreversibility and
@@ -407,8 +420,22 @@ visible paths per request, never hidden or `node_modules` paths, and never
 above the 8 MiB automatic text limit. Single bounded byte reads have the same
 visible-path rule, so `.git`, `.env` and recovery storage are not
 renderer-readable. Reads open each file once without following a final link
-or blocking on a FIFO, then check its type and size on that handle. A hidden
-folder inside an approved vault cannot be approved as a separate vault. The media (`asset`) scope also requires a
+or blocking on a FIFO, then check its type and size on that handle. On Windows
+a reparse point passes only when its tag keeps the data at that path: cloud
+placeholders (OneDrive Files On-Demand and other Cloud Files providers), Data
+Deduplication and WOF compression. Symlinks, junctions, mount points, every
+other name-surrogate tag and unknown tags are refused, by one shared classifier
+(`platform_fs.rs`) used by reads, saves, sync, rename and recovery. A hidden
+folder inside an approved vault cannot be approved as a separate vault. Approved
+roots are compared by one key per folder: forward slashes, and on Windows
+lowercase without the `\\?\` prefix that path resolution adds, so the plain and
+resolved spellings of one folder always match. The prefix is dropped only when
+the rest is an ordinary drive or UNC path; a name that Windows would rewrite
+(trailing dot or space, a device name such as `CON`) keeps it. On a volume that
+cannot report resolved paths (some RAM disks and virtual drives), Mesa uses the
+plain absolute path only when no part of it is a link, junction or cloud
+placeholder and no part looks like an 8.3 short name; otherwise access fails.
+Other native modules still require full resolution on such volumes. The media (`asset`) scope also requires a
 literal leading dot, and Mesa windows cannot navigate to `asset` URLs.
 Visible directories use native creation. Delete and restore use recoverable,
 no-replace moves. Recovery catalogue reads need no recursive hidden-path grant.
@@ -416,6 +443,12 @@ Artifact restoration accepts stale recognized originals, retains rescue copies,
 and fails when a destination appears. Native tests exercise collisions, symlink
 parents, fresh artifacts and concurrent edits; capability tests cover every window.
 Pi and other OS processes remain outside this renderer boundary.
+Walks, the index and sync skip `desktop.ini`, `Thumbs.db`, `$RECYCLE.BIN` and
+`System Volume Information` on every platform (ASCII case-insensitive), so peers
+agree on the synced file set. On Windows, Mesa marks `.mesa-trash` hidden each
+time it uses that folder (so one that is still visible from an older version
+becomes hidden) and writes the sync journal hidden; save stages and rescue copies stay unhidden because a moved
+file keeps its attributes and a hidden stage would hide the saved note.
 
 ## Unix access metadata
 
@@ -439,10 +472,15 @@ bytes with strict UTF-8 decoding before editing is enabled, including cached
 and deliberately loaded documents, external refreshes and confirmed disk-copy
 recovery. Invalid UTF-8 opens read-only with a clear
 status; Mesa does not transcode it. Authored UTF-8 replacement characters remain
-editable. Pure CRLF documents retain their line endings through editor changes,
-saves and tab history; mixed endings retain the existing LF normalization.
-Regression coverage is in the existing native-write, document-controller and
-editor undo suites.
+editable. Line endings are never converted as a whole: the editor keeps the
+exact break (LF, CRLF or CR) of every line an edit does not touch, and a break
+the user creates or retypes, or text they paste, takes the file's dominant
+break (the most frequent one; a tie goes to the first). Undo puts deleted
+lines back with their own breaks. This holds for pure
+CRLF, classic-Mac CR and mixed files through edits, saves and tab history; LF
+files are unchanged. The conflict review's Reviewed text box follows the same
+rule. Regression coverage is in the native-write, document-controller, editor
+undo and editor line-ending suites.
 
 Native ordinary saves serialize per canonical target, so a large binary save does
 not hold a global exclusive lock against an unrelated note. Rename, deletion,

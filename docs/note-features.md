@@ -99,8 +99,11 @@ free.
 Mesa refuses shortcuts that it or the editor already uses (for example
 `Ctrl/Cmd+P` with any other modifier, `Ctrl/Cmd+F`, `Ctrl/Cmd+Z`, `Ctrl/Cmd+D`,
 `Shift+Tab`, and `Ctrl/Cmd` or `Alt` with arrow, Home, End, Backspace or
-Delete keys) and shortcuts that another command has. A user shortcut takes precedence over the editor's own
-keymap. The palette shows each assigned shortcut beside its command. Hotkeys
+Delete keys, and `Ctrl+S` on Windows and Linux, where it saves) and shortcuts
+that another command has. A user shortcut takes precedence over the editor's own
+keymap; on Windows and Linux a Ctrl+letter shortcut does not fire inside the Pi terminal. One bound to `F5`, `F7` or
+`Ctrl+R` still runs on Windows; only the browser's reload or caret browsing is
+blocked. The palette shows each assigned shortcut beside its command. Hotkeys
 are stored in Mesa's settings, not in the vault.
 
 ## Code

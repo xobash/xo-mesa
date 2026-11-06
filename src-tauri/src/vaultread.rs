@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// a real length here: a file that large would have failed the read anyway.
 const READ_FAILED: u32 = u32::MAX;
 const READ_SKIPPED: u32 = u32::MAX - 1;
+/// An online-only cloud file (OneDrive Files On-Demand) left unread so that
+/// background indexing never downloads the vault. Opening the note still loads
+/// it through the ordinary read, which downloads on demand.
+const READ_OFFLINE: u32 = u32::MAX - 2;
 const DEFAULT_MAX_TEXT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// Requests above this are refused; the frontend sends at most 64 paths.
 const MAX_TEXT_READ_BATCH: usize = 128;
@@ -26,6 +30,7 @@ const DEFAULT_BULK_READ_WORKERS: usize = 8;
 enum ReadResult {
     Content(Vec<u8>),
     Skipped,
+    Offline,
     Failed,
 }
 
@@ -153,10 +158,11 @@ fn open_regular(path: &Path) -> io::Result<std::fs::File> {
     }
     let file = options.open(path)?;
     let meta = file.metadata()?;
+    // Cloud placeholders (OneDrive Files On-Demand) read as files; links do not.
     #[cfg(windows)]
     let reparse = {
         use std::os::windows::fs::MetadataExt;
-        meta.file_attributes() & 0x400 != 0
+        !crate::sync_core::platform_fs::handle_is_in_place(&file, meta.file_attributes())?
     };
     #[cfg(not(windows))]
     let reparse = false;
@@ -168,6 +174,9 @@ fn open_regular(path: &Path) -> io::Result<std::fs::File> {
 
 fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
     use std::io::Read;
+    if crate::sync_core::platform_fs::path_is_not_downloaded(path) {
+        return Ok(ReadResult::Offline);
+    }
     // Regular files only, matching `vault_scan`'s `is_file` rule: a directory
     // or a device node named in `rels` must read as a failure, not hang.
     let file = open_regular(path)?;
@@ -191,7 +200,8 @@ fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
 /// ```text
 ///   u32  count
 ///   repeat count times:
-///     u32  len   (READ_FAILED = unreadable, READ_SKIPPED = over limit)
+///     u32  len   (READ_FAILED = unreadable, READ_SKIPPED = over limit,
+///                 READ_OFFLINE = online-only cloud file)
 ///     u8   bytes[len]
 /// ```
 ///
@@ -213,11 +223,12 @@ fn encode(results: &[ReadResult]) -> Vec<u8> {
         match result {
             // A file at or above 4 GiB would collide with the failure marker.
             // It cannot be read into memory here anyway, so report it as one.
-            ReadResult::Content(bytes) if bytes.len() < READ_SKIPPED as usize => {
+            ReadResult::Content(bytes) if bytes.len() < READ_OFFLINE as usize => {
                 out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
                 out.extend_from_slice(bytes);
             }
             ReadResult::Skipped => out.extend_from_slice(&READ_SKIPPED.to_le_bytes()),
+            ReadResult::Offline => out.extend_from_slice(&READ_OFFLINE.to_le_bytes()),
             _ => out.extend_from_slice(&READ_FAILED.to_le_bytes()),
         }
     }
@@ -366,7 +377,7 @@ mod tests {
         for _ in 0..count {
             let len = u32::from_le_bytes(body[at..at + 4].try_into().unwrap());
             at += 4;
-            if len == READ_FAILED || len == READ_SKIPPED {
+            if len == READ_FAILED || len == READ_SKIPPED || len == READ_OFFLINE {
                 out.push(None);
             } else {
                 let len = len as usize;
@@ -386,6 +397,19 @@ mod tests {
             DEFAULT_MAX_TEXT_FILE_BYTES,
             None,
         )))
+    }
+
+    #[test]
+    fn online_only_files_have_their_own_marker() {
+        // The frontend discloses these separately and never caches them as text.
+        let body = encode(&[
+            ReadResult::Offline,
+            ReadResult::Skipped,
+            ReadResult::Content(b"x".to_vec()),
+        ]);
+        assert_eq!(&body[4..8], &(u32::MAX - 2).to_le_bytes());
+        assert_eq!(&body[8..12], &(u32::MAX - 1).to_le_bytes());
+        assert_eq!(decode(&body), vec![None, None, Some(b"x".to_vec())]);
     }
 
     #[test]
@@ -656,7 +680,9 @@ mod tests {
                     for result in read_all(&root, group, DEFAULT_MAX_TEXT_FILE_BYTES, None) {
                         match result {
                             ReadResult::Content(b) => bytes += b.len(),
-                            ReadResult::Skipped | ReadResult::Failed => failed += 1,
+                            ReadResult::Skipped | ReadResult::Offline | ReadResult::Failed => {
+                                failed += 1
+                            }
                         }
                     }
                 }
@@ -749,7 +775,10 @@ fn fingerprint_all(root: &Path, rels: &[String]) -> Vec<Option<String>> {
     rels.iter()
         .map(|rel| {
             let path = safe_join(&canonical_root, rel)?.canonicalize().ok()?;
-            if !visible_under(&canonical_root, &path) {
+            // An online-only cloud file is a miss: hashing would download it.
+            if !visible_under(&canonical_root, &path)
+                || crate::sync_core::platform_fs::path_is_not_downloaded(&path)
+            {
                 return None;
             }
             let mut file = open_regular(&path).ok()?;

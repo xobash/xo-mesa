@@ -347,6 +347,20 @@ pub fn validate_journal(journal: &SyncJournal, label: &str) -> std::io::Result<(
     Ok(())
 }
 
+/// Validate a journal received from a peer. Records for Windows shell files,
+/// which older versions still synced, are dropped first: they never apply here,
+/// and refusing them would stop every exchange with that peer.
+pub fn accept_peer_journal(journal: &mut SyncJournal, label: &str) -> std::io::Result<()> {
+    journal.operations.retain(|op| {
+        !is_retired_shell_rel(&op.from)
+            && op.to.as_deref().is_none_or(|to| !is_retired_shell_rel(to))
+    });
+    journal
+        .known
+        .retain(|entry| !is_retired_shell_rel(&entry.rel));
+    validate_journal(journal, label)
+}
+
 pub fn load_journal(root: &Path) -> std::io::Result<SyncJournal> {
     let _guard = journal_guard()?;
     load_journal_unlocked(root)
@@ -710,7 +724,13 @@ pub(super) fn save_journal_unlocked(
         .open(&tmp)?;
     let written = file.write_all(&bytes).and_then(|()| file.sync_all());
     drop(file);
-    if let Err(error) = written.and_then(|()| std::fs::rename(&tmp, &path)) {
+    // The journal is Mesa-owned control state; the rename carries the hidden
+    // attribute to it. An indexer or antivirus may hold the old journal for a
+    // moment on Windows, so the replace retries those locks.
+    platform_fs::hide_control_entry(&tmp);
+    if let Err(error) =
+        written.and_then(|()| platform_fs::retry_transient_lock(|| std::fs::rename(&tmp, &path)))
+    {
         let _ = std::fs::remove_file(&tmp);
         return Err(error);
     }

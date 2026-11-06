@@ -56,6 +56,10 @@ empty document. Skipped or failed files remain in the catalog and are matched
 by name only until content loads. Opening a failed file retries the read;
 opening an oversized file offers a deliberate load. Editing stays disabled
 until a real read succeeds. Search reports skipped and failed counts separately.
+On Windows, background indexing also leaves OneDrive online-only files unread
+(and unhashed), so a vault open never downloads them; search counts them as
+online-only. Opening one reads it normally, which downloads it, and it is then
+indexed. Files that arrive through the watcher are still read when they appear.
 
 External changes and edits update the shared cache. Saved edits are checked
 against their current revision before compaction. A cancelled vault generation

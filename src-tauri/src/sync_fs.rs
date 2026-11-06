@@ -155,10 +155,10 @@ fn ensure_real_parent_tracked(target: &Path, created: &mut CreatedDirs) -> std::
                 #[cfg(windows)]
                 {
                     use std::os::windows::fs::MetadataExt;
-                    // Junctions and mount points are reparse points but need not
-                    // report file_type().is_symlink(). Never create through one.
-                    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-                    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    // Never create through a junction, mount point or other
+                    // link-like reparse point; cloud placeholders are real folders.
+                    if !super::platform_fs::path_is_in_place(&current, metadata.file_attributes())?
+                    {
                         return Err(invalid_data("sync target parent is a reparse point"));
                     }
                 }
@@ -184,7 +184,7 @@ fn ensure_real_parent_tracked(target: &Path, created: &mut CreatedDirs) -> std::
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            if metadata.file_attributes() & 0x400 != 0 {
+            if !super::platform_fs::path_is_in_place(&dir, metadata.file_attributes())? {
                 return Err(invalid_data("sync target parent became a reparse point"));
             }
         }
@@ -414,14 +414,21 @@ pub(super) fn platform_exclusive_publish(
     from_wide.push(0);
     to_wide.push(0);
     // The replacement flag is deliberately absent. MoveFileExW therefore
-    // fails if another writer already created the destination.
-    // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call.
-    let result =
-        unsafe { MoveFileExW(from_wide.as_ptr(), to_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
-    if result != 0 {
+    // fails if another writer already created the destination. A failed move
+    // changes nothing, so a short antivirus or indexer lock is retried.
+    let moved = super::platform_fs::retry_transient_lock(|| {
+        // SAFETY: both UTF-16 buffers are NUL-terminated and live through the call.
+        let result =
+            unsafe { MoveFileExW(from_wide.as_ptr(), to_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+        if result != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    });
+    let Err(error) = moved else {
         return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
+    };
     match error.raw_os_error().map(|code| code as u32) {
         Some(ERROR_FILE_EXISTS) | Some(ERROR_ALREADY_EXISTS) => Err(ExclusivePublishError::Failed(
             std::io::Error::new(std::io::ErrorKind::AlreadyExists, error),

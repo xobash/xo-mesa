@@ -67,6 +67,7 @@ fn main() {
             "vault_watch",
             "vault_unwatch",
             "tray_update",
+            "main_close_hides",
             "tray_popover_request",
             "tray_popover_act",
         ]),

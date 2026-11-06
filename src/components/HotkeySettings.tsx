@@ -47,7 +47,7 @@ export function HotkeySettings() {
             <div className="hotkey-row" key={command.id}>
               <span>{command.label}</span>
               <span className="hotkey-actions">
-                {chord ? <kbd>{formatHotkey(chord)}</kbd> : command.hint ? <kbd aria-label="Built-in shortcut">{command.hint}</kbd> : null}
+                {chord ? <kbd>{formatHotkey(chord)}</kbd> : command.hint ? <kbd aria-label="Built-in shortcut">{formatHotkey(command.hint)}</kbd> : null}
                 <button
                   type="button"
                   className={"seg-btn" + (active ? " on" : "")}

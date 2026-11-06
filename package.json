@@ -39,6 +39,7 @@
     "audit:assets": "node scripts/asset-metadata.mjs"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.3",
     "@codemirror/lang-markdown": "^6.3.0",
     "@codemirror/language": "^6.12.3",
     "@codemirror/search": "6.7.1",

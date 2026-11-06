@@ -599,8 +599,11 @@ export function PdfView({
     // Skip pointer mapping until the page has a nonzero painted bitmap.
     if (canvas.width <= 0 || canvas.height <= 0) return null;
     const rect = canvas.getBoundingClientRect();
-    const vx = ((e.clientX - rect.left) * canvas.width) / rect.width;
-    const vy = ((e.clientY - rect.top) * canvas.height) / rect.height;
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    // Map through the CSS-pixel viewport, never the bitmap: the bitmap is
+    // larger than the box by the device pixel ratio.
+    const vx = ((e.clientX - rect.left) * vp.width) / rect.width;
+    const vy = ((e.clientY - rect.top) * vp.height) / rect.height;
     const [pdfX, pdfY] = vp.convertToPdfPoint(vx, vy);
     return { pdfX, pdfY, cssX: vx, cssY: vy, rect };
   };
@@ -711,14 +714,16 @@ export function PdfView({
     }
     if (!drag.current || drag.current.page !== pageIdx) return;
     const canvas = canvasRefs.current.get(pageIdx);
-    if (!canvas) return;
+    const vp = viewports.current.get(pageIdx);
+    if (!canvas || !vp) return;
     const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
     setDragBox((b) =>
       b
         ? {
             ...b,
-            w: ((e.clientX - rect.left) * canvas.width) / rect.width - b.left,
-            h: ((e.clientY - rect.top) * canvas.height) / rect.height - b.top,
+            w: ((e.clientX - rect.left) * vp.width) / rect.width - b.left,
+            h: ((e.clientY - rect.top) * vp.height) / rect.height - b.top,
           }
         : b
     );

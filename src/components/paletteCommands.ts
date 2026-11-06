@@ -6,7 +6,7 @@ export interface PaletteCommand {
   /** Stable id; user hotkeys are stored against it. */
   id: string;
   label: string;
-  /** Built-in shortcut shown beside the label. */
+  /** Built-in shortcut as a canonical chord ("Mod+N"); shown through `formatHotkey`. */
   hint?: string;
   run: () => void;
 }
@@ -17,9 +17,9 @@ const findInNote = () => {
 
 /** Every command-palette command. The palette and user hotkeys share this list. */
 export const PALETTE_COMMANDS: readonly PaletteCommand[] = [
-  { id: "new", label: "New note", hint: "⌘N", run: () => void getStore().newNote() },
-  { id: "search", label: "Search in all notes", hint: "⌘⇧F", run: () => getStore().openSearch("") },
-  { id: "find", label: "Find and replace in current note", hint: "⌘F", run: findInNote },
+  { id: "new", label: "New note", hint: "Mod+N", run: () => void getStore().newNote() },
+  { id: "search", label: "Search in all notes", hint: "Mod+Shift+F", run: () => getStore().openSearch("") },
+  { id: "find", label: "Find and replace in current note", hint: "Mod+F", run: findInNote },
   { id: "insert-template", label: "Insert template…", run: () => getStore().openTemplatePicker() },
   { id: "tasks", label: "Open tasks dashboard", run: () => getStore().setTasksOpen(true) },
   { id: "sync", label: "Open device sync", run: () => getStore().setSyncOpen(true) },
@@ -29,13 +29,13 @@ export const PALETTE_COMMANDS: readonly PaletteCommand[] = [
   {
     id: "calendar",
     label: "Open calendar (overlay)",
-    hint: "⇧Tab",
+    hint: "Shift+Tab",
     run: () => getStore().setOverlayOpen(true),
   },
   {
     id: "overlay-search",
     label: "Open overlay search",
-    hint: "⇧Tab",
+    hint: "Shift+Tab",
     run: () => {
       getStore().setOverlayOpen(true);
       getStore().openSearch("");
@@ -49,7 +49,7 @@ export const PALETTE_COMMANDS: readonly PaletteCommand[] = [
     run: () => void getStore().openDailyNote(localISO()),
   },
   { id: "help", label: "Help & guide", run: () => getStore().setHelpOpen(true) },
-  { id: "settings", label: "Open settings", hint: "⌘,", run: () => getStore().setSettingsOpen(true) },
+  { id: "settings", label: "Open settings", hint: "Mod+,", run: () => getStore().setSettingsOpen(true) },
   { id: "graph", label: "Toggle full graph", run: () => getStore().toggleGraphFull() },
   {
     id: "theme",

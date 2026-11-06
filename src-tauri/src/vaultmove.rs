@@ -329,8 +329,10 @@ fn purge_recovery(root: &Path, rel: &str) -> Result<(), String> {
         #[cfg(windows)]
         {
             use std::os::windows::fs::MetadataExt;
-            if metadata.file_attributes() & 0x400 != 0 {
-                return Err("recovery path must not contain reparse points".into());
+            if !crate::sync_core::platform_fs::path_is_in_place(&path, metadata.file_attributes())
+                .map_err(|e| e.to_string())?
+            {
+                return Err("recovery path must not contain links or junctions".into());
             }
         }
     }

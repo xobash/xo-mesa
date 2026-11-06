@@ -63,9 +63,14 @@ const RESERVED_WITH_MOD: Readonly<Record<string, string>> = {
 };
 const EDITING_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Backspace", "Delete", "PageUp", "PageDown"]);
 
+/** Chords Mesa owns only off macOS, where the browser key guard
+ * (`browserKeyGuard.ts`) gives Ctrl+S a save. */
+export const RESERVED_OFF_MAC: Readonly<Record<string, string>> = { "Mod+S": "Save now" };
+
 /** What already owns `chord`, or null when it is free to assign. */
-export function reservedBy(chord: string): string | null {
+export function reservedBy(chord: string, mac = IS_MAC): string | null {
   if (RESERVED_HOTKEYS[chord]) return RESERVED_HOTKEYS[chord];
+  if (!mac && RESERVED_OFF_MAC[chord]) return RESERVED_OFF_MAC[chord];
   const parts = chord.split("+");
   const key = parts[parts.length - 1];
   if (parts.includes("Mod") && RESERVED_WITH_MOD[key]) return RESERVED_WITH_MOD[key];
@@ -83,6 +88,21 @@ function keyName(event: KeyLike): string | null {
   if (NAMED_KEYS.has(event.key)) return event.key;
   if (event.key.length === 1) return event.key.toUpperCase();
   return null;
+}
+
+/** Whether a keydown holds the App-level Mod key for Mesa's built-in shortcuts.
+ * Off macOS, AltGr arrives as Ctrl+Alt and types characters, so Alt excludes it. */
+export function isAppModifier(event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey">, mac = IS_MAC): boolean {
+  if (mac) return event.metaKey || event.ctrlKey;
+  return (event.ctrlKey || event.metaKey) && !event.altKey;
+}
+
+/** Whether the Pi terminal owns `chord` when it has focus. Off macOS, Ctrl
+ * with a letter, `[`, backslash, `]` or Space becomes a control character that Pi's
+ * readline uses (Ctrl+R search, Ctrl+E end of line). On macOS Mod is Cmd,
+ * which the terminal never sends, so user Cmd chords keep working there. */
+export function terminalOwnsChord(chord: string, mac = IS_MAC): boolean {
+  return !mac && /^Mod\+(Shift\+)?([A-Z]|\[|\]|\\|Space)$/.test(chord);
 }
 
 /** Canonical chord for a keydown, or null for a bare modifier press. */

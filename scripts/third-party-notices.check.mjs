@@ -18,6 +18,14 @@ const run = () => spawnSync(process.execPath, [join(directory, 'scripts/third-pa
 test('checks notices without Rust or a registry cache', () => {
   const result = run(); assert.equal(result.status, 0, result.stderr);
 });
+test('orders notices the same under any OS locale', () => {
+  for (const locale of ['cs_CZ.UTF-8', 'lt_LT.UTF-8']) {
+    const result = spawnSync(process.execPath, [join(directory, 'scripts/third-party-notices.mjs'), '--check'], {
+      cwd:directory, encoding:'utf8', env:{...process.env, LANG:locale, LC_ALL:locale, CARGO:join(directory, 'cargo-must-not-be-called')},
+    });
+    assert.equal(result.status, 0, `${locale}: ${result.stderr}`);
+  }
+});
 test('accepts equivalent Windows lockfile line endings', () => {
   const locks = ['package-lock.json', 'src-tauri/Cargo.lock'].map(file => join(directory, file));
   const originals = locks.map(file => readFileSync(file));

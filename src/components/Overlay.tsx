@@ -25,11 +25,14 @@ import { TasksPanel } from "./TasksModal";
 import { trapDialogFocus } from "./Modal";
 import { collectVaultTasks, type TaskItem } from "../lib/tasks";
 import { claimKeyboardShortcut, isPlainShiftTab, isWindowTransferShortcut } from "../lib/shortcuts";
+import { canvasBackingScale, currentDevicePixelRatio, onDevicePixelRatioChange } from "../lib/devicePixelRatio";
 
 const OVERLAY_TOURED_KEY = "mesa:overlayToured";
 const OVERLAY_FADE_MS = 240;
 const SCRATCH_PREFIX = "mesa:scratch:";
 const WHITEBOARD_KEY = "mesa:whiteboard";
+/** Whiteboard bitmap ceiling (32 MiB of RGBA) when scaling for the display. */
+const WHITEBOARD_MAX_PIXELS = 8 * 1024 * 1024;
 const WINS_KEY = "mesa:overlayWins";
 const SUN_DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -772,7 +775,8 @@ function ScratchpadDocument({ day }: { day: string }) {
   </>;
 }
 
-function Whiteboard() {
+/** Exported for tests. */
+export function Whiteboard() {
   const identity = useAppStore(s => `${s.vaultPath}\0${s.getVaultGeneration()}`);
   return <WhiteboardDocument key={identity} />;
 }
@@ -784,6 +788,7 @@ function WhiteboardDocument() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const active = useRef<{ color: string; points: Array<[number, number]> } | null>(null);
   const paintGeneration = useRef(0);
+  const pixelScale = useRef(1);
   const [color, setColor] = useState("#e0a948");
   let board: BoardDocument = { version: 1, strokes: [] };
   let parseError = "";
@@ -795,6 +800,12 @@ function WhiteboardDocument() {
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
     const generation = ++paintGeneration.current;
+    // Strokes are stored in CSS pixels; the bitmap is larger by `pixelScale`.
+    const reset = () => {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(pixelScale.current, 0, 0, pixelScale.current, 0, 0);
+    };
     const draw = () => {
       if (generation !== paintGeneration.current) return;
       for (const stroke of [...boardRef.current.strokes, ...(active.current ? [active.current] : [])]) {
@@ -804,13 +815,13 @@ function WhiteboardDocument() {
         ctx.strokeStyle = stroke.color; ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.stroke();
       }
     };
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    reset();
     const background = boardRef.current.background;
     if (!background) { draw(); return; }
     const image = new Image();
     image.onload = () => {
       if (generation !== paintGeneration.current) return;
-      ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.drawImage(image, 0, 0); draw();
+      reset(); ctx.drawImage(image, 0, 0); draw();
     };
     image.src = background;
   };
@@ -818,13 +829,18 @@ function WhiteboardDocument() {
     const canvas = canvasRef.current!;
     const generationRef = paintGeneration;
     const resize = () => {
-      canvas.width = Math.max(canvas.parentElement!.clientWidth, 1);
-      canvas.height = Math.max(canvas.parentElement!.clientHeight, 1);
+      const width = Math.max(canvas.parentElement!.clientWidth, 1);
+      const height = Math.max(canvas.parentElement!.clientHeight, 1);
+      const scale = canvasBackingScale(width, height, currentDevicePixelRatio(), WHITEBOARD_MAX_PIXELS);
+      pixelScale.current = scale;
+      canvas.width = Math.floor(width * scale);
+      canvas.height = Math.floor(height * scale);
       paint();
     };
     resize();
     const observer = new ResizeObserver(resize); observer.observe(canvas.parentElement!);
-    return () => { observer.disconnect(); ++generationRef.current; };
+    const stopRatio = onDevicePixelRatioChange(resize);
+    return () => { observer.disconnect(); stopRatio(); ++generationRef.current; };
   }, []);
   useEffect(() => { paint(); }, [draft.content]);
   const at = (e: React.PointerEvent): [number, number] => {

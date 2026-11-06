@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandForEvent, formatHotkey, hotkeyConflict, hotkeyFromEvent, normalizeHotkey, normalizeHotkeys, reservedBy } from "./hotkeys";
+import { commandForEvent, formatHotkey, hotkeyConflict, hotkeyFromEvent, isAppModifier, normalizeHotkey, terminalOwnsChord, normalizeHotkeys, reservedBy } from "./hotkeys";
 
 const key = (init: Partial<KeyboardEvent> & { key: string; code?: string }) => ({
   code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...init,
@@ -62,6 +62,20 @@ describe("reservedBy", () => {
     expect(reservedBy("Mod+Shift+T")).toBeNull();
     expect(reservedBy("Alt+T")).toBeNull();
   });
+
+  it("reserves Ctrl+S for the save guard only off macOS", () => {
+    expect(reservedBy("Mod+S", false)).toBe("Save now");
+    expect(reservedBy("Mod+S", true)).toBeNull();
+  });
+});
+
+describe("isAppModifier", () => {
+  it("treats AltGr (Ctrl+Alt) as typing off macOS and keeps macOS chords", () => {
+    expect(isAppModifier(key({ key: "p", ctrlKey: true }), false)).toBe(true);
+    expect(isAppModifier(key({ key: "@", ctrlKey: true, altKey: true }), false)).toBe(false);
+    expect(isAppModifier(key({ key: "π", metaKey: true, altKey: true }), true)).toBe(true);
+    expect(isAppModifier(key({ key: "p", ctrlKey: true }), true)).toBe(true);
+  });
 });
 
 describe("hotkeyConflict", () => {
@@ -80,5 +94,13 @@ describe("commandForEvent and formatHotkey", () => {
     expect(commandForEvent({ theme: "Mod+Shift+T" }, key({ key: "t", code: "KeyT", metaKey: true }), true)).toBeNull();
     expect(formatHotkey("Mod+Alt+Shift+K", true)).toBe("⌘⌥⇧K");
     expect(formatHotkey("Mod+Shift+K", false)).toBe("Ctrl+Shift+K");
+  });
+});
+
+describe("terminalOwnsChord", () => {
+  it("gives Pi the Ctrl chords readline uses off macOS only", () => {
+    for (const chord of ["Mod+E", "Mod+Shift+R", "Mod+[", "Mod+\\", "Mod+Space"]) expect(terminalOwnsChord(chord, false), chord).toBe(true);
+    for (const chord of ["Alt+T", "F5", "Mod+1", "Mod+Alt+E"]) expect(terminalOwnsChord(chord, false), chord).toBe(false);
+    expect(terminalOwnsChord("Mod+E", true)).toBe(false);
   });
 });

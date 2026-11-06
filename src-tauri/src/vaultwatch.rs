@@ -23,10 +23,14 @@ const WATCH_DEBOUNCE_MS: u64 = 120;
 /// are already excluded by the leading-dot rule below.
 const SKIPPED_DIRS: [&str; 1] = ["node_modules"];
 
-/// One coalesced, pre-filtered batch item. Serializes to the exact shape of
-/// `VaultWatchEvent` in `src/lib/vault.ts` (`{ paths, kind }`), so the frontend
-/// consumer needs no change. Paths are absolute, as the plugin path delivered
-/// them.
+/// One coalesced, pre-filtered batch item. Serializes to the shape of
+/// `VaultWatchEvent` in `src/lib/vault.ts` (`{ paths, kind }`). A path under
+/// the watched root is vault-relative with `/` separators and a leading
+/// `./`, so the frontend
+/// never has to match the OS spelling of the root (Windows reports
+/// `\\?\C:\…` under a canonical root). A path that cannot be placed under
+/// the root, and the rescan entry's root, stay absolute without a verbatim
+/// prefix.
 #[derive(Clone, Serialize)]
 pub struct WatchEvent {
     pub paths: Vec<String>,
@@ -94,6 +98,11 @@ fn rel_under_root(root: &Path, abs: &Path) -> Option<String> {
     Some(out)
 }
 
+/// Absolute path text for the renderer, without a Windows verbatim prefix.
+fn emitted_absolute(path: &Path) -> String {
+    dunce::simplified(path).to_string_lossy().into_owned()
+}
+
 /// Kind of the root-level entry that asks the frontend for one full rescan.
 const RESCAN_KIND: &str = "rescan";
 
@@ -123,7 +132,7 @@ impl ErrorRescanGate {
 /// watcher error), so no path list can be trusted as complete.
 fn rescan_entry(root: &Path) -> WatchEvent {
     WatchEvent {
-        paths: vec![root.to_string_lossy().to_string()],
+        paths: vec![emitted_absolute(root)],
         kind: RESCAN_KIND,
     }
 }
@@ -149,10 +158,12 @@ fn build_batch(
             match rel_under_root(root, abs) {
                 Some(rel) => {
                     if is_indexable_rel(&rel) {
-                        kept.push(abs.to_string_lossy().to_string());
+                        // `./` keeps a first segment such as `C:` (legal on
+                        // Unix) from reading as a drive-absolute path.
+                        kept.push(format!("./{rel}"));
                     }
                 }
-                None => kept.push(abs.to_string_lossy().to_string()),
+                None => kept.push(emitted_absolute(abs)),
             }
         }
         if !kept.is_empty() {
@@ -379,7 +390,7 @@ mod tests {
             let batch = build_batch(&root, &[read(kind)], false);
             assert_eq!(batch.len(), 1);
             assert_eq!(batch[0].kind, "modify");
-            assert_eq!(batch[0].paths, vec!["/vault/a.md".to_string()]);
+            assert_eq!(batch[0].paths, vec!["./a.md".to_string()]);
         }
         // A pathless access event still means lost events.
         let lost = [(EventKind::Access(AccessKind::Open(AccessMode::Any)), vec![])];
@@ -482,10 +493,44 @@ mod tests {
         assert_eq!(
             batch[0].paths,
             vec![
-                "/vault/notes/keep.md".to_string(),
+                "./notes/keep.md".to_string(),
                 "/somewhere/else.md".to_string(),
             ]
         );
+    }
+
+    /// Paths under the root reach the renderer vault-relative, so the
+    /// renderer never compares them with its own spelling of the root.
+    #[test]
+    fn paths_under_the_root_are_emitted_vault_relative() {
+        let root = p("/vault");
+        let events = vec![(
+            EventKind::Create(CreateKind::File),
+            vec![
+                p("/vault/Ünïcødé dir/Café.md"),
+                p("/vault/a b/c.md"),
+                p("/vault/C:/d.md"),
+            ],
+        )];
+        let batch = build_batch(&root, &events, false);
+        assert_eq!(
+            batch[0].paths,
+            ["./Ünïcødé dir/Café.md", "./a b/c.md", "./C:/d.md"]
+        );
+    }
+
+    /// Windows reports event paths under the verbatim canonical root.
+    #[cfg(windows)]
+    #[test]
+    fn windows_verbatim_event_paths_never_reach_the_renderer() {
+        let root = p(r"\\?\C:\Vault");
+        let events = vec![(
+            EventKind::Create(CreateKind::File),
+            vec![p(r"\\?\C:\Vault\notes\a.md"), p(r"\\?\C:\Elsewhere\b.md")],
+        )];
+        let batch = build_batch(&root, &events, true);
+        assert_eq!(batch[0].paths, [r"C:\Vault"]);
+        assert_eq!(batch[1].paths, ["./notes/a.md", r"C:\Elsewhere\b.md"]);
     }
 
     /// An inotify overflow arrives as a pathless `Other` event flagged Rescan.
@@ -503,7 +548,7 @@ mod tests {
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].kind, "rescan");
         assert_eq!(batch[0].paths, vec!["/vault".to_string()]);
-        assert_eq!(batch[1].paths, vec!["/vault/a.md".to_string()]);
+        assert_eq!(batch[1].paths, vec!["./a.md".to_string()]);
 
         // A pathless event alone still asks for a rescan without the flag.
         let pathless = vec![(EventKind::Other, Vec::new())];

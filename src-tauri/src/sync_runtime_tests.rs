@@ -168,78 +168,58 @@ fn identity_bundle_rejects_mismatched_legacy_pair() {
 #[cfg(windows)]
 #[test]
 fn private_directory_acl_does_not_require_audit_privilege() {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{
+        CreateRestrictedToken, ImpersonateLoggedOnUser, RevertToSelf, DISABLE_MAX_PRIVILEGE,
+        TOKEN_DUPLICATE, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     let dir = identity_test_dir("unprivileged-vault-state");
-    let script = r#"
-$ErrorActionPreference = 'Stop'
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class AclProbe {
-    [DllImport("advapi32.dll", SetLastError=true)]
-    static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-    [DllImport("advapi32.dll", SetLastError=true)]
-    static extern bool CreateRestrictedToken(IntPtr token, uint flags, uint sidCount, IntPtr sids, uint privilegeCount, IntPtr privileges, uint restrictedCount, IntPtr restricted, out IntPtr result);
-    [DllImport("advapi32.dll", SetLastError=true)]
-    static extern bool ImpersonateLoggedOnUser(IntPtr token);
-    [DllImport("advapi32.dll", SetLastError=true)]
-    public static extern bool RevertToSelf();
-    [DllImport("advapi32.dll", SetLastError=true)]
-    static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr info, uint size, out uint needed);
-    [DllImport("kernel32.dll")]
-    static extern IntPtr GetCurrentProcess();
-    [DllImport("kernel32.dll")]
-    public static extern bool CloseHandle(IntPtr handle);
-    public static IntPtr Begin() {
-        IntPtr original, restricted;
-        if (!OpenProcessToken(GetCurrentProcess(), 0xA, out original)) throw new Exception("Open token failed");
-        try {
-            // DISABLE_MAX_PRIVILEGE retains only SeChangeNotifyPrivilege.
-            if (!CreateRestrictedToken(original, 1, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted)) throw new Exception("Restrict token failed");
-        } finally { CloseHandle(original); }
-        uint needed;
-        GetTokenInformation(restricted, 3, IntPtr.Zero, 0, out needed);
-        IntPtr info = Marshal.AllocHGlobal((int)needed);
-        try {
-            if (!GetTokenInformation(restricted, 3, info, needed, out needed) || Marshal.ReadInt32(info) > 1) throw new Exception("Privileges were not removed");
-            if (!ImpersonateLoggedOnUser(restricted)) throw new Exception("Impersonation failed");
-        } catch { CloseHandle(restricted); throw; }
-        finally { Marshal.FreeHGlobal(info); }
-        return restricted;
+    let (mut original, mut restricted): (HANDLE, HANDLE) =
+        (std::ptr::null_mut(), std::ptr::null_mut());
+    // DISABLE_MAX_PRIVILEGE retains only SeChangeNotifyPrivilege, so neither
+    // audit nor ownership privileges are available during protection.
+    unsafe {
+        assert_ne!(
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &mut original
+            ),
+            0
+        );
+        assert_ne!(
+            CreateRestrictedToken(
+                original,
+                DISABLE_MAX_PRIVILEGE,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                &mut restricted,
+            ),
+            0
+        );
+        CloseHandle(original);
+        assert_ne!(ImpersonateLoggedOnUser(restricted), 0);
     }
-}
-'@
-$token = [AclProbe]::Begin()
-try {
-    & ([scriptblock]::Create($env:MESA_TEST_DIRECTORY_ACL_SCRIPT))
-    & ([scriptblock]::Create($env:MESA_TEST_DIRECTORY_ACL_SCRIPT))
-    $acl = Get-Acl -LiteralPath $env:MESA_IDENTITY_DIRECTORY
-    $rules = @($acl.Access)
-    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-    if ($rules.Count -ne 1 -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl' -or $rules[0].IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Private access not applied' }
-} finally {
-    if (-not [AclProbe]::RevertToSelf()) { throw 'Revert failed' }
-    [AclProbe]::CloseHandle($token) | Out-Null
-}
-"#;
-    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-    let result = std::process::Command::new(
-        std::path::Path::new(&system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
-    )
-    .env_remove("PSModulePath")
-    .env("MESA_IDENTITY_DIRECTORY", &dir)
-    .env(
-        "MESA_TEST_DIRECTORY_ACL_SCRIPT",
-        super::identity::PRIVATE_DIRECTORY_ACL_SCRIPT,
-    )
-    .args(["-NoProfile", "-NonInteractive", "-Command", script])
-    .output()
-    .unwrap();
-    std::fs::remove_dir_all(dir).unwrap();
+    let first = protect_private_directory(&dir, &["private.json"]);
+    let second = protect_private_directory(&dir, &["private.json"]);
+    unsafe {
+        assert_ne!(RevertToSelf(), 0);
+        CloseHandle(restricted);
+    }
+    first.unwrap();
+    second.unwrap();
+    let user = super::identity::private_acl::UserSid::current().unwrap();
+    let summary = super::identity::private_acl::summary(&dir, &user).unwrap();
     assert!(
-        result.status.success(),
-        "Unprivileged ACL repair failed: {}",
-        String::from_utf8_lossy(&result.stderr)
+        super::identity::directory_is_private(&summary),
+        "{summary:?}"
     );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[cfg(windows)]
@@ -250,17 +230,130 @@ fn identity_acl_repairs_explicit_broad_key_access() {
     super::protect_identity_directory(&dir).unwrap();
     let key = dir.join("key.pem");
     super::persist_identity_key(&key, b"synthetic identity").unwrap();
+    let user = super::identity::private_acl::UserSid::current().unwrap();
+    let private = |path: &std::path::Path| {
+        super::identity::file_is_private(
+            &super::identity::private_acl::summary(path, &user).unwrap(),
+        )
+    };
+    assert!(private(&key));
+    // The test may use a system tool; production protection never spawns one.
     let status = std::process::Command::new("icacls.exe")
         .arg(&key)
         .args(["/grant", "*S-1-1-0:R", "/Q"])
         .status()
         .unwrap();
     assert!(status.success());
-    // The production verifier reads the effective ACL after resetting it.
+    assert!(!private(&key));
     super::protect_identity_directory(&dir).unwrap();
+    assert!(private(&key));
     assert_eq!(std::fs::read(&key).unwrap(), b"synthetic identity");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn private_storage_protection_spawns_no_helper_process() {
+    // AppLocker, WDAC or Constrained Language Mode can block helper processes;
+    // vault open must not depend on any.
+    let source = include_str!("sync_identity.rs");
+    for forbidden in [
+        "powershell",
+        "icacls",
+        "std::process::Command",
+        "system_tool",
+    ] {
+        assert!(
+            !source
+                .to_ascii_lowercase()
+                .contains(&forbidden.to_ascii_lowercase()),
+            "sync_identity.rs must not use {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn private_acl_rules_require_one_protected_user_entry() {
+    use super::identity::{
+        directory_is_private, file_is_private, AceSummary, AclSummary, FULL_ACCESS,
+        INHERIT_TO_CHILDREN,
+    };
+    let user = AceSummary {
+        allow: true,
+        current_user: true,
+        mask: FULL_ACCESS,
+        flags: INHERIT_TO_CHILDREN,
+    };
+    let private = AclSummary {
+        protected: true,
+        owner_is_user: true,
+        aces: vec![user],
+    };
+    assert!(directory_is_private(&private));
+    // Inheritance on, another owner, a second entry, partial access or
+    // entries that do not reach children are all repaired.
+    let everyone = AceSummary {
+        current_user: false,
+        mask: 0x0012_00A9,
+        ..user
+    };
+    for broken in [
+        AclSummary {
+            protected: false,
+            ..private.clone()
+        },
+        AclSummary {
+            owner_is_user: false,
+            ..private.clone()
+        },
+        AclSummary {
+            aces: vec![user, everyone],
+            ..private.clone()
+        },
+        AclSummary {
+            aces: vec![AceSummary {
+                mask: 0x0012_019F,
+                ..user
+            }],
+            ..private.clone()
+        },
+        AclSummary {
+            aces: vec![AceSummary { flags: 0, ..user }],
+            ..private.clone()
+        },
+        AclSummary {
+            aces: vec![],
+            ..private.clone()
+        },
+    ] {
+        assert!(!directory_is_private(&broken), "{broken:?}");
+    }
+    // Files inherit the user entry; any other grant or a deny entry is reset.
+    let inherited = AclSummary {
+        protected: false,
+        owner_is_user: true,
+        aces: vec![AceSummary {
+            flags: 0x10,
+            ..user
+        }],
+    };
+    assert!(file_is_private(&inherited));
+    assert!(!file_is_private(&AclSummary {
+        aces: vec![user, everyone],
+        ..inherited.clone()
+    }));
+    assert!(!file_is_private(&AclSummary {
+        aces: vec![AceSummary {
+            allow: false,
+            ..user
+        }],
+        ..inherited.clone()
+    }));
+    assert!(!file_is_private(&AclSummary {
+        aces: vec![],
+        ..inherited
+    }));
+}
+
 #[cfg(unix)]
 #[test]
 fn identity_permissions_are_private_and_repaired() {
@@ -1196,6 +1289,33 @@ async fn chunked_manifest_without_length_stops_at_stream_cap() {
         .unwrap();
 }
 #[test]
+fn older_peer_manifest_listing_shell_files_still_syncs() {
+    let entry = |rel: &str| ManifestEntry {
+        rel: rel.into(),
+        size: 7,
+        hash: "a".repeat(64),
+    };
+    let mut files = vec![
+        entry("note.md"),
+        entry("desktop.ini"),
+        entry("Photos/Thumbs.db"),
+        entry("$RECYCLE.BIN/S-1-5-21/old.md"),
+    ];
+    // Before: one shell entry refused the whole manifest and stopped sync.
+    assert!(validate_remote_manifest(&files).is_err());
+    accept_remote_manifest(&mut files).unwrap();
+    let rels: Vec<_> = files.iter().map(|file| file.rel.as_str()).collect();
+    assert_eq!(rels, ["note.md"]);
+    // Hidden and traversal paths are still refused, never silently dropped.
+    for rel in [".git/desktop.ini", "../desktop.ini"] {
+        assert!(
+            accept_remote_manifest(&mut vec![entry(rel)]).is_err(),
+            "{rel}"
+        );
+    }
+}
+
+#[test]
 fn remote_manifest_rejects_invalid_fields_duplicates_and_count() {
     let entry = ManifestEntry {
         rel: "note.md".into(),
@@ -1334,6 +1454,130 @@ fn discovery_uses_the_sender_address_and_limits_repeated_events() {
         })
         .count();
     assert_eq!(admitted, DISCOVERY_MAX_EMITS_PER_SECOND);
+}
+
+/// Replays receive results; stops the loop once the script is exhausted.
+struct ScriptedDiscoverySocket<'a> {
+    script: std::cell::RefCell<std::collections::VecDeque<std::io::Result<Vec<u8>>>>,
+    running: &'a AtomicBool,
+    announcements: std::cell::Cell<usize>,
+}
+
+impl DiscoverySocket for ScriptedDiscoverySocket<'_> {
+    fn announce(&self, _payload: &[u8]) {
+        self.announcements.set(self.announcements.get() + 1);
+    }
+    fn receive(&self, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)> {
+        let from: std::net::SocketAddr = "192.0.2.7:47887".parse().unwrap();
+        match self.script.borrow_mut().pop_front() {
+            Some(Ok(bytes)) => {
+                buf[..bytes.len()].copy_from_slice(&bytes);
+                Ok((bytes.len(), from))
+            }
+            Some(Err(e)) => Err(e),
+            None => {
+                self.running.store(false, Ordering::Relaxed);
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+        }
+    }
+}
+
+#[test]
+fn discovery_survives_windows_receive_errors_without_spinning() {
+    let announcement = |fingerprint: String| {
+        serde_json::to_vec(&DiscoveryPacket {
+            mesa_discovery: true,
+            version: "2.0".into(),
+            name: "Laptop".into(),
+            host: "x".into(),
+            port: 47888,
+            protocol: "https".into(),
+            listening: true,
+            fingerprint,
+        })
+        .unwrap()
+    };
+    let os_error = |code| Err(std::io::Error::from_raw_os_error(code));
+    let mut script: std::collections::VecDeque<std::io::Result<Vec<u8>>> = [
+        os_error(10040), // WSAEMSGSIZE: an oversized datagram
+        os_error(10054), // WSAECONNRESET: ICMP unreachable after a broadcast
+        Err(std::io::ErrorKind::ConnectionReset.into()),
+        Ok(announcement("b".repeat(64))),
+        Err(std::io::ErrorKind::TimedOut.into()),
+    ]
+    .into_iter()
+    .collect();
+    // A persistent error backs off instead of ending discovery.
+    script.extend((0..40).map(|_| Err(std::io::Error::other("persistent"))));
+    script.push_back(Ok(announcement("c".repeat(64))));
+    let running = AtomicBool::new(true);
+    let socket = ScriptedDiscoverySocket {
+        script: std::cell::RefCell::new(script),
+        running: &running,
+        announcements: std::cell::Cell::new(0),
+    };
+    let mut emitted = Vec::new();
+    let mut pauses = Vec::new();
+    run_discovery_loop(
+        &socket,
+        &running,
+        b"own",
+        DiscoveryFilter::new("a".repeat(64)),
+        |packet| emitted.push(packet.fingerprint),
+        |pause| pauses.push(pause),
+    );
+    assert_eq!(emitted, vec!["b".repeat(64), "c".repeat(64)]);
+    assert_eq!(socket.announcements.get(), 1);
+    assert_eq!(pauses.len(), 43);
+    assert_eq!(
+        pauses[..3],
+        [10, 20, 40].map(Duration::from_millis),
+        "transient errors pause briefly"
+    );
+    // Success resets the backoff; a persistent error never pauses for zero
+    // time and settles at the one-second ceiling.
+    assert_eq!(pauses[3], Duration::from_millis(10));
+    assert!(pauses
+        .iter()
+        .all(|p| !p.is_zero() && *p <= DISCOVERY_ERROR_PAUSE_MAX));
+    assert!(pauses[10..].iter().all(|p| *p == DISCOVERY_ERROR_PAUSE_MAX));
+}
+
+/// Fails every receive at once, as a socket in a persistent error state does.
+struct FailingDiscoverySocket;
+
+impl DiscoverySocket for FailingDiscoverySocket {
+    fn announce(&self, _payload: &[u8]) {}
+    fn receive(&self, _buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)> {
+        Err(std::io::Error::other("persistent"))
+    }
+}
+
+#[test]
+fn discovery_stop_does_not_wait_out_a_back_off_pause() {
+    let running = Arc::new(AtomicBool::new(true));
+    let loop_running = running.clone();
+    let handle = std::thread::spawn(move || {
+        run_discovery_loop(
+            &FailingDiscoverySocket,
+            &loop_running,
+            b"own",
+            DiscoveryFilter::new("a".repeat(64)),
+            |_| {},
+            |pause| pause_while_running(&loop_running, pause),
+        );
+    });
+    // The pauses reach the one-second ceiling after about 1.3 s.
+    std::thread::sleep(Duration::from_millis(1_400));
+    let stopped = Instant::now();
+    running.store(false, Ordering::Relaxed);
+    handle.join().unwrap();
+    assert!(
+        stopped.elapsed() < Duration::from_millis(300),
+        "stop took {:?}",
+        stopped.elapsed()
+    );
 }
 
 #[test]

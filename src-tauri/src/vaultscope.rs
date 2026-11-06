@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -34,15 +35,191 @@ fn normalized_root(root: &str) -> Result<String, String> {
     {
         return Err("vault root must be an absolute path without parent traversal".into());
     }
+    Ok(root_key(root, cfg!(windows)))
+}
+
+/// Comparison key of an absolute root: forward slashes, no trailing separator.
+/// Windows keys also drop a simplifiable verbatim prefix and are lowercased,
+/// so `\\?\C:\Vault` (canonicalize) and `C:\Vault` (folder dialog) are one root.
+/// Unix keys are unchanged from earlier releases.
+fn root_key(root: &str, windows: bool) -> String {
+    let root = if windows {
+        strip_verbatim_prefix(root)
+    } else {
+        Cow::Borrowed(root)
+    };
     let mut normalized = root.replace('\\', "/");
     while normalized.len() > 1 && normalized.ends_with('/') {
         normalized.pop();
     }
+    if windows {
+        normalized = normalized.to_lowercase();
+        // `c:` alone is drive-relative; a drive-root vault keeps its separator.
+        if normalized.len() == 2 && normalized.ends_with(':') {
+            normalized.push('/');
+        }
+    }
+    normalized
+}
+
+/// `text` without its Windows verbatim prefix (`\\?\` or `//?/`) when the rest
+/// is an ordinary drive or UNC path that Win32 path parsing would not rewrite:
+/// `\\?\C:\x` becomes `C:\x`, `\\?\UNC\srv\share\x` becomes `\\srv\share\x`.
+/// Anything else, including a segment with a trailing dot or a device name that
+/// only the verbatim form can reach, is returned unchanged. Pure text, so the
+/// rule is tested on every platform; `dunce` applies the same rule to `Path`s
+/// that leave Mesa.
+pub(crate) fn strip_verbatim_prefix(text: &str) -> Cow<'_, str> {
+    let is_sep = |ch: char| ch == '\\' || ch == '/';
+    let mut chars = text.chars();
+    let lead: [Option<char>; 4] = [chars.next(), chars.next(), chars.next(), chars.next()];
+    let [Some(a), Some(b), Some('?'), Some(d)] = lead else {
+        return Cow::Borrowed(text);
+    };
+    if !(is_sep(a) && is_sep(b) && is_sep(d)) {
+        return Cow::Borrowed(text);
+    }
+    let rest = &text[4..];
+    let segments_ok = |tail: &str, required: usize| {
+        let parts: Vec<&str> = tail.split(is_sep).collect();
+        let last = parts.len().saturating_sub(1);
+        parts.len() >= required
+            && parts.iter().enumerate().all(|(index, part)| {
+                if part.is_empty() {
+                    // Only a single trailing separator, after the required parts.
+                    return index == last && index >= required;
+                }
+                *part != "." && *part != ".." && !crate::sync_core::windows_reserved_segment(part)
+            })
+    };
+    let bytes = rest.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let tail = &rest[2..];
+        if tail.starts_with(is_sep) && segments_ok(&tail[1..], 0) {
+            return Cow::Borrowed(rest);
+        }
+        return Cow::Borrowed(text);
+    }
+    // Compare bytes: byte 3 may sit inside a multibyte character.
+    if bytes.len() > 4
+        && bytes[..3].eq_ignore_ascii_case(b"UNC")
+        && matches!(bytes[3], b'\\' | b'/')
+    {
+        // Byte 4 follows an ASCII separator, so it is a character boundary.
+        let unc = &rest[4..];
+        if segments_ok(unc, 2) {
+            return Cow::Owned(format!("{a}{a}{unc}"));
+        }
+    }
+    Cow::Borrowed(text)
+}
+
+/// `fs::canonicalize`, with one Windows fallback to `std::path::absolute`.
+/// Some volumes (RAM disks, some virtual cloud drives) cannot report a final
+/// path, so canonicalize fails with "Incorrect function" or "not supported"
+/// for every path on them. Canonicalize exists here to resolve links and 8.3
+/// short names before containment and visibility checks, so the fallback is
+/// used only when there is nothing for it to resolve: no existing component
+/// is a reparse point (symlink, junction, cloud placeholder) and no component
+/// has a short-name shape. Otherwise the original error stands (fail closed).
+pub(crate) fn resolve_path(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    let path = path.as_ref();
+    match fs::canonicalize(path) {
+        Err(error) if cfg!(windows) && final_path_unsupported(&error) => {
+            absolute_without_aliases(path).ok_or(error)
+        }
+        result => result,
+    }
+}
+
+/// `path` relative to `root`, component by component. Windows folds case:
+/// approval keys are lowercase, and on a volume where `resolve_path` falls
+/// back to `std::path::absolute` nothing restores the on-disk case of the root.
+/// Other platforms compare exactly, as `Path::strip_prefix` does.
+fn under_root<'a>(path: &'a Path, root: &Path) -> Option<&'a Path> {
+    strip_root(path, root, cfg!(windows))
+}
+
+fn strip_root<'a>(path: &'a Path, root: &Path, fold_case: bool) -> Option<&'a Path> {
+    let mut rest = path.components();
+    for expected in root.components() {
+        let actual = rest.next()?;
+        let same = actual == expected
+            || (fold_case
+                && actual.as_os_str().to_string_lossy().to_lowercase()
+                    == expected.as_os_str().to_string_lossy().to_lowercase());
+        if !same {
+            return None;
+        }
+    }
+    Some(rest.as_path())
+}
+
+/// ERROR_INVALID_FUNCTION and ERROR_NOT_SUPPORTED: the volume, not the path.
+fn final_path_unsupported(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(1 | 50))
+}
+
+/// An 8.3 alias such as `GIT~1` or `NOTES~12.MD`, which only the OS expands.
+fn short_name_shaped(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    stem.rsplit_once('~')
+        .is_some_and(|(_, tail)| !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn is_link_like(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
-        normalized = normalized.to_lowercase();
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
     }
-    Ok(normalized)
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+fn absolute_without_aliases(path: &Path) -> Option<PathBuf> {
+    if path
+        .components()
+        .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+    {
+        return None;
+    }
+    let absolute = std::path::absolute(path).ok()?;
+    for ancestor in absolute.ancestors() {
+        if ancestor
+            .file_name()
+            .is_some_and(|name| name.to_str().is_none_or(short_name_shaped))
+        {
+            return None;
+        }
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if is_link_like(&metadata) => return None,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+    }
+    Some(absolute)
+}
+
+/// Re-key a loaded record with the current spelling rule. Windows records
+/// written before verbatim prefixes were dropped hold `//?/c:/…` keys.
+fn rekey_approved_roots(roots: &mut ApprovedRoots, windows: bool) -> bool {
+    if !windows {
+        return false;
+    }
+    let rekey = |set: &BTreeSet<String>| -> BTreeSet<String> {
+        set.iter().map(|root| root_key(root, true)).collect()
+    };
+    let migrated = ApprovedRoots {
+        roots: rekey(&roots.roots),
+        pi_process: rekey(&roots.pi_process),
+    };
+    let changed = migrated.roots != roots.roots || migrated.pi_process != roots.pi_process;
+    *roots = migrated;
+    changed
 }
 
 fn approved_roots_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -81,7 +258,12 @@ fn cached_approved_roots(
             return Ok(roots.clone());
         }
     }
-    let roots = read_approved_roots(path)?;
+    let mut roots = read_approved_roots(path)?;
+    if rekey_approved_roots(&mut roots, cfg!(windows)) {
+        // Best effort: the in-memory record is already migrated, and the cache
+        // lock serializes this write with every other approval publication.
+        let _ = write_approved_roots(path, &roots);
+    }
     *cached = Some((path.to_path_buf(), roots.clone()));
     Ok(roots)
 }
@@ -116,7 +298,7 @@ fn read_approved_roots(path: &Path) -> Result<ApprovedRoots, String> {
 fn require_approved_from(approval_path: &Path, root: &str) -> Result<PathBuf, String> {
     normalized_root(root)?;
     let canonical =
-        fs::canonicalize(root).map_err(|error| format!("vault root is unavailable: {error}"))?;
+        resolve_path(root).map_err(|error| format!("vault root is unavailable: {error}"))?;
     if !canonical.is_dir() {
         return Err("vault root is not a directory".into());
     }
@@ -184,12 +366,19 @@ fn visible_vault_path(path: &Path) -> bool {
     })
 }
 
-/// A dot-prefixed or `node_modules` folder beneath an approved root.
-fn hidden_inside_approved(roots: &BTreeSet<String>, canonical: &Path) -> bool {
+/// A dot-prefixed or `node_modules` folder beneath an approved root. Both
+/// sides are root keys (`normalized_root`), so Windows verbatim and plain
+/// spellings of one folder compare equal.
+fn hidden_inside_approved(roots: &BTreeSet<String>, key: &str) -> bool {
     roots.iter().any(|root| {
-        canonical
-            .strip_prefix(root)
-            .is_ok_and(|rel| !rel.as_os_str().is_empty() && !visible_vault_path(rel))
+        let rel = key.strip_prefix(root.as_str()).and_then(|rel| {
+            if root.ends_with('/') {
+                Some(rel)
+            } else {
+                rel.strip_prefix('/')
+            }
+        });
+        rel.is_some_and(|rel| !rel.is_empty() && !visible_vault_path(Path::new(rel)))
     })
 }
 
@@ -203,15 +392,13 @@ pub(crate) fn resolves_visible(root: &Path, rel: &str) -> bool {
     if !visible_vault_path(Path::new(rel)) {
         return false;
     }
-    let Ok(canonical_root) = fs::canonicalize(root) else {
+    let Ok(canonical_root) = resolve_path(root) else {
         return false;
     };
     loop {
-        match fs::canonicalize(&existing) {
+        match resolve_path(&existing) {
             Ok(canonical) => {
-                return canonical
-                    .strip_prefix(&canonical_root)
-                    .is_ok_and(visible_vault_path)
+                return under_root(&canonical, &canonical_root).is_some_and(visible_vault_path)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if existing == root || !existing.pop() {
@@ -241,15 +428,12 @@ fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Resul
     }) {
         return Err("invalid vault file name".into());
     }
-    let canonical_parent = fs::canonicalize(parent)
-        .map_err(|error| format!("vault folder is unavailable: {error}"))?;
+    let canonical_parent =
+        resolve_path(parent).map_err(|error| format!("vault folder is unavailable: {error}"))?;
     let approved = load_approved_roots(approval_path)?;
     if !approved.roots.iter().any(|root| {
-        fs::canonicalize(root).ok().is_some_and(|approved_root| {
-            canonical_parent
-                .strip_prefix(approved_root)
-                .ok()
-                .is_some_and(visible_vault_path)
+        resolve_path(root).ok().is_some_and(|approved_root| {
+            under_root(&canonical_parent, &approved_root).is_some_and(visible_vault_path)
         })
     }) {
         return Err("vault file is outside the approved folders".into());
@@ -258,7 +442,7 @@ fn require_approved_write_target_from(approval_path: &Path, path: &str) -> Resul
     match fs::symlink_metadata(&target) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
             // A short-name leaf such as `ENV~1` can resolve to a hidden file.
-            let resolved = fs::canonicalize(&target)
+            let resolved = resolve_path(&target)
                 .map_err(|error| format!("vault file is unavailable: {error}"))?;
             if resolved.parent() != Some(canonical_parent.as_path())
                 || !resolved
@@ -288,14 +472,11 @@ fn require_approved_file_from(approval_path: &Path, path: &str) -> Result<PathBu
         return Err("vault flush requires a regular file".into());
     }
     let canonical =
-        fs::canonicalize(input).map_err(|error| format!("vault file is unavailable: {error}"))?;
+        resolve_path(input).map_err(|error| format!("vault file is unavailable: {error}"))?;
     let approved = load_approved_roots(approval_path)?;
     let inside = approved.roots.iter().any(|root| {
-        fs::canonicalize(root).ok().is_some_and(|approved_root| {
-            canonical
-                .strip_prefix(&approved_root)
-                .ok()
-                .is_some_and(visible_vault_path)
+        resolve_path(root).ok().is_some_and(|approved_root| {
+            under_root(&canonical, &approved_root).is_some_and(visible_vault_path)
         })
     });
     if !inside {
@@ -354,6 +535,11 @@ fn save_approved_roots(path: &Path, roots: &ApprovedRoots) -> Result<(), String>
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *cached = None;
+    write_approved_roots(path, roots)
+}
+
+/// Publish the record. Callers hold the approval cache lock.
+fn write_approved_roots(path: &Path, roots: &ApprovedRoots) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "approved vault roots path has no parent".to_string())?;
@@ -380,7 +566,8 @@ fn save_approved_roots(path: &Path, roots: &ApprovedRoots) -> Result<(), String>
         .and_then(|_| file.sync_all())
         .map_err(|_| "Cannot save vault approvals")?;
     drop(file);
-    replace_file(&temporary, path)
+    // A failed MoveFileExW leaves the stage in place, so a retry is safe.
+    crate::sync_core::platform_fs::retry_transient_lock(|| replace_file(&temporary, path))
         .map_err(|error| format!("cannot publish approved vault roots: {error}"))
 }
 
@@ -428,7 +615,7 @@ pub fn vault_authorize(
     let path = PathBuf::from(&root);
     normalized_root(&root)?;
     let canonical =
-        fs::canonicalize(&path).map_err(|error| format!("vault root is unavailable: {error}"))?;
+        resolve_path(&path).map_err(|error| format!("vault root is unavailable: {error}"))?;
     if !canonical.is_dir() {
         return Err("vault root is not a directory".into());
     }
@@ -445,7 +632,7 @@ pub fn vault_authorize(
 
     // An approved root's recursive scope also allows its subfolders, so this
     // check cannot tell a dialog pick of `<vault>/.git` from a renderer request.
-    if !approved.roots.contains(&normalized) && hidden_inside_approved(&approved.roots, &canonical)
+    if !approved.roots.contains(&normalized) && hidden_inside_approved(&approved.roots, &normalized)
     {
         return Err("a hidden folder inside a vault cannot be opened as a vault".into());
     }
@@ -482,7 +669,7 @@ fn revoke_from(approval_path: &Path, root: &str) -> Result<bool, String> {
     // /var still matches after the folder itself was deleted.
     let path = Path::new(root);
     for ancestor in path.ancestors() {
-        let Ok(resolved) = fs::canonicalize(ancestor) else {
+        let Ok(resolved) = resolve_path(ancestor) else {
             continue;
         };
         let rest = path.strip_prefix(ancestor).map_err(|e| e.to_string())?;
@@ -572,7 +759,7 @@ pub fn vault_authorize_artifacts(
     let canonical_roots: Vec<PathBuf> = approved
         .roots
         .iter()
-        .filter_map(|root| fs::canonicalize(root).ok())
+        .filter_map(|root| resolve_path(root).ok())
         .collect();
     let mut checked = Vec::with_capacity(paths.len());
     for raw in paths {
@@ -589,11 +776,11 @@ pub fn vault_authorize_artifacts(
             return Err("invalid Mesa write artifact path".into());
         }
         let parent = path.parent().ok_or("write artifact has no parent")?;
-        let canonical_parent = fs::canonicalize(parent)
+        let canonical_parent = resolve_path(parent)
             .map_err(|error| format!("cannot resolve write artifact parent: {error}"))?;
         if !canonical_roots
             .iter()
-            .any(|root| canonical_parent.starts_with(root))
+            .any(|root| under_root(&canonical_parent, root).is_some())
         {
             return Err("write artifact is outside the approved vault".into());
         }
@@ -610,11 +797,12 @@ pub fn vault_authorize_artifacts(
 
 fn relative_to_root(root: &Path, raw: &str) -> Option<String> {
     let spelling = |value: &str| {
-        value
-            .replace('\\', "/")
-            .trim_start_matches("//?/")
-            .trim_end_matches('/')
-            .to_string()
+        let value = if cfg!(windows) {
+            strip_verbatim_prefix(value)
+        } else {
+            Cow::Borrowed(value.trim_start_matches("//?/"))
+        };
+        value.replace('\\', "/").trim_end_matches('/').to_string()
     };
     let input = spelling(raw);
     let root_text = spelling(&root.to_string_lossy());
@@ -638,7 +826,7 @@ fn relative_to_root(root: &Path, raw: &str) -> Option<String> {
     // A selected root can have an OS alias (for example /var on macOS).
     // Resolve that root alias, never a descendant inside it.
     for ancestor in Path::new(raw).ancestors() {
-        if fs::canonicalize(ancestor).ok().as_deref() == Some(root) {
+        if resolve_path(ancestor).ok().as_deref() == Some(root) {
             return raw
                 .strip_prefix(ancestor.to_str()?)
                 .map(|rel| rel.trim_start_matches(['/', '\\']).replace('\\', "/"));
@@ -651,7 +839,7 @@ pub(crate) fn approved_path(app: &AppHandle, raw: &str) -> Result<(PathBuf, Stri
     normalized_root(raw)?;
     let approved = load_approved_roots(&approved_roots_path(app)?)?;
     for root in approved.roots {
-        let Ok(root) = fs::canonicalize(root) else {
+        let Ok(root) = resolve_path(root) else {
             continue;
         };
         if let Some(rel) = relative_to_root(&root, raw) {
@@ -673,23 +861,233 @@ mod tests {
 
     #[test]
     fn hidden_subfolders_of_an_approved_root_are_not_new_vaults() {
-        let roots = BTreeSet::from(["/vault".to_string()]);
+        let roots = BTreeSet::from(["/vault".to_string(), "/".to_string()]);
         for hidden in [
             "/vault/.git",
             "/vault/notes/.mesa-trash",
             "/vault/node_modules/x",
+            "/.hidden",
         ] {
+            assert!(hidden_inside_approved(&roots, hidden), "{hidden}");
+        }
+        let roots = BTreeSet::from(["/vault".to_string()]);
+        for allowed in ["/vault", "/vault/notes", "/other/.git", "/vault2/.git"] {
+            assert!(!hidden_inside_approved(&roots, allowed), "{allowed}");
+        }
+    }
+
+    #[test]
+    fn windows_hidden_subfolders_are_refused_whatever_the_spelling() {
+        // A record written by an older build holds the lowercased verbatim key;
+        // canonicalize hands back the verbatim, mixed-case form.
+        let mut approved = ApprovedRoots {
+            roots: BTreeSet::from([
+                "//?/c:/data/me/vault".to_string(),
+                "//?/unc/server.example/share/team vault".to_string(),
+            ]),
+            pi_process: BTreeSet::new(),
+        };
+        assert!(rekey_approved_roots(&mut approved, true));
+        for canonical in [
+            r"\\?\C:\Data\Me\Vault\.git",
+            r"C:\Data\Me\Vault\notes\.mesa-trash",
+            r"\\?\UNC\server.example\Share\Team Vault\.git",
+            r"\\server.example\share\team vault\node_modules",
+        ] {
+            let key = root_key(canonical, true);
+            assert!(hidden_inside_approved(&approved.roots, &key), "{canonical}");
+        }
+        for canonical in [
+            r"\\?\C:\Data\Me\Vault",
+            r"\\?\C:\Data\Me\Vault\Notes",
+            r"\\?\C:\Data\Me\Vault2\.git",
+        ] {
+            let key = root_key(canonical, true);
             assert!(
-                hidden_inside_approved(&roots, Path::new(hidden)),
-                "{hidden}"
+                !hidden_inside_approved(&approved.roots, &key),
+                "{canonical}"
             );
         }
-        for allowed in ["/vault", "/vault/notes", "/other/.git"] {
-            assert!(
-                !hidden_inside_approved(&roots, Path::new(allowed)),
-                "{allowed}"
+    }
+
+    #[test]
+    fn verbatim_prefixes_are_dropped_only_from_ordinary_paths() {
+        for (verbatim, plain) in [
+            (r"\\?\C:\Data\Me\Vault", r"C:\Data\Me\Vault"),
+            (r"\\?\C:\", r"C:\"),
+            (
+                r"\\?\UNC\server.example\Share\Vault",
+                r"\\server.example\Share\Vault",
+            ),
+            (r"\\?\unc\server.example\Share", r"\\server.example\Share"),
+            ("//?/c:/data/me/vault", "c:/data/me/vault"),
+            (
+                "//?/unc/server.example/share/vault",
+                "//server.example/share/vault",
+            ),
+            (r"\\?\D:\Ünïcødé dir\Café", r"D:\Ünïcødé dir\Café"),
+        ] {
+            assert_eq!(strip_verbatim_prefix(verbatim), plain, "{verbatim}");
+        }
+        for kept in [
+            // Win32 parsing would strip the trailing dot or space and name
+            // another folder, or reach a device instead of a file.
+            r"\\?\C:\Vault.\notes",
+            r"\\?\C:\Vault \notes",
+            r"\\?\C:\Vault\CON",
+            r"\\?\C:\Vault\..\x",
+            r"\\?\C:\Vault\\x",
+            r"\\?\C:",
+            r"\\?\UNC\server",
+            r"\\?\UNC\server\",
+            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\Vault",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
+            r"\\?\Ü:\x",
+            // Byte 3 falls inside `€`: must not panic.
+            r"\\?\A€\x",
+            r"\\?\UN€\x\y",
+            r"\\?\€",
+            r"C:\Data\Me\Vault",
+            "/Data/me/vault",
+            r"\\server\share",
+        ] {
+            assert_eq!(strip_verbatim_prefix(kept), kept, "{kept}");
+        }
+    }
+
+    #[test]
+    fn root_keys_keep_unix_spellings_and_unify_windows_spellings() {
+        // Unix keys must stay byte-identical: per-vault records are keyed by them.
+        for (root, key) in [
+            ("/Data/me/Vault", "/Data/me/Vault"),
+            ("/Data/me/Vault/", "/Data/me/Vault"),
+            ("/", "/"),
+            ("//?/odd", "//?/odd"),
+        ] {
+            assert_eq!(root_key(root, false), key, "{root}");
+        }
+        for spelling in [
+            r"\\?\C:\Data\Me\Vault",
+            r"C:\Data\Me\Vault\",
+            "c:/data/me/vault",
+            "//?/c:/data/me/vault",
+        ] {
+            assert_eq!(root_key(spelling, true), "c:/data/me/vault", "{spelling}");
+        }
+        assert_eq!(
+            root_key(r"\\?\UNC\server.example\Share\Vault", true),
+            root_key(r"\\server.example\share\vault", true)
+        );
+        assert_eq!(root_key(r"\\?\D:\", true), "d:/");
+        assert_eq!(root_key(r"D:\", true), "d:/");
+        assert_ne!(
+            root_key(r"\\?\C:\Vault.", true),
+            root_key(r"C:\Vault", true)
+        );
+    }
+
+    #[test]
+    fn legacy_windows_approval_records_are_rewritten_without_verbatim_keys() {
+        let dir = std::env::temp_dir().join(format!("mesa-scope-rekey-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("approved.json");
+        fs::write(
+            &path,
+            br#"{"roots":["//?/unc/server.example/share/vault","c:/vault"],"piProcess":["//?/unc/server.example/share/vault"]}"#,
+        )
+        .unwrap();
+        let mut approved = read_approved_roots(&path).unwrap();
+        assert!(rekey_approved_roots(&mut approved, true));
+        write_approved_roots(&path, &approved).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("?"), "{text}");
+        let reread = read_approved_roots(&path).unwrap();
+        assert_eq!(
+            reread.roots,
+            BTreeSet::from([
+                "//server.example/share/vault".to_string(),
+                "c:/vault".to_string()
+            ])
+        );
+        assert_eq!(
+            reread.pi_process,
+            BTreeSet::from(["//server.example/share/vault".to_string()])
+        );
+        let mut clean = reread;
+        assert!(!rekey_approved_roots(&mut clean, true));
+        // Unix records are never rewritten.
+        let mut unix = ApprovedRoots {
+            roots: BTreeSet::from(["//?/odd".to_string()]),
+            pi_process: BTreeSet::new(),
+        };
+        assert!(!rekey_approved_roots(&mut unix, false));
+        assert!(unix.roots.contains("//?/odd"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unresolvable_volumes_fall_back_only_without_links_or_short_names() {
+        assert!(final_path_unsupported(&std::io::Error::from_raw_os_error(
+            1
+        )));
+        assert!(final_path_unsupported(&std::io::Error::from_raw_os_error(
+            50
+        )));
+        assert!(!final_path_unsupported(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
+        for alias in ["GIT~1", "NOTES~12.MD", "a~3"] {
+            assert!(short_name_shaped(alias), "{alias}");
+        }
+        for plain in ["notes", "a~b", "draft~", "~1x", "Café.md"] {
+            assert!(!short_name_shaped(plain), "{plain}");
+        }
+        let dir = std::env::temp_dir().join(format!("mesa-scope-absolute-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("vault/notes")).unwrap();
+        // The temp folder itself may sit behind a link (macOS `/var`).
+        let dir = fs::canonicalize(&dir).unwrap();
+        let plain = dir.join("vault/notes");
+        assert_eq!(absolute_without_aliases(&plain), Some(plain.clone()));
+        assert_eq!(absolute_without_aliases(&dir.join("vault/../vault")), None);
+        assert_eq!(absolute_without_aliases(&dir.join("vault/GIT~1")), None);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("vault"), dir.join("link")).unwrap();
+            assert_eq!(absolute_without_aliases(&dir.join("link/notes")), None);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn root_prefixes_fold_case_only_on_windows() {
+        let path = Path::new("/G/Vault/Notes/a.md");
+        assert_eq!(
+            strip_root(path, Path::new("/g/vault"), true),
+            Some(Path::new("Notes/a.md"))
+        );
+        assert_eq!(strip_root(path, Path::new("/g/vault"), false), None);
+        assert_eq!(
+            strip_root(path, Path::new("/G/Vault"), false),
+            Some(Path::new("Notes/a.md"))
+        );
+        assert_eq!(
+            strip_root(path, Path::new("/G/Vault"), true),
+            path.strip_prefix("/G/Vault").ok()
+        );
+        // Whole components only, in either mode.
+        for fold in [true, false] {
+            assert_eq!(strip_root(path, Path::new("/G/Vau"), fold), None);
+            assert_eq!(
+                strip_root(Path::new("/G"), Path::new("/G/Vault"), fold),
+                None
             );
         }
+        assert_eq!(
+            strip_root(Path::new("/G/Vault"), Path::new("/g/vault"), true),
+            Some(Path::new(""))
+        );
     }
 
     #[test]

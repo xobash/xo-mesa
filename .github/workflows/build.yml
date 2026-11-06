@@ -53,6 +53,34 @@ jobs:
       # cannot see an advisory published after the pin was written.
       - run: npm audit --audit-level=moderate
 
+  # The JS gates on a stock Windows runner: win32 branches in the launcher and
+  # checks, Windows path and process handling, and Git for Windows checkouts.
+  # Advisory until it has passed on GitHub and the owner promotes it: the
+  # release gate needs a successful workflow run, so without continue-on-error
+  # this job would silently become a ninth release check. Nothing needs it.
+  frontend-windows:
+    name: frontend (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild esbuild
+      - run: npm test
+      - run: npm run test:toolchains
+      - run: npm run test:release
+      - run: npm run test:bootstrap
+      - run: npm run test:activity-api
+      - run: npm run test:notices
+
   # Rust unit tests and lints cover native behavior on each supported OS.
   #
   # Windows and macOS are in the matrix, not just Linux: the PTY resolver's
@@ -90,9 +118,14 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      - name: Exercise Windows installer
+      # Users run install.ps1 from Windows PowerShell 5.1 or PowerShell 7.
+      - name: Exercise Windows installer (PowerShell 7)
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        run: ./scripts/windows-installer-behavior.check.ps1
+      - name: Exercise Windows installer (Windows PowerShell 5.1)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
         run: ./scripts/windows-installer-behavior.check.ps1
 
   rust-advisory:
@@ -164,13 +197,15 @@ jobs:
       - run: npm rebuild esbuild
       - name: Build the desktop app
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        # Windows builds the same target triple as release (scripts/tauri-targets.mjs).
         with:
-          args: ${{ matrix.name == 'macos' && '--target universal-apple-darwin' || matrix.name == 'windows' && '--bundles msi,nsis' || '' }}
+          args: ${{ matrix.name == 'macos' && '--target universal-apple-darwin' || matrix.name == 'windows' && '--target x86_64-pc-windows-msvc --bundles msi,nsis' || '' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mesa-${{ matrix.name }}
           path: |
             src-tauri/target/release/bundle/**/*
             src-tauri/target/universal-apple-darwin/release/bundle/**/*
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*
           if-no-files-found: error
           retention-days: 7

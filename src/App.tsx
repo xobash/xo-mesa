@@ -2,7 +2,7 @@ import { syncSecretsNeededAtStartup } from "./lib/syncSecrets";
 import { Modal } from "./components/Modal";
 import { confirmAction } from "./lib/confirmAction";
 import { loadRecentVaults, resolveRecentVault } from "./lib/persistedUi";
-import { flushBeforeClose, installCloseGuard, pendingEditGuard, type BlockedClose } from "./lib/closeGuard";
+import { flushBeforeClose, hideOrQuitMain, installCloseGuard, pendingEditGuard, type BlockedClose } from "./lib/closeGuard";
 const QUIT_REQUESTED_EVENT = "mesa://quit-requested";
 import {
   Fragment,
@@ -40,6 +40,8 @@ import { startViewDrag } from "./components/panelDrag";
 import { useApplyTheme } from "./components/useApplyTheme";
 import { useTrayStatus } from "./components/useTrayStatus";
 import { useCustomHotkeys } from "./components/useCustomHotkeys";
+import { useBrowserKeyGuard } from "./components/useBrowserKeyGuard";
+import { isAppModifier } from "./lib/hotkeys";
 import {
   adjacentPath,
   clampKeyboardFocus,
@@ -597,6 +599,7 @@ export default function App() {
   useApplyTheme(theme, uiStyle);
   useTrayStatus(IN_TAURI && !docMode && !panelMode && !agentMode && !researchMode);
   useCustomHotkeys(!docMode && !panelMode && !agentMode && !researchMode);
+  useBrowserKeyGuard(!docMode && !panelMode && !agentMode && !researchMode);
 
   // Detached documents reuse the main renderer's live file catalog. They
   // read only their selected document and never start another vault walk.
@@ -783,14 +786,15 @@ export default function App() {
     void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
       if (disposed) return;
       const current = getCurrentWindow();
-      // Mesa keeps running in the menu bar; Quit (menu, popover, Cmd+Q) ends it.
+      // Mesa keeps running behind its Dock or tray icon; without a visible
+      // tray (Linux, a failed tray) closing main quits after the same flush.
       stop = installCloseGuard(
         current,
         flushAllEdits,
         hasPendingEdits,
         (status) => useAppStore.setState({ status }),
         onBlocked,
-        () => current.hide()
+        () => hideOrQuitMain(() => invoke<boolean>("main_close_hides"), () => current.hide(), () => invoke("quit_after_save"))
       );
     }).catch((error) => {
       if (!disposed) useAppStore.setState({ status: `Close safety failed to start: ${String(error)}` });
@@ -1057,7 +1061,7 @@ export default function App() {
       if (e.code === "ShiftLeft") leftShiftDownRef.current = true;
       const el = document.activeElement as HTMLElement | null;
       const editable = isTextEntryTarget(el);
-      const mod = e.metaKey || e.ctrlKey;
+      const mod = isAppModifier(e);
       const k = e.key.toLowerCase();
       if (mod && k === "p") {
         e.preventDefault();

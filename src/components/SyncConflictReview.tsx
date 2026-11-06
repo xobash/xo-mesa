@@ -2,7 +2,19 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../store';
 import { findSyncConflicts, type SyncConflict } from '../lib/syncConflicts';
 import { readReviewText } from '../lib/vault';
-import { applyTextDiffChoice, diffTextLines, type TextDiffPart } from '../lib/textDiff';
+import { applyTextDiffChoice, diffTextLines, lineEndingOnlyLines, type TextDiffPart } from '../lib/textDiff';
+import { describeLineEndingStyle, lineEndingStyle, restoreLineBreaks, withLineBreak } from '../lib/lineEndings';
+
+/** Explains line-ending-only differences, which the diff shows as unchanged. */
+function lineEndingNote(original: string, other: string, parts: readonly TextDiffPart[]): string {
+  const count = lineEndingOnlyLines(parts);
+  if (!count) return '';
+  const lines = count === 1 ? '1 line' : `${count} lines`;
+  const styles = `The original uses ${describeLineEndingStyle(lineEndingStyle(original))}; the conflict copy uses ${describeLineEndingStyle(lineEndingStyle(other))}.`;
+  const keep = 'Saving keeps the line endings of the reviewed text.';
+  if (!parts.some(part => part.kind === 'change')) return `Only the line endings differ. The text of all ${lines} is the same. ${styles} ${keep}`;
+  return `${lines} ${count === 1 ? 'differs' : 'differ'} only in their line endings and ${count === 1 ? 'is' : 'are'} shown as unchanged. ${styles} ${keep}`;
+}
 
 const REVIEW_LIMIT = 1024 * 1024;
 export function SyncConflictReview() {
@@ -47,6 +59,11 @@ export function SyncConflictReview() {
     finally { if (token === generation.current) setWorking(false); }
   };
   const diffParts = useMemo(() => review ? diffTextLines(review.original, review.other) : [], [review]);
+  const eolNote = useMemo(() => review ? lineEndingNote(review.original, review.other, diffParts) : '', [review, diffParts]);
+  // A textarea's value is always LF. Show it LF-only so React never rewrites
+  // the field (and moves the caret); `draft` keeps the faithful breaks.
+  const reviewView = useMemo(() => ({ original: review ? withLineBreak(review.original, '\n') : '', other: review ? withLineBreak(review.other, '\n') : '' }), [review]);
+  const draftView = useMemo(() => withLineBreak(draft, '\n'), [draft]);
   const applyChoice = (part: TextDiffPart, choice: 'original' | 'other') => setDraft(value => applyTextDiffChoice(value, part, choice));
   if (!conflicts.length && !message) return null;
   const start = Math.min(page * 10, Math.max(0, Math.floor((conflicts.length - 1) / 10) * 10));
@@ -61,7 +78,8 @@ export function SyncConflictReview() {
     </div>)}
     {conflicts.length > 10 && <div className="sync-conflict-row"><button className="btn" disabled={start === 0} onClick={() => setPage(Math.max(0, page - 1))}>Previous copies</button><span>{start + 1}–{Math.min(start + 10, conflicts.length)} of {conflicts.length}</span><button className="btn" disabled={start + 10 >= conflicts.length} onClick={() => setPage(page + 1)}>Next copies</button></div>}
     {review && <div className="sync-review">
-      <div className="sync-review-columns"><label>Original<textarea readOnly value={review.original} /></label><label>Conflict copy<textarea readOnly value={review.other} /></label></div>
+      <div className="sync-review-columns"><label>Original<textarea readOnly value={reviewView.original} /></label><label>Conflict copy<textarea readOnly value={reviewView.other} /></label></div>
+      {eolNote && <p className="setting-desc sync-diff-eol" role="note"><strong>Line endings: </strong>{eolNote}</p>}
       <div className="sync-diff" aria-label="Highlighted differences">
         {diffParts.map((part, index) => part.kind === 'same'
           ? <pre className="sync-diff-same" key={index}>{part.lines.join('')}</pre>
@@ -76,7 +94,7 @@ export function SyncConflictReview() {
               </div>
             </div>)}
       </div>
-      <label>Reviewed text<textarea ref={editor} value={draft} disabled={working} onChange={event => setDraft(event.target.value)} /></label>
+      <label>Reviewed text<textarea ref={editor} value={draftView} disabled={working} onChange={event => { const value = event.target.value; setDraft(previous => restoreLineBreaks(previous, value)); }} /></label>
       <div className="sync-conflict-row"><button className="btn" disabled={working} onClick={() => setDraft(review.original)}>Use original text</button><button className="btn" disabled={working} onClick={() => setDraft(review.other)}>Use conflict text</button><button className="btn primary" disabled={working || busy} onClick={() => void save()}>{working ? 'Saving…' : 'Save reviewed text'}</button><button className="btn" disabled={working} onClick={() => { setReview(null); setMessage('Both copies kept. No files changed.'); }}>Keep both</button></div>
     </div>}
     {message && <p role="status" aria-live="polite" className="setting-desc">{message}</p>}

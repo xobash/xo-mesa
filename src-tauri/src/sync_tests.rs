@@ -1462,6 +1462,11 @@ fn list_vault_files_skips_hidden_and_node_modules() {
     std::fs::write(dir.join(".DS_Store"), b"x").unwrap();
     std::fs::write(dir.join(".git/config"), b"x").unwrap();
     std::fs::write(dir.join("node_modules/pkg/i.js"), b"x").unwrap();
+    // Windows shell files never sync, so peers do not exchange view state.
+    std::fs::write(dir.join("desktop.ini"), b"x").unwrap();
+    std::fs::write(dir.join("notes/Thumbs.db"), b"x").unwrap();
+    std::fs::create_dir_all(dir.join("$RECYCLE.BIN")).unwrap();
+    std::fs::write(dir.join("$RECYCLE.BIN/old.md"), b"x").unwrap();
     let rels: Vec<String> = list_vault_files(&dir).into_iter().map(|(r, _)| r).collect();
     assert_eq!(rels, vec!["b.md".to_string(), "notes/a.md".to_string()]);
     let _ = std::fs::remove_dir_all(&dir);
@@ -2175,6 +2180,10 @@ fn peer_path_policy_rejects_hidden_and_ignored_segments() {
         "a/MESA-T~1/old.md",
         "ENV~12",
         "Node_Modules/x.js",
+        "desktop.ini",
+        "a/Thumbs.db",
+        "$Recycle.Bin/x.md",
+        "System Volume Information/x",
     ] {
         assert!(!is_peer_rel(rel), "{rel:?} must be rejected");
         let dir = std::env::temp_dir();
@@ -2291,6 +2300,60 @@ fn load_repairs_a_journal_holding_operations_peers_refuse() {
     assert_eq!(loaded.next_sequence, 3);
     let bytes = std::fs::read(v.0.join(".mesa-sync-journal.json")).unwrap();
     assert!(!String::from_utf8_lossy(&bytes).contains("draft~1.md"));
+}
+
+#[test]
+fn older_peer_journal_with_shell_file_records_is_accepted_without_them() {
+    // A peer from before shell files were skipped still journals them. The
+    // exchange must continue, and those records must never apply here.
+    let v = ManifestVault::new("older-peer-shell-journal");
+    std::fs::write(v.0.join("desktop.ini"), b"[.ShellClassInfo]").unwrap();
+    let op = |sequence: u64, kind, from: &str, to: Option<&str>| JournalOperation {
+        id: format!("peer:{sequence}"),
+        device: "peer".into(),
+        sequence,
+        at_ms: 0,
+        kind,
+        from: from.into(),
+        to: to.map(Into::into),
+        size: 1,
+        hash: "a".repeat(64),
+    };
+    let mut remote = SyncJournal::empty("peer".into());
+    remote.operations = vec![
+        op(1, JournalOperationKind::Delete, "desktop.ini", None),
+        op(
+            2,
+            JournalOperationKind::Rename,
+            "a.md",
+            Some("Photos/Thumbs.db"),
+        ),
+        op(3, JournalOperationKind::Delete, "gone.md", None),
+    ];
+    remote.next_sequence = 4;
+    assert!(validate_journal(&remote, "peer journal").is_err());
+    accept_peer_journal(&mut remote, "peer journal").unwrap();
+    let froms: Vec<_> = remote
+        .operations
+        .iter()
+        .map(|op| op.from.as_str())
+        .collect();
+    assert_eq!(froms, ["gone.md"]);
+    apply_incoming_journal(&v.0, &remote).unwrap();
+    assert_eq!(
+        std::fs::read(v.0.join("desktop.ini")).unwrap(),
+        b"[.ShellClassInfo]"
+    );
+    // Hidden or traversal paths are still refused, not dropped.
+    let mut hostile = SyncJournal::empty("peer".into());
+    hostile.operations = vec![op(
+        1,
+        JournalOperationKind::Delete,
+        ".git/desktop.ini",
+        None,
+    )];
+    hostile.next_sequence = 2;
+    assert!(accept_peer_journal(&mut hostile, "peer journal").is_err());
 }
 
 #[cfg(target_os = "macos")]

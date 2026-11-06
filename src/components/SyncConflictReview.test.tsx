@@ -107,6 +107,92 @@ it("compares both copies, applies one change and saves the reviewed text", async
   expect(document.activeElement).toBe(button(`Compare ${copy}`));
 });
 
+it("says plainly when two copies differ only in line endings", async () => {
+  const copy = copyOf("Note.md");
+  reads.text.set("Note.md", "title\r\nbody\r\n");
+  reads.text.set(copy, "title\nbody\n");
+  render([file("Note.md"), file(copy)]);
+  await click(`Compare ${copy}`);
+  expect(host.querySelectorAll(".sync-diff-change")).toHaveLength(0);
+  const note = host.querySelector(".sync-diff-eol")?.textContent ?? "";
+  expect(note).toContain("Only the line endings differ");
+  expect(note).toContain("CRLF (Windows)");
+  expect(note).toContain("LF (macOS and Linux)");
+  expect(note).toContain("2 lines");
+});
+
+it("notes line-ending-only lines next to real changes and keeps the draft's endings", async () => {
+  const copy = copyOf("Note.md");
+  reads.text.set("Note.md", "title\r\nmine\r\nend\r\n");
+  reads.text.set(copy, "title\ntheirs\nend\n");
+  render([file("Note.md"), file(copy)]);
+  await click(`Compare ${copy}`);
+  expect(host.querySelectorAll(".sync-diff-change")).toHaveLength(1);
+  const note = host.querySelector(".sync-diff-eol")?.textContent ?? "";
+  expect(note).toContain("2 lines differ only in their line endings");
+  expect(note).not.toContain("Only the line endings differ");
+  await click("Use conflict for this change");
+  await click("Save reviewed text");
+  expect(store.saveConflictReview).toHaveBeenCalledWith("/vault", "Note.md", "title\r\nmine\r\nend\r\n", "title\r\ntheirs\r\nend\r\n", copy);
+});
+
+it("keeps CRLF line endings when the reviewed text is typed in", async () => {
+  const copy = copyOf("Note.md");
+  reads.text.set("Note.md", "a\r\nb\nc\r\n");
+  reads.text.set(copy, "a\r\nx\nc\r\n");
+  render([file("Note.md"), file(copy)]);
+  await click(`Compare ${copy}`);
+  const draft = textareas()[2];
+  // A textarea reports its value with LF breaks only.
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  await act(async () => {
+    setValue.call(draft, "a\nB\nc\n");
+    draft.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await click("Save reviewed text");
+  expect(store.saveConflictReview).toHaveBeenCalledWith("/vault", "Note.md", "a\r\nb\nc\r\n", "a\r\nB\nc\r\n", copy);
+});
+
+it("shows the reviewed text with LF breaks so React never rewrites the field under the caret", async () => {
+  // A textarea's value is always LF. Handing React a CRLF value makes it
+  // reassign the DOM value on every render, which moves the caret to the end.
+  const writes: string[] = [];
+  const readOnlyWrites: string[] = [];
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!;
+  Object.defineProperty(HTMLTextAreaElement.prototype, "value", {
+    configurable: true,
+    get: descriptor.get,
+    set(this: HTMLTextAreaElement, value: string) {
+      if (this.closest("label")?.textContent?.startsWith("Reviewed text")) writes.push(value);
+      else readOnlyWrites.push(value);
+      descriptor.set!.call(this, value);
+    },
+  });
+  try {
+    const copy = copyOf("Note.md");
+    reads.text.set("Note.md", "a\r\nb\r\n");
+    reads.text.set(copy, "a\r\nc\r\n");
+    render([file("Note.md"), file(copy)]);
+    await click(`Compare ${copy}`);
+    expect(writes.every((value) => !value.includes("\r"))).toBe(true);
+    const draft = textareas()[2];
+    writes.length = 0;
+    readOnlyWrites.length = 0;
+    await act(async () => {
+      descriptor.set!.call(draft, "a\nbx\n");
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // The user's own value stands; React writes nothing different back.
+    expect(writes.filter((value) => value !== "a\nbx\n")).toEqual([]);
+    // Nor does it reset the read-only copies (and any selection in them).
+    expect(readOnlyWrites).toEqual([]);
+    await click("Save reviewed text");
+    expect(store.saveConflictReview).toHaveBeenCalledWith("/vault", "Note.md", "a\r\nb\r\n", "a\r\nbx\r\n", copy);
+  } finally {
+    Object.defineProperty(HTMLTextAreaElement.prototype, "value", descriptor);
+  }
+});
+
 it("keeps both copies without writing, and reports a failed save", async () => {
   const copy = copyOf("Note.md");
   reads.text.set("Note.md", "a\n");

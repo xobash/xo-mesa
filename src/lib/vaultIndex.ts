@@ -167,7 +167,7 @@ export async function loadIndexedNotes(options: {
    */
   onCached?: (cached: { notes: Record<string, NoteMeta>; cache: Record<string, string>; missing: number }) => void;
   storage?: VaultIndexStorage;
-}): Promise<{ notes: Record<string, NoteMeta>; cache: Record<string, string>; reused: number; read: number; skipped: string[]; failed: string[]; changed: Map<string, string> }> {
+}): Promise<{ notes: Record<string, NoteMeta>; cache: Record<string, string>; reused: number; read: number; skipped: string[]; /** Online-only cloud files left undownloaded. */ offline?: string[]; failed: string[]; changed: Map<string, string> }> {
   const { root, files, read, fingerprints, stopped } = options;
   const storage = options.storage ?? vaultIndexStorage;
   const epoch = epochs.get(root) ?? 0;
@@ -197,7 +197,7 @@ export async function loadIndexedNotes(options: {
   let completed = 0;
   const entries = new Map<string, RecordEntry>();
   let reused = 0, reads = 0;
-  const skipped: string[] = [], failed: string[] = [];
+  const skipped: string[] = [], offline: string[] = [], failed: string[] = [];
   const { createIndexCodec } = await import("./indexCodec");
   const codec = createIndexCodec();
   try {
@@ -225,6 +225,7 @@ export async function loadIndexedNotes(options: {
       const result = texts[i];
       if (result?.kind === "content") return [{ file, text: result.text }];
       if (result?.kind === "skipped") skipped.push(file.relPath);
+      else if (result?.kind === "offline") offline.push(file.relPath);
       else failed.push(file.relPath);
       return [];
     });
@@ -269,7 +270,7 @@ export async function loadIndexedNotes(options: {
     });
     void storage.save({ version: VERSION, root, cachedAt: Date.now(), entries: persisted }).catch(() => {});
   }
-  return { notes, cache: indexedContentCache([...entries].map(([rel, entry]) => [rel, entry.document])), reused, read: reads, skipped, failed, changed };
+  return { notes, cache: indexedContentCache([...entries].map(([rel, entry]) => [rel, entry.document])), reused, read: reads, skipped, offline, failed, changed };
 }
 
 export async function forgetVaultIndex(root: string): Promise<void> {

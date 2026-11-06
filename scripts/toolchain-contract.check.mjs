@@ -1,9 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const read = file => readFileSync(file, 'utf8');
-test('development, CI and release use the exact reviewed toolchains', () => {
+// A Windows checkout may turn LF into CRLF; the contract reads text, not line endings.
+const lf = text => text.replace(/\r\n/g, '\n');
+const read = file => lf(readFileSync(file, 'utf8'));
+function checkToolchains(readRaw) {
+  const read = file => lf(readRaw(file));
   const node = read('.node-version').trim();
   const rust = /channel = "([^"]+)"/.exec(read('rust-toolchain.toml'))?.[1];
   assert.equal(node, '22.22.3');
@@ -58,6 +62,15 @@ test('development, CI and release use the exact reviewed toolchains', () => {
   assert.match(read('scripts/windows-node.ps1'), /node\.exe'\) --version\) -eq "v\$version"\) \{ exit 0 \}/);
   assert.match(posixNode, /bin\/node" -v 2>\/dev\/null \|\| true\)" != "v\$version" \]; then/);
   assert.match(read('run.cmd'), />"%STAMP%" echo !CD!/);
+}
+test('development, CI and release use the exact reviewed toolchains', () => checkToolchains(file => readFileSync(file, 'utf8')));
+test('the toolchain contract holds in a CRLF checkout', () => checkToolchains(file => readFileSync(file, 'utf8').replace(/\r?\n/g, '\r\n')));
+test('every text file checks out with LF except cmd.exe batch files', () => {
+  const attr = (name, file) => new RegExp(`: ${name}: (\\S+)$`).exec(execFileSync('git', ['check-attr', name, '--', file], { encoding: 'utf8' }).trim())?.[1];
+  const eol = file => attr('eol', file);
+  for (const file of ['.github/workflows/build.yml', 'docs/activity-api.md', 'scripts/toolchain-contract.check.mjs', 'scripts/windows-node.ps1', 'install.ps1', 'install.sh', 'package.json']) assert.equal(eol(file), 'lf', file);
+  for (const file of ['run.cmd', 'example.bat']) assert.equal(eol(file), 'crlf', file);
+  assert.equal(attr('text', 'public/THIRD_PARTY_NOTICES.txt'), 'unset', 'upstream license bytes are never converted');
 });
 
 // GitHub resolves `uses:` pins as commits. docs/release.md records each pin

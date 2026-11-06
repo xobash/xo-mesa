@@ -704,8 +704,14 @@ pub fn browse_open_saved_html(
         return Err("only saved HTML can be opened".into());
     }
     app.opener()
-        .open_path(checked.to_string_lossy().into_owned(), None::<&str>)
+        .open_path(opener_path(&checked), None::<&str>)
         .map_err(|_| "Could not open system browser".into())
+}
+
+/// The path handed to the system opener: the shell and browsers do not
+/// accept the `\\?\` form that canonicalize returns on Windows.
+fn opener_path(checked: &std::path::Path) -> String {
+    dunce::simplified(checked).to_string_lossy().into_owned()
 }
 
 pub(crate) fn revoke_resource_window(owner: &str) {
@@ -716,6 +722,25 @@ pub(crate) fn revoke_resource_window(owner: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn saved_html_opens_by_its_plain_path() {
+        assert_eq!(
+            super::opener_path(std::path::Path::new("/Data/me/Vault/page.html")),
+            "/Data/me/Vault/page.html"
+        );
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                super::opener_path(std::path::Path::new(r"\\?\C:\Vault\page.html")),
+                r"C:\Vault\page.html"
+            );
+            assert_eq!(
+                super::opener_path(std::path::Path::new(r"\\?\UNC\nas\share\page.html")),
+                r"\\nas\share\page.html"
+            );
+        }
+    }
+
     #[test]
     fn saved_html_opening_is_limited_to_document_surfaces() {
         for label in ["main", "doc-1", "panel-graph"] {

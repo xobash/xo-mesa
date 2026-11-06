@@ -119,6 +119,7 @@ src-tauri/resources/mesa-context.ts
 src-tauri/resources/mesa-deep-research.ts
 src-tauri/resources/mesa-goal.ts
 src-tauri/src/activity.rs
+src-tauri/src/applog.rs
 src-tauri/src/bearer.rs
 src-tauri/src/browse.rs
 src-tauri/src/diagnostics.rs
@@ -126,6 +127,7 @@ src-tauri/src/file_metadata.rs
 src-tauri/src/htmlrun.rs
 src-tauri/src/lib.rs
 src-tauri/src/main.rs
+src-tauri/src/platform_fs.rs
 src-tauri/src/recents.rs
 src-tauri/src/secrets.rs
 src-tauri/src/surfaces.rs
@@ -150,6 +152,7 @@ src-tauri/src/vaultscope.rs
 src-tauri/src/vaulttransaction.rs
 src-tauri/src/vaultwatch.rs
 src-tauri/src/vaultwrite.rs
+src-tauri/src/webview_settings.rs
 src-tauri/tauri.conf.json
 src-tauri/tauri.windows.conf.json
 src-tauri/tauri.windows.offline.conf.json
@@ -229,6 +232,7 @@ src/components/SyncConflictReview.test.tsx
 src/components/SyncConflictReview.tsx
 src/components/SyncModal.test.tsx
 src/components/SyncModal.tsx
+src/components/Tabs.test.tsx
 src/components/Tabs.tsx
 src/components/TagList.test.tsx
 src/components/TagList.tsx
@@ -238,7 +242,9 @@ src/components/TopBar.tsx
 src/components/VaultImage.test.tsx
 src/components/VaultImage.tsx
 src/components/Welcome.tsx
+src/components/Whiteboard.test.tsx
 src/components/editorFindReplace.test.tsx
+src/components/editorLineEndings.test.tsx
 src/components/editorUndoBoundary.test.tsx
 src/components/fileDrag.ts
 src/components/fileTreeMenu.test.tsx
@@ -254,7 +260,10 @@ src/components/pdfPerf.ts
 src/components/previewTriggers.test.ts
 src/components/previewTriggers.ts
 src/components/useApplyTheme.ts
+src/components/useBrowserKeyGuard.test.tsx
+src/components/useBrowserKeyGuard.ts
 src/components/useCustomHotkeys.ts
+src/components/useDevicePixelRatio.ts
 src/components/useOverlayDraft.test.tsx
 src/components/useOverlayDraft.ts
 src/components/usePdfEditor.test.tsx
@@ -287,6 +296,8 @@ src/lib/boundedText.test.ts
 src/lib/boundedText.ts
 src/lib/browseSerialQueue.test.ts
 src/lib/browserExtension.test.ts
+src/lib/browserKeyGuard.test.ts
+src/lib/browserKeyGuard.ts
 src/lib/browserReader.test.ts
 src/lib/browserReader.ts
 src/lib/buildNotes.test.ts
@@ -315,6 +326,8 @@ src/lib/deepResearchUrls.ts
 src/lib/deepResearchWindow.ts
 src/lib/deviceName.test.ts
 src/lib/deviceName.ts
+src/lib/devicePixelRatio.test.ts
+src/lib/devicePixelRatio.ts
 src/lib/discoveryPeers.test.ts
 src/lib/discoveryPeers.ts
 src/lib/docSplit.test.ts
@@ -353,6 +366,8 @@ src/lib/hue.ts
 src/lib/indexCodec.test.ts
 src/lib/indexCodec.ts
 src/lib/indexCodec.worker.ts
+src/lib/indexDisclosure.test.ts
+src/lib/indexDisclosure.ts
 src/lib/indexSearch.test.ts
 src/lib/indexSearch.ts
 src/lib/indexSearch.worker.ts
@@ -361,6 +376,8 @@ src/lib/keyboardNav.ts
 src/lib/latestWinsQueue.test.ts
 src/lib/latestWinsQueue.ts
 src/lib/layout-css.test.ts
+src/lib/lineEndings.test.ts
+src/lib/lineEndings.ts
 src/lib/linkRewrite.test.ts
 src/lib/linkRewrite.ts
 src/lib/localNotes.test.ts
@@ -487,12 +504,16 @@ src/lib/syncUi.test.ts
 src/lib/syncUi.ts
 src/lib/syncWorkflow.test.ts
 src/lib/syncWorkflow.ts
+src/lib/tabStripWheel.test.ts
+src/lib/tabStripWheel.ts
 src/lib/taskParsing.test.ts
 src/lib/taskParsing.ts
 src/lib/tasks.test.ts
 src/lib/tasks.ts
 src/lib/terminalOutput.test.ts
 src/lib/terminalOutput.ts
+src/lib/terminalPlatform.test.ts
+src/lib/terminalPlatform.ts
 src/lib/terminalReplay.test.ts
 src/lib/terminalReplay.ts
 src/lib/terminalResize.test.ts
@@ -568,6 +589,7 @@ src/store.noteFeatures.test.ts
 src/store.pdfDirty.test.ts
 src/store.research.test.ts
 src/store.researchDiscard.test.ts
+src/store.syncKeysReset.test.ts
 src/store.syncListener.test.ts
 src/store.textLifecycle.test.ts
 src/store.ts

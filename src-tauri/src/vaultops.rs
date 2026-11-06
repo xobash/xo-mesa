@@ -65,7 +65,10 @@ pub(crate) fn move_entry(root: &Path, from: &str, to: &str) -> Result<(), String
             sync_core::WindowsParentGuard::acquire(&to, true).map_err(|e| e.to_string())?;
         let meta = fs::symlink_metadata(&from).map_err(|e| e.to_string())?;
         use std::os::windows::fs::MetadataExt;
-        if meta.file_attributes() & 0x400 != 0 {
+        if meta.file_type().is_symlink()
+            || !sync_core::platform_fs::path_is_in_place(&from, meta.file_attributes())
+                .map_err(|e| e.to_string())?
+        {
             return Err("linked recovery source".into());
         }
         sync_core::move_file_no_replace(&from, &to).map_err(|e| e.to_string())
@@ -319,12 +322,14 @@ fn deepest_single_entry(path: std::path::PathBuf) -> (std::path::PathBuf, bool) 
         current = only.path();
     }
 }
+/// A link-like reparse point (junction, mount point); cloud placeholders are not.
 #[cfg(windows)]
 fn is_reparse(entry: &fs::DirEntry) -> bool {
     use std::os::windows::fs::MetadataExt;
-    !entry
-        .metadata()
-        .is_ok_and(|meta| meta.file_attributes() & 0x400 == 0)
+    !entry.metadata().is_ok_and(|meta| {
+        sync_core::platform_fs::path_is_in_place(&entry.path(), meta.file_attributes())
+            .unwrap_or(false)
+    })
 }
 #[cfg(not(windows))]
 fn is_reparse(_entry: &fs::DirEntry) -> bool {

@@ -50,6 +50,19 @@ describe('leased resource', () => {
     b(); await settle(); expect(h.stop).toHaveBeenCalledOnce();
   });
 
+  it('tells each lease whether the shared resource started', async () => {
+    const h = harness(); const first = vi.fn(); const second = vi.fn();
+    h.start.mockRejectedValueOnce(new Error('address in use'));
+    const releaseFirst = h.own({ name: 'a' }, 'a', first);
+    await settle();
+    expect(first).toHaveBeenCalledWith({ ok: false, error: new Error('address in use') });
+    expect(first).not.toHaveBeenCalledWith({ ok: true });
+    const releaseSecond = h.own({ name: 'a' }, 'b', second);
+    await settle();
+    expect(first).toHaveBeenLastCalledWith({ ok: true }); expect(second).toHaveBeenLastCalledWith({ ok: true });
+    releaseFirst(); releaseSecond(); await settle();
+  });
+
   it('skips many disposed leases without retaining resources', async () => {
     const h = harness();
     for (let i = 0; i < 1000; i++) h.own({ name: 'a' }, 'a')();

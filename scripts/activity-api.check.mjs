@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,10 +8,40 @@ import https from 'node:https';
 import { X509Certificate, createHmac } from 'node:crypto';
 import { mesaActivity, activityCredential } from './activity-client.mjs';
 
-const doc = readFileSync('docs/activity-api.md', 'utf8');
+// A Windows checkout may turn LF into CRLF; the contract reads text, not line endings.
+const lf = text => text.replace(/\r\n/g, '\n');
+const doc = lf(readFileSync('docs/activity-api.md', 'utf8'));
+export const pythonClient = markdown => lf(markdown).match(/```python\n([\s\S]*?)\n```/)?.[1];
+
+// Windows ships a Microsoft Store `python3` stub that only prints "Python was
+// not found", so win32 uses the `py` launcher or a real `python`.
+export function pythonCommand(platform = process.platform, probe = (command, args) => spawnSync(command, [...args, '-c', 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)'], { stdio: 'ignore', windowsHide: true }).status === 0) {
+  const candidates = platform === 'win32' ? [['py', ['-3']], ['python', []], ['python3', []]] : [['python3', []]];
+  return candidates.find(([command, args]) => probe(command, args)) ?? null;
+}
+const python3 = pythonCommand();
+const noPython = !python3 && process.platform === 'win32' && 'no Python 3 found as py -3, python or python3';
+
+test('the Python client is read from the docs in an LF or CRLF checkout', () => {
+  const client = pythonClient(readFileSync('docs/activity-api.md', 'utf8'));
+  assert.match(client, /^import hashlib/);
+  assert.equal(pythonClient(readFileSync('docs/activity-api.md', 'utf8').replace(/\r?\n/g, '\r\n')), client);
+});
+
+test('Windows runs Python through the py launcher or a real python, never the Store stub', () => {
+  const real = new Set(['py -3', 'python']);
+  const probe = (command, args) => real.has([command, ...args].join(' '));
+  assert.deepEqual(pythonCommand('win32', probe), ['py', ['-3']]);
+  assert.deepEqual(pythonCommand('win32', (command, args) => probe(command, args) && command !== 'py'), ['python', []]);
+  assert.equal(pythonCommand('win32', () => false), null);
+  assert.deepEqual(pythonCommand('linux', () => true), ['python3', []]);
+  assert.equal(pythonCommand('darwin', (command) => command !== 'python3'), null);
+});
 test('activity documentation agrees with the TLS server contract', () => {
   assert.doesNotMatch(doc, /http:\/\/localhost:8787|Bearer <your sync key>/);
   for (const term of ['https://localhost:8787', 'mesa-sync-cert-v1:', '409', 'MESA_FINGERPRINT']) assert.ok(doc.includes(term), term);
+  // Windows users get PowerShell commands and the py launcher, not POSIX-only ones.
+  for (const term of ["$env:MESA_SYNC_KEY = ", "| node scripts/activity-client.mjs\n```", "| py -3 mesa_activity.py"]) assert.ok(doc.includes(term), term);
   const source = readFileSync('src-tauri/src/sync_server.rs', 'utf8');
   assert.ok(source.includes('key.as_bytes()'));
   assert.ok(source.includes('mesa-sync-cert-v1:'));
@@ -21,7 +51,7 @@ test('activity documentation agrees with the TLS server contract', () => {
   assert.equal(activityCredential('0123456789abcdef'.repeat(4), 'a'.repeat(64)), '7f7eb47de4883660fabc22d30deda7a71d5dcaf433e8997f79dde376ca90efb5');
 });
 
-test('copied Node and Python clients pin TLS before HTTP and use certificate-scoped auth', async () => {
+test('copied Node and Python clients pin TLS before HTTP and use certificate-scoped auth', { skip: noPython }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mesa-activity-contract-'));
   let server;
   try {
@@ -53,9 +83,14 @@ test('copied Node and Python clients pin TLS before HTTP and use certificate-sco
     status = 409;
     await assert.rejects(mesaActivity(body, env), /409.*retry/);
     status = 200;
-    const python = doc.match(/```python\n([\s\S]*?)\n```/)[1];
+    const python = pythonClient(doc);
+    assert.ok(python3, 'Python 3 is required to exercise the documented client');
+    const [pythonExe, pythonArgs] = python3;
+    // Run the saved file, as the docs say; a multi-line -c argument is fragile under Windows quoting.
+    const script = join(dir, 'mesa_activity.py');
+    writeFileSync(script, python);
     const runPython = pin => new Promise(resolve => {
-      const child = spawn('python3', ['-c', python], { env: { ...env, MESA_FINGERPRINT: pin } });
+      const child = spawn(pythonExe, [...pythonArgs, script], { windowsHide: true, env: { ...env, MESA_FINGERPRINT: pin } });
       let stderr = '';
       child.stderr.on('data', data => { stderr += data; });
       child.once('error', error => resolve({ code: -1, stderr: error.message }));

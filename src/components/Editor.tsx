@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { EditorView, basicSetup } from "codemirror";
-import { EditorState, Compartment } from "@codemirror/state";
+import { EditorState, Compartment, StateEffect, StateField } from "@codemirror/state";
+import { invertedEffects } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { openSearchPanel, search } from "@codemirror/search";
@@ -8,6 +9,16 @@ import { tags as t } from "@lezer/highlight";
 import { useAppStore, getStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
 import { focusEditorCommands, registerEditorCommands, type EditorCommandTarget } from "../lib/editorCommands";
+import {
+  joinWithLineBreaks,
+  needsLineBreakTracking,
+  restoreLineBreakRun,
+  trackLineBreaks,
+  updateLineBreaks,
+  type LineBreak,
+  type LineBreakEdit,
+  type TrackedLineBreaks,
+} from "../lib/lineEndings";
 
 // Token colors are CSS variables (--syn-*) set per theme in styles/tokens.css, so the
 // source view never falls back to CodeMirror's fixed default palette.
@@ -60,12 +71,66 @@ function activityFromUpdate(update: Parameters<Parameters<typeof EditorView.upda
   return { snippet: snippet.trim(), lines: { added, removed }, tasksUnchanged };
 }
 
+// CodeMirror stores every line break as one "\n". For a file with any CR this
+// field keeps the break each line had on disk, so the text handed to the save
+// path rewrites only the breaks an edit touched (policy: lib/lineEndings.ts).
+// LF files never carry it and pay nothing.
+// Undo puts the removed lines back with their own breaks: history stores the
+// removed run and replays it with the inverted change. `pos` is where the run
+// is reinserted. When quick edits are grouped, history maps a later step's run
+// through the earlier step's reinsertion at the same point; the earlier text
+// comes first there, so the later run maps to after it (assoc 1).
+const restoreLineBreaks = StateEffect.define<{ pos: number; breaks: readonly LineBreak[] }>({
+  map: (value, mapping) => ({ pos: mapping.mapPos(value.pos, 1), breaks: value.breaks }),
+});
+const lineBreaksField = StateField.define<TrackedLineBreaks>({
+  create: () => trackLineBreaks(""),
+  update(value, tr) {
+    let next = value;
+    if (tr.docChanged) {
+      const old = tr.startState.doc;
+      const edits: LineBreakEdit[] = [];
+      tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+        edits.push({ fromLine: old.lineAt(fromA).number, toLine: old.lineAt(toA).number, insertedBreaks: inserted.lines - 1 });
+      });
+      next = updateLineBreaks(next, edits);
+    }
+    for (const effect of tr.effects) {
+      if (!effect.is(restoreLineBreaks)) continue;
+      const line = tr.newDoc.lineAt(Math.min(effect.value.pos, tr.newDoc.length)).number;
+      next = restoreLineBreakRun(next, line, effect.value.breaks);
+    }
+    return next;
+  },
+  provide: () => invertedEffects.of((tr) => {
+    const tracked = tr.startState.field(lineBreaksField, false);
+    if (!tracked || !tr.docChanged) return [];
+    const old = tr.startState.doc;
+    const effects: StateEffect<{ pos: number; breaks: readonly LineBreak[] }>[] = [];
+    tr.changes.iterChanges((fromA, toA) => {
+      const fromLine = old.lineAt(fromA).number;
+      const toLine = old.lineAt(toA).number;
+      if (toLine > fromLine) {
+        effects.push(restoreLineBreaks.of({ pos: fromA, breaks: tracked.breaks.slice(fromLine - 1, toLine - 1) }));
+      }
+    });
+    return effects;
+  }),
+});
+
+/** The document as file text, with its original line breaks. */
+function docText(state: EditorState): string {
+  const tracked = state.field(lineBreaksField, false);
+  if (!tracked) return state.sliceDoc();
+  if (!tracked.odd) return state.doc.sliceString(0, state.doc.length, tracked.dominant);
+  return joinWithLineBreaks(state.doc.iterLines(), tracked);
+}
+
 function makeState(doc: string, onUserEdit: (text: string, activity: EditorActivityChange) => void, editable = true): EditorState {
   return EditorState.create({
     doc,
     extensions: [
-      ...(doc.includes("\r\n") && !/\r(?!\n)/.test(doc) && !doc.replace(/\r\n/g, "").includes("\n")
-        ? [EditorState.lineSeparator.of("\r\n")] : []),
+      ...(needsLineBreakTracking(doc) ? [lineBreaksField.init(() => trackLineBreaks(doc))] : []),
       basicSetup,
       // Find and replace (Mod-F) opens above the note, like other editors.
       search({ top: true }),
@@ -77,7 +142,7 @@ function makeState(doc: string, onUserEdit: (text: string, activity: EditorActiv
       editableCompartment.of(EditorView.editable.of(editable)),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
-        onUserEdit(u.state.sliceDoc(), activityFromUpdate(u));
+        onUserEdit(docText(u.state), activityFromUpdate(u));
       }),
     ],
   });
@@ -158,7 +223,7 @@ export function Editor() {
     const initial = sessionsRef.current.get(initialKey);
     const view = new EditorView({
       parent: hostRef.current,
-      state: initial?.state.sliceDoc() === getStore().content ? initial.state : makeState(getStore().content, onUserEditRef.current),
+      state: initial && docText(initial.state) === getStore().content ? initial.state : makeState(getStore().content, onUserEditRef.current),
     });
     if (initial) view.scrollDOM.scrollTop = initial.scrollTop;
     viewRef.current = view;
@@ -202,14 +267,14 @@ export function Editor() {
     // (Identity check: the store holds the exact string we handed it.)
     if (!pathChanged && content === lastEditorTextRef.current) return;
     const next = content;
-    const cur = view.state.sliceDoc();
+    const cur = docText(view.state);
     if (pathChanged) {
       const oldKey = docKeyRef.current;
       docKeyRef.current = key;
       if (previousPath) rememberSession(oldKey, view.state, view.scrollDOM.scrollTop);
       const cached = sessionsRef.current.get(key);
       lastEditorTextRef.current = null;
-      if (cached && cached.state.sliceDoc() === next) {
+      if (cached && docText(cached.state) === next) {
         view.setState(cached.state);
         view.scrollDOM.scrollTop = cached.scrollTop;
       } else {

@@ -50,18 +50,23 @@ function dirname(path: string): string {
   return i >= 0 ? clean.slice(0, i) : "";
 }
 
+/** Absolute root of a slash-normalized path: `//server/share` (UNC), `C:` or `/`. */
+const PATH_ROOT_RE = /^(?:\/\/[^/]+\/[^/]+|[a-zA-Z]:|\/)/;
+
+/** Resolve `rel` against `dir`. `..` never climbs above a UNC share, drive or `/`. */
 function joinRelative(dir: string, rel: string): string {
   const normalized = rel.replace(/\\/g, "/");
   const base = dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const absolute = base.startsWith("/");
-  const parts = `${base}/${normalized}`.split("/");
+  const root = PATH_ROOT_RE.exec(base)?.[0] ?? "";
+  const parts = `${base.slice(root.length)}/${normalized}`.split("/");
   const out: string[] = [];
   for (const part of parts) {
     if (!part || part === ".") continue;
     if (part === "..") out.pop();
     else out.push(part);
   }
-  return (absolute ? "/" : "") + out.join("/");
+  if (root === "/") return `/${out.join("/")}`;
+  return root ? `${root}/${out.join("/")}` : out.join("/");
 }
 
 const URL_ATTR_ENTITIES: Record<string, string> = { "&amp;": "&", "&#38;": "&", "&quot;": '"', "&#39;": "'" };

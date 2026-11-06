@@ -109,6 +109,24 @@ describe("saved webpage HTML rewriting", () => {
     expect(localSavedHtmlAssetPath("https://site.test/app.css", "/vault/web/Page.html")).toBeNull();
   });
 
+  it("keeps UNC and drive roots when resolving saved assets", () => {
+    expect(localSavedHtmlAssetPath("./Page_files/app.css", "//server.example/share/vault/web/Page.html")).toBe(
+      "//server.example/share/vault/web/Page_files/app.css"
+    );
+    expect(localSavedHtmlAssetPath("Page_files\\app.css", "\\\\server.example\\share\\Page.html")).toBe(
+      "//server.example/share/Page_files/app.css"
+    );
+    // `..` never climbs above the share or the drive.
+    expect(localSavedHtmlAssetPath("../../../../x.css", "//server.example/share/vault/Page.html")).toBe(
+      "//server.example/share/x.css"
+    );
+    expect(localSavedHtmlAssetPath("../../x.css", "C:/vault/Page.html")).toBe("C:/x.css");
+    expect(localSavedHtmlAssetPath("../../x.css", "/vault/Page.html")).toBe("/x.css");
+    expect(
+      savedHtmlInlineAssetPath("app.css", "//server.example/share/vault/web/Page.html", "style", "//server.example/share/vault")
+    ).toBe("//server.example/share/vault/web/app.css");
+  });
+
   it("never inlines assets outside the saved document's folder", async () => {
     const doc = "/vault/web/saved/page.html";
     expect(savedHtmlInlineAssetPath("../../Private/journal.css", doc, "style")).toBeNull();

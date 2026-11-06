@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../store";
+import { IS_MAC } from "../lib/hotkeys";
+import { installTabStripWheel } from "../lib/tabStripWheel";
 
 /** Open-document tab strip with an overflow menu; drag a tab out to pop it into its own window. */
 export function Tabs() {
@@ -21,6 +23,14 @@ export function Tabs() {
     if (!enableTabs) return;
     activeTabRef.current?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }, [enableTabs, openTabs, activePath]);
+
+  // The strip hides its scrollbar; off macOS a mouse wheel scrolls it sideways.
+  const hasTabs = openTabs.length > 0;
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!enableTabs || !hasTabs || !strip || IS_MAC) return;
+    return installTabStripWheel(strip);
+  }, [enableTabs, hasTabs]);
 
   // Close the overflow menu on an outside click.
   useEffect(() => {

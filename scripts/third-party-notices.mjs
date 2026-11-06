@@ -23,6 +23,9 @@ function licenseFiles(dir, extra = []) {
   }
   return files.sort();
 }
+// One fixed collation, so the generated order never follows the OS locale
+// (Czech, for example, sorts "ch" after "h"). It matches the published file.
+const byName = new Intl.Collator('en-US').compare;
 function notice(name, version, license, files, base, fallback) {
   if (!license) throw new Error(`No license metadata: ${name}@${version}`);
   if (!files.length && !fallback) throw new Error(`No required license material: ${name}@${version}`);
@@ -49,7 +52,7 @@ function npmNotices() {
   const lock = JSON.parse(npmLock);
   const entries = Object.entries(lock.packages).filter(([path, meta]) =>
     path.startsWith('node_modules/') && !meta.dev && !meta.optional);
-  return entries.sort(([a], [b]) => a.localeCompare(b)).map(([path, meta]) => {
+  return entries.sort(([a], [b]) => byName(a, b)).map(([path, meta]) => {
     const dir = join(root, path);
     const pkg = JSON.parse(readFileSync(join(dir, 'package.json')));
     if (pkg.version !== meta.version) throw new Error(`Installed version differs from lock: ${path}`);
@@ -91,7 +94,7 @@ function cargoNotices() {
     }
   }
   const known = /\b(MIT|Apache-2\.0|BSD-2-Clause|BSD-3-Clause|ISC|Zlib|Unicode-3\.0|MPL-2\.0|Unlicense|0BSD)\b/i;
-  return [...selected].sort(([a], [b]) => a.localeCompare(b)).map(([, {pkg, platforms}]) => {
+  return [...selected].sort(([a], [b]) => byName(a, b)).map(([, {pkg, platforms}]) => {
     const dir = dirname(pkg.manifest_path);
     const files = licenseFiles(dir);
     if (pkg.license_file) {

@@ -6,6 +6,7 @@ import type { VaultFile } from '../types';
 const mock = vi.hoisted(() => ({
   invoke: vi.fn(), apply: vi.fn(), renderError: 'Rendering failed', undo: vi.fn(), redo: vi.fn(), dirty: false,
   bytes: new TextEncoder().encode('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF'),
+  viewports: new Map<number, unknown>(), canvases: new Map<number, HTMLCanvasElement>(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }));
 vi.mock('../lib/vault', () => ({ IN_TAURI: true, urlForPath: (path: string) => `asset://${path}` }));
@@ -14,7 +15,7 @@ vi.mock('./usePdfEditor', () => ({ usePdfEditor: () => ({
   bytes: mock.bytes,
   pageCount: 1, scale: 1, renderScale: 1, setScale: vi.fn(), dirty: mock.dirty,
   status: '', renderError: mock.renderError, apply: mock.apply, loadFailed: false, fields: [], textRuns: [{page:0,text:'Original',left:20,top:20,width:80,height:12,pdfX:20,pdfY:250,pdfWidth:80,pdfHeight:12}],
-  firstPagePainted: false, viewports: { current: new Map() }, canvasRefs: { current: new Map() },
+  firstPagePainted: false, viewports: { current: mock.viewports }, canvasRefs: { current: mock.canvases },
   pageSizes: new Map(), bindCanvas: vi.fn(), setOnscreenPages: vi.fn(),
   undo: mock.undo, redo: mock.redo, canUndo: true, canRedo: true,
 }) }));
@@ -24,6 +25,7 @@ afterEach(() => {
   vi.unstubAllGlobals(); mock.invoke.mockReset(); mock.undo.mockReset(); mock.redo.mockReset();
   mock.dirty = false; mock.renderError = 'Rendering failed'; mock.apply.mockReset();
   mock.bytes = new TextEncoder().encode('%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF');
+  mock.viewports.clear(); mock.canvases.clear();
 });
 const file: VaultFile = { path: '/vault/sample.pdf', relPath: 'sample.pdf', name: 'sample', ext: 'pdf', isMarkdown: false };
 
@@ -191,4 +193,25 @@ it.each([
       expect(create).not.toHaveBeenCalled();
     }
   } finally { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); }
+});
+
+it('places a click by the page box, not the bitmap, when the bitmap is scaled for the display', async () => {
+  mock.invoke.mockResolvedValue(undefined);
+  mock.renderError = '';
+  const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
+  try {
+    await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
+    await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent?.includes('Edit PDF'))!.click());
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Add text"]')!.click());
+    // A 300×200 CSS page drawn into a 1.5× bitmap (150% display scaling).
+    const canvas = host.querySelector<HTMLCanvasElement>('[data-testid=pdf-page-canvas]')!;
+    canvas.width = 450; canvas.height = 300;
+    canvas.getBoundingClientRect = () => ({ left: 10, top: 20, width: 300, height: 200, right: 310, bottom: 220, x: 10, y: 20, toJSON: () => ({}) });
+    mock.canvases.set(0, canvas);
+    mock.viewports.set(0, { width: 300, height: 200, convertToPdfPoint: (x: number, y: number) => [x, 200 - y] });
+    await act(async () => canvas.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 110, clientY: 70 })));
+    const input = host.querySelector<HTMLInputElement>('.pdf-text-input')!;
+    expect(input.style.left).toBe('100px');
+    expect(input.style.top).toBe('50px');
+  } finally { await act(async () => root.unmount()); host.remove(); }
 });

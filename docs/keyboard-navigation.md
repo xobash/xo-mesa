@@ -61,8 +61,16 @@ diagnostics, recovery storage, revision history, Pi, Deep Research, settings,
 graph, themes, daily notes, and opening a vault. It also has "Find and replace
 in current note" (`Ctrl/Cmd+F` in the editor) and "Insert template…".
 
+Shortcut hints show `Ctrl`/`Shift` names on Windows and Linux and `⌘`/`⇧`
+glyphs on macOS. Off macOS, `Ctrl+S` saves pending edits at once and the
+status bar says what it saved (inside the Pi terminal Pi also receives
+`Ctrl+S`), and AltGr
+(Ctrl+Alt) never triggers a Ctrl shortcut.
+
 Settings → Hotkeys assigns your own shortcut to any of these commands; the
-palette shows it beside the command. See [note-features.md](note-features.md)
+palette shows it beside the command. On Windows and Linux, custom Ctrl+letter
+shortcuts do not fire inside the Pi terminal, so readline keeps them; other
+shortcuts, and every shortcut on macOS, still work there. See [note-features.md](note-features.md)
 for the rules and the reserved shortcuts.
 
 ## Overlay Calendar

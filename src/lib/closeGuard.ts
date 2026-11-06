@@ -18,7 +18,7 @@ export async function flushBeforeClose(flush: () => Promise<void>): Promise<void
 /**
  * A verified flush grants one close request, unless the user explicitly abandons edits.
  * With `hide`, the window hides after the flush instead of closing, and every
- * later close request flushes again (the app keeps running in the menu bar).
+ * later close request flushes again (the app keeps running behind its Dock or tray icon).
  */
 export function installCloseGuard(window: CloseWindow, flush: () => Promise<void>, pending: () => boolean, error: (message: string) => void, onBlocked?: BlockedClose, hide?: () => Promise<void>): () => void {
   let disposed = false, flushing = false, authorized = false, forced = false;
@@ -52,6 +52,14 @@ export function installCloseGuard(window: CloseWindow, flush: () => Promise<void
   }).then(stop => { if (disposed) stop(); else unlisten = stop; })
     .catch(reason => { if (!disposed) error(`Close safety failed to start: ${String(reason)}`); });
   return () => { disposed = true; unlisten?.(); };
+}
+
+/** After main's verified close flush: hide it only when native code says the
+ * user can still see Mesa and reach Quit (Dock or a tray icon); otherwise
+ * quit, so no invisible Mesa keeps running. An unanswered question quits. */
+export async function hideOrQuitMain(canHide: () => Promise<boolean>, hide: () => Promise<void>, quit: () => Promise<void>): Promise<void> {
+  const hides = await canHide().catch(() => false);
+  await (hides ? hide() : quit());
 }
 
 export interface PendingEditState {

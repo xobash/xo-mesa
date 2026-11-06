@@ -152,7 +152,7 @@ export function CommandPalette() {
               >
                 <span>{c.label}</span>
                 {(hotkeys?.[c.id] || c.hint) && (
-                  <span className="palette-hint">{hotkeys?.[c.id] ? formatHotkey(hotkeys[c.id]) : c.hint}</span>
+                  <span className="palette-hint">{formatHotkey(hotkeys?.[c.id] || c.hint || "")}</span>
                 )}
               </button>
             ))

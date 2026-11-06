@@ -20,3 +20,10 @@ it('keeps the windowed HTML source sized by its host in block-level detached win
   expect(declarations('.doc-window-body > .html-view').height).toBe('100%');
   expect(declarations('.html-view')).toMatchObject({ display: 'flex', 'flex-direction': 'column', 'min-height': '0' });
 });
+
+it('gives every monospace stack a Windows font before the generic family', () => {
+  // Without one, Windows falls back to Courier New in Deep Research and code views.
+  const stacks = [...css.matchAll(/font(?:-family)?\s*:[^;{}]*\bmonospace\b[^;{}]*/g)].map((match) => match[0]);
+  expect(stacks.length).toBeGreaterThan(0);
+  for (const stack of stacks) expect(stack, stack).toMatch(/Consolas|var\(--mono\)/);
+});

@@ -733,10 +733,17 @@ async fn fetch_manifest_with(
         return Err(format!("Device responded {}.", status.as_u16()));
     }
     let bytes = read_capped(res, MAX_MANIFEST_WIRE_BYTES, "Peer manifest").await?;
-    let body: ManifestBody = serde_json::from_slice(&bytes)
+    let mut body: ManifestBody = serde_json::from_slice(&bytes)
         .map_err(|_| "That address isn't sharing a Mesa vault.".to_string())?;
-    validate_remote_manifest(&body.files)?;
+    accept_remote_manifest(&mut body.files)?;
     Ok(body)
+}
+
+/// Older peers still list Windows shell files; skip those entries (never a
+/// download or a deletion) and validate the rest.
+fn accept_remote_manifest(files: &mut Vec<ManifestEntry>) -> Result<(), String> {
+    files.retain(|file| !sync_core::is_retired_shell_rel(&file.rel));
+    validate_remote_manifest(files)
 }
 
 const MAX_MANIFEST_FILES: usize = 1_000_000;
@@ -804,9 +811,10 @@ async fn read_journal_response(
     response: reqwest::Response,
 ) -> Result<sync_core::SyncJournal, String> {
     let body = read_capped(response, sync_core::MAX_JOURNAL_WIRE_BYTES, "Peer journal").await?;
-    let journal = serde_json::from_slice(&body)
+    let mut journal = serde_json::from_slice(&body)
         .map_err(|_| "Peer returned an invalid sync journal".to_string())?;
-    sync_core::validate_journal(&journal, "peer journal").map_err(|error| error.to_string())?;
+    sync_core::accept_peer_journal(&mut journal, "peer journal")
+        .map_err(|error| error.to_string())?;
     Ok(journal)
 }
 
@@ -2064,41 +2072,113 @@ pub fn sync_discovery_start(
         fingerprint: fingerprint.clone(),
     };
     let handle = std::thread::spawn(move || {
-        let dest = format!("255.255.255.255:{}", DISCOVERY_PORT);
-        let payload = match serde_json::to_vec(&own) {
-            Ok(v) => v,
-            Err(_) => return,
+        let Ok(payload) = serde_json::to_vec(&own) else {
+            return;
         };
-        let mut last_announce = Instant::now() - Duration::from_secs(10);
-        let mut buf = [0u8; 4096];
-        let mut filter = DiscoveryFilter::new(fingerprint);
-        while running_thread.load(Ordering::Relaxed) {
-            if last_announce.elapsed() >= Duration::from_secs(2) {
-                let _ = socket.send_to(&payload, &dest);
-                last_announce = Instant::now();
-            }
-
-            match socket.recv_from(&mut buf) {
-                Ok((n, from)) => {
-                    let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..n]) else {
-                        continue;
-                    };
-                    if let Some(packet) = filter.admit(packet, from.ip(), Instant::now()) {
-                        let _ = app.emit(DISCOVERY_EVENT, packet);
-                    }
-                }
-                Err(e)
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(_) => break,
-            }
-        }
+        run_discovery_loop(
+            &socket,
+            &running_thread,
+            &payload,
+            DiscoveryFilter::new(fingerprint),
+            |packet| {
+                let _ = app.emit(DISCOVERY_EVENT, packet);
+            },
+            |pause| pause_while_running(&running_thread, pause),
+        );
     });
     *guard = Some(DiscoveryState {
         running,
         handle: Some(handle),
     });
     Ok(())
+}
+
+/// The discovery socket operations, so the receive loop runs against injected
+/// error sequences in tests.
+trait DiscoverySocket {
+    fn announce(&self, payload: &[u8]);
+    fn receive(&self, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)>;
+}
+
+impl DiscoverySocket for std::net::UdpSocket {
+    fn announce(&self, payload: &[u8]) {
+        let _ = self.send_to(payload, (std::net::Ipv4Addr::BROADCAST, DISCOVERY_PORT));
+    }
+    fn receive(&self, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)> {
+        self.recv_from(buf)
+    }
+}
+
+const DISCOVERY_ANNOUNCE_EVERY: Duration = Duration::from_secs(2);
+const DISCOVERY_ERROR_PAUSE_MIN: Duration = Duration::from_millis(10);
+const DISCOVERY_ERROR_PAUSE_MAX: Duration = Duration::from_secs(1);
+
+/// Pause before the next receive after `consecutive` receive errors.
+///
+/// A receive error never ends discovery: Windows reports an oversized datagram
+/// (WSAEMSGSIZE, 10040) or an ICMP port-unreachable reply to an earlier
+/// broadcast (WSAECONNRESET, 10054) as a receive error on a healthy socket.
+/// The pause doubles per consecutive error up to one second, so a persistent
+/// error costs at most one wakeup per second instead of a busy loop.
+fn discovery_error_pause(consecutive: u32) -> Duration {
+    DISCOVERY_ERROR_PAUSE_MIN
+        .saturating_mul(1u32 << consecutive.saturating_sub(1).min(16))
+        .min(DISCOVERY_ERROR_PAUSE_MAX)
+}
+
+/// Sleep in short slices so `sync_discovery_stop`, which joins this thread
+/// while holding the discovery lock, never waits out a whole back-off pause.
+fn pause_while_running(running: &AtomicBool, pause: Duration) {
+    const SLICE: Duration = Duration::from_millis(50);
+    let until = Instant::now() + pause;
+    while running.load(Ordering::Relaxed) {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        std::thread::sleep(left.min(SLICE));
+    }
+}
+
+fn run_discovery_loop(
+    socket: &impl DiscoverySocket,
+    running: &AtomicBool,
+    payload: &[u8],
+    mut filter: DiscoveryFilter,
+    mut emit: impl FnMut(DiscoveryPacket),
+    mut pause: impl FnMut(Duration),
+) {
+    let mut last_announce: Option<Instant> = None;
+    let mut buf = [0u8; 4096];
+    let mut consecutive_errors = 0u32;
+    while running.load(Ordering::Relaxed) {
+        if last_announce.is_none_or(|at| at.elapsed() >= DISCOVERY_ANNOUNCE_EVERY) {
+            socket.announce(payload);
+            last_announce = Some(Instant::now());
+        }
+        match socket.receive(&mut buf) {
+            Ok((n, from)) => {
+                consecutive_errors = 0;
+                let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..n]) else {
+                    continue;
+                };
+                if let Some(packet) = filter.admit(packet, from.ip(), Instant::now()) {
+                    emit(packet);
+                }
+            }
+            // The socket's read timeout paces an idle loop.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                consecutive_errors = 0;
+            }
+            Err(_) => {
+                consecutive_errors = consecutive_errors.saturating_add(1);
+                pause(discovery_error_pause(consecutive_errors));
+            }
+        }
+    }
 }
 
 /// Received announcements become at most one event per device per refresh

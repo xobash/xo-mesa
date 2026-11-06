@@ -2,6 +2,9 @@
 pub(crate) mod file_metadata;
 #[path = "sync_fs.rs"]
 mod filesystem;
+#[cfg_attr(not(windows), allow(dead_code))]
+#[path = "platform_fs.rs"]
+pub(crate) mod platform_fs;
 pub use filesystem::*;
 
 #[path = "sync_journal.rs"]
@@ -71,8 +74,16 @@ impl WindowsParentGuard {
                 result => result?,
             };
             let metadata = handle.metadata()?;
-            if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
+            // Cloud placeholders (OneDrive) are real directories; links are not.
+            if !metadata.is_dir()
+                || !platform_fs::handle_is_in_place(&handle, metadata.file_attributes())?
+            {
                 return Err(invalid_data("sync ancestor is not a real directory"));
+            }
+            // Every Windows use of recovery storage passes here: hide a new or
+            // a still-visible `.mesa-trash` the way the leading dot hides it elsewhere.
+            if platform_fs::needs_hiding(component.as_os_str(), metadata.file_attributes()) {
+                platform_fs::hide_control_entry(&path);
             }
             handles.push(handle);
         }
@@ -99,7 +110,9 @@ pub fn open_file_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)?;
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        if !metadata.is_file()
+            || !platform_fs::handle_is_in_place(&file, metadata.file_attributes())?
+        {
             return Err(invalid_data("sync input is not a regular file"));
         }
         Ok(file)
@@ -221,9 +234,10 @@ fn hash_open_file_until(
 
 /// Files/dirs sync ignores. Matches the frontend vault walker
 /// (`src/lib/vault.ts` `walk`): dot-prefixed names (covers `.git`,
-/// `.obsidian`, `.DS_Store`) and `node_modules`.
+/// `.obsidian`, `.DS_Store`), `node_modules` and Windows shell artifacts
+/// (`desktop.ini`, `Thumbs.db`, `$RECYCLE.BIN`, `System Volume Information`).
 pub fn ignored_name(name: &str) -> bool {
-    name.starts_with('.') || name == "node_modules"
+    name.starts_with('.') || name == "node_modules" || platform_fs::is_windows_shell_artifact(name)
 }
 
 /// Peer-facing sync path policy: everything `safe_join` accepts, minus any
@@ -235,6 +249,21 @@ pub fn is_peer_rel(rel: &str) -> bool {
         && !rel
             .split('/')
             .any(|seg| ignored_name(seg) || peer_reserved_name(seg))
+}
+
+/// A path an older Mesa may still exchange: otherwise valid, but naming a
+/// Windows shell file (`desktop.ini`, `Thumbs.db`, ...). Current peers drop such
+/// entries instead of refusing the whole manifest or journal, so they never
+/// become downloads, uploads or deletions.
+pub fn is_retired_shell_rel(rel: &str) -> bool {
+    let shell = |seg: &str| platform_fs::is_windows_shell_artifact(seg);
+    safe_join(Path::new("."), rel).is_some()
+        && rel.split('/').any(shell)
+        // Every other segment must be one peers accept, so a hidden or
+        // reserved path is still refused rather than dropped.
+        && rel
+            .split('/')
+            .all(|seg| shell(seg) || !(ignored_name(seg) || peer_reserved_name(seg)))
 }
 
 /// Names a local walk would include but peers refuse (`is_peer_rel`). The
@@ -430,6 +459,14 @@ fn walk(
                 return false;
             }
         } else if ftype.is_file() {
+            // An online-only cloud file is reported, never hashed or omitted.
+            if platform_fs::path_is_not_downloaded(&path) {
+                errors.push((
+                    rel_for_error(root, &path),
+                    platform_fs::NOT_DOWNLOADED_SYNC_ERROR.to_string(),
+                ));
+                continue;
+            }
             if let Ok(rel) = path.strip_prefix(root) {
                 let rel = rel.to_string_lossy().replace('\\', "/");
                 out.push((rel, path));

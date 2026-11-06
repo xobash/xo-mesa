@@ -1,6 +1,6 @@
 // Prepend the Rust user bin directory and launch the project-local Tauri CLI.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,15 @@ import { WINDOWS_TARGET } from "./tauri-targets.mjs";
 const env = { ...process.env };
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriCli = join(projectRoot, "node_modules", "@tauri-apps", "cli", "tauri.js");
+// Dev and release builds use the exact reviewed Node; npm only warns (EBADENGINE).
+const nodePin = existsSync(join(projectRoot, ".node-version")) ? readFileSync(join(projectRoot, ".node-version"), "utf8").trim() : "";
+if (process.versions.node !== nodePin) {
+  console.error(
+    `Mesa needs Node.js ${nodePin || "from .node-version"}, but this is Node.js ${process.versions.node}. ` +
+      "Run run.cmd (Windows) or run.sh, which install the pinned Node.js, or switch to that version and retry."
+  );
+  process.exit(1);
+}
 const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
 
 function prependPath(dir) {

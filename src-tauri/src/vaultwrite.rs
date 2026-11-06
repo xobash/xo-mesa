@@ -9,6 +9,8 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 
+use crate::sync_core::platform_fs;
+
 // Destructive operations exclude every ordinary save; unrelated saves may overlap.
 pub(crate) static WRITE_LOCK: RwLock<()> = RwLock::new(());
 static SAVE_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
@@ -53,7 +55,13 @@ pub enum ExpectedCurrent {
     Hash { sha256: String, size: u64 },
 }
 
+/// Hash a file. On Windows a short antivirus or indexer lock is retried, so a
+/// published save is never reported as failed only because read-back raced it.
 fn file_hash(path: &Path) -> io::Result<([u8; 32], u64)> {
+    platform_fs::retry_transient_lock(|| file_hash_once(path))
+}
+
+fn file_hash_once(path: &Path) -> io::Result<([u8; 32], u64)> {
     let mut file = File::open(path)?;
     if !file.metadata()?.is_file() {
         return Err(io::Error::other("vault target is not a regular file"));
@@ -213,25 +221,33 @@ fn replace_preserving(from: &Path, to: &Path, displaced: &Path) -> io::Result<()
             .collect::<Vec<u16>>()
     };
     let (from_wide, to_wide, displaced_wide) = (wide(from), wide(to), wide(displaced));
-    let result = unsafe {
-        ReplaceFileW(
-            to_wide.as_ptr(),
-            from_wide.as_ptr(),
-            displaced_wide.as_ptr(),
-            0,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
+    let replace_once = || {
+        // SAFETY: all three paths are NUL-terminated and outlive the call.
+        let result = unsafe {
+            ReplaceFileW(
+                to_wide.as_ptr(),
+                from_wide.as_ptr(),
+                displaced_wide.as_ptr(),
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        if result == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     };
-    if result == 0 {
-        Err(restore_unmoved_replacement(
-            io::Error::last_os_error(),
-            to,
-            displaced,
-        ))
-    } else {
-        Ok(())
-    }
+    // Sharing, lock, access and ERROR_UNABLE_TO_REMOVE_REPLACED failures leave
+    // both files under their original names. Retry only while that is still
+    // true: a backup that already exists means the OS moved something.
+    let result = platform_fs::retry_with(
+        replace_once,
+        |error| platform_fs::is_transient_lock(error) && fs::symlink_metadata(displaced).is_err(),
+        std::thread::sleep,
+    );
+    result.map_err(|error| restore_unmoved_replacement(error, to, displaced))
 }
 
 /// ReplaceFileW's ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 leaves the original only
@@ -280,6 +296,35 @@ fn write_atomic_at_commit(
     write_atomic_with_replace(target, data, expected, at_commit, replace_preserving)
 }
 
+/// A read-only target cannot be replaced on Windows; say so instead of a bare
+/// "Access is denied".
+const READ_ONLY_TARGET: &str = "read-only: This file is marked read-only, so Mesa cannot save it. Your edits are still open. Clear the file's Read-only attribute in its Properties, then save again.";
+
+fn refuse_read_only_target(read_only: bool) -> Result<(), String> {
+    if read_only {
+        Err(READ_ONLY_TARGET.into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Windows refuses to replace a read-only file. Unix replacement swaps
+/// directory entries and keeps working for a mode-0444 file, so only Windows checks.
+fn target_is_read_only(target: &Path) -> bool {
+    cfg!(windows) && fs::symlink_metadata(target).is_ok_and(|meta| meta.permissions().readonly())
+}
+
+/// Remove the retained original after a verified publication. The save has
+/// already succeeded, so a cleanup failure must not be reported as a failed
+/// save; the leftover keeps a recognised rescue name that recovery lists.
+fn discard_displaced(displaced: &Path, remove: impl Fn(&Path) -> io::Result<()>) {
+    match platform_fs::retry_transient_lock(|| remove(displaced)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!("[mesa] saved; previous version kept as a recovery copy: {error}"),
+    }
+}
+
 fn replacement_error(error: io::Error) -> String {
     #[cfg(target_os = "linux")]
     let unsupported = matches!(
@@ -312,6 +357,7 @@ fn write_atomic_with_replace(
     }
     let initial = observed(target)?;
     matches_expected(initial, expected)?;
+    refuse_read_only_target(initial.is_some() && target_is_read_only(target))?;
     let temporary = artifact_path(target, "save")?;
     let displaced = artifact_path(target, "rescue")?;
     let candidate = (Sha256::digest(data).into(), data.len() as u64);
@@ -353,6 +399,7 @@ fn write_atomic_with_replace(
                 return Err("Current file bytes changed during the verified write.".into());
             }
         } else {
+            // The no-replace primitive retries short Windows locks itself.
             super::sync_core::move_file_no_replace(&temporary, target)
                 .map_err(|e| format!("cannot publish vault file: {e}"))?;
             sync_parent(target).map_err(|e| e.to_string())?;
@@ -375,9 +422,9 @@ fn write_atomic_with_replace(
         return Err(error);
     }
     if displaced.exists() {
-        fs::remove_file(&displaced)
-            .map_err(|e| format!("saved, but rescue cleanup failed: {e}"))?;
-        sync_parent(target).map_err(|e| e.to_string())?;
+        discard_displaced(&displaced, |path| fs::remove_file(path));
+        // The publication was already flushed; this only persists the cleanup.
+        let _ = sync_parent(target);
     }
     Ok(())
 }
@@ -723,6 +770,64 @@ mod tests {
                 .contains("unsupported-filesystem:"));
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn published_save_succeeds_when_rescue_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root ignores directory permissions
+        }
+        let dir = test_folder("cleanup-fails");
+        let target = dir.join("note.md");
+        fs::write(&target, b"old").unwrap();
+        let locked = dir.clone();
+        let result = write_atomic_with_replace(
+            &target,
+            b"new",
+            &ExpectedCurrent::Any,
+            || {},
+            |from, to, displaced| {
+                replace_preserving(from, to, displaced)?;
+                // The rescue can no longer be removed, as when another process
+                // holds it on Windows.
+                fs::set_permissions(&locked, fs::Permissions::from_mode(0o555))
+            },
+        );
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        // The new bytes were published and read back, so the save succeeded.
+        assert_eq!(result, Ok(()));
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        let rescues: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".mesa-rescue-"))
+            .collect();
+        assert_eq!(rescues.len(), 1, "the old version stays recoverable");
+        assert_eq!(fs::read(dir.join(&rescues[0])).unwrap(), b"old");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn read_only_targets_get_a_clear_message() {
+        let error = refuse_read_only_target(true).unwrap_err();
+        assert!(error.starts_with("read-only:"));
+        assert!(error.contains("edits are still open"));
+        assert!(refuse_read_only_target(false).is_ok());
+        // Only Windows refuses read-only replacement; Unix saves keep working.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = test_folder("read-only");
+            let target = dir.join("note.md");
+            fs::write(&target, b"old").unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+            assert!(!target_is_read_only(&target));
+            write_atomic(&target, b"new", &ExpectedCurrent::Any).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), b"new");
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

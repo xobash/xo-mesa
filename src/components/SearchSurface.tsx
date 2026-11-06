@@ -18,6 +18,7 @@ import {
 } from "../lib/search";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { PreviewCard } from "./PreviewCard";
+import { describeUnindexedReasons } from "../lib/indexDisclosure";
 
 /** Wall time one scan slice may take. Comfortably inside a frame, so typing and
  *  scrolling keep their budget while the pass runs. */
@@ -462,7 +463,11 @@ export function SearchSurface({
             <div className="palette-empty" role="status">
               Search covers file names now. {unindexedTextFiles.toLocaleString()} text{" "}
               {unindexedTextFiles === 1 ? "file is" : "files are"} matched by name only
-              ({skippedTextFiles.toLocaleString()} over the 8 MiB limit, {failedTextFiles.toLocaleString()} read failures).
+              ({describeUnindexedReasons({
+                skipped: skippedTextFiles,
+                offline: Math.max(0, unindexedTextFiles - skippedTextFiles - failedTextFiles),
+                failed: failedTextFiles,
+              })}).
             </div>
           )}
         </div>

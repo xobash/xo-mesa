@@ -1,6 +1,6 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,7 @@ function fakeRoot(body) {
   cpSync(source, join(root, "scripts", "dev.mjs"));
   cpSync(join(scripts, "tauri-targets.mjs"), join(root, "scripts", "tauri-targets.mjs"));
   writeFileSync(join(root, "node_modules", "@tauri-apps", "cli", "tauri.js"), body);
+  writeFileSync(join(root, ".node-version"), `${process.versions.node}\r\n`);
   return root;
 }
 
@@ -33,6 +34,18 @@ function runFakeCli(body) {
 test("dev launcher returns failure when Tauri exits by signal", () => {
   const result = runFakeCli('process.kill(process.pid, "SIGTERM");');
   assert.equal(result.status, 1);
+});
+
+test("dev launcher refuses a Node.js other than the .node-version pin", () => {
+  const root = fakeRoot('require("node:fs").writeFileSync(require("node:path").join(__dirname, "ran"), "");');
+  writeFileSync(join(root, "node_modules", "@tauri-apps", "cli", "package.json"), '{"type":"commonjs"}');
+  for (const pin of ["22.22.2", ""]) {
+    writeFileSync(join(root, ".node-version"), pin);
+    const result = spawnSync(process.execPath, [join(root, "scripts", "dev.mjs"), "build"], { encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`Mesa needs Node\\.js .*this is Node\\.js ${process.versions.node.replaceAll(".", "\\.")}`));
+  }
+  assert.equal(existsSync(join(root, "node_modules", "@tauri-apps", "cli", "ran")), false, "Tauri ran under the wrong Node");
 });
 
 test("dev launcher preserves a successful Tauri exit", () => {

@@ -10,6 +10,8 @@ import {
   type AgentContext,
 } from "../lib/agent";
 import { IN_TAURI } from "../lib/vault";
+import { IS_MAC } from "../lib/hotkeys";
+import { copyTerminalSelection, terminalClipboardKey, windowsPtyOption } from "../lib/terminalPlatform";
 import { confirmAction } from "../lib/confirmAction";
 import {
   claimKeyboardShortcut,
@@ -236,9 +238,10 @@ async function createSharedPiTerminal(): Promise<Terminal> {
   // before the Mesa stylesheet in the cascade (Mesa's .xterm-host overrides win by
   // order at equal specificity, e.g. viewport overflow-y). Only the JS is
   // deferred; the stylesheet is ~2 kB gzipped.
-  const [{ Terminal }, { FitAddon }] = await Promise.all([
+  const [{ Terminal }, { FitAddon }, windowsPty] = await Promise.all([
     import("@xterm/xterm"),
     import("@xterm/addon-fit"),
+    windowsPtyOption(navigator),
   ]);
 
   const term = new Terminal({
@@ -255,6 +258,7 @@ async function createSharedPiTerminal(): Promise<Terminal> {
     scrollback: 10000,
     tabStopWidth: 8,
     theme: SHARED_PI_THEME,
+    windowsPty,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -270,6 +274,19 @@ async function createSharedPiTerminal(): Promise<Terminal> {
       store.setPiOverlayOpen(!store.piOverlayOpen);
       return false;
     }
+    // Off macOS, Ctrl+C with a selection copies and Ctrl+V pastes. Skipping
+    // Ctrl+V lets the webview's native paste reach xterm's textarea.
+    const clipboard = terminalClipboardKey(event, term.hasSelection(), IS_MAC);
+    if (clipboard === "copy") {
+      event.preventDefault();
+      // The selection clears only after the write, so the next Ctrl+C is SIGINT
+      // and a failed copy stays selected with a status message.
+      void copyTerminalSelection(term, navigator.clipboard).then((failure) => {
+        if (failure) useAppStore.setState({ status: failure });
+      });
+      return false;
+    }
+    if (clipboard === "paste") return false;
     // Ctrl+Shift+= (Ctrl++)  → enlarge terminal font
     // Ctrl+-                → shrink terminal font
     // Ctrl+0                → reset to default size

@@ -198,9 +198,34 @@ export function fileKind(ext: string): FileKind {
 
 // --- path helpers (forward-slash normalized) ------------------------------
 
+/** Windows reserved names and characters that only a verbatim path can reach. */
+const VERBATIM_ONLY_SEGMENT_RE = /^(?:con|prn|aux|nul|conin\$|conout\$|clock\$|com[1-9¹²³]|lpt[1-9¹²³]) *(?:\..*)?$|[<>:"|?*]|[. ]$/i;
+
+/**
+ * Drop a Windows verbatim prefix (`\\?\C:\…`, `\\?\UNC\srv\share\…`, either
+ * slash) when the rest is an ordinary drive or UNC path. Native code applies
+ * the same rule (`strip_verbatim_prefix` in `vaultscope.rs`). Other paths,
+ * including every Unix path, are returned unchanged.
+ */
+export function stripVerbatimPrefix(p: string): string {
+  const match = /^[\\/]{2}\?[\\/](?:([a-zA-Z]:)(?=[\\/]|$)|unc[\\/])/i.exec(p);
+  if (!match) return p;
+  // A drive match stops before its separator; a bare `\\?\C:` stays as is.
+  if (match[1] && p.length === match[0].length) return p;
+  const rest = p.slice(match[0].length + (match[1] ? 1 : 0)).split(/[\\/]/);
+  if (rest.length && rest[rest.length - 1] === "") rest.pop();
+  const required = match[1] ? 0 : 2;
+  const ok =
+    rest.length >= required &&
+    rest.every((part) => part !== "" && part !== "." && part !== ".." && !VERBATIM_ONLY_SEGMENT_RE.test(part) && ![...part].some((ch) => ch.charCodeAt(0) < 0x20));
+  if (!ok) return p;
+  const sep = p[0];
+  return match[1] ? p.slice(4) : `${sep}${sep}${p.slice(match[0].length)}`;
+}
+
 /** Canonical vault-root spelling for storage/comparison: forward slashes and normalized trailing separators. */
 export function canonicalRoot(p: string): string {
-  const trimmed = p.trim().replace(/\\/g, "/");
+  const trimmed = stripVerbatimPrefix(p.trim()).replace(/\\/g, "/");
   let slashed = trimmed.replace(/\/+$/, "");
   // A bare filesystem or drive root keeps its separator: `/` and `D:/`, never
   // "" or the drive-relative `D:`.
@@ -236,7 +261,7 @@ export function normalizeVaultRelPath(
   vaultRoot: string | null,
   knownRelPaths: string[] = []
 ): string {
-  let raw = rawPath.trim().replace(/\\/g, "/");
+  let raw = stripVerbatimPrefix(rawPath.trim()).replace(/\\/g, "/");
   if (!raw) return "";
   if (raw.startsWith("file://")) {
     try {
@@ -255,7 +280,7 @@ export function normalizeVaultRelPath(
   const givenRoot = vaultRoot?.trim() ?? "";
   // `/` and `D:/` reduce to the prefixes "" and `D:`; the separator check below
   // still requires a segment boundary.
-  const root = givenRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  const root = stripVerbatimPrefix(givenRoot).replace(/\\/g, "/").replace(/\/+$/, "");
   // Vault filesystems are case-insensitive on Windows and (by default) macOS,
   // and tools report the same file under different casings (`c:\…` vs `C:/…`).
   // Match prefixes case-insensitively but keep the reported casing in the rel.
@@ -471,12 +496,22 @@ export function hasVaultMetadata(files: readonly VaultFile[]): boolean {
 /** Directory names `walk` never descends into. */
 const SKIPPED_DIRS = new Set(["node_modules", ".git"]);
 
-/** Shared scan/watch path filter. Exclude dot-prefixed path segments and
- * dependency directories before registration or fallback rescanning. */
+/** Names Windows Explorer and the volume create for themselves. Every walk, the
+ * index and sync skip them on every platform, ASCII case-insensitively. Keep in
+ * parity with `is_windows_shell_artifact` in `src-tauri/src/platform_fs.rs`. */
+const WINDOWS_SHELL_NAMES = new Set(["desktop.ini", "thumbs.db", "$recycle.bin", "system volume information"]);
+
+function isWindowsShellName(name: string): boolean {
+  return WINDOWS_SHELL_NAMES.has(name.replace(/[A-Z]/g, (c) => c.toLowerCase()));
+}
+
+/** Shared scan/watch path filter. Exclude dot-prefixed path segments,
+ * dependency directories and Windows shell files before registration or
+ * fallback rescanning. */
 export function isIndexableVaultRelPath(rel: string): boolean {
   if (!rel) return false;
   for (const seg of rel.split("/")) {
-    if (!seg || seg.startsWith(".") || SKIPPED_DIRS.has(seg)) return false;
+    if (!seg || seg.startsWith(".") || SKIPPED_DIRS.has(seg) || isWindowsShellName(seg)) return false;
   }
   return true;
 }
@@ -508,7 +543,7 @@ async function walk(
             return;
           }
           for (const e of entries) {
-            if (!e.name || e.name.startsWith(".")) continue;
+            if (!e.name || e.name.startsWith(".") || isWindowsShellName(e.name)) continue;
             const full = joinPath(current, e.name);
             if (e.isDirectory) {
               if (SKIPPED_DIRS.has(e.name)) continue;
@@ -584,7 +619,14 @@ export function isLikelyRemoteVaultPath(root: string): boolean {
 /** Failure marker in the `vault_read_text` frame — see `vaultread.rs`. */
 const TEXT_READ_FAILED = 0xffffffff;
 const TEXT_READ_SKIPPED = 0xfffffffe;
-export type TextReadOutcome = { kind: "content"; text: string } | { kind: "skipped" } | { kind: "failed" };
+/** Online-only cloud file (OneDrive Files On-Demand): background reads leave it
+ *  in the cloud; opening the note downloads it through the ordinary read. */
+const TEXT_READ_OFFLINE = 0xfffffffd;
+export type TextReadOutcome =
+  | { kind: "content"; text: string }
+  | { kind: "skipped" }
+  | { kind: "offline" }
+  | { kind: "failed" };
 
 /** In-flight per-file reads when the native bulk command is unavailable. Only
  *  the fallback needs a bound; the native path's parallelism is chosen in Rust. */
@@ -629,6 +671,10 @@ export function decodeTextChunkOutcomes(
     }
     if (len === TEXT_READ_SKIPPED) {
       out.push({ kind: "skipped" });
+      continue;
+    }
+    if (len === TEXT_READ_OFFLINE) {
+      out.push({ kind: "offline" });
       continue;
     }
     need(at, len);
@@ -1098,7 +1144,8 @@ export const WATCH_FALLBACK_MAX_WAIT_MS = 500;
 
 /** A file change observed by the filesystem watcher. */
 export interface VaultWatchEvent {
-  /** Absolute paths affected by the change. */
+  /** Paths affected by the change: vault-relative from the native watcher,
+   *  absolute from the plugin fallback or when outside the root. */
   paths: string[];
   /** Coarse kind: "create" (file or folder appeared), "modify" (data/metadata
    *  changed), "remove" (file or folder deleted). Falls back to "modify" when
@@ -1328,7 +1375,7 @@ async function collectFilesMatching(
           for (const e of entries) {
             if (!e.name) continue;
             if (e.isDirectory) {
-              if (e.name.startsWith(".") || SKIPPED_DIRS.has(e.name)) continue;
+              if (e.name.startsWith(".") || SKIPPED_DIRS.has(e.name) || isWindowsShellName(e.name)) continue;
               directories.push(joinPath(current, e.name));
             } else if (e.isFile && matches(e.name)) {
               files.push({ dir: current, name: e.name });
@@ -1460,7 +1507,7 @@ export async function listRecoveryEntries(root: string): Promise<RecoveryEntry[]
       const abs = joinPath(dir, entry.name);
       if (entry.name === ".mesa-trash") {
         await walkTrash(abs);
-      } else if (!entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name)) {
+      } else if (!entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name) && !isWindowsShellName(entry.name)) {
         await walkVault(abs);
       }
     }

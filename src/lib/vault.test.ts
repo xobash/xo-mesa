@@ -11,6 +11,7 @@ import {
   readNote,
   resolveTextVaultLink,
   scanVault,
+  stripVerbatimPrefix,
   urlForPath,
   writeNote,
 } from "./vault";
@@ -125,6 +126,67 @@ describe("canonicalRoot", () => {
     expect(normalizeVaultRelPath("/Notes/a.md", canonicalRoot("/"))).toBe("Notes/a.md");
     // A sibling drive is not under the root.
     expect(normalizeVaultRelPath("E:/Notes/a.md", "D:/")).toBe("");
+  });
+});
+
+describe("Windows verbatim paths", () => {
+  // Same table as `verbatim_prefixes_are_dropped_only_from_ordinary_paths` in vaultscope.rs.
+  it("drops the prefix only from ordinary drive and UNC paths", () => {
+    for (const [verbatim, plain] of [
+      ["\\\\?\\C:\\Data\\Me\\Vault", "C:\\Data\\Me\\Vault"],
+      ["\\\\?\\C:\\", "C:\\"],
+      ["\\\\?\\UNC\\server.example\\Share\\Vault", "\\\\server.example\\Share\\Vault"],
+      ["\\\\?\\unc\\server.example\\Share", "\\\\server.example\\Share"],
+      ["//?/c:/data/me/vault", "c:/data/me/vault"],
+      ["//?/unc/server.example/share/vault", "//server.example/share/vault"],
+      ["\\\\?\\D:\\Ünïcødé dir\\Café", "D:\\Ünïcødé dir\\Café"],
+    ]) {
+      expect(stripVerbatimPrefix(verbatim)).toBe(plain);
+    }
+    for (const kept of [
+      "\\\\?\\C:\\Vault.\\notes",
+      "\\\\?\\C:\\Vault \\notes",
+      "\\\\?\\C:\\Vault\\CON",
+      "\\\\?\\C:\\Vault\\con .txt",
+      "\\\\?\\C:\\Vault\\..\\x",
+      "\\\\?\\C:\\Vault\\\\x",
+      "\\\\?\\C:",
+      "\\\\?\\UNC\\server",
+      "\\\\?\\UNC\\server\\",
+      "\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\Vault",
+      "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
+      "\\\\?\\A€\\x",
+      "\\\\?\\UN€\\x\\y",
+      "\\\\?\\€",
+      "C:\\Data\\Me\\Vault",
+      "/Data/me/vault",
+      "\\\\server\\share",
+    ]) {
+      expect(stripVerbatimPrefix(kept)).toBe(kept);
+    }
+  });
+
+  it("gives a recents root and a picker root one canonical spelling", () => {
+    expect(canonicalRoot("\\\\?\\C:\\Data\\Me\\Vault")).toBe("C:/Data/Me/Vault");
+    expect(canonicalRoot("\\\\?\\UNC\\server.example\\Share\\Team Vault")).toBe(
+      canonicalRoot("\\\\server.example\\Share\\Team Vault")
+    );
+    expect(canonicalRoot("\\\\?\\D:\\")).toBe("D:/");
+  });
+
+  it("reads native watcher paths as vault-relative even when a folder is named like a drive", () => {
+    expect(normalizeVaultRelPath("./C:/d.md", "/vault")).toBe("C:/d.md");
+    expect(normalizeVaultRelPath("./notes/a.md", "C:/Vault")).toBe("notes/a.md");
+    // Without the native `./` the same text reads as a drive path outside the root.
+    expect(normalizeVaultRelPath("C:/d.md", "/vault")).toBe("");
+  });
+
+  it("maps verbatim watcher paths under a plain root and the reverse", () => {
+    expect(normalizeVaultRelPath("\\\\?\\C:\\Vault\\Notes\\a.md", "C:/Vault")).toBe("Notes/a.md");
+    expect(normalizeVaultRelPath("C:\\Vault\\Notes\\a.md", "//?/C:/Vault")).toBe("Notes/a.md");
+    expect(
+      normalizeVaultRelPath("\\\\?\\UNC\\server.example\\Share\\Vault\\a.md", "//server.example/Share/Vault")
+    ).toBe("a.md");
   });
 });
 
@@ -272,6 +334,17 @@ describe("isIndexableVaultRelPath", () => {
     // what the dot rule has always prevented.
     expect(isIndexableVaultRelPath(".Note.md.mesa-tmp")).toBe(false);
     expect(isIndexableVaultRelPath("Notes/.Note.md.mesa-tmp")).toBe(false);
+  });
+
+  it("rejects Windows shell files at any depth, in any case", () => {
+    // Explorer writes these into every folder it shows; indexing or syncing
+    // them leaks one machine's view state to every peer.
+    expect(isIndexableVaultRelPath("desktop.ini")).toBe(false);
+    expect(isIndexableVaultRelPath("Photos/Thumbs.db")).toBe(false);
+    expect(isIndexableVaultRelPath("$RECYCLE.BIN/S-1-5-21/note.md")).toBe(false);
+    expect(isIndexableVaultRelPath("System Volume Information/x")).toBe(false);
+    expect(isIndexableVaultRelPath("Notes/Desktop.INI")).toBe(false);
+    expect(isIndexableVaultRelPath("Notes/desktop.ini.md")).toBe(true);
   });
 
   it("rejects node_modules at any depth", () => {

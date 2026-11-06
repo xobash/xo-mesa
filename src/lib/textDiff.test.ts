@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyTextDiffChoice, diffTextLines } from "./textDiff";
+import { applyTextDiffChoice, diffTextLines, lineEndingOnlyLines } from "./textDiff";
 
 describe("conflict text diffs", () => {
   const reference = (original: string[], other: string[]) => {
@@ -68,5 +68,36 @@ describe("conflict text diffs", () => {
       const b = Array.from({ length: random() + random() }, () => `${random()}\n`);
       expect(diffTextLines(a.join(""), b.join(""))).toEqual(reference(a, b));
     }
+  });
+
+  it("treats CRLF and LF lines as the same line and counts them", () => {
+    const parts = diffTextLines("a\r\nmine\r\nc\r\n", "a\ntheirs\nc\n");
+    expect(parts).toEqual([
+      { kind: "same", lines: ["a\r\n"], lineEndingOnly: 1 },
+      { kind: "change", original: ["mine\r\n"], other: ["theirs\n"] },
+      { kind: "same", lines: ["c\r\n"], lineEndingOnly: 1 },
+    ]);
+    expect(lineEndingOnlyLines(parts)).toBe(2);
+  });
+
+  it("reports a pure line-ending conversion as unchanged text", () => {
+    const parts = diffTextLines("one\r\ntwo\r\n", "one\ntwo\n");
+    expect(parts).toEqual([{ kind: "same", lines: ["one\r\n", "two\r\n"], lineEndingOnly: 2 }]);
+  });
+
+  it("still shows an added or removed final newline as a change", () => {
+    expect(diffTextLines("x\r\n", "x")).toEqual([{ kind: "change", original: ["x\r\n"], other: ["x"] }]);
+  });
+
+  it("splits classic-Mac CR text into lines", () => {
+    expect(diffTextLines("a\rb\r", "a\rc\r")).toEqual([
+      { kind: "same", lines: ["a\r"] },
+      { kind: "change", original: ["b\r"], other: ["c\r"] },
+    ]);
+  });
+
+  it("applies a conflict change with the draft's own line endings", () => {
+    const parts = diffTextLines("a\r\nmine\r\nc\r\n", "a\ntheirs\nmore\nc\n");
+    expect(applyTextDiffChoice("a\r\nmine\r\nc\r\n", parts[1], "other")).toBe("a\r\ntheirs\r\nmore\r\nc\r\n");
   });
 });

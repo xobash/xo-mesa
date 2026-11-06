@@ -336,7 +336,7 @@ macOS and Linux:
 Windows 10 and Windows 11:
 
 ```powershell
-& { $ErrorActionPreference = 'Stop'; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p -UseBasicParsing; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne 'cf1390040d93bc0a44c276d2bc174c1977760ce32614b977d45858db3ac5ea2f') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
+& { $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; $p = Join-Path ([IO.Path]::GetTempPath()) (([guid]::NewGuid().ToString('N')) + '.ps1'); try { Invoke-WebRequest https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.ps1 -OutFile $p -UseBasicParsing; if ((Get-FileHash $p -Algorithm SHA256).Hash -ne '930815ce2bd036d14bbd15110a6b1b53816160123575b104d176bbc8a2903ab0') { throw 'Mesa bootstrap checksum mismatch' }; Get-Content -Raw $p | Invoke-Expression } finally { Remove-Item $p -ErrorAction SilentlyContinue } }
 ```
 
 The source installers preserve existing local files and refuse non-fast-forward
@@ -380,8 +380,12 @@ Update the version references and both reviewed hashes together for each source
 release. The shell bootstrap pins the SHA-256 of the official Node.js
 `.tar.gz` archive for each macOS/Linux architecture and Rustup 1.28.2's
 architecture-specific binary hashes; mismatched downloads stop before
-execution. It does not install or modify nvm. Windows uses existing Scoop or Winget packages and never runs
-get.scoop.sh. Package managers and their artifact/signature checks remain part
+execution. It does not install or modify nvm. On Windows, `scripts/windows-node.ps1`
+installs the official Node.js `.zip` for x64 or arm64 only after its pinned
+SHA-256 matches. Winget is a fallback for that exact Node.js version only when no
+Node.js is installed in `%ProgramFiles%\nodejs`. Git, Rust and the build tools
+come from existing Scoop or Winget packages; setup never runs get.scoop.sh.
+Package managers and their artifact/signature checks remain part
 of the source toolchain trust. Development checkouts are a separate path.
 
 ## Native advisory review

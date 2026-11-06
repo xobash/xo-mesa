@@ -183,6 +183,78 @@ describe('pinned POSIX Rust bootstrap', { skip: process.platform === 'win32' }, 
   });
 });
 
+// Windows setup scripts run only on Windows CI (windows-installer-behavior.check.ps1
+// executes them); these text checks keep each fix visible on every OS.
+describe('Windows setup script contracts', () => {
+  const text = file => readFileSync(resolve(file), 'utf8').replace(/\r\n/g, '\n');
+  const label = (script, name) => { const at = script.indexOf(`\n:${name}\n`); assert.ok(at >= 0, `:${name} is missing`); const end = script.indexOf('\n:', at + 2); return script.slice(at, end < 0 ? undefined : end); };
+  it('keeps "!" in paths: delayed expansion is off except for the stamp write', () => {
+    const run = text('run.cmd');
+    assert.match(run, /^@echo off\n(?:REM [^\n]*\n)*setlocal disabledelayedexpansion\n/);
+    const bangs = run.split('\n').filter(line => /![A-Za-z_]+!/.test(line) && !/^REM /.test(line));
+    assert.deepEqual(bangs, ['>"%STAMP%" echo !CD!']);
+    assert.match(label(run, 'write_build_stamp'), /setlocal enabledelayedexpansion\n>"%STAMP%" echo !CD!\nendlocal/);
+    assert.match(label(run, 'check_long_paths'), /echo {7}"%CD%"\n/);
+  });
+  it('compares the stamped build path without case', () => {
+    assert.match(label(text('run.cmd'), 'checkmoved'), /if \/i not "%LASTPATH%"=="%CD%" \(/);
+  });
+  it('never restarts Windows while installing the C++ Build Tools', () => {
+    const run = text('run.cmd');
+    const install = label(run, 'install_build_tools');
+    assert.match(install, /--override "--quiet --wait --norestart /);
+    assert.match(install, /for %%S in \(3010 1641 -1978334967\) do if "%MESA_INSTALL_STATUS%"=="%%S" goto build_tools_restart\n/);
+    // 0x8A15010A: nothing was installed, so it must not say "were installed".
+    assert.match(install, /if "%MESA_INSTALL_STATUS%"=="-1978334966" goto build_tools_restart_first\n/);
+    assert.match(label(run, 'build_tools_restart_first'), /Nothing was installed\./);
+    assert.doesNotMatch(label(run, 'build_tools_restart_first'), /were installed/);
+    assert.match(run, /call :install_build_tools\n {4}if errorlevel 1 exit \/b 1/);
+    assert.equal(run.match(/Microsoft\.VisualStudio\.2022\.BuildTools/g).length, 1);
+  });
+  it('tells a missing WebView2 apart from an old one', () => {
+    const probe = label(text('run.cmd'), 'has_webview2');
+    assert.match(probe, /^\n:has_webview2\nset "MESA_WEBVIEW2_SEEN="/);
+    assert.match(probe, /if defined MESA_WEBVIEW2_SEEN \(\n {2}echo {3}! The newest WebView2 found, %MESA_WEBVIEW2_SEEN%, is older than[^\n]*\n\) else \(\n {2}echo {3}! Microsoft Edge WebView2 Runtime is not installed\.\n\)/);
+    assert.doesNotMatch(probe, /call :webview2_version_ok/);
+    // Only a higher major replaces the remembered version.
+    assert.match(label(text('run.cmd'), 'webview2_found'), /if defined MESA_WEBVIEW2_SEEN_MAJOR if %MESA_FOUND_MAJOR% LEQ %MESA_WEBVIEW2_SEEN_MAJOR% endlocal & exit \/b 1\nendlocal & set "MESA_WEBVIEW2_SEEN=%~1" & set "MESA_WEBVIEW2_SEEN_MAJOR=%MESA_FOUND_MAJOR%"/);
+  });
+  it('accepts only a cl.exe that builds for x64', () => {
+    const run = text('run.cmd');
+    assert.match(label(run, 'has_msvc_tools'), /where cl >nul 2>nul\nif errorlevel 1 goto find_msvc_tools\ncall :cl_targets_x64\nif not errorlevel 1 exit \/b 0\n/);
+    assert.match(label(run, 'cl_targets_x64'), /if \/i not "%VSCMD_ARG_TGT_ARCH%"=="x64" exit \/b 1\ncl 2>&1 \| findstr \/i \/c:" x64" >nul/);
+  });
+  it('never lets winget replace an installed machine-wide Node.js', () => {
+    const ensure = label(text('run.cmd'), 'ensure_node');
+    const guard = ensure.indexOf('if exist "%ProgramFiles%\\nodejs\\node.exe" (');
+    assert.ok(guard > 0 && guard < ensure.indexOf('call :install_winget OpenJS.NodeJS.22'));
+    assert.ok(ensure.indexOf('call :install_pinned_node') < guard, 'the pinned download stays first');
+  });
+  it('downloads the pinned Node.js with TLS 1.2 and no progress bar', () => {
+    const node = text('scripts/windows-node.ps1');
+    for (const setting of ["$ProgressPreference = 'SilentlyContinue'", '[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12']) {
+      assert.ok(node.indexOf(setting) > 0 && node.indexOf(setting) < node.indexOf('Invoke-WebRequest'), setting);
+      const guide = text('docs/release.md'); const oneLiner = guide.slice(guide.indexOf("& { $ErrorActionPreference = 'Stop';"));
+      assert.ok(oneLiner.indexOf(setting) > 0 && oneLiner.indexOf(setting) < oneLiner.indexOf('Invoke-WebRequest'), `release guide: ${setting}`);
+    }
+  });
+  it('installs outside Windows folders, warns about OneDrive and needs Git 2.34', () => {
+    const install = text('install.ps1');
+    assert.match(install, /\(Test-PathUnder \(\[string\]\$currentDir\) \$env:SystemRoot\)[^\n]*\n(?:\s*#[^\n]*\n)*\s*Join-Path \$env:USERPROFILE "xo-mesa"/);
+    assert.match(install, /foreach \(\$oneDrive in @\(\$env:OneDrive, \$env:OneDriveConsumer, \$env:OneDriveCommercial\)\)/);
+    const version = install.indexOf('[version]"2.34"');
+    assert.ok(version > install.indexOf('  Ensure-Git\n') && version < install.indexOf('  if (Test-Path (Join-Path $installDir ".git")) {'), 'Git version is checked before any clone or update');
+  });
+  it('keeps the installer check runnable under Windows PowerShell 5.1', () => {
+    const check = text('scripts/windows-installer-behavior.check.ps1');
+    const code = check.slice(0, check.indexOf("$nodeProbe = @'")) + check.slice(check.indexOf("'@", check.indexOf("$nodeProbe = @'")));
+    const harness = code.split('\n').filter(line => !/^\s*#/.test(line)).join('\n');
+    // 5.1 throws NativeCommandError on redirected native stderr; module cmdlets can be hidden by an inherited PSModulePath.
+    assert.doesNotMatch(harness, /\*> \$null|\(Get-FileHash \$|^\s*Compress-Archive /m);
+    assert.doesNotMatch(harness, /^\s*& cmd\.exe/m, 'run cmd.exe probes through Invoke-Cmd');
+  });
+});
+
 it('release guide bootstrap checksums match the complete installer bytes', () => {
   const guide = readFileSync(resolve('docs/release.md'), 'utf8');
   for (const file of ['install.sh', 'install.ps1']) {

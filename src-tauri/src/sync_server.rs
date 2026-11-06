@@ -713,13 +713,13 @@ pub(super) async fn handle_hyper(
                 body.extend_from_slice(bytes);
             }
         }
-        let incoming: sync_core::SyncJournal = match serde_json::from_slice(&body) {
+        let mut incoming: sync_core::SyncJournal = match serde_json::from_slice(&body) {
             Ok(journal) => journal,
             Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "invalid sync journal"),
         };
         let root_for_apply = root.as_ref().clone();
         let result = tokio::task::spawn_blocking(move || {
-            sync_core::validate_journal(&incoming, "peer journal")
+            sync_core::accept_peer_journal(&mut incoming, "peer journal")
                 .map_err(|error| error.to_string())?;
             if let Some(fingerprint) = sender_fingerprint {
                 sync_core::bind_journal_peer(

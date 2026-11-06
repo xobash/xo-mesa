@@ -1,4 +1,14 @@
+# Every text file checks out with LF, whatever core.autocrlf says. Checks,
+# workflows and installers read these bytes on every OS.
+* text=auto eol=lf
+
 *.pdf binary
+*.png binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+
 # Preserve upstream license text verbatim, including its whitespace.
 public/THIRD_PARTY_NOTICES.txt -text -whitespace
 
@@ -9,3 +19,4 @@ install.ps1 text eol=lf
 # Shell scripts run with LF; cmd.exe batch labels and goto need CRLF.
 *.sh text eol=lf
 *.cmd text eol=crlf
+*.bat text eol=crlf

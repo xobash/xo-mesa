@@ -25,9 +25,12 @@ On macOS and Linux, sync traverses vault directories with no-follow directory
 handles. File reads, manifest hashing, incoming journal moves, conflict-copy
 probes, staging, and publication use the held parent handle. A
 directory replaced after validation cannot redirect those operations through
-a new symlink. Windows holds non-reparse ancestor handles without write/delete sharing through
+a new symlink. Windows holds ancestor handles without write/delete sharing through
 reads, journal moves, staging and publication. That blocks ancestor renames and
-junction retargeting while the operation runs. Unix uses handle-relative operations.
+junction retargeting while the operation runs. An ancestor or file that is a
+symlink, junction, mount point or unknown reparse point is refused; cloud
+placeholders (OneDrive Files On-Demand), dedup and WOF files are real entries.
+Unix uses handle-relative operations.
 
 The authenticated `POST /activity` route on the sync listener is the public
 external-tool activity API ([activity API](activity-api.md)); it shares the sync
@@ -117,6 +120,25 @@ when the Sync or Connect window opens or a sync action starts. On macOS an
 unsigned development build counts as a new app after each rebuild, so Keychain
 can ask again. Browser demo keys last only for that session. Remove
 the shared key from every device when a former peer must lose access.
+
+macOS and Linux keep all keys in one credential-store entry, so the number of
+paired devices never adds Keychain items or Keychain prompts. Windows
+Credential Manager refuses an entry larger than 2,560 bytes (about eight
+peers), so on Windows Mesa splits the same record across numbered entries and
+publishes a small index entry only after every part is written and read back.
+The index names one of two alternating sets and the record's SHA-256, so an
+interrupted save leaves the previous keys or the new keys readable, never a
+mix; a damaged or missing part fails closed. Keys saved in the single-entry
+format by earlier builds stay readable and move to the new format on the next
+save, after which the old entry is removed. If an earlier build saves keys
+again after that (for example after a downgrade and a new pairing), the index
+recognizes that single entry as newer and Mesa uses it, then moves it into the
+new format on the next save. A saved record is limited to 256 peers and 64 KiB.
+
+If saved keys are damaged or incomplete, Mesa does not use them and says so in
+Sync. It never resets them by itself. **Reset sync keys…** in Sync asks you to
+type RESET, then removes every saved key entry, including peer keys, and
+generates a new sync key. Every device must then pair again with the new key.
 
 **Why the whole engine runs natively.** The sync client (`sync_fetch_manifest`,
 and `sync_run`, which performs the entire sync — local hashing, diff, and every
@@ -233,7 +255,17 @@ any letter case, and any Windows 8.3 short-name segment such as `GIT~1` are
 refused on the file routes, in journal operations and in manifest or baseline
 entries (`is_peer_rel` in `sync_core`). A short name could otherwise open an
 ignored folder under another spelling. A peer therefore cannot reach `.git/`,
-`.obsidian/`, `.env`, `.mesa-trash/` or the journal. The local scan reports a
+`.obsidian/`, `.env`, `.mesa-trash/` or the journal. Windows shell files
+(`desktop.ini`, `Thumbs.db`, `$RECYCLE.BIN`, `System Volume Information`, any
+letter case) are skipped by the walk and refused as file requests from peers.
+An older peer may still list them in its manifest or journal: those entries are
+dropped on receipt, so they never become downloads, uploads or deletions and
+the rest of the exchange continues. An older peer that tries to upload one gets
+a per-file error. On Windows a OneDrive file that is online-only (not on the
+device) is never hashed or silently left out, because a missing file could look
+like a deletion: the scan lists it with the remedy "make this folder available
+offline", and sync stops before any journal or file planning. Acceptance with a
+real online-only file is pending. The local scan reports a
 `node_modules` case variant or a short-name segment (`draft~1.md`) as a scan
 error, like a name Windows cannot hold: sync stops until the user renames it,
 and such a name never enters the manifest or the journal. A remote manifest
@@ -422,6 +454,15 @@ After a reviewed save, Mesa renames that preserved conflict copy with a
 `reviewed` marker. The bytes stay in the vault, but the Sync menu no longer
 lists that copy as unresolved.
 
+Lines that differ only in their line endings (CRLF from Windows, LF from macOS
+or Linux, or CR) are shown as unchanged, so a copy that passed through another
+OS does not look like every line changed. Whenever such lines exist, a
+**Line endings** note above the differences says how many there are and which
+endings each copy uses, and says plainly when line endings are the only
+difference. An added or removed final line break still shows as a change.
+Applying a change, or typing in **Reviewed text**, keeps the reviewed text's own
+line endings, so a review never produces a mixed file by accident.
+
 A failed read, preservation write, or baseline check stops the review save.
 If the final save fails, the reviewed buffer remains in save recovery. Reopen a
 stale comparison instead of overriding newer disk content. This is an explicit
@@ -441,6 +482,23 @@ Obsolete operations cannot publish success over a newer operation. Cancelled or
 partially failed runs do not update **Last sync** as a success. Successful
 transfers refresh additions without resetting the current tabs, selection or
 Research run. A vault switch prevents old transfers from refreshing the new vault.
+
+A receive error never ends discovery. Windows reports an oversized datagram
+(`WSAEMSGSIZE`) or an ICMP reply to an earlier broadcast (`WSAECONNRESET`) as an
+error on a healthy socket, so Mesa keeps listening; repeated errors pause
+receives with a doubling delay from 10 ms up to one second, so a persistent
+error cannot busy-loop. Pauses wake within 50 ms of a stop, so closing Sync
+still stops discovery within the socket's 0.5-second receive timeout. If the
+discovery socket cannot start (for example, another app holds UDP port 47887),
+Sync shows that error instead of the nearby list.
+
+On Windows, Defender Firewall asks whether to allow Mesa the first time it
+listens on the network, and on a network set to **Public** it silently drops
+discovery and incoming sync. When a running discovery socket hears nobody for
+six seconds, or a saved device at a private or link-local IP address refuses
+the connection or times out, the Sync window on Windows suggests allowing Mesa
+on private networks or setting the network to **Private**. Name-resolution and
+internet failures do not show this note. Mesa adds no firewall rule itself.
 
 Discovery retains at most 128 nearby devices and expires entries after 20 seconds.
 Asynchronous discovery registration and shutdown are serialized so rapid opening,

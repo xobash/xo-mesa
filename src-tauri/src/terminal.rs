@@ -27,6 +27,10 @@ unsafe impl Send for WindowsJob {}
 /// Assign the PTY leader to a kill-on-close job. Windows automatically places
 /// descendants (including a shell wrapper's Node/Pi grandchild) in that job,
 /// so closing Mesa cannot leave a process holding a vault or build directory.
+/// The assignment happens just after `CreateProcessW` returns: portable-pty
+/// owns that call and its creation flags, so `CREATE_SUSPENDED` or a
+/// `PROC_THREAD_ATTRIBUTE_JOB_LIST` cannot be passed. A child that spawns a
+/// process within that window (before Node has even loaded) would escape.
 #[cfg(target_os = "windows")]
 fn own_windows_process_tree(pid: u32) -> Result<WindowsJob, String> {
     use std::ptr::null;
@@ -475,15 +479,37 @@ fn executable_names(name: &str) -> Vec<OsString> {
         return vec![OsString::from(name)];
     }
 
-    let mut names = Vec::new();
-    let pathext = env::var_os("PATHEXT")
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
-    for ext in pathext.split(';').filter(|ext| !ext.trim().is_empty()) {
-        names.push(OsString::from(format!("{name}{ext}")));
-    }
+    let pathext = env::var_os("PATHEXT").map(|value| value.to_string_lossy().to_string());
+    let mut names: Vec<OsString> = launch_extensions(pathext.as_deref())
+        .into_iter()
+        .map(|ext| OsString::from(format!("{name}{ext}")))
+        .collect();
     names.push(OsString::from(name));
     names
+}
+
+/// Extensions to try for a bare command name. Native images and the cmd
+/// shims Mesa knows how to launch come first, whatever the user's PATHEXT
+/// order, so a `pi.ps1` or `pi.js` beside `pi.cmd` is never chosen over it.
+/// Other PATHEXT entries follow in their configured order.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn launch_extensions(pathext: Option<&str>) -> Vec<String> {
+    const PREFERRED: [&str; 4] = [".EXE", ".COM", ".CMD", ".BAT"];
+    let mut extensions: Vec<String> = PREFERRED.iter().map(|ext| ext.to_string()).collect();
+    for ext in pathext
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| ext.starts_with('.') && ext.len() > 1)
+    {
+        if !extensions
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(ext))
+        {
+            extensions.push(ext.to_string());
+        }
+    }
+    extensions
 }
 
 #[cfg(target_os = "windows")]
@@ -542,6 +568,97 @@ fn cmd_shim_command(comspec: &str, shim: &Path) -> CommandBuilder {
     cmd
 }
 
+/// True when the command runs through `cmd.exe` (`cmd_shim_command`).
+fn launches_through_cmd(cmd: &CommandBuilder) -> bool {
+    cmd.get_argv()
+        .get(1..4)
+        .is_some_and(|args| args == ["/d", "/c", "call"])
+}
+
+/// Pi's working folder. Child processes get a plain spelling, never the
+/// `\\?\` form canonicalize returns on Windows. On Windows the folder keeps
+/// the spelling the user opened (a mapped drive such as `Z:\Vault` stays
+/// `Z:`, which cmd.exe accepts) only when that spelling still resolves to the
+/// approved canonical root; otherwise the canonical root is used. Other
+/// platforms always use the canonical root.
+fn launch_cwd(requested: &str, canonical: &Path, windows: bool) -> PathBuf {
+    let resolved = dunce::simplified(canonical).to_path_buf();
+    if !windows {
+        return resolved;
+    }
+    let spelled = Path::new(requested);
+    let plain = !(requested.starts_with("\\\\?\\") || requested.starts_with("//?/"));
+    let same_folder = plain
+        && spelled.is_absolute()
+        && !spelled.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+        && crate::vaultscope::resolve_path(spelled).ok().as_deref() == Some(canonical);
+    if !same_folder {
+        return resolved;
+    }
+    if cfg!(windows) {
+        PathBuf::from(requested.replace('/', "\\"))
+    } else {
+        spelled.to_path_buf()
+    }
+}
+
+/// cmd.exe cannot use a UNC or verbatim working directory: it prints "UNC
+/// paths are not supported" and starts in the Windows folder instead.
+fn cmd_accepts_cwd(cwd: &Path) -> bool {
+    let text = cwd.to_string_lossy();
+    !(text.starts_with("\\\\") || text.starts_with("//"))
+}
+
+/// The Node entry an npm `cmd-shim` wrapper runs, relative to the shim folder.
+/// Only the standard npm template is recognized: `_prog` is Node and the
+/// entry is a `.js`/`.cjs`/`.mjs` file under `%dp0%` without `..`, so Mesa
+/// can start Node itself instead of going through cmd.exe.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn npm_shim_node_entry(shim: &str) -> Option<String> {
+    let lower = shim.to_ascii_lowercase();
+    if !lower.contains("set \"_prog=node\"") {
+        return None;
+    }
+    let line = shim
+        .lines()
+        .find(|line| line.contains("\"%_prog%\"") && line.trim_end().ends_with("%*"))?;
+    let after = &line[line.find("\"%_prog%\"")? + "\"%_prog%\"".len()..];
+    let start = after.find("\"%dp0%\\")? + "\"%dp0%\\".len();
+    let rel = &after[start..];
+    let rel = &rel[..rel.find('"')?];
+    let parts: Vec<&str> = rel.split(['\\', '/']).collect();
+    let valid = parts.iter().all(|part| {
+        !part.is_empty()
+            && *part != "."
+            && *part != ".."
+            && !part.contains(['%', ':', '"', '*', '?', '<', '>', '|'])
+    });
+    let lower_rel = rel.to_ascii_lowercase();
+    (valid
+        && [".js", ".cjs", ".mjs"]
+            .iter()
+            .any(|ext| lower_rel.ends_with(ext)))
+    .then(|| parts.join("\\"))
+}
+
+#[cfg(target_os = "windows")]
+fn npm_shim_node_command(shim: &Path) -> Option<Result<CommandBuilder, String>> {
+    let mut text = String::new();
+    fs::File::open(shim)
+        .ok()?
+        .take(16 * 1024)
+        .read_to_string(&mut text)
+        .ok()?;
+    let folder = shim.parent()?;
+    let entry = folder.join(npm_shim_node_entry(&text)?);
+    entry.is_file().then(|| node_command(folder, &entry))
+}
+
 #[cfg(target_os = "windows")]
 fn pi_command(pi: &Path) -> Result<CommandBuilder, String> {
     if windows_launches_directly(pi) {
@@ -561,6 +678,11 @@ fn pi_command(pi: &Path) -> Result<CommandBuilder, String> {
             if let Some(script) = sibling_script_path(pi).filter(|script| script_uses_node(script))
             {
                 return node_script_command(&script);
+            }
+            // Start Node directly when the shim is npm's: no cmd.exe, so a
+            // network (UNC) vault can still be Pi's working directory.
+            if let Some(command) = npm_shim_node_command(pi) {
+                return command;
             }
 
             return Ok(cmd_shim_command(&comspec(), pi));
@@ -747,19 +869,28 @@ fn sibling_script_path(path: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn node_script_command(script: &Path) -> Result<CommandBuilder, String> {
-    let node = resolve_node_binary_for_script(script)?;
+    node_command(script.parent().unwrap_or(script), script)
+}
+
+/// Node for `script`, preferring a `node.exe` in `near` as npm shims do.
+#[cfg(target_os = "windows")]
+fn node_command(near: &Path, script: &Path) -> Result<CommandBuilder, String> {
+    let node = resolve_node_binary_near(near)?;
     let mut cmd = CommandBuilder::new(node.to_string_lossy().to_string());
     cmd.arg(script.to_string_lossy().to_string());
     Ok(cmd)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", test))]
 fn resolve_node_binary_for_script(script: &Path) -> Result<PathBuf, String> {
-    if let Some(parent) = script.parent() {
-        for candidate in [parent.join("node.exe"), parent.join("node")] {
-            if candidate.is_file() && windows_launches_directly(&candidate) {
-                return Ok(candidate);
-            }
+    resolve_node_binary_near(script.parent().unwrap_or(script))
+}
+
+#[cfg(target_os = "windows")]
+fn resolve_node_binary_near(parent: &Path) -> Result<PathBuf, String> {
+    for candidate in [parent.join("node.exe"), parent.join("node")] {
+        if candidate.is_file() && windows_launches_directly(&candidate) {
+            return Ok(candidate);
         }
     }
 
@@ -1045,11 +1176,16 @@ pub async fn terminal_start(
     cols: Option<u16>,
 ) -> Result<String, String> {
     crate::require_agent_surface(window.label())?;
-    let root = cwd.as_deref().ok_or("Pi needs an approved vault folder")?;
-    let root = crate::vaultscope::require_approved(&app, root)?;
+    let requested = cwd.as_deref().ok_or("Pi needs an approved vault folder")?;
+    let root = crate::vaultscope::require_approved(&app, requested)?;
     let (mut cmd, program_dir) = terminal_command(program.as_deref())?;
+    let cwd = launch_cwd(requested, &root, cfg!(windows));
+    if launches_through_cmd(&cmd) && !cmd_accepts_cwd(&cwd) {
+        return Err("Pi's launcher runs through cmd.exe, which cannot start in a folder opened by its network (UNC) path. Open the vault through a mapped drive letter, or set MESA_PI_BIN to Pi's Node script.".into());
+    }
     static PROCESS_GATE: Mutex<()> = Mutex::new(());
     let approved_root = root.clone();
+    let display_root = cwd.clone();
     let dialog_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -1057,7 +1193,7 @@ pub async fn terminal_start(
             &PROCESS_GATE,
             || crate::vaultscope::pi_process_allowed(&dialog_app, &approved_root).unwrap_or(false),
             || dialog_app.dialog().message(
-                format!("Vault: {}\n\nPi runs with your normal OS permissions. It can read or change files outside this vault, run commands, and use the network. Pi edits bypass Mesa's verified saves and recovery. Untrusted notes, webpages, and extensions can influence its actions. Allow this trusted external process for this vault?\n\nMesa remembers this choice. To remove it, remove this vault from the recent list in the vault menu.", approved_root.display())
+                format!("Vault: {}\n\nPi runs with your normal OS permissions. It can read or change files outside this vault, run commands, and use the network. Pi edits bypass Mesa's verified saves and recovery. Untrusted notes, webpages, and extensions can influence its actions. Allow this trusted external process for this vault?\n\nMesa remembers this choice. To remove it, remove this vault from the recent list in the vault menu.", display_root.display())
             ).title("Allow Pi external process access?")
                 .kind(MessageDialogKind::Warning)
                 .buttons(MessageDialogButtons::OkCancelCustom("Allow Pi".into(), "Cancel".into()))
@@ -1066,7 +1202,7 @@ pub async fn terminal_start(
         )
     }).await.map_err(|_| "Pi permission dialog failed")??;
     let id = session_id()?;
-    cmd.cwd(root);
+    cmd.cwd(cwd);
     cmd.env("MESA_TERMINAL", "1");
     cmd.env("TERM", "xterm-256color");
     cmd.env("TERM_PROGRAM", "Mesa");
@@ -1658,6 +1794,118 @@ mod tests {
         let image = dir.join("image");
         fs::write(&image, b"MZ\x90\x00").expect("image");
         assert!(file_starts_with_mz(&image));
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    /// The template npm's cmd-shim writes for a Node package binary.
+    const NPM_SHIM: &str = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n";
+
+    #[test]
+    fn npm_cmd_shims_resolve_to_their_node_entry() {
+        assert_eq!(
+            npm_shim_node_entry(NPM_SHIM).as_deref(),
+            Some(r"node_modules\@scope\pi-agent\dist\cli.js")
+        );
+        for rejected in [
+            // Escapes the shim folder.
+            NPM_SHIM.replace(r"node_modules\@scope", r"..\elsewhere"),
+            // Not a Node program.
+            NPM_SHIM.replace("SET \"_prog=node\"", "SET \"_prog=sh\""),
+            // Not a script entry.
+            NPM_SHIM.replace("cli.js", "cli.ps1"),
+            // An expansion Mesa cannot reproduce.
+            NPM_SHIM.replace(r"\dist\", r"\%PI_DIST%\"),
+            "@echo off\r\n".to_string(),
+        ] {
+            assert_eq!(npm_shim_node_entry(&rejected), None, "{rejected}");
+        }
+    }
+
+    #[test]
+    fn cmd_route_is_detected_and_refuses_network_working_folders() {
+        let shim = cmd_shim_command(r"C:\Windows\System32\cmd.exe", Path::new(r"C:\npm\pi.cmd"));
+        assert!(launches_through_cmd(&shim));
+        assert!(!launches_through_cmd(&CommandBuilder::new(
+            r"C:\nodejs\node.exe"
+        )));
+        for cwd in [r"C:\Data\Me\Vault", "D:/Vault", "/Data/me/Vault"] {
+            assert!(cmd_accepts_cwd(Path::new(cwd)), "{cwd}");
+        }
+        for cwd in [
+            r"\\server.example\share\Vault",
+            "//server.example/share/Vault",
+            r"\\?\C:\Vault",
+        ] {
+            assert!(!cmd_accepts_cwd(Path::new(cwd)), "{cwd}");
+        }
+    }
+
+    #[test]
+    fn pi_keeps_the_opened_spelling_only_when_it_resolves_to_the_approved_root() {
+        let base = std::env::temp_dir().join(format!("mesa-pi-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("vault")).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let canonical = std::fs::canonicalize(base.join("vault")).unwrap();
+        #[cfg(unix)]
+        {
+            let alias = base.join("drive");
+            std::os::unix::fs::symlink(base.join("vault"), &alias).unwrap();
+            // A mapped-drive-like alias of the same folder keeps its spelling on Windows.
+            let spelled = alias.to_str().unwrap();
+            assert_eq!(launch_cwd(spelled, &canonical, true), alias);
+            // Other platforms keep the canonical root, as before.
+            assert_eq!(launch_cwd(spelled, &canonical, false), canonical);
+        }
+        // A spelling of another folder, a relative one or a traversal never wins.
+        for spelled in [
+            base.join("other").to_str().unwrap().to_string(),
+            "vault".to_string(),
+            format!("{}/other/../vault", base.display()),
+        ] {
+            assert_eq!(
+                launch_cwd(&spelled, &canonical, true),
+                canonical,
+                "{spelled}"
+            );
+        }
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn launch_extensions_prefer_native_images_and_cmd_shims() {
+        assert_eq!(
+            launch_extensions(Some(".PS1;.JS;.CMD;.EXE;.VBS")),
+            [".EXE", ".COM", ".CMD", ".BAT", ".PS1", ".JS", ".VBS"]
+        );
+        assert_eq!(
+            launch_extensions(Some(".com;.exe;.bat;.cmd;;  ;.js")),
+            [".EXE", ".COM", ".CMD", ".BAT", ".js"]
+        );
+        assert_eq!(launch_extensions(None), [".EXE", ".COM", ".CMD", ".BAT"]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_npm_shim_starts_node_directly() {
+        let dir = std::env::temp_dir().join(format!("mesa-pi-test-{}-npm", std::process::id()));
+        let entry = dir.join(r"node_modules\@scope\pi-agent\dist");
+        fs::create_dir_all(&entry).expect("temp dir");
+        fs::write(entry.join("cli.js"), b"console.log(1)\n").expect("entry");
+        fs::write(dir.join("node.exe"), b"MZ").expect("node stub");
+        let shim = dir.join("pi.cmd");
+        fs::write(&shim, NPM_SHIM).expect("shim");
+        fs::write(dir.join("pi.ps1"), b"#!/usr/bin/env pwsh\n").expect("ps1");
+        assert_eq!(executable_in_dir(&dir, "pi"), Some(shim.clone()));
+        let cmd = pi_command(&shim).expect("node command");
+        assert!(!launches_through_cmd(&cmd));
+        assert_eq!(
+            cmd.get_argv(),
+            &[
+                dir.join("node.exe").into_os_string(),
+                entry.join("cli.js").into_os_string()
+            ]
+        );
         fs::remove_dir_all(dir).expect("cleanup");
     }
 

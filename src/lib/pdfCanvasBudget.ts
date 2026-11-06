@@ -1,3 +1,5 @@
+import { canvasBackingScale } from "./devicePixelRatio";
+
 /** Bound retained canvas bytes as well as page distance.
  * Release pages outside keep, then trim the furthest retained pages first.
  * Pages in the paint band are exempt to avoid immediate repainting. */
@@ -5,6 +7,20 @@
 /** Retained canvas byte budget. The visible paint band is exempt to avoid
  * releasing pages that the painter would immediately render again. */
 export const PDF_CANVAS_BUDGET_BYTES = 96 * 1024 * 1024;
+
+/** Most backing pixels one page canvas may hold because of display scaling
+ * (32 MiB of RGBA). Three such pages fit the paint band inside the budget. */
+export const PDF_CANVAS_MAX_SCALED_PIXELS = 8 * 1024 * 1024;
+
+/** Backing-store multiplier for one page canvas; see `canvasBackingScale`. */
+export function pdfCanvasBackingScale(
+  cssWidth: number,
+  cssHeight: number,
+  devicePixelRatio: number,
+  maxPixels: number = PDF_CANVAS_MAX_SCALED_PIXELS
+): number {
+  return canvasBackingScale(cssWidth, cssHeight, devicePixelRatio, maxPixels);
+}
 
 /** Bound paint-ahead page count by estimated bytes at the current scale.
  * Painter and releaser must use the same band to avoid repaint thrashing.

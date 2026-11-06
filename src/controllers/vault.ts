@@ -64,7 +64,7 @@ import {
 } from "../lib/textSaveCoordinator";
 
 import type { StoreApi } from "zustand";
-import type { AppState } from "../store";
+import type { AppState, UnreadableTextReason } from "../store";
 type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 const CALENDAR_FILE = "calendar.json";
 const SORT_MODES_NEEDING_METADATA = new Set<SortMode>(["modified", "size"]);
@@ -194,7 +194,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
 
     const nextNotes = { ...latest.notes };
     const nextCache = forkContentCache(latest.contentCache);
-    const unreadable: Record<string, "skipped" | "failed"> = {};
+    const unreadable: Record<string, UnreadableTextReason> = {};
     const textAdditions = additions.filter(isTextualVaultFile);
     // An external create storm can contain thousands of text files. Keep
     // the final state commit atomic, but bound the reads and decoded strings
@@ -226,7 +226,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     const remaining = additions.filter((file) => !present.has(file.relPath));
     const cache = forkContentCache(current.contentCache);
     const notes = { ...current.notes };
-    const skipped: Record<string, "skipped" | "failed"> = {};
+    const skipped: Record<string, UnreadableTextReason> = {};
     for (const file of remaining) {
       if (!(file.relPath in cache) && file.relPath in nextCache) cache[file.relPath] = nextCache[file.relPath];
       if (!(file.relPath in notes) && file.relPath in nextNotes) notes[file.relPath] = nextNotes[file.relPath];
@@ -309,7 +309,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
   }
 
   // Catalogue-only text files: merge their reasons and recount the totals.
-  function unreadableUpdate(added: Record<string, "skipped" | "failed">): Partial<AppState> {
+  function unreadableUpdate(added: Record<string, UnreadableTextReason>): Partial<AppState> {
     if (!Object.keys(added).length) return {};
     const unreadableTextReasons = { ...get().unreadableTextReasons, ...added };
     const reasons = Object.values(unreadableTextReasons);
@@ -1076,8 +1076,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                 changes[rel] = text;
                 if (indexed.notes[rel]) changedNotes[rel] = indexed.notes[rel];
               }
-              const unreadable: Record<string, "skipped" | "failed"> = {};
+              const unreadable: Record<string, UnreadableTextReason> = {};
               for (const rel of indexed.skipped) unreadable[rel] = "skipped";
+              for (const rel of indexed.offline ?? []) unreadable[rel] = "offline";
               for (const rel of indexed.failed) unreadable[rel] = "failed";
               set({
                 ...(Object.keys(changes).length ? {
@@ -1100,8 +1101,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             // current bytes. Copy only those newer records over the snapshot.
             for (const { rel } of documentEntries(current.contentCache))
               mergedCache[rel] = current.contentCache[rel];
-            const unreadableTextReasons: Record<string, "skipped" | "failed"> = {};
+            const unreadableTextReasons: Record<string, UnreadableTextReason> = {};
             for (const rel of indexed.skipped) if (!(rel in mergedCache)) unreadableTextReasons[rel] = "skipped";
+            for (const rel of indexed.offline ?? []) if (!(rel in mergedCache)) unreadableTextReasons[rel] = "offline";
             for (const rel of indexed.failed) if (!(rel in mergedCache)) unreadableTextReasons[rel] = "failed";
             set({
               contentCache: mergedCache,

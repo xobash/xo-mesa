@@ -81,6 +81,8 @@ const pdfjsState = vi.hoisted(() => ({
   getPageNumbers: [] as number[],
   /** 1-based page numbers pdf.js was actually asked to RASTERIZE. */
   renderedPageNumbers: [] as number[],
+  /** The transform each rasterization was handed (undefined = identity). */
+  renderTransforms: [] as unknown[],
   numPages: 1,
   /** When true, a parse hangs until `releaseDocument()` is called, so a zoom
    *  can be made to land while a reparse is still in flight. */
@@ -162,8 +164,9 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => {
               transform: [scale, 0, 0, -scale, 0, PAGE_HEIGHT * scale],
               convertToPdfPoint: (x: number, y: number) => [x / scale, y / scale],
             }),
-            render: () => {
+            render: (params?: { transform?: unknown }) => {
               pdfjsState.renderedPageNumbers.push(pageNumber);
+              pdfjsState.renderTransforms.push(params?.transform);
               return { promise: Promise.resolve(), cancel: () => undefined };
             },
             // A page with no drawing operations: a blank paint from it is the
@@ -320,6 +323,7 @@ afterEach(async () => {
   pdfjsState.textContentPages.length = 0;
   pdfjsState.getPageNumbers.length = 0;
   pdfjsState.renderedPageNumbers.length = 0;
+  pdfjsState.renderTransforms.length = 0;
   pdfjsState.numPages = 1;
   pdfjsState.gateDocument = false;
   pdfjsState.releaseDocument = null;
@@ -921,6 +925,81 @@ describe("render pass idempotence", () => {
         [...latest!.paintedPages.values()].every((s) => s === 2)
     );
     expect(pdfjsState.renderedPageNumbers).toEqual([1, 2, 3]);
+  });
+
+  it("draws the bitmap at the device pixel ratio and repaints when it changes", async () => {
+    // 150% display scaling, then the window moves to a 200% monitor.
+    const queries: { media: string; listeners: Set<() => void> }[] = [];
+    vi.stubGlobal("matchMedia", (media: string) => {
+      const query = { media, listeners: new Set<() => void>() };
+      queries.push(query);
+      return {
+        media,
+        matches: true,
+        addEventListener: (_type: string, cb: () => void) => query.listeners.add(cb),
+        removeEventListener: (_type: string, cb: () => void) => query.listeners.delete(cb),
+      };
+    });
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 1.5 });
+    const readBacks: string[] = [];
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(
+      () =>
+        ({
+          drawImage: () => undefined,
+          getImageData: (_x: number, _y: number, w: number, h: number) => {
+            readBacks.push(`${w}x${h}`);
+            return { data: new Uint8ClampedArray(Math.max(4, w * h * 4)) };
+          },
+        }) as unknown as CanvasRenderingContext2D
+    );
+    try {
+      pdfjsState.numPages = 1;
+      fsState.files.set("/sharp.pdf", await makePdf("sharp"));
+      host = document.createElement("div");
+      document.body.append(host);
+      root = createRoot(host);
+
+      await render(file("/sharp.pdf"));
+      await waitFor(() => latest?.pageCount === 1);
+      await mountPaintableCanvases(1);
+      await waitFor(() => latest!.paintedPages.size === 1);
+      const canvas = paintableCanvas(0);
+      // The mock page is 300×200 at scale 1; the render scale is 1.2.
+      expect([canvas.width, canvas.height]).toEqual([540, 360]);
+      expect(pdfjsState.renderTransforms).toEqual([[1.5, 0, 0, 1.5, 0, 0]]);
+      // The page-1 blank check reads a CSS-size copy, never the scaled bitmap.
+      expect(readBacks.length).toBeGreaterThan(0);
+      expect(readBacks.every((size) => size === "360x240")).toBe(true);
+      // Pointer and annotation geometry stays in CSS pixels.
+      expect(latest!.viewports.current.get(0)?.width).toBe(360);
+
+      pdfjsState.renderedPageNumbers.length = 0;
+      Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 2 });
+      await act(async () => {
+        for (const cb of [...queries[queries.length - 1].listeners]) cb();
+      });
+      await waitFor(() => pdfjsState.renderedPageNumbers.length === 1 && canvas.width === 720);
+      expect([canvas.width, canvas.height]).toEqual([720, 480]);
+      expect(pdfjsState.renderTransforms[pdfjsState.renderTransforms.length - 1]).toEqual([2, 0, 0, 2, 0, 0]);
+      expect(queries[queries.length - 1].media).toBe("(resolution: 2dppx)");
+    } finally {
+      Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 1 });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the bitmap at CSS size at 100% scaling", async () => {
+    pdfjsState.numPages = 1;
+    fsState.files.set("/plain.pdf", await makePdf("plain"));
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await render(file("/plain.pdf"));
+    await waitFor(() => latest?.pageCount === 1);
+    await mountPaintableCanvases(1);
+    await waitFor(() => latest!.paintedPages.size === 1);
+    expect([paintableCanvas(0).width, paintableCanvas(0).height]).toEqual([360, 240]);
+    expect(pdfjsState.renderTransforms).toEqual([undefined]);
   });
 
   it("repaints everything after undo, which can change any page", async () => {

@@ -31,6 +31,7 @@ import {
 } from "../lib/pdfStalePages";
 import { pdfPageWindow } from "../lib/pdfPageWindow";
 import {
+  pdfCanvasBackingScale,
   pdfPaintAheadPages,
   planPdfCanvasRelease,
 } from "../lib/pdfCanvasBudget";
@@ -41,6 +42,7 @@ import {
   takePdfWorker,
 } from "../lib/pdfWorkerPool";
 import { countPdfPerf, markPdfPerf, startPdfPerfRun } from "./pdfPerf";
+import { useDevicePixelRatio } from "./useDevicePixelRatio";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -129,6 +131,26 @@ export async function paintedBlankUnexpectedly(
   }
 }
 
+/** The bitmap the page-1 blank check reads. A display-scaled bitmap is
+ * first drawn down to the CSS box, so the read-back costs what it did at
+ * ratio 1 and a mark that was visible there is still visible. */
+function blankProbe(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  viewport: { width: number; height: number }
+): [CanvasRenderingContext2D, { width: number; height: number }] {
+  const width = Math.max(1, Math.floor(viewport.width));
+  const height = Math.max(1, Math.floor(viewport.height));
+  if (canvas.width <= width && canvas.height <= height) return [ctx, canvas];
+  const probe = document.createElement("canvas");
+  probe.width = width;
+  probe.height = height;
+  const probeCtx = probe.getContext("2d");
+  if (!probeCtx) return [ctx, canvas];
+  probeCtx.drawImage(canvas, 0, 0, width, height);
+  return [probeCtx, probe];
+}
+
 export function usePdfEditor(
   file: VaultFile | undefined,
   { enabled = true, extractText = false, formFields = false, reloadToken }: PdfEditorOptions = {}
@@ -151,6 +173,10 @@ export function usePdfEditor(
   // only first-page completion requires a UI publication.
   const paintedPagesRef = useRef<Map<number, number>>(new Map());
   const allPagesPaintedRef = useRef(false);
+  // Pixels are drawn at renderScale × this ratio (capped per page), so a ratio
+  // change invalidates every page's paint credit.
+  const devicePixelRatio = useDevicePixelRatio();
+  const paintedRatioRef = useRef(devicePixelRatio);
   const [history, setHistory] = useState<Uint8Array[]>([]);
   const [future, setFuture] = useState<Uint8Array[]>([]);
   const viewports = useRef<Map<number, pdfjs.PageViewport>>(new Map());
@@ -705,6 +731,11 @@ export function usePdfEditor(
     lastRenderedDocRef.current = doc;
     const stalePages = isDocumentChange ? stalePaintPagesRef.current : "all";
     if (isDocumentChange) stalePaintPagesRef.current = null;
+    if (paintedRatioRef.current !== devicePixelRatio) {
+      paintedRatioRef.current = devicePixelRatio;
+      paintedPagesRef.current.clear();
+      allPagesPaintedRef.current = false;
+    }
     let cancelled = false;
     let activeTask: pdfjs.RenderTask | null = null;
     (async () => {
@@ -721,9 +752,10 @@ export function usePdfEditor(
             pageSizesRef.current.get(0) ??
             pageSizesRef.current.values().next().value;
           if (!size) return 0;
-          return (
-            size.width * renderScale * size.height * renderScale * 4
-          );
+          const cssWidth = size.width * renderScale;
+          const cssHeight = size.height * renderScale;
+          const backing = pdfCanvasBackingScale(cssWidth, cssHeight, devicePixelRatio);
+          return cssWidth * backing * cssHeight * backing * 4;
         };
         const window = pdfPageWindow(onscreenPagesRef.current, doc.numPages, {
           ahead: pdfPaintAheadPages(typicalPageBytes(), PAINT_AHEAD_PAGES),
@@ -818,11 +850,18 @@ export function usePdfEditor(
           }
           const canvas = canvasRefs.current.get(i - 1);
           if (!canvas) continue;
-          renderCanvas.width = viewport.width;
-          renderCanvas.height = viewport.height;
+          // `viewport` stays in CSS pixels (pointer and annotation geometry use
+          // it); only the bitmap is scaled up for the display.
+          const backing = pdfCanvasBackingScale(viewport.width, viewport.height, devicePixelRatio);
+          renderCanvas.width = Math.floor(viewport.width * backing);
+          renderCanvas.height = Math.floor(viewport.height * backing);
           const renderCtx = renderCanvas.getContext("2d");
           if (!renderCtx) continue;
-          activeTask = page.render({ canvasContext: renderCtx, viewport });
+          activeTask = page.render({
+            canvasContext: renderCtx,
+            viewport,
+            ...(backing !== 1 ? { transform: [backing, 0, 0, backing, 0, 0] } : {}),
+          });
           await activeTask.promise;
           activeTask = null;
           countPdfPerf(pdfPerfRunRef.current, "pageRasters");
@@ -830,14 +869,14 @@ export function usePdfEditor(
           if (i === 1) markPdfPerf(pdfPerfRunRef.current, "page-1-raster-end");
           if (cancelled) return;
           if (i === 1) markPdfPerf(pdfPerfRunRef.current, "blank-check-start");
-          if (i === 1 && (await paintedBlankUnexpectedly(renderCtx, renderCanvas, page))) {
+          if (i === 1 && (await paintedBlankUnexpectedly(...blankProbe(renderCanvas, renderCtx, viewport), page))) {
             if (cancelled) return;
             throw new Error("pdf.js rendered a blank first page");
           }
           if (i === 1) markPdfPerf(pdfPerfRunRef.current, "blank-check-end");
           if (cancelled) return;
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
+          canvas.width = renderCanvas.width;
+          canvas.height = renderCanvas.height;
           const ctx = canvas.getContext("2d");
           if (!ctx) continue;
           ctx.drawImage(renderCanvas, 0, 0);
@@ -870,7 +909,7 @@ export function usePdfEditor(
       cancelled = true;
       activeTask?.cancel();
     };
-  }, [enabled, doc, renderScale, canvasVersion, onscreenVersion]);
+  }, [enabled, doc, renderScale, devicePixelRatio, canvasVersion, onscreenVersion]);
 
   // Measure scale-1 geometry after first paint in yielding batches; reserve page layout without rasterizing.
   useEffect(() => {

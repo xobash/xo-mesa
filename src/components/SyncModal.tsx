@@ -11,6 +11,9 @@ import {
   peerFromDiscovery,
   syncIdentity,
   formatFingerprint,
+  IS_WINDOWS,
+  DISCOVERY_QUIET_MS,
+  windowsFirewallHint,
   type DiscoveredSyncPeer,
   type SyncProgress,
 } from "../lib/syncUi";
@@ -20,6 +23,7 @@ import {
 } from "../lib/syncDiagnostics";
 import { encodePairing, isValidSyncPort } from "../lib/pairing";
 import { generateSyncKey, validSyncKey } from "../lib/syncKey";
+import { SYNC_KEYS_DAMAGED } from "../lib/syncSecrets";
 import { IN_TAURI } from "../lib/vault";
 import { Modal } from "./Modal";
 import type { SyncPeer } from "../types";
@@ -431,6 +435,14 @@ export function SyncModal() {
   const [copied, setCopied] = useState(false);
   const [myFp, setMyFp] = useState<string | null>(null);
   const [nearby, setNearby] = useState<Record<string, DiscoveredSyncPeer>>({});
+  const [discoveryQuiet, setDiscoveryQuiet] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const settingsIssue = useAppStore((s) => s.settingsIssue);
+  const resetSyncKeys = useAppStore((s) => s.resetSyncKeys);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetTyped, setResetTyped] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const keysDamaged = [settingsIssue, status].some((text) => typeof text === "string" && text.includes(SYNC_KEYS_DAMAGED));
 
   useEffect(() => {
     if (!open) return;
@@ -449,6 +461,8 @@ export function SyncModal() {
     const shouldDiscover = settings.syncEnabled && settings.syncDiscovery && open;
     if (!shouldDiscover) return;
     let alive = true;
+    // The quiet window starts only once the socket is bound.
+    let quiet: ReturnType<typeof setTimeout> | undefined;
     const release = syncDiscovery(
       { name: settings.syncDeviceName.trim() || vaultName || "Mesa device", port: settings.syncPort, listening },
       (packet) => {
@@ -456,8 +470,14 @@ export function SyncModal() {
         if (!peer || !alive) return;
         setNearby((current) => refreshDiscoveredPeers(current, peer));
       },
+      (started) => {
+        if (!alive) return;
+        if (!started.ok) { setDiscoveryError(String(started.error)); return; }
+        setDiscoveryError(null);
+        quiet ??= setTimeout(() => setDiscoveryQuiet(true), DISCOVERY_QUIET_MS);
+      },
     );
-    return () => { alive = false; release(); };
+    return () => { alive = false; clearTimeout(quiet); setDiscoveryQuiet(false); setDiscoveryError(null); release(); };
   }, [
     open,
     listening,
@@ -583,6 +603,13 @@ export function SyncModal() {
                 if (!IN_TAURI) { setSetting("syncToken", generateSyncKey()); return; }
                 void invoke<string>("sync_secrets_generate").then(key => setSetting("syncToken", key)).catch(error => useAppStore.setState({ syncStatus: String(error) }));
               }}>Generate key</button>
+              {IN_TAURI && keysDamaged && <div className="setting-desc sync-note" role="alert">
+                Saved sync keys are damaged or incomplete, so sync is off until
+                you reset them. Reset removes every saved key, including keys
+                for your devices, and makes a new sync key. Every device must
+                then pair again with the new key.
+              </div>}
+              {IN_TAURI && keysDamaged && <button type="button" className="link-btn" onClick={() => { setResetTyped(""); setResetOpen(true); }}>Reset sync keys…</button>}
               {IN_TAURI && settings.syncToken.startsWith("credential:") && <button type="button" className="link-btn" onClick={() => {
                 void invoke("sync_secrets_show", { reference: settings.syncToken }).catch(error => useAppStore.setState({ syncStatus: String(error) }));
               }}>Show key in native dialog</button>}
@@ -657,6 +684,12 @@ export function SyncModal() {
                 <div className="setting-desc">
                   Turn on LAN discovery in Advanced for this open dialog. It broadcasts this device’s name and certificate fingerprint on the local network and stops when the dialog closes.
                 </div>
+              ) : discoveryError ? (
+                <div className="setting-desc sync-note" role="alert">
+                  LAN discovery could not start on this device: {discoveryError}.
+                  Another app may be using UDP port 47887. Add devices by
+                  address in Advanced instead.
+                </div>
               ) : discoveredPeers.length === 0 ? (
                 <div className="setting-desc">
                   No nearby Mesa devices found yet. Open Sync on another device
@@ -686,6 +719,16 @@ export function SyncModal() {
                 </div>
               )}
             </div>
+
+            {windowsFirewallHint({ windows: IS_WINDOWS, discoveryQuiet, nearbyCount: discoveredPeers.length, peers }) && (
+              <div className="setting-desc sync-note" role="note">
+                No device answered? Windows Firewall can block Mesa. If
+                Windows asked about Mesa, allow it on private networks. If this
+                network is set to Public, set it to Private in Settings &gt;
+                Network &amp; internet, or allow Mesa in “Allow an app through
+                firewall”. Check the other device too if it runs Windows.
+              </div>
+            )}
 
             {/* Your devices */}
             <div className="sync-section">
@@ -850,6 +893,23 @@ export function SyncModal() {
         )}
       </div>
       {status && <footer className="settings-foot">{status}</footer>}
+      {resetOpen && <Modal title="Reset sync keys" onClose={() => setResetOpen(false)}>
+        <div className="modal-head">Reset all saved sync keys?</div>
+        <div className="modal-body">
+          <p>This removes this device's sync key and every saved device key, then makes a new sync key. Your notes are not changed. Every device must pair again with the new key.</p>
+          <label>Type RESET to confirm
+            <input className="text-input" aria-label="Type RESET to confirm" value={resetTyped} onChange={e => setResetTyped(e.target.value)} />
+          </label>
+          <button className="btn" disabled={resetTyped !== "RESET" || resetBusy} onClick={() => {
+            setResetBusy(true);
+            void resetSyncKeys()
+              .then(() => { setResetOpen(false); useAppStore.setState({ syncStatus: "Sync keys reset. Pair every device again with the new key." }); })
+              .catch(error => useAppStore.setState({ syncStatus: `Sync keys were not reset: ${String(error)}` }))
+              .finally(() => setResetBusy(false));
+          }}>Reset sync keys</button>
+          <button className="btn ghost" onClick={() => setResetOpen(false)}>Cancel</button>
+        </div>
+      </Modal>}
     </Modal>
   );
 }

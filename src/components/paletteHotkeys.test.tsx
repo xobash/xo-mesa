@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPalette } from "./CommandPalette";
 import { HotkeySettings } from "./HotkeySettings";
 import { useCustomHotkeys } from "./useCustomHotkeys";
+import { PALETTE_COMMANDS } from "./paletteCommands";
+import { TopBar } from "./TopBar";
+import { installBrowserKeyGuard } from "../lib/browserKeyGuard";
+import { formatHotkey } from "../lib/hotkeys";
 import { useAppStore } from "../store";
 import { registerEditorCommands } from "../lib/editorCommands";
 import type { VaultFile } from "../types";
@@ -30,6 +34,7 @@ afterEach(() => {
   act(() => root.unmount());
   host.remove();
   useAppStore.setState(initial, true);
+  vi.unstubAllGlobals();
 });
 
 const press = (target: EventTarget, init: KeyboardEventInit) =>
@@ -136,3 +141,60 @@ describe("custom hotkey listener", () => {
     window.removeEventListener("keydown", later);
   });
 });
+
+describe("built-in shortcut labels", () => {
+  it("stores built-in hints as chords so each platform shows its own keys", () => {
+    const hints = Object.fromEntries(PALETTE_COMMANDS.filter((item) => item.hint).map((item) => [item.id, item.hint!]));
+    for (const [id, hint] of Object.entries(hints)) expect(formatHotkey(hint, false), id).not.toMatch(/[⌘⇧⌥]/);
+    // macOS keeps the glyphs it showed before.
+    expect(Object.fromEntries(Object.entries(hints).map(([id, hint]) => [id, formatHotkey(hint, true)]))).toEqual({
+      new: "⌘N", search: "⌘⇧F", find: "⌘F", calendar: "⇧Tab", "overlay-search": "⇧Tab", settings: "⌘,",
+    });
+  });
+
+  it("shows Ctrl in the palette and top bar off macOS", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }));
+    act(() => useAppStore.getState().setPalette(true));
+    act(() => root.render(<><TopBar /><CommandPalette /></>));
+    const input = host.querySelector<HTMLInputElement>(".palette-input")!;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, ">new note");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const row = [...host.querySelectorAll(".palette-item")].find((item) => item.textContent?.includes("New note"));
+    expect(row?.querySelector(".palette-hint")?.textContent).toBe("Ctrl+N");
+    expect(host.querySelector('[aria-label="Search"]')?.getAttribute("title")).toBe("Search (Ctrl+Shift+F) — Ctrl+P for quick switcher");
+    expect(host.querySelector('[aria-label="Settings"]')?.getAttribute("title")).toBe("Settings (Ctrl+,)");
+  });
+});
+
+describe("custom hotkeys beside the browser key guard", () => {
+  function Harness() { useCustomHotkeys(); return <div className="xterm"><textarea aria-label="terminal" /></div>; }
+
+  it("still runs a user binding whose browser default the guard cancelled", async () => {
+    const setTasksOpen = vi.fn();
+    useAppStore.setState({ setTasksOpen, settings: { ...initial.settings, hotkeys: { tasks: "F5" } } });
+    const remove = installBrowserKeyGuard(window, {});
+    try {
+      act(() => root.render(<><input aria-label="field" /><HarnessHost /></>));
+      press(host.querySelector("input")!, { key: "F5", code: "F5" });
+      await vi.waitFor(() => expect(setTasksOpen).toHaveBeenCalledWith(true));
+    } finally { remove(); }
+  });
+
+  it("leaves Ctrl chords inside the Pi terminal to readline but runs other bindings there", async () => {
+    const setTasksOpen = vi.fn();
+    useAppStore.setState({ setTasksOpen, settings: { ...initial.settings, hotkeys: { tasks: "Mod+E", sync: "Alt+Y" } } });
+    const setSyncOpen = vi.fn();
+    useAppStore.setState({ setSyncOpen });
+    act(() => root.render(<Harness />));
+    press(host.querySelector("textarea")!, { key: "e", code: "KeyE", ctrlKey: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(setTasksOpen).not.toHaveBeenCalled();
+    press(host.querySelector("textarea")!, { key: "y", code: "KeyY", altKey: true });
+    await vi.waitFor(() => expect(setSyncOpen).toHaveBeenCalledWith(true));
+  });
+});
+
+function HarnessHost() { useCustomHotkeys(); return null; }

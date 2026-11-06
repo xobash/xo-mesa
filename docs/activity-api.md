@@ -92,6 +92,14 @@ It needs Node 22 and no external packages. From the checkout root:
 printf '%s' '{"path":"Notes/ideas.md","op":"read"}' | node scripts/activity-client.mjs
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+$env:MESA_FINGERPRINT = '<64-character fingerprint>'
+$env:MESA_SYNC_KEY = '<64-character sync key>'
+'{"path":"Notes/ideas.md","op":"read"}' | node scripts/activity-client.mjs
+```
+
 ```js
 import { mesaActivity } from './scripts/activity-client.mjs';
 await mesaActivity({ path: 'Notes/ideas.md', op: 'edit', detail: 'New paragraph', added: 1, removed: 0 });
@@ -105,7 +113,18 @@ before sending any request. For shell integrations, check its exit status.
 
 Save this as `mesa_activity.py`. It uses Python's standard library and the same
 private environment values. Run it with a JSON body on stdin, or import its
-`mesa_activity` function.
+`mesa_activity` function:
+
+```bash
+printf '%s' '{"path":"Notes/ideas.md","op":"read"}' | python3 mesa_activity.py
+```
+
+On Windows, use the `py` launcher (or `python`). The `python3` command there is
+often a Microsoft Store stub that only prints "Python was not found".
+
+```powershell
+'{"path":"Notes/ideas.md","op":"read"}' | py -3 mesa_activity.py
+```
 
 ```python
 import hashlib, hmac, http.client, json, os, re, ssl, sys

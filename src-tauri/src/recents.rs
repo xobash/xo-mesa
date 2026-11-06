@@ -65,6 +65,64 @@ fn read(path: &Path) -> Result<Catalogue, String> {
         Err(_) => Err("Cannot read recent vaults".into()),
     }
 }
+/// Drop Windows verbatim prefixes that older builds stored with each root, and
+/// any duplicate that leaves. Unix catalogues are never changed.
+fn migrate_roots(catalogue: &mut Catalogue, windows: bool) -> bool {
+    if !windows {
+        return false;
+    }
+    let mut changed = false;
+    // Lowercased root -> id of the entry kept for it (the most recent one).
+    let mut kept = std::collections::HashMap::new();
+    // Dropped id -> id of the kept entry for the same folder.
+    let mut replaced = std::collections::HashMap::new();
+    for entry in &mut catalogue.entries {
+        let plain = crate::vaultscope::strip_verbatim_prefix(&entry.root).into_owned();
+        if plain != entry.root {
+            entry.root = plain;
+            changed = true;
+        }
+        match kept.entry(entry.root.to_lowercase()) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(entry.id.clone());
+            }
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                replaced.insert(entry.id.clone(), slot.get().clone());
+            }
+        }
+    }
+    if !replaced.is_empty() {
+        changed = true;
+        catalogue
+            .entries
+            .retain(|entry| !replaced.contains_key(&entry.id));
+        if let Some(survivor) = catalogue.last.as_ref().and_then(|last| replaced.get(last)) {
+            catalogue.last = Some(survivor.clone());
+        }
+    }
+    changed
+}
+/// HMAC input for a renderer root. Windows drops a verbatim prefix so a vault
+/// opened from recents and from the folder dialog shares one namespace; Unix
+/// input is used as given so existing per-vault state keeps its id.
+fn namespace_root(root: &str, windows: bool) -> std::borrow::Cow<'_, str> {
+    if windows {
+        crate::vaultscope::strip_verbatim_prefix(root)
+    } else {
+        std::borrow::Cow::Borrowed(root)
+    }
+}
+fn save(path: &Path, catalogue: &mut Catalogue) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(&*catalogue).map_err(|_| "Cannot encode recent vaults")?;
+    while bytes.len() > 64 * 1024 && catalogue.entries.len() > 1 {
+        catalogue.entries.pop();
+        bytes = serde_json::to_vec(&*catalogue).map_err(|_| "Cannot encode recent vaults")?;
+    }
+    if bytes.len() > 64 * 1024 {
+        return Err("Recent vault root exceeds its storage limit".into());
+    }
+    crate::vaultwrite::write_atomic(path, &bytes, &crate::vaultwrite::ExpectedCurrent::Any)
+}
 fn reply(catalogue: &Catalogue) -> RecentState {
     RecentState {
         entries: catalogue
@@ -143,16 +201,26 @@ pub fn vault_recents(
     let _guard = state.0.lock().map_err(|_| "Vault state is unavailable")?;
     let path = storage(&app)?;
     let mut catalogue = read(&path)?;
+    let migrated = migrate_roots(&mut catalogue, cfg!(windows));
     match action {
-        Action::List => return Ok(reply(&catalogue)),
+        Action::List => {
+            if migrated {
+                save(&path, &mut catalogue)?;
+            }
+            return Ok(reply(&catalogue));
+        }
         Action::Remember => {
             let root = crate::vaultscope::require_approved(
                 &app,
                 root.as_deref().ok_or("Vault root is missing")?,
             )?;
+            // Stored and later handed back to the renderer: no `\\?\` prefix.
             remember(
                 &mut catalogue,
-                root.to_str().ok_or("Vault root is not UTF-8")?.into(),
+                dunce::simplified(&root)
+                    .to_str()
+                    .ok_or("Vault root is not UTF-8")?
+                    .into(),
             )?;
         }
         Action::Forget => {
@@ -172,15 +240,7 @@ pub fn vault_recents(
             catalogue = Catalogue::default();
         }
     }
-    let mut bytes = serde_json::to_vec(&catalogue).map_err(|_| "Cannot encode recent vaults")?;
-    while bytes.len() > 64 * 1024 && catalogue.entries.len() > 1 {
-        catalogue.entries.pop();
-        bytes = serde_json::to_vec(&catalogue).map_err(|_| "Cannot encode recent vaults")?;
-    }
-    if bytes.len() > 64 * 1024 {
-        return Err("Recent vault root exceeds its storage limit".into());
-    }
-    crate::vaultwrite::write_atomic(&path, &bytes, &crate::vaultwrite::ExpectedCurrent::Any)?;
+    save(&path, &mut catalogue)?;
     Ok(reply(&catalogue))
 }
 #[tauri::command(async)]
@@ -192,7 +252,11 @@ pub fn vault_recent_resolve(
 ) -> Result<String, String> {
     crate::require_main(window.label())?;
     let _guard = state.0.lock().map_err(|_| "Vault state is unavailable")?;
-    let catalogue = read(&storage(&app)?)?;
+    let path = storage(&app)?;
+    let mut catalogue = read(&path)?;
+    if migrate_roots(&mut catalogue, cfg!(windows)) {
+        save(&path, &mut catalogue)?;
+    }
     catalogue
         .entries
         .into_iter()
@@ -213,7 +277,7 @@ pub fn vault_storage_id(
     let _guard = state.0.lock().map_err(|_| "Vault state is unavailable")?;
     let path = storage(&app)?.with_file_name("storage-key");
     let key = storage_key(&path)?;
-    Ok(namespace(&key, &root))
+    Ok(namespace(&key, &namespace_root(&root, cfg!(windows))))
 }
 fn namespace(key: &[u8], root: &str) -> String {
     let tag = ring::hmac::sign(
@@ -274,6 +338,53 @@ mod tests {
         assert!(!id.contains("synthetic"));
         assert_ne!(id, namespace(&[0; 32], "/synthetic/private/vault"));
         std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn storage_namespace_input_is_unchanged_on_unix_and_spelling_stable_on_windows() {
+        let key = [7u8; 32];
+        // Unix ids must not move: per-vault UI state is stored under them.
+        for root in ["/Data/me/Vault", "//?/odd", r"C:\x"] {
+            assert_eq!(
+                namespace(&key, &namespace_root(root, false)),
+                namespace(&key, root)
+            );
+        }
+        assert_eq!(
+            namespace(&key, &namespace_root("//?/C:/Data/Me/Vault", true)),
+            namespace(&key, &namespace_root("C:/Data/Me/Vault", true))
+        );
+        assert_eq!(
+            namespace(
+                &key,
+                &namespace_root("//?/UNC/server.example/share/Vault", true)
+            ),
+            namespace(&key, &namespace_root("//server.example/share/Vault", true))
+        );
+    }
+    #[test]
+    fn legacy_windows_recents_lose_verbatim_prefixes_and_duplicates() {
+        let mut catalogue: Catalogue = serde_json::from_str(
+            r#"{"entries":[
+                {"id":"a","root":"\\\\?\\UNC\\server.example\\Share\\Team Vault"},
+                {"id":"b","root":"\\\\?\\C:\\Data\\Me\\Vault"},
+                {"id":"c","root":"C:\\Data\\Me\\Vault"}
+            ],"last":"c"}"#,
+        )
+        .unwrap();
+        let mut unix =
+            serde_json::from_str::<Catalogue>(&serde_json::to_string(&catalogue).unwrap()).unwrap();
+        assert!(!migrate_roots(&mut unix, false));
+        assert_eq!(unix.entries.len(), 3);
+        assert!(migrate_roots(&mut catalogue, true));
+        let roots: Vec<_> = catalogue.entries.iter().map(|e| e.root.as_str()).collect();
+        assert_eq!(
+            roots,
+            [r"\\server.example\Share\Team Vault", r"C:\Data\Me\Vault"]
+        );
+        // `last` named the dropped duplicate; it moves to the kept entry for that folder.
+        assert_eq!(catalogue.last.as_deref(), Some("b"));
+        assert!(!serde_json::to_string(&catalogue).unwrap().contains('?'));
+        assert!(!migrate_roots(&mut catalogue, true));
     }
     #[test]
     fn catalogue_replies_do_not_contain_roots_and_ids_are_stable() {

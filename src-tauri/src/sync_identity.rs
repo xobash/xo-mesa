@@ -30,23 +30,312 @@ pub(super) fn fingerprint_from_cert_pem(cert_pem: &str) -> Result<String, String
     Ok(sha256_hex(block.contents()))
 }
 
-/// Windows tool by absolute System32 path, with no console window flashing
-/// from the GUI process.
-#[cfg(windows)]
-fn system_tool(relative: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-    let mut command =
-        std::process::Command::new(std::path::Path::new(&root).join("System32").join(relative));
-    command.creation_flags(CREATE_NO_WINDOW);
-    command
+/// One access-control entry, reduced to what the private-storage rule checks.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct AceSummary {
+    pub(super) allow: bool,
+    pub(super) current_user: bool,
+    pub(super) mask: u32,
+    pub(super) flags: u32,
 }
 
-// Persist only the owner/access sections we changed. Set-Acl also attempts
-// audit sections, which need SeSecurityPrivilege in a normal user session.
+/// A Windows security descriptor, reduced to owner, inheritance and entries.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AclSummary {
+    pub(super) protected: bool,
+    pub(super) owner_is_user: bool,
+    pub(super) aces: Vec<AceSummary>,
+}
+
+/// FILE_ALL_ACCESS ("Full control").
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) const FULL_ACCESS: u32 = 0x001F_01FF;
+/// OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE: applies to files and folders inside.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) const INHERIT_TO_CHILDREN: u32 = 0x3;
+
+/// A private directory is owned by the current user, does not inherit from its
+/// parent, and has exactly one entry: full control for the current user,
+/// inherited by everything inside it.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn directory_is_private(acl: &AclSummary) -> bool {
+    acl.protected
+        && acl.owner_is_user
+        && acl.aces
+            == [AceSummary {
+                allow: true,
+                current_user: true,
+                mask: FULL_ACCESS,
+                flags: INHERIT_TO_CHILDREN,
+            }]
+}
+
+/// A private file grants access to the current user only.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(super) fn file_is_private(acl: &AclSummary) -> bool {
+    !acl.aces.is_empty() && acl.aces.iter().all(|ace| ace.allow && ace.current_user)
+}
+
+/// Native Windows private storage: a protected DACL for the current user, set
+/// through the security API. No helper process runs, so application control
+/// (AppLocker, WDAC) or a locked-down script host cannot block vault open. Only the
+/// owner and DACL are written (never the SACL, which needs audit privilege),
+/// and only when they differ from the private state.
 #[cfg(windows)]
-pub(super) const PRIVATE_DIRECTORY_ACL_SCRIPT: &str = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object System.Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); [System.IO.Directory]::SetAccessControl($p,$acl); $actual=Get-Acl -LiteralPath $p; if(-not $actual.AreAccessRulesProtected){throw 'Unprotected identity ACL'}; foreach($r in $actual.Access){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value){throw 'Unexpected identity access'}}"#;
+pub(super) mod private_acl {
+    use super::{AceSummary, AclSummary, FULL_ACCESS, INHERIT_TO_CHILDREN};
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        AddAccessAllowedAceEx, EqualSid, GetAce, GetLengthSid, GetSecurityDescriptorControl,
+        GetTokenInformation, InitializeAcl, TokenUser, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+        ACL_REVISION, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+        TOKEN_QUERY, TOKEN_USER, UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+
+    fn win32(code: u32) -> io::Result<()> {
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(code as i32))
+        }
+    }
+
+    /// The process user's SID, kept inside its TOKEN_USER buffer.
+    pub(in crate::sync) struct UserSid(Vec<u64>);
+
+    impl UserSid {
+        pub(in crate::sync) fn current() -> io::Result<Self> {
+            let mut token: HANDLE = std::ptr::null_mut();
+            // SAFETY: the pseudo process handle needs no close; `token` is
+            // closed below on every path.
+            if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut needed = 0u32;
+            // SAFETY: a size query with a null buffer.
+            unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
+            // u64 storage keeps the pointer inside TOKEN_USER aligned.
+            let mut buffer = vec![0u64; (needed as usize).div_ceil(8).max(2)];
+            // SAFETY: `buffer` holds at least `needed` bytes.
+            let ok = unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * 8) as u32,
+                    &mut needed,
+                )
+            };
+            let error = io::Error::last_os_error();
+            // SAFETY: `token` is a valid handle owned here.
+            unsafe { CloseHandle(token) };
+            if ok == 0 {
+                return Err(error);
+            }
+            Ok(Self(buffer))
+        }
+
+        fn sid(&self) -> PSID {
+            // SAFETY: the buffer was filled with a TOKEN_USER whose SID points
+            // into the same buffer.
+            unsafe { (*(self.0.as_ptr() as *const TOKEN_USER)).User.Sid }
+        }
+    }
+
+    /// A descriptor returned by GetNamedSecurityInfoW, freed on drop.
+    struct Descriptor {
+        descriptor: PSECURITY_DESCRIPTOR,
+        owner: PSID,
+        dacl: *mut ACL,
+    }
+
+    impl Drop for Descriptor {
+        fn drop(&mut self) {
+            // SAFETY: the descriptor was allocated by the security API.
+            unsafe { LocalFree(self.descriptor) };
+        }
+    }
+
+    fn read(path: &Path) -> io::Result<Descriptor> {
+        let name = wide(path);
+        let mut found = Descriptor {
+            descriptor: std::ptr::null_mut(),
+            owner: std::ptr::null_mut(),
+            dacl: std::ptr::null_mut(),
+        };
+        // SAFETY: every out pointer is valid; the descriptor owns owner and dacl.
+        win32(unsafe {
+            GetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut found.owner,
+                std::ptr::null_mut(),
+                &mut found.dacl,
+                std::ptr::null_mut(),
+                &mut found.descriptor,
+            )
+        })?;
+        Ok(found)
+    }
+
+    /// Owner, inheritance and entries of `path` relative to the current user.
+    pub(in crate::sync) fn summary(path: &Path, user: &UserSid) -> io::Result<AclSummary> {
+        let found = read(path)?;
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        // SAFETY: the descriptor is valid until `found` drops.
+        if unsafe { GetSecurityDescriptorControl(found.descriptor, &mut control, &mut revision) }
+            == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: both SIDs are valid; a null owner is checked first.
+        let owner_is_user =
+            !found.owner.is_null() && unsafe { EqualSid(found.owner, user.sid()) } != 0;
+        let mut aces = Vec::new();
+        if found.dacl.is_null() {
+            // A NULL DACL grants everyone full access.
+            aces.push(AceSummary {
+                allow: true,
+                current_user: false,
+                mask: FULL_ACCESS,
+                flags: 0,
+            });
+        } else {
+            // SAFETY: the DACL belongs to the live descriptor.
+            let count = unsafe { (*found.dacl).AceCount };
+            for index in 0..u32::from(count) {
+                let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
+                // SAFETY: `index` is below the ACE count.
+                if unsafe { GetAce(found.dacl, index, &mut ace) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: every ACE starts with an ACE_HEADER.
+                let header = unsafe { *(ace as *const ACE_HEADER) };
+                let simple = matches!(
+                    header.AceType,
+                    ACCESS_ALLOWED_ACE_TYPE | ACCESS_DENIED_ACE_TYPE
+                );
+                // Allowed and denied ACEs share one layout; other kinds
+                // (object, callback) never count as private.
+                let (mask, current_user) = if simple {
+                    let entry = ace as *const ACCESS_ALLOWED_ACE;
+                    // SAFETY: simple ACEs have this layout; the SID starts at SidStart.
+                    unsafe {
+                        let sid = std::ptr::addr_of!((*entry).SidStart) as PSID;
+                        ((*entry).Mask, EqualSid(sid, user.sid()) != 0)
+                    }
+                } else {
+                    (0, false)
+                };
+                aces.push(AceSummary {
+                    allow: header.AceType == ACCESS_ALLOWED_ACE_TYPE,
+                    current_user,
+                    mask,
+                    flags: u32::from(header.AceFlags),
+                });
+            }
+        }
+        Ok(AclSummary {
+            protected: control & SE_DACL_PROTECTED != 0,
+            owner_is_user,
+            aces,
+        })
+    }
+
+    fn write(path: &Path, info: u32, owner: PSID, acl: &[u64]) -> io::Result<()> {
+        let name = wide(path);
+        // SAFETY: the name is NUL-terminated and the ACL buffer is initialised.
+        win32(unsafe {
+            SetNamedSecurityInfoW(
+                name.as_ptr(),
+                SE_FILE_OBJECT,
+                info,
+                owner,
+                std::ptr::null_mut(),
+                acl.as_ptr().cast(),
+                std::ptr::null(),
+            )
+        })
+    }
+
+    /// An initialised ACL buffer holding `sid`'s full-control entry, or none.
+    fn acl_for(sid: Option<PSID>) -> io::Result<Vec<u64>> {
+        let ace_bytes = sid.map_or(0, |sid| {
+            // SAFETY: the SID comes from the token buffer.
+            std::mem::size_of::<ACCESS_ALLOWED_ACE>() - std::mem::size_of::<u32>()
+                + unsafe { GetLengthSid(sid) } as usize
+        });
+        let size = (std::mem::size_of::<ACL>() + ace_bytes).next_multiple_of(4);
+        let mut buffer = vec![0u64; size.div_ceil(8)];
+        let acl = buffer.as_mut_ptr() as *mut ACL;
+        // SAFETY: the buffer is at least `size` bytes and DWORD-aligned.
+        if unsafe { InitializeAcl(acl, size as u32, ACL_REVISION) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if let Some(sid) = sid {
+            // SAFETY: the ACL has room for exactly this entry.
+            if unsafe {
+                AddAccessAllowedAceEx(acl, ACL_REVISION, INHERIT_TO_CHILDREN, FULL_ACCESS, sid)
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(buffer)
+    }
+
+    /// Give `dir` a protected DACL with full control for the current user only.
+    pub(in crate::sync) fn protect_directory(dir: &Path, user: &UserSid) -> io::Result<()> {
+        let current = summary(dir, user)?;
+        if super::directory_is_private(&current) {
+            return Ok(());
+        }
+        let mut info = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
+        let mut owner = std::ptr::null_mut();
+        if !current.owner_is_user {
+            info |= OWNER_SECURITY_INFORMATION;
+            owner = user.sid();
+        }
+        write(dir, info, owner, &acl_for(Some(user.sid()))?)?;
+        if !super::directory_is_private(&summary(dir, user)?) {
+            return Err(io::Error::other("unexpected private directory access"));
+        }
+        Ok(())
+    }
+
+    /// Reset `file` to inherit only the private parent entry when it grants
+    /// anyone else access.
+    pub(in crate::sync) fn protect_file(file: &Path, user: &UserSid) -> io::Result<()> {
+        if super::file_is_private(&summary(file, user)?) {
+            return Ok(());
+        }
+        let info = DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION;
+        write(file, info, std::ptr::null_mut(), &acl_for(None)?)?;
+        if !super::file_is_private(&summary(file, user)?) {
+            return Err(io::Error::other("unexpected private file access"));
+        }
+        Ok(())
+    }
+}
 
 /// Establish private identity storage before reading or creating any key.
 pub(super) fn protect_identity_directory(dir: &std::path::Path) -> Result<(), String> {
@@ -150,26 +439,13 @@ pub(crate) fn protect_private_directory(
         }
     }
     #[cfg(windows)]
+    let user = private_acl::UserSid::current()
+        .map_err(|e| format!("could not read the current Windows user: {e}"))?;
+    #[cfg(windows)]
     {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        // Use the process identity SID, never a renderer-provided account name.
-        // The path travels as data through an environment variable, not code.
-        let script = PRIVATE_DIRECTORY_ACL_SCRIPT;
-        let status = system_tool("WindowsPowerShell\\v1.0\\powershell.exe")
-            // A PowerShell 7 parent passes incompatible module paths through
-            // native child processes. Let Windows PowerShell use its own modules.
-            .env_remove("PSModulePath")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("MESA_IDENTITY_DIRECTORY", dir)
-            .env(
-                "MESA_PRIVATE_FILE_NAMES",
-                serde_json::to_string(names).map_err(|_| "Cannot encode private filenames")?,
-            )
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err("could not restrict sync identity ACL".into());
-        }
+        private_acl::protect_directory(dir, &user)
+            .map_err(|e| format!("could not restrict sync identity ACL: {e}"))?;
     }
     for &name in names {
         let path = dir.join(name);
@@ -199,37 +475,10 @@ pub(crate) fn protect_private_directory(
                     return Err("sync key permissions could not be restricted".into());
                 }
             }
+            // Reset old explicit file grants to the private parent ACL.
             #[cfg(windows)]
-            {
-                // Reset old explicit file grants to the private parent ACL.
-                let status = system_tool("icacls.exe")
-                    .arg(&path)
-                    .args(["/reset", "/Q"])
-                    .status()
-                    .map_err(|e| e.to_string())?;
-                if !status.success() {
-                    return Err("could not restrict sync identity file ACL".into());
-                }
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        let script = r#"$ErrorActionPreference='Stop'; $p=$env:MESA_IDENTITY_DIRECTORY; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; foreach($name in (ConvertFrom-Json -InputObject $env:MESA_PRIVATE_FILE_NAMES)) { $file=Join-Path $p $name; if(Test-Path -LiteralPath $file) { $acl=Get-Acl -LiteralPath $file; $rules=@($acl.Access); if($rules.Count -eq 0){throw 'Missing identity access'}; foreach($r in $rules){if($r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $r.AccessControlType -ne 'Allow'){throw 'Unexpected identity file access'}} } }"#;
-        let status = system_tool("WindowsPowerShell\\v1.0\\powershell.exe")
-            // A PowerShell 7 parent passes incompatible module paths through
-            // native child processes. Let Windows PowerShell use its own modules.
-            .env_remove("PSModulePath")
-            .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("MESA_IDENTITY_DIRECTORY", dir)
-            .env(
-                "MESA_PRIVATE_FILE_NAMES",
-                serde_json::to_string(names).map_err(|_| "Cannot encode private filenames")?,
-            )
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err("sync identity file ACL verification failed".into());
+            private_acl::protect_file(&path, &user)
+                .map_err(|e| format!("could not restrict sync identity file ACL: {e}"))?;
         }
     }
     Ok(())
@@ -388,7 +637,7 @@ pub(super) fn get_identity(app: &tauri::AppHandle) -> Result<Arc<Identity>, Stri
 }
 
 /// `get_identity` on the blocking pool: the first call reads or creates the
-/// identity on disk (two PowerShell ACL runs on Windows).
+/// identity on disk and protects its directory.
 pub(super) async fn get_identity_async(app: &tauri::AppHandle) -> Result<Arc<Identity>, String> {
     // Every server request asks; once loaded, answer without a blocking task.
     // `try_lock` never waits behind a first load that holds the lock.

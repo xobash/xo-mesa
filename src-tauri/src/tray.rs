@@ -86,13 +86,20 @@ fn clip(text: &str) -> String {
     out
 }
 
+/// Clipped menu text with a literal `&`. Menus read a single `&` as a
+/// mnemonic marker (Windows underlines the next letter, macOS and GTK drop
+/// it), so user text such as a vault named "R&D" escapes it as `&&`.
+fn menu_label(text: &str) -> String {
+    clip(text).replace('&', "&&")
+}
+
 fn bounded(mut snapshot: TraySnapshot) -> TraySnapshot {
     snapshot.tasks.truncate(MAX_TASKS);
     snapshot
 }
 
 fn info<R: Runtime>(app: &AppHandle<R>, id: &str, text: &str) -> tauri::Result<MenuItem<R>> {
-    MenuItem::with_id(app, id, clip(text), false, None::<&str>)
+    MenuItem::with_id(app, id, menu_label(text), false, None::<&str>)
 }
 
 fn build_menu<R: Runtime>(app: &AppHandle<R>, s: &TraySnapshot) -> tauri::Result<Menu<R>> {
@@ -105,7 +112,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, s: &TraySnapshot) -> tauri::Result
     for (i, task) in s.tasks.iter().enumerate() {
         menu = menu.text(
             format!("{TASK_PREFIX}{i}"),
-            clip(&format!("  {}", task.label)),
+            menu_label(&format!("  {}", task.label)),
         );
     }
     menu = menu.separator();
@@ -562,6 +569,38 @@ pub fn tray_popover_act<R: Runtime>(
     Ok(())
 }
 
+/// Whether `tray::create` succeeded this run.
+#[derive(Default)]
+pub struct TrayPresence(std::sync::atomic::AtomicBool);
+
+impl TrayPresence {
+    pub fn mark_created(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Closing main may hide it only while the user can still see Mesa and reach
+/// its Quit: macOS always (Dock and app menu), Windows behind a created tray
+/// icon. Linux cannot tell whether its tray is shown (GNOME hides it without
+/// AppIndicator), so there closing main quits.
+pub(crate) fn close_may_hide(tray_created: bool, os: &str) -> bool {
+    os == "macos" || (tray_created && os != "linux")
+}
+
+/// True when the main window should hide on close; false when it should
+/// quit through the same save-guarded path as the tray Quit.
+#[tauri::command]
+pub fn main_close_hides<R: Runtime>(
+    window: tauri::Window<R>,
+    presence: tauri::State<'_, TrayPresence>,
+) -> Result<bool, String> {
+    crate::require_main(window.label())?;
+    Ok(close_may_hide(
+        presence.0.load(std::sync::atomic::Ordering::SeqCst),
+        std::env::consts::OS,
+    ))
+}
+
 /// Replaces the tray menu with the renderer's current snapshot.
 #[tauri::command]
 pub fn tray_update<R: Runtime>(
@@ -588,11 +627,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn main_hides_on_close_only_behind_a_visible_tray() {
+        assert!(close_may_hide(true, "windows"));
+        assert!(!close_may_hide(false, "windows"));
+        assert!(!close_may_hide(true, "linux"));
+        assert!(close_may_hide(false, "macos"));
+        let presence = TrayPresence::default();
+        assert!(!presence.0.load(std::sync::atomic::Ordering::SeqCst));
+        presence.mark_created();
+        assert!(presence.0.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
     fn labels_and_task_count_stay_bounded() {
         let long = "x".repeat(200);
         assert_eq!(clip(&long).chars().count(), MAX_LABEL_CHARS);
         assert!(clip(&long).ends_with('…'));
         assert_eq!(clip("  short  "), "short");
+        // A literal `&` survives the menu's mnemonic parsing.
+        assert_eq!(menu_label("R&D & Notes"), "R&&D && Notes");
+        let edge = format!("{}&tail", "x".repeat(MAX_LABEL_CHARS - 2));
+        assert_eq!(
+            menu_label(&edge),
+            format!("{}&&…", "x".repeat(MAX_LABEL_CHARS - 2))
+        );
         let tasks = (0..12)
             .map(|i| TrayTask {
                 label: format!("t{i}"),

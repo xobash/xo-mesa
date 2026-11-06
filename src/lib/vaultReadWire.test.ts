@@ -47,6 +47,16 @@ describe("vault text batch decoder", () => {
     expect(decodeTextChunk(encode([null]))).toEqual([null]);
   });
 
+  it("decodes the online-only cloud marker instead of falling back to a full read", () => {
+    // An unknown marker would throw and send the batch to per-file reads,
+    // which download every OneDrive online-only file.
+    const frame = new Uint8Array(8);
+    const view = new DataView(frame.buffer);
+    view.setUint32(0, 1, true);
+    view.setUint32(4, 0xfffffffd, true);
+    expect(decodeTextChunkOutcomes(frame)).toEqual([{ kind: "offline" }]);
+  });
+
   it("distinguishes empty, oversized, and failed reads", () => {
     const frame = new Uint8Array(16);
     const view = new DataView(frame.buffer);

@@ -97,6 +97,11 @@ fn walk(dir: &Path, prefix: &str, out: &mut ScanResult) -> std::io::Result<()> {
             }
             continue;
         }
+        // Explorer's own files (`desktop.ini`, `$RECYCLE.BIN`, ...) are never
+        // vault content; `isIndexableVaultRelPath` skips the same names.
+        if crate::sync_core::platform_fs::is_windows_shell_artifact(&name) {
+            continue;
+        }
         // `file_type` does not traverse symlinks, matching `readDir`'s
         // isFile/isDirectory: a symlink is neither, so it is skipped entirely.
         let ft = match entry.file_type() {
@@ -251,6 +256,21 @@ mod tests {
         v.file("node_modules/pkg/index.js", "a");
         v.file("sub/node_modules/pkg/index.js", "a");
         assert_eq!(v.rels(), vec!["keep.md"]);
+    }
+
+    #[test]
+    fn skips_windows_shell_files_and_folders_in_any_case() {
+        let v = TempVault::new("shell");
+        v.file("keep.md", "a");
+        v.file("desktop.ini", "[.ShellClassInfo]");
+        v.file("photos/Thumbs.db", "x");
+        v.file("$RECYCLE.BIN/S-1-5-21/.a.md.mesa-rescue-1-a.tmp", "x");
+        v.file("System Volume Information/tracking.log", "x");
+        v.file("notes/Desktop.INI", "x");
+        v.file("notes/desktop.ini.md", "a");
+        assert_eq!(v.rels(), vec!["keep.md", "notes/desktop.ini.md"]);
+        // Nothing inside the recycle bin enters crash recovery either.
+        assert!(v.artifacts().is_empty());
     }
 
     #[test]
