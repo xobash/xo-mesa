@@ -485,7 +485,7 @@ export function DeepResearchPanel({
   const startDeepResearch = useAppStore((s) => s.startDeepResearch);
   const cancelDeepResearch = useAppStore((s) => s.cancelDeepResearch);
   const applyDeepResearch = useAppStore((s) => s.applyDeepResearch);
-  const discardDeepResearch = useAppStore((s) => s.discardDeepResearch);
+  const discardDeepResearch = useAppStore((s) => s.requestDiscardDeepResearch);
   const openFile = useAppStore((s) => s.openFile);
 
   const fileCount = useAppStore((s) => s.files.length);
@@ -867,7 +867,7 @@ export function DeepResearchPanel({
                     : "Copy troubleshooting kit"}
               </button>
             )}
-            <button className="btn" onClick={() => discardDeepResearch()}>
+            <button className="btn" onClick={() => void discardDeepResearch()}>
               Dismiss
             </button>
           </div>}
@@ -940,7 +940,7 @@ export function DeepResearchPanel({
             <button className="btn primary" onClick={() => void applyDeepResearch()}>
               Apply {opList.length} change{opList.length === 1 ? "" : "s"}
             </button>
-            <button className="btn" onClick={() => discardDeepResearch()}>
+            <button className="btn" onClick={() => void discardDeepResearch()}>
               Discard
             </button>
             <span className="dr-apply-hint">
@@ -979,7 +979,7 @@ export function DeepResearchPanel({
                 </button>
           </div>
            {!readOnly && <div className="dr-apply-row">
-             <button className="btn" onClick={() => discardDeepResearch()}>
+             <button className="btn" onClick={() => void discardDeepResearch()}>
                Close
              </button>
            </div>}

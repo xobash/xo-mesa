@@ -567,6 +567,7 @@ src/store.lifecycle.test.ts
 src/store.noteFeatures.test.ts
 src/store.pdfDirty.test.ts
 src/store.research.test.ts
+src/store.researchDiscard.test.ts
 src/store.syncListener.test.ts
 src/store.textLifecycle.test.ts
 src/store.ts

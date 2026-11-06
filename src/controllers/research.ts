@@ -7,6 +7,7 @@ import {
   type BackgroundWorkHandle,
 } from "../lib/backgroundWorkGovernor";
 import { forkContentCache } from "../lib/documentWorkingSet";
+import { confirmAction } from "../lib/confirmAction";
 import { extractAliases, extractLinks, extractLinksAndFirstImage, extractTags } from "../lib/markdownExtract";
 import type { TextSaveCoordinator, TextSaveHold } from "../lib/textSaveCoordinator";
 import type { VaultFile } from "../types";
@@ -45,6 +46,11 @@ import {
   researchArchiveRelPaths,
   type ArchiveFetchedPage,
 } from "../lib/webArchive";
+/** A reviewed change set that was never applied exists only in memory. */
+export function deepResearchHasUnappliedProposal(run: Pick<DeepResearchRunState, "phase" | "changeSet">): boolean {
+  return run.changeSet !== null && run.phase !== "done" && run.phase !== "applying";
+}
+
 const loadDeepResearch = () => import("../lib/deepResearch");
 const createRunId = () => `dr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const currentPiSessionId = () => getPiSessionSnapshot().sessionId;
@@ -598,7 +604,7 @@ export function createResearchController({ get, set, getGeneration, registerExte
     armTimeout(DR_TIMEOUT_MS);
   }
 
-  const actions: Pick<AppState, 'setDeepResearchSurface' | 'openDeepResearch' | 'startDeepResearch' | 'cancelDeepResearch' | 'applyDeepResearch' | 'discardDeepResearch'> = {
+  const actions: Pick<AppState, 'setDeepResearchSurface' | 'openDeepResearch' | 'startDeepResearch' | 'cancelDeepResearch' | 'applyDeepResearch' | 'discardDeepResearch' | 'requestDiscardDeepResearch'> = {
     setDeepResearchSurface: (surface) => {
       const previous = get().deepResearchSurface;
       if (previous === surface) return;
@@ -1007,6 +1013,22 @@ export function createResearchController({ get, set, getGeneration, registerExte
     discardDeepResearch: () => {
       void drStopListening();
       set({ deepResearch: null, deepResearchSurface: null });
+    },
+
+    requestDiscardDeepResearch: async () => {
+      const run = get().deepResearch;
+      if (!run) return false;
+      if (deepResearchHasUnappliedProposal(run)) {
+        const count = run.changeSet?.ops.length ?? 0;
+        const ok = await confirmAction(
+          `Discard this research and its ${count} proposed change${count === 1 ? "" : "s"}? Nothing was written to the vault, and the report cannot be recovered.`,
+          { title: "Discard research", okLabel: "Discard", kind: "warning" }
+        );
+        // The dialog is modal to Mesa but not to Pi: discard only the run the user saw.
+        if (!ok || get().deepResearch?.runId !== run.runId) return false;
+      }
+      get().discardDeepResearch();
+      return true;
     },
 
   };

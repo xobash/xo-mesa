@@ -260,6 +260,10 @@ linked, not recreated. Existing report links are not duplicated.
 Every proposed file operation is **shown before applying** — click any row to
 preview its full content.
 
+An unapplied proposal exists only in memory. **Discard** (and **Dismiss** on an
+error that kept the proposal) asks for confirmation first; a newer run that
+replaced the reviewed one while the dialog was open is never discarded.
+
 **Output folder:** generated notes go into the folder from
 `settings.researchFolder` (default `Research/`). If the vault has no such
 convention yet, the folder is created on apply; all generated names are

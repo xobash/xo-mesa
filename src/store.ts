@@ -366,6 +366,9 @@ export interface AppState {
   cancelDeepResearch: () => Promise<void>;
   applyDeepResearch: () => Promise<void>;
   discardDeepResearch: () => void;
+  /** User-facing discard: confirms first when an unapplied proposal would be
+   * lost. Resolves true when the run was discarded. */
+  requestDiscardDeepResearch: () => Promise<boolean>;
   openDailyNote: (dateISO: string) => Promise<void>;
   /** Turn one unlinked mention in `sourceRel` into a wiki link to `targetRel`
    * through the verified text-save queue. False when the text changed or the
