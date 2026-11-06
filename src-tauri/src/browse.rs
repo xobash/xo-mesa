@@ -711,7 +711,9 @@ pub fn browse_open_saved_html(
 /// The path handed to the system opener: the shell and browsers do not
 /// accept the `\\?\` form that canonicalize returns on Windows.
 fn opener_path(checked: &std::path::Path) -> String {
-    dunce::simplified(checked).to_string_lossy().into_owned()
+    crate::vaultscope::plain_path(checked)
+        .to_string_lossy()
+        .into_owned()
 }
 
 pub(crate) fn revoke_resource_window(owner: &str) {

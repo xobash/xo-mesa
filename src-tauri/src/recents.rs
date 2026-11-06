@@ -217,7 +217,7 @@ pub fn vault_recents(
             // Stored and later handed back to the renderer: no `\\?\` prefix.
             remember(
                 &mut catalogue,
-                dunce::simplified(&root)
+                crate::vaultscope::plain_path(&root)
                     .to_str()
                     .ok_or("Vault root is not UTF-8")?
                     .into(),

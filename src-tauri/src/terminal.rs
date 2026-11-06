@@ -582,7 +582,7 @@ fn launches_through_cmd(cmd: &CommandBuilder) -> bool {
 /// approved canonical root; otherwise the canonical root is used. Other
 /// platforms always use the canonical root.
 fn launch_cwd(requested: &str, canonical: &Path, windows: bool) -> PathBuf {
-    let resolved = dunce::simplified(canonical).to_path_buf();
+    let resolved = crate::vaultscope::plain_path(canonical);
     if !windows {
         return resolved;
     }
@@ -1865,7 +1865,7 @@ mod tests {
         ] {
             assert_eq!(
                 launch_cwd(&spelled, &canonical, true),
-                canonical,
+                crate::vaultscope::plain_path(&canonical),
                 "{spelled}"
             );
         }
@@ -1896,7 +1896,15 @@ mod tests {
         let shim = dir.join("pi.cmd");
         fs::write(&shim, NPM_SHIM).expect("shim");
         fs::write(dir.join("pi.ps1"), b"#!/usr/bin/env pwsh\n").expect("ps1");
-        assert_eq!(executable_in_dir(&dir, "pi"), Some(shim.clone()));
+        // PATHEXT supplies the extension's case (`pi.CMD`); NTFS names are
+        // case-insensitive, so compare the found path that way.
+        let found = executable_in_dir(&dir, "pi").expect("shim found");
+        assert!(
+            found
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&shim.to_string_lossy()),
+            "{found:?}"
+        );
         let cmd = pi_command(&shim).expect("node command");
         assert!(!launches_through_cmd(&cmd));
         assert_eq!(

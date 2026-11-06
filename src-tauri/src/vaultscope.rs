@@ -67,7 +67,7 @@ fn root_key(root: &str, windows: bool) -> String {
 /// `\\?\C:\x` becomes `C:\x`, `\\?\UNC\srv\share\x` becomes `\\srv\share\x`.
 /// Anything else, including a segment with a trailing dot or a device name that
 /// only the verbatim form can reach, is returned unchanged. Pure text, so the
-/// rule is tested on every platform; `dunce` applies the same rule to `Path`s
+/// rule is tested on every platform; [`plain_path`] applies it to `Path`s
 /// that leave Mesa.
 pub(crate) fn strip_verbatim_prefix(text: &str) -> Cow<'_, str> {
     let is_sep = |ch: char| ch == '\\' || ch == '/';
@@ -112,6 +112,21 @@ pub(crate) fn strip_verbatim_prefix(text: &str) -> Cow<'_, str> {
         }
     }
     Cow::Borrowed(text)
+}
+
+/// Plain spelling of a resolved path for storage, IPC, the opener and child
+/// processes. On Windows this drops the `\\?\` prefix through
+/// [`strip_verbatim_prefix`], which also turns `\\?\UNC\server\share` into
+/// `\\server\share` (`dunce::simplified` leaves UNC paths verbatim). Other
+/// platforms return the path unchanged.
+pub(crate) fn plain_path(path: &Path) -> PathBuf {
+    if !cfg!(windows) {
+        return path.to_path_buf();
+    }
+    match path.to_str() {
+        Some(text) => PathBuf::from(strip_verbatim_prefix(text).into_owned()),
+        None => path.to_path_buf(),
+    }
 }
 
 /// `fs::canonicalize`, with one Windows fallback to `std::path::absolute`.
@@ -1046,8 +1061,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mesa-scope-absolute-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("vault/notes")).unwrap();
-        // The temp folder itself may sit behind a link (macOS `/var`).
-        let dir = fs::canonicalize(&dir).unwrap();
+        // The temp folder itself may sit behind a link (macOS `/var`). The
+        // fallback sees plain spellings: under a `\\?\` prefix `/` and `..`
+        // are literal name characters, not separators or traversal.
+        let dir = plain_path(&fs::canonicalize(&dir).unwrap());
         let plain = dir.join("vault/notes");
         assert_eq!(absolute_without_aliases(&plain), Some(plain.clone()));
         assert_eq!(absolute_without_aliases(&dir.join("vault/../vault")), None);

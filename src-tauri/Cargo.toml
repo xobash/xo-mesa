@@ -25,8 +25,6 @@ tiny_http = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 portable-pty = "0.9"
-# Drops the Windows `\\?\` verbatim prefix from paths Mesa stores, emits or hands to other programs.
-dunce = "1"
 
 # Sync uses rcgen identity certificates, Hyper/Tokio-Rustls server TLS, and reqwest certificate pinning.
 # tiny_http is loopback-only here; do not enable ssl-rustls.

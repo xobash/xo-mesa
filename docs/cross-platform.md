@@ -212,8 +212,9 @@ in a container), so the desktop bundles come from the CI matrix above, not Docke
   `\\?\UNC\server\share\…`. Mesa keeps that form only for in-process
   checks. Paths it stores (recent vaults, approved roots), sends to the
   frontend, or gives to another program (Pi's working folder, the system
-  opener) drop the prefix (`dunce` natively, `stripVerbatimPrefix` in
-  `lib/vault.ts`, `strip_verbatim_prefix` in `vaultscope.rs`); records written
+  opener) drop the prefix (`plain_path` and `strip_verbatim_prefix` in
+  `vaultscope.rs`, `stripVerbatimPrefix` in `lib/vault.ts`), network shares
+  included (`\\?\UNC\server\share` becomes `\\server\share`); records written
   by older builds are rewritten on first read. The native watcher sends
   vault-relative paths, so it never depends on how the root is spelled. Saved
   HTML asset paths keep a UNC `//server/share` or drive root and never climb

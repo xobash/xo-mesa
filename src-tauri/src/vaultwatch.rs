@@ -100,7 +100,9 @@ fn rel_under_root(root: &Path, abs: &Path) -> Option<String> {
 
 /// Absolute path text for the renderer, without a Windows verbatim prefix.
 fn emitted_absolute(path: &Path) -> String {
-    dunce::simplified(path).to_string_lossy().into_owned()
+    crate::vaultscope::plain_path(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Kind of the root-level entry that asks the frontend for one full rescan.
@@ -504,19 +506,16 @@ mod tests {
     #[test]
     fn paths_under_the_root_are_emitted_vault_relative() {
         let root = p("/vault");
-        let events = vec![(
-            EventKind::Create(CreateKind::File),
-            vec![
-                p("/vault/Ünïcødé dir/Café.md"),
-                p("/vault/a b/c.md"),
-                p("/vault/C:/d.md"),
-            ],
-        )];
+        let mut paths = vec![p("/vault/Ünïcødé dir/Café.md"), p("/vault/a b/c.md")];
+        let mut expected = vec!["./Ünïcødé dir/Café.md", "./a b/c.md"];
+        // A Unix folder may be named like a drive; on Windows `C:` is a prefix.
+        if cfg!(unix) {
+            paths.push(p("/vault/C:/d.md"));
+            expected.push("./C:/d.md");
+        }
+        let events = vec![(EventKind::Create(CreateKind::File), paths)];
         let batch = build_batch(&root, &events, false);
-        assert_eq!(
-            batch[0].paths,
-            ["./Ünïcødé dir/Café.md", "./a b/c.md", "./C:/d.md"]
-        );
+        assert_eq!(batch[0].paths, expected);
     }
 
     /// Windows reports event paths under the verbatim canonical root.

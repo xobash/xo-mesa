@@ -2601,7 +2601,6 @@ name = "mesa"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "dunce",
  "encoding_rs",
  "futures-util",
  "http-body-util",
