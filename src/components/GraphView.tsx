@@ -998,10 +998,44 @@ export function GraphView() {
       }
       resizeTimer = window.setTimeout(applyResize, 90);
     });
+    // Display scaling can change while the CSS box does not (the window moves
+    // to a monitor with another scale), so the ResizeObserver never fires.
+    // Reallocate only the backing store: no re-fit, no kick, no reheat.
+    const reallocForScale = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const { w, h } = sizeRef.current;
+      const width = Math.max(1, Math.floor(w * dpr));
+      const height = Math.max(1, Math.floor(h * dpr));
+      if (canvas.width === width && canvas.height === height) return;
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = ctxRef.current;
+      if (ctx) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+      }
+      needsRedrawRef.current = true;
+      resumeRef.current();
+    };
+    let scaleQuery: MediaQueryList | null = null;
+    const onScaleChange = () => {
+      reallocForScale();
+      watchScale(); // a resolution query matches one scale; re-arm for the new one
+    };
+    const watchScale = () => {
+      scaleQuery?.removeEventListener("change", onScaleChange);
+      scaleQuery =
+        typeof window.matchMedia === "function"
+          ? window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+          : null;
+      scaleQuery?.addEventListener?.("change", onScaleChange);
+    };
     applyResize(); // size correctly on mount without waiting for the debounce
     ro.observe(wrap);
+    watchScale();
     return () => {
       ro.disconnect();
+      scaleQuery?.removeEventListener?.("change", onScaleChange);
       if (resizeTimer != null) clearTimeout(resizeTimer);
     };
   }, []);

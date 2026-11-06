@@ -517,3 +517,54 @@ it('stops settled ambient frames after 15 seconds and resumes once on input and 
   expect(f.raf).toHaveBeenCalledOnce();
   expect(simulation().alpha()).toBe(0);
 });
+
+it('reallocates the backing store when display scaling changes, keeping zoom and layout', () => {
+  const scaleListeners = new Map<string, () => void>();
+  const removed: string[] = [];
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: false,
+    addEventListener: (_name: string, listener: () => void) => { if (query.startsWith('(resolution')) scaleListeners.set(query, listener); },
+    removeEventListener: () => { if (query.startsWith('(resolution')) removed.push(query); },
+  }));
+  let dpr = 1;
+  vi.spyOn(window, 'devicePixelRatio', 'get').mockImplementation(() => dpr);
+  let callback: FrameRequestCallback = () => {};
+  const transforms: number[][] = [];
+  const scales: number[] = [];
+  const context = new Proxy({
+    setTransform: (...m: number[]) => { transforms.push(m); },
+    scale: (k: number) => { scales.push(k); },
+    createRadialGradient: () => ({ addColorStop: () => {} }),
+    measureText: (text: string) => ({ width: text.length * 7 }),
+  }, { get: (target, key) => key in target ? target[key as keyof typeof target] : () => {} });
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480, toJSON: () => ({}) });
+  vi.stubGlobal('requestAnimationFrame', vi.fn((next: FrameRequestCallback) => { callback = next; return 1; }));
+  mount();
+  const tick = () => act(() => { vi.advanceTimersByTime(20); callback(performance.now()); });
+  const canvas = host.querySelector('canvas')!;
+  expect([canvas.width, canvas.height]).toEqual([640, 480]);
+  for (let i = 0; i < 30; i++) tick();
+  // The user zooms in; the eased zoom converges over a few frames.
+  act(() => canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, clientX: 320, clientY: 240, bubbles: true, cancelable: true })));
+  for (let i = 0; i < 120; i++) tick();
+  const zoom = scales.at(-1)!;
+  const alpha = simulation().alpha();
+  // The window moves to a 150% monitor: the CSS box is unchanged, so only the
+  // resolution query reports it.
+  dpr = 1.5;
+  expect(scaleListeners.has('(resolution: 1dppx)')).toBe(true);
+  act(() => scaleListeners.get('(resolution: 1dppx)')!());
+  expect([canvas.width, canvas.height]).toEqual([960, 720]);
+  expect([canvas.style.width, canvas.style.height]).toEqual(['640px', '480px']);
+  scales.length = 0; transforms.length = 0;
+  for (let i = 0; i < 10; i++) tick();
+  expect(transforms.some((m) => m[0] === 1.5 && m[3] === 1.5)).toBe(true);
+  expect(scales.at(-1)).toBeCloseTo(zoom, 6);
+  expect(simulation().alpha()).toBeLessThanOrEqual(alpha);
+  // It re-arms for the new scale and unsubscribes on unmount.
+  expect(scaleListeners.has('(resolution: 1.5dppx)')).toBe(true);
+  act(() => root.unmount());
+  expect(removed).toContain('(resolution: 1.5dppx)');
+  root = createRoot(host);
+});
