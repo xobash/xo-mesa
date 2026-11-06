@@ -4,6 +4,7 @@ import { backlinksFor } from "../lib/graph";
 import { SORT_LABELS } from "../lib/sort";
 import { countWords } from "../lib/wordCount";
 import { isTextualVaultFile } from "../lib/vault";
+import { syncAttention } from "../lib/syncAttention";
 
 export function StatusBar() {
   const activePath = useAppStore((s) => s.activePath);
@@ -12,6 +13,13 @@ export function StatusBar() {
   const files = useAppStore((s) => s.files);
   const sortMode = useAppStore((s) => s.settings.sortMode);
   const syncListening = useAppStore((s) => s.syncListening);
+  const syncEnabled = useAppStore((s) => s.settings.syncEnabled);
+  const syncBusy = useAppStore((s) => s.syncBusy);
+  const syncPhase = useAppStore((s) => s.syncPhase);
+  const syncStatus = useAppStore((s) => s.syncStatus);
+  const syncReport = useAppStore((s) => s.syncReport);
+  const peers = useAppStore((s) => s.settings.peers);
+  const setSyncOpen = useAppStore((s) => s.setSyncOpen);
   const linkCount = useAppStore((s) => s.openTabs.length);
   const status = useAppStore((s) => s.status);
   const importInProgress = useAppStore((s) => s.importInProgress);
@@ -42,6 +50,11 @@ export function StatusBar() {
   const saveIssues = useMemo(
     () => Object.values(textSaveIssues),
     [textSaveIssues]
+  );
+
+  const syncIssue = useMemo(
+    () => syncAttention({ syncEnabled, syncBusy, syncPhase, syncStatus, syncReport, peers }),
+    [syncEnabled, syncBusy, syncPhase, syncStatus, syncReport, peers]
   );
 
   // Render global status failures here; suppress the redundant post-open note count.
@@ -118,6 +131,18 @@ export function StatusBar() {
       )}
       {settingsIssue && <details className="sb-save-issues"><summary>Settings need attention</summary><div className="sb-save-issue-list"><span role="alert">{settingsIssue}</span><button className="sb-save-action" onClick={retrySettings}>Retry settings</button></div></details>}
       <span className="sb-spacer" />
+      {syncIssue && (
+        <span role="alert">
+          <button
+            className="sb-save-action danger"
+            onClick={() => setSyncOpen(true)}
+            title={syncIssue.detail}
+            aria-label={syncIssue.detail}
+          >
+            {syncIssue.summary}
+          </button>
+        </span>
+      )}
       {syncListening && <span className="sb-sync">◉ sync on</span>}
       {activePath && (
         <>

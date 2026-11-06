@@ -22,6 +22,8 @@ export interface TrayInput {
   syncEnabled: boolean;
   syncBusy: boolean;
   syncPeers: number;
+  /** Short sync problem from `syncAttention`; replaces the healthy label. */
+  syncIssue: string | null;
 }
 
 export const TRAY_TASK_LIMIT = 5;
@@ -62,7 +64,9 @@ export function buildTraySnapshot(input: TrayInput): TraySnapshot {
     research: phase ? `Deep Research: ${phase}` : null,
     sync: input.syncBusy
       ? "Sync: syncing…"
-      : input.syncEnabled
+      : input.syncIssue
+        ? input.syncIssue
+        : input.syncEnabled
         ? `Sync: on · ${input.syncPeers} device${input.syncPeers === 1 ? "" : "s"}`
         : "Sync: off",
   };

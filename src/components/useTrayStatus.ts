@@ -5,6 +5,7 @@ import { getStore, useAppStore } from "../store";
 import { collectVaultTasks } from "../lib/tasks";
 import { localISO } from "../lib/daily";
 import { buildTraySnapshot } from "../lib/trayStatus";
+import { syncAttention } from "../lib/syncAttention";
 import { readGraphColors } from "./graphColors";
 import { miniGraph, popoverFile, popoverVaults, rememberRecent, searchFiles, type MiniGraph, type TrayPopoverState } from "../lib/trayPopover";
 
@@ -25,6 +26,14 @@ function snapshotOf(s: ReturnType<typeof getStore>) {
     syncEnabled: s.settings.syncEnabled,
     syncBusy: s.syncBusy,
     syncPeers: s.settings.peers.length,
+    syncIssue: syncAttention({
+      syncEnabled: s.settings.syncEnabled,
+      syncBusy: s.syncBusy,
+      syncPhase: s.syncPhase,
+      syncStatus: s.syncStatus,
+      syncReport: s.syncReport,
+      peers: s.settings.peers,
+    })?.summary ?? null,
   });
 }
 

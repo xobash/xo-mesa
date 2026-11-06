@@ -467,6 +467,8 @@ src/lib/supplyChainContract.test.ts
 src/lib/sync.ipc.test.ts
 src/lib/sync.test.ts
 src/lib/sync.ts
+src/lib/syncAttention.test.ts
+src/lib/syncAttention.ts
 src/lib/syncAutoSchedule.test.ts
 src/lib/syncAutoSchedule.ts
 src/lib/syncConflicts.test.ts

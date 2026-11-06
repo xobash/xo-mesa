@@ -6,7 +6,7 @@ const task = (text: string, due: string | null, checked = false, line = 1): Task
   ({ rel: "Notes.md", noteTitle: "Notes", line, text, checked, due, kind: "personal" });
 const base: TrayInput = {
   vaultName: "Demo Vault", saveState: { pending: 0, saving: 0, failed: 0 }, tasks: [],
-  today: "2026-10-13", researchPhase: null, syncEnabled: false, syncBusy: false, syncPeers: 0,
+  today: "2026-10-13", researchPhase: null, syncEnabled: false, syncBusy: false, syncPeers: 0, syncIssue: null,
 };
 
 describe("tray snapshot", () => {
@@ -38,5 +38,11 @@ describe("tray snapshot", () => {
     expect(snap.save).toBe("1 save needs attention");
     expect(snap.research).toBe("Deep Research: Researching");
     expect(snap.sync).toBe("Sync: on · 2 devices");
+  });
+
+  it("replaces the healthy sync label with a sync problem", () => {
+    const snap = buildTraySnapshot({ ...base, syncEnabled: true, syncPeers: 2, syncIssue: "Sync: failed with Laptop" });
+    expect(snap.sync).toBe("Sync: failed with Laptop");
+    expect(buildTraySnapshot({ ...base, syncEnabled: true, syncBusy: true, syncIssue: "Sync: offline" }).sync).toBe("Sync: syncing…");
   });
 });

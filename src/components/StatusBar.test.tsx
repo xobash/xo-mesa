@@ -291,4 +291,22 @@ describe('persistent save and settings feedback', () => {
     const button = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Retry settings')!;
     act(() => button.click()); expect(retrySettings).toHaveBeenCalledOnce();
   });
+
+  it('keeps a failed background sync visible and opens Sync from it', () => {
+    const settings = useAppStore.getState().settings;
+    act(() => useAppStore.setState({
+      settings: { ...settings, syncEnabled: true, peers: [{ id: 'p', name: 'Laptop', address: 'peer.example:8787', favorite: false, lastStatus: 'error', lastError: 'connection refused' }] },
+      syncBusy: false, syncPhase: 'offline', syncOpen: false,
+    }));
+    act(() => root.render(<StatusBar />));
+    const button = Array.from(host.querySelectorAll('button')).find(b => b.textContent === 'Sync: failed with Laptop')!;
+    expect(button.closest('[role="alert"]')).not.toBeNull();
+    expect(button.getAttribute('aria-label')).toContain('connection refused');
+    act(() => button.click());
+    expect(useAppStore.getState().syncOpen).toBe(true);
+
+    act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, peers: [{ id: 'p', name: 'Laptop', address: 'peer.example:8787', favorite: false, lastStatus: 'ok' }] }, syncPhase: 'complete' }));
+    expect(host.textContent).not.toContain('Sync: failed');
+  });
 });
+

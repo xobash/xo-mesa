@@ -204,6 +204,13 @@ transferring, retrying, offline, incomplete, complete, cancelled, disabled, or
 error. The same state is copied into the troubleshooting package, so a failed
 sync can be explained without inferring status from raw log lines.
 
+Problems also show outside the Sync dialog, because scheduled sync runs in the
+background. A device whose last sync failed, a sync that stopped before it
+reached a device, or conflict copies from the last sync put a red
+**Sync: …** button in the status bar (it opens Sync) and replace the menu-bar
+sync line. A failed device stays flagged across restarts until a later sync
+with it succeeds.
+
 Each peer records:
 
 - pinned certificate fingerprint (trust state)
