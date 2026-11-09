@@ -468,55 +468,6 @@ pub(super) fn destination_state<F: CommitFs>(
     }
 }
 
-#[cfg(test)]
-pub(super) fn stage_candidate<F: CommitFs>(
-    fs: &F,
-    path: &Path,
-    bytes: &[u8],
-    size: u64,
-    hash: &str,
-) -> std::io::Result<PathBuf> {
-    for _ in 0..16 {
-        let candidate = candidate_path(path);
-        match fs.write_new(&candidate, bytes) {
-            Ok(()) => {
-                let staged = match fs.fingerprint(&candidate) {
-                    Ok(staged) => staged,
-                    Err(e) => {
-                        let _ = fs.remove_file(&candidate);
-                        return Err(std::io::Error::new(
-                            e.kind(),
-                            format!(
-                                "sync candidate read-back failed at {}: {e}",
-                                candidate.display()
-                            ),
-                        ));
-                    }
-                };
-                if !fingerprint_matches(&staged, size, hash) {
-                    let _ = fs.remove_file(&candidate);
-                    return Err(invalid_data(format!(
-                        "sync candidate failed read-back verification: {}",
-                        candidate.display()
-                    )));
-                }
-                return Ok(candidate);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => {
-                // `write_all` or `sync_all` can fail after creating a partial
-                // candidate. It is uniquely ours and safe to remove.
-                let _ = fs.remove_file(&candidate);
-                return Err(e);
-            }
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "could not allocate a unique sync candidate",
-    ))
-}
-
 pub(super) fn publish_candidate<F: CommitFs>(
     fs: &F,
     candidate: &Path,
@@ -537,33 +488,6 @@ pub(super) fn publish_candidate<F: CommitFs>(
             }
         }
     }
-}
-
-#[cfg(test)]
-pub(super) fn commit_verified_create_with_fs<F: CommitFs>(
-    fs: &F,
-    path: &Path,
-    bytes: &[u8],
-    size: u64,
-    hash: &str,
-) -> std::io::Result<CommitOutcome> {
-    if let Some(parent) = path.parent() {
-        fs.create_dir_all(parent)?;
-    }
-    match destination_state(fs, path, size, hash)? {
-        Some(true) => return Ok(CommitOutcome::Unchanged),
-        Some(false) => return Err(collision_error(path)),
-        None => {}
-    }
-
-    let candidate = stage_candidate(fs, path, bytes, size, hash)?;
-    let mut preserve_candidate = false;
-    let result =
-        publish_verified_candidate(fs, &candidate, path, size, hash, &mut preserve_candidate);
-    if !preserve_candidate {
-        let _ = fs.remove_file(&candidate);
-    }
-    result
 }
 
 pub(super) fn publish_verified_candidate<F: CommitFs>(
@@ -620,17 +544,6 @@ pub(super) fn publish_verified_candidate<F: CommitFs>(
     }
 }
 
-/// Commit a verified candidate only when `path` is missing. The platform's
-/// native exclusive-rename primitive publishes the complete sibling candidate
-/// without a check-then-rename race. A hard link is used only when the native
-/// primitive reports that the filesystem does not support exclusive rename.
-#[cfg(test)]
-pub fn commit_verified_create(path: &Path, bytes: &[u8]) -> std::io::Result<CommitOutcome> {
-    let size = bytes.len() as u64;
-    let hash = content_hash_hex(bytes);
-    commit_verified_create_with_fs(&StdCommitFs, path, bytes, size, &hash)
-}
-
 /// The reason a streamed receive failed, kept distinct for HTTP diagnostics.
 #[derive(Debug)]
 pub enum ReceiveError {
@@ -680,6 +593,49 @@ pub struct StagedFile {
 pub(super) struct RootedStage {
     parent: std::fs::File,
     candidate: std::ffi::CString,
+}
+
+/// Rename `from` (relative to `from_dir`) to `to` (relative to `to_dir`) and
+/// never replace an existing `to`. Returns the libc result: 0 on success,
+/// otherwise -1 with `errno` set. Platforms without a no-replace `renameat`
+/// return -1 so callers take their fallback or error path.
+#[cfg(unix)]
+fn renameat_no_replace(
+    from_dir: &std::fs::File,
+    from: &std::ffi::CStr,
+    to_dir: &std::fs::File,
+    to: &std::ffi::CStr,
+) -> libc::c_int {
+    use std::os::fd::AsRawFd;
+    let (from_fd, to_fd) = (from_dir.as_raw_fd(), to_dir.as_raw_fd());
+    #[cfg(target_os = "linux")]
+    // SAFETY: both directory Files are borrowed open and both names are NUL-terminated.
+    let moved = unsafe {
+        libc::renameat2(
+            from_fd,
+            from.as_ptr(),
+            to_fd,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: both directory Files are borrowed open and both names are NUL-terminated.
+    let moved = unsafe {
+        libc::renameatx_np(
+            from_fd,
+            from.as_ptr(),
+            to_fd,
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let moved = {
+        let _ = (from_fd, from, to_fd, to);
+        -1
+    };
+    moved
 }
 
 /// Open each descendant relative to the already-open vault directory. A
@@ -865,30 +821,7 @@ impl RootedTarget {
         use std::os::fd::AsRawFd;
         let from_fd = self.parent.as_raw_fd();
         let to_fd = to.parent.as_raw_fd();
-        #[cfg(target_os = "linux")]
-        // SAFETY: both parent Files remain open and both names are NUL-terminated.
-        let moved = unsafe {
-            libc::renameat2(
-                from_fd,
-                self.name.as_ptr(),
-                to_fd,
-                to.name.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        #[cfg(target_os = "macos")]
-        // SAFETY: both parent Files remain open and both names are NUL-terminated.
-        let moved = unsafe {
-            libc::renameatx_np(
-                from_fd,
-                self.name.as_ptr(),
-                to_fd,
-                to.name.as_ptr(),
-                libc::RENAME_EXCL,
-            )
-        };
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let moved = -1;
+        let moved = renameat_no_replace(&self.parent, &self.name, &to.parent, &to.name);
         if moved == 0 {
             return Ok(());
         }
@@ -950,27 +883,7 @@ impl RootedTarget {
         if kind != libc::S_IFREG && kind != libc::S_IFDIR {
             return Err(invalid_data("recovery source must be a file or directory"));
         }
-        #[cfg(target_os = "linux")]
-        let moved = unsafe {
-            libc::renameat2(
-                self.parent.as_raw_fd(),
-                self.name.as_ptr(),
-                to.parent.as_raw_fd(),
-                to.name.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        #[cfg(target_os = "macos")]
-        let moved = unsafe {
-            libc::renameatx_np(
-                self.parent.as_raw_fd(),
-                self.name.as_ptr(),
-                to.parent.as_raw_fd(),
-                to.name.as_ptr(),
-                libc::RENAME_EXCL,
-            )
-        };
-        if moved != 0 {
+        if renameat_no_replace(&self.parent, &self.name, &to.parent, &to.name) != 0 {
             return Err(std::io::Error::last_os_error());
         }
         self.parent.sync_all()?;
@@ -1116,30 +1029,7 @@ impl StagedFile {
             Err(error) => return Err(error),
         }
         let fd = rooted.parent.as_raw_fd();
-        #[cfg(target_os = "linux")]
-        // SAFETY: the parent File remains open and both names are NUL-terminated.
-        let renamed = unsafe {
-            libc::renameat2(
-                fd,
-                rooted.candidate.as_ptr(),
-                fd,
-                dest.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        };
-        #[cfg(target_os = "macos")]
-        // SAFETY: the parent File remains open and both names are NUL-terminated.
-        let renamed = unsafe {
-            libc::renameatx_np(
-                fd,
-                rooted.candidate.as_ptr(),
-                fd,
-                dest.as_ptr(),
-                libc::RENAME_EXCL,
-            )
-        };
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let renamed = -1;
+        let renamed = renameat_no_replace(&rooted.parent, &rooted.candidate, &rooted.parent, &dest);
         let linked = if renamed == 0 {
             false
         } else {
@@ -1594,35 +1484,6 @@ pub fn numbered_conflict_name(base: &str, ordinal: u32) -> String {
     } else {
         format!("{base}{tag}")
     }
-}
-
-/// Commit a conflict copy without replacing any existing same-day copy.
-/// Identical bytes reuse the first matching numbered destination; different
-/// bytes advance until an unused sibling is available.
-#[cfg(test)]
-pub fn commit_conflict_verified(
-    root: &Path,
-    base_rel: &str,
-    bytes: &[u8],
-) -> std::io::Result<(CommitOutcome, String)> {
-    for ordinal in 1..=10_000 {
-        let dest_rel = numbered_conflict_name(base_rel, ordinal);
-        let dest = safe_join_confined(root, &dest_rel).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unsafe destination path {dest_rel:?}"),
-            )
-        })?;
-        match commit_verified_create(&dest, bytes) {
-            Ok(outcome) => return Ok((outcome, dest_rel)),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "too many same-day conflict copies",
-    ))
 }
 
 /// Check the contiguous conflict-copy sequence for identical bytes. Mesa's

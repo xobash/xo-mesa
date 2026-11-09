@@ -37,15 +37,33 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   },
 }));
 
-vi.mock("../lib/vault", () => ({
-  IN_TAURI: true,
-  urlForPath: (path: string) => path,
-  authorizeWriteArtifacts: async () => {},
-  flushVaultFile: async () => {},
-  // This suite exercises the JS filesystem adapter; native publication and
-  // preconditions are covered by Rust and vaultWriteNative bridge tests.
-  nativeVaultWriteAtomic: undefined,
-}));
+// Every filesystem call made through the vault's verified-write object.
+const vaultFsCalls = vi.hoisted(() => [] as string[]);
+
+vi.mock("../lib/vault", async () => {
+  const fs = await import("@tauri-apps/plugin-fs");
+  const record = <A extends unknown[], R>(name: string, fn: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      vaultFsCalls.push(name);
+      return fn(...args);
+    };
+  return {
+    IN_TAURI: true,
+    urlForPath: (path: string) => path,
+    // This suite exercises the JS filesystem adapter; native publication and
+    // preconditions are covered by Rust and vaultWriteNative bridge tests.
+    VAULT_FS: {
+      readFile: record("readFile", (path: string) => fs.readFile(path)),
+      writeFile: record("writeFile", (path: string, data: Uint8Array) => fs.writeFile(path, data)),
+      remove: record("remove", (path: string) => fs.remove(path)),
+      exists: record("exists", (path: string) => fs.exists(path)),
+      rename: record("rename", (from: string, to: string) => fs.rename(from, to)),
+      authorizeArtifacts: record("authorizeArtifacts", async () => {}),
+      flush: record("flush", async () => {}),
+      atomicWrite: undefined,
+    },
+  };
+});
 
 // Passthrough spy: the bound itself is unit-tested in pdfHistory.test.ts; here
 // we pin that the hook actually routes BOTH stacks through it.
@@ -201,7 +219,8 @@ vi.mock("pdfjs-dist/legacy/build/pdf.mjs", () => {
 
 import { addText } from "../lib/pdf";
 import { pdfBytesEqual } from "../lib/pdfBytes";
-import { paintedBlankUnexpectedly, usePdfEditor } from "./usePdfEditor";
+import { usePdfEditor } from "./usePdfEditor";
+import { paintedBlankUnexpectedly } from "./usePdfPagePaint";
 
 type HookValue = ReturnType<typeof usePdfEditor>;
 let latest: HookValue | null = null;
@@ -319,6 +338,7 @@ afterEach(async () => {
   fsState.files.clear();
   fsState.onRead = null;
   trimCalls.length = 0;
+  vaultFsCalls.length = 0;
   pdfjsState.textContentCalls = 0;
   pdfjsState.textContentPages.length = 0;
   pdfjsState.getPageNumbers.length = 0;
@@ -687,6 +707,33 @@ describe("usePdfEditor document identity safety", () => {
     expect(pdfBytesEqual(fsState.files.get("/queued.pdf")!, edited)).toBe(true);
     expect(latest!.dirty).toBe(false);
     expect(latest!.status).toBe("Saved.");
+  });
+
+  it("saves through the vault's verified-write filesystem, not raw plugin-fs", async () => {
+    const baseline = await makePdf("vault-fs");
+    const edited = await addText(baseline, { page: 0, x: 40, y: 40, text: "vault" });
+    fsState.files.set("/vault-fs.pdf", baseline);
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+
+    await render(file("/vault-fs.pdf"));
+    await waitFor(() => !!latest?.bytes && pdfBytesEqual(latest.bytes, baseline));
+    await act(async () => {
+      await latest!.apply(async () => edited);
+    });
+    await waitFor(() => latest?.dirty === true);
+    vaultFsCalls.length = 0;
+    await act(async () => {
+      await latest!.save();
+    });
+
+    expect(latest!.status).toBe("Saved.");
+    expect(pdfBytesEqual(fsState.files.get("/vault-fs.pdf")!, edited)).toBe(true);
+    // The guarded vault object staged, committed and flushed the write.
+    expect(vaultFsCalls).toEqual(
+      expect.arrayContaining(["authorizeArtifacts", "writeFile", "rename", "flush"])
+    );
   });
 });
 

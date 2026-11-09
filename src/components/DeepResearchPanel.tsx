@@ -1,22 +1,24 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { useRemoteImageRewrite } from "../lib/remoteImages";
+import { useRemoteImageRewrite } from "./useRemoteImageRewrite";
 import { useAppStore, getStore } from "../store";
 import type { DeepResearchRunState } from "../store";
 import { IN_TAURI } from "../lib/vault";
 import {
-  RESEARCH_DEPTH_PRESETS,
-  DEPTH_LIMITS,
-  clampDepth,
-  buildResearchGraph,
   canonicalizeSourceUrl,
   presentResearchSource,
   type ResearchContextScope,
-  type ResearchDepth,
-  type ResearchDepthPreset,
   type ResearchActivity,
-  type ResearchGraphLayout,
   type ResearchSourcePresentation,
 } from "../lib/deepResearch";
+import {
+  RESEARCH_DEPTH_PRESETS,
+  DEPTH_LIMITS,
+  clampDepth,
+  depthForPreset,
+  type ResearchDepth,
+  type ResearchDepthPreset,
+} from "../lib/deepResearchConfig";
+import { buildResearchGraph, type ResearchGraphLayout } from "../lib/deepResearchGraph";
 import {
   buildResearchCompletionExport,
   buildResearchTroubleshootingKit,
@@ -549,17 +551,7 @@ export function DeepResearchPanel({
   };
 
   // Per-run depth (initialized from the persisted default preset).
-  const defaultDepth = useMemo(
-    () =>
-      clampDepth(
-        RESEARCH_DEPTH_PRESETS[
-          (settings.researchDepth as ResearchDepthPreset) in RESEARCH_DEPTH_PRESETS
-            ? (settings.researchDepth as ResearchDepthPreset)
-            : "standard"
-        ]
-      ),
-    [settings.researchDepth]
-  );
+  const defaultDepth = useMemo(() => depthForPreset(settings.researchDepth), [settings.researchDepth]);
   const [depth, setDepth] = useState<ResearchDepth>(defaultDepth);
   useEffect(() => setDepth(defaultDepth), [defaultDepth]);
 

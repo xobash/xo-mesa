@@ -1,5 +1,5 @@
 import { forEachSegment, inlineCodeSpans, isMarkdownPath } from "./markdownCode";
-import { extOf, stripExt } from "./vault";
+import { extOf, relBase, relDir, stripExt } from "./vaultPaths";
 import { linkKey } from "./fsnames";
 
 // A body that stops at a single "]", a newline or the end is consumed as a
@@ -132,14 +132,14 @@ export function rewriteInboundLinks(
   renamedIsMarkdown: boolean,
   bareNameUnambiguous: boolean
 ): { text: string; changed: boolean } {
-  const sourceDir = sourceRel.includes("/") ? sourceRel.slice(0, sourceRel.lastIndexOf("/")) : "";
-  const oldBase = linkKey(oldRel.slice(oldRel.lastIndexOf("/") + 1));
+  const sourceDir = relDir(sourceRel);
+  const oldBase = linkKey(relBase(oldRel));
   const oldExt = `.${extOf(oldRel)}`;
   // A wikilink that names the file (not a frontmatter alias) breaks on rename.
   const namesOldFile = (target: string) => {
     const path = linkKey(normalizeRelativeTarget(sourceDir, target).replace(/^\/+/, ""));
     const bare = path.endsWith(oldExt) ? path.slice(0, -oldExt.length) : path;
-    return bare.slice(bare.lastIndexOf("/") + 1) === stripExt(oldBase);
+    return relBase(bare) === stripExt(oldBase);
   };
   const resolve = (target: string) => {
     const normalized = normalizeRelativeTarget(sourceDir, target);
@@ -173,7 +173,7 @@ export function rewriteInboundLinks(
         : relative ? (slashy.startsWith("./") && !relative.startsWith("../") ? `./${relative}` : relative)
           : newRel;
     if (hadDir) return hadExt || !renamedIsMarkdown ? nextRel : stripExt(nextRel);
-    const base = nextRel.slice(nextRel.lastIndexOf("/") + 1);
+    const base = relBase(nextRel);
     // A bare name that already belongs to another note would resolve there.
     const owner = renamedIsMarkdown ? resolveNote(stripExt(base)) : null;
     if (owner && owner !== oldRel) return hadExt ? newRel : stripExt(newRel);
@@ -260,13 +260,13 @@ export function referenceMayTarget(
   oldRel: string,
   bareNameUnambiguous: boolean
 ): boolean {
-  const sourceDir = sourceRel.includes("/") ? sourceRel.slice(0, sourceRel.lastIndexOf("/")) : "";
+  const sourceDir = relDir(sourceRel);
   let target = rawReference.split("|")[0]?.split("#")[0]?.trim() ?? "";
   try { target = decodeURIComponent(target); } catch { /* malformed escapes stay literal */ }
   if (!target) return false;
   const normalized = linkKey(normalizeRelativeTarget(sourceDir, target));
   if (normalized === linkKey(oldRel)) return true;
-  const oldBase = linkKey(oldRel.slice(oldRel.lastIndexOf("/") + 1));
+  const oldBase = linkKey(relBase(oldRel));
   return bareNameUnambiguous && !target.includes("/") && linkKey(target) === oldBase;
 }
 

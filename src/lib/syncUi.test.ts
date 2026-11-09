@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLanAddress, peerFromDiscovery, windowsFirewallHint } from "./syncUi";
+import { isLanAddress, normalizePeer, peerFromDiscovery, windowsFirewallHint, type DiscoveryPacket } from "./syncUi";
 
 describe("sync UI boundary", () => {
   it("normalizes a valid discovery packet without exposing credentials", () => {
@@ -41,5 +41,51 @@ describe("sync UI boundary", () => {
     expect(windowsFirewallHint({ ...quiet, peers: [peer("198.51.100.2:8787", "Timed out reaching that device.")] })).toBe(false);
     expect(windowsFirewallHint({ ...quiet, peers: [peer(lanPeer, "3 files failed: a.md")] })).toBe(false);
     expect(windowsFirewallHint({ ...quiet, windows: false, discoveryQuiet: true })).toBe(false);
+  });
+});
+
+describe("normalizePeer", () => {
+  it("defaults bare peers to HTTPS (sync is TLS-only)", () => {
+    expect(normalizePeer("notes-host:8787")).toBe("https://notes-host:8787");
+    expect(normalizePeer("notes-host:8787", false)).toBe("http://notes-host:8787");
+  });
+
+  it("preserves explicit schemes and strips trailing slashes", () => {
+    expect(normalizePeer("https://peer.example/")).toBe("https://peer.example");
+    expect(normalizePeer("http://203.0.113.5:8787/")).toBe(
+      "http://203.0.113.5:8787"
+    );
+  });
+});
+
+describe("peerFromDiscovery", () => {
+  const base: DiscoveryPacket = {
+    mesaDiscovery: true,
+    version: "1.0",
+    name: "Office iMac",
+    host: "192.0.2.113",
+    port: 8787,
+    protocol: "https",
+    listening: true,
+    fingerprint: "AA:BB:CC:DD",
+  };
+
+  it("carries the certificate fingerprint and uses it as the stable id", () => {
+    const peer = peerFromDiscovery(base, 1000);
+    expect(peer).not.toBeNull();
+    expect(peer!.fingerprint).toBe("aabbccdd");
+    expect(peer!.id).toBe("aabbccdd");
+    expect(peer!.address).toBe("192.0.2.113:8787");
+  });
+
+  it("falls back to address as id when no fingerprint is advertised", () => {
+    const peer = peerFromDiscovery({ ...base, fingerprint: "" }, 1000);
+    expect(peer!.id).toBe("192.0.2.113:8787");
+    expect(peer!.fingerprint).toBe("");
+  });
+
+  it("rejects non-Mesa or unroutable packets", () => {
+    expect(peerFromDiscovery({ ...base, mesaDiscovery: false })).toBeNull();
+    expect(peerFromDiscovery({ ...base, host: "0.0.0.0" })).toBeNull();
   });
 });

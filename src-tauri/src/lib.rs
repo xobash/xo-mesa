@@ -23,6 +23,9 @@ mod vaultwatch;
 mod vaultwrite;
 mod webview_settings;
 
+// Self-contained helpers compiled under `sync_core` (see its module list).
+use sync_core::{hex, vault_names};
+
 pub(crate) fn require_main(label: &str) -> Result<(), String> {
     if label == "main" {
         Ok(())
@@ -340,11 +343,9 @@ pub fn run() {
             sync::sync_discovery_stop,
             secrets::sync_secrets_read,
             secrets::sync_secrets_write,
-            activity::activity_start,
             activity::activity_set_context,
             activity::deep_research_respond,
             activity::activity_view_respond,
-            activity::activity_stop,
             htmlrun::html_run_session,
             htmlrun::html_run_revoke,
             browse::browse_fetch,

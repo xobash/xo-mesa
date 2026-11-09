@@ -6,16 +6,11 @@ import { getMesaPerfTimeline } from "../lib/mesaPerf";
 import { isIndexedCache, workingSetStats } from "../lib/documentWorkingSet";
 import { activePdfPerfRun } from "./pdfPerf";
 import { Modal } from "./Modal";
+import { formatBytes } from "../lib/formatBytes";
 import { backgroundWork } from "../lib/backgroundWorkGovernor";
 import { clearLocalIndexCache, vaultIndexStorageStats, type VaultIndexStorageStats } from "../lib/vaultIndex";
 import { recordResourceSample, summarizeResourcePlateau } from "../lib/resourcePlateau";
 import { sampleProcessTreeResources, type ProcessTreeRateSample } from "../lib/processResources";
-
-function bytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function count(n: number): string {
   return n.toLocaleString();
@@ -218,7 +213,7 @@ export function DiagnosticsModal() {
           </div>
           <div className="diag-card">
             <span className="diag-label">Decoded Text</span>
-            <strong>{bytes(snapshot.working.decodedChars * 2)}</strong>
+            <strong>{formatBytes(snapshot.working.decodedChars * 2)}</strong>
             <span>{count(snapshot.working.decodedDocuments)} documents in memory</span>
           </div>
           <div className="diag-card">
@@ -244,7 +239,7 @@ export function DiagnosticsModal() {
           <div className="diag-card">
             <span className="diag-label">PDF Memory</span>
             <strong>{snapshot.pdfRun ? "active" : "idle"}</strong>
-            <span>{snapshot.pdfRun ? `${snapshot.pdfRun.file.relPath} · ${count(snapshot.pdfRun.counters.pagesPlanned ?? 0)} pages planned · ~${bytes(snapshot.pdfRun.counters.rasterBytes ?? 0)} raster memory` : "No PDF run recorded"}</span>
+            <span>{snapshot.pdfRun ? `${snapshot.pdfRun.file.relPath} · ${count(snapshot.pdfRun.counters.pagesPlanned ?? 0)} pages planned · ~${formatBytes(snapshot.pdfRun.counters.rasterBytes ?? 0)} raster memory` : "No PDF run recorded"}</span>
           </div>
           <div className="diag-card">
             <span className="diag-label">Resource Plateau</span>
@@ -252,13 +247,13 @@ export function DiagnosticsModal() {
             <span>
               {snapshot.resourceSample.heapBytes === null
                 ? "Renderer heap unavailable"
-                : `heap ${bytes(snapshot.resourceSample.heapBytes)}`}
+                : `heap ${formatBytes(snapshot.resourceSample.heapBytes)}`}
               {snapshot.resourcePlateau ? ` · ${snapshot.resourcePlateau.samples} samples` : ""}
             </span>
           </div>
           <div className="diag-card">
             <span className="diag-label">Process Tree</span>
-            <strong>{processTree ? bytes(processTree.rssBytes) : "native only"}</strong>
+            <strong>{processTree ? formatBytes(processTree.rssBytes) : "native only"}</strong>
             <span>
               {processTree
                 ? `${count(processTree.processCount)} processes${processTree.cpuPercent === null ? "" : ` · ${processTree.cpuPercent.toFixed(1)}% CPU`}`
@@ -274,7 +269,7 @@ export function DiagnosticsModal() {
         <section className="diag-section">
           <h3>Local Cache</h3>
           <div className="diag-timeline">
-            <span>{storage ? `${bytes(storage.bytes)} of ${bytes(storage.budgetBytes)} · ${storage.snapshots} vault snapshot${storage.snapshots === 1 ? "" : "s"}` : "Measuring cache…"}</span>
+            <span>{storage ? `${formatBytes(storage.bytes)} of ${formatBytes(storage.budgetBytes)} · ${storage.snapshots} vault snapshot${storage.snapshots === 1 ? "" : "s"}` : "Measuring cache…"}</span>
             <button className="btn" onClick={() => void clearLocalIndexCache().then(() => setCacheRefresh((n) => n + 1))}>Clear local cache</button>
           </div>
           <span className="setting-desc">Removes disposable indexes only. Your vault files and settings stay untouched.</span>
@@ -285,14 +280,14 @@ export function DiagnosticsModal() {
             {snapshot.resourcePlateau ? (
               <>
                 {snapshot.resourcePlateau.heapDeltaBytes !== null && (
-                  <span>Renderer heap delta: {bytes(Math.abs(snapshot.resourcePlateau.heapDeltaBytes))} {snapshot.resourcePlateau.heapDeltaBytes >= 0 ? "up" : "down"}</span>
+                  <span>Renderer heap delta: {formatBytes(Math.abs(snapshot.resourcePlateau.heapDeltaBytes))} {snapshot.resourcePlateau.heapDeltaBytes >= 0 ? "up" : "down"}</span>
                 )}
-                <span>Decoded text delta: {bytes(Math.abs(snapshot.resourcePlateau.decodedDeltaBytes))} {snapshot.resourcePlateau.decodedDeltaBytes >= 0 ? "up" : "down"}</span>
-                <span>PDF raster delta: {bytes(Math.abs(snapshot.resourcePlateau.pdfRasterDeltaBytes))} {snapshot.resourcePlateau.pdfRasterDeltaBytes >= 0 ? "up" : "down"}</span>
+                <span>Decoded text delta: {formatBytes(Math.abs(snapshot.resourcePlateau.decodedDeltaBytes))} {snapshot.resourcePlateau.decodedDeltaBytes >= 0 ? "up" : "down"}</span>
+                <span>PDF raster delta: {formatBytes(Math.abs(snapshot.resourcePlateau.pdfRasterDeltaBytes))} {snapshot.resourcePlateau.pdfRasterDeltaBytes >= 0 ? "up" : "down"}</span>
                 <span>Queue delta: {snapshot.resourcePlateau.queuedDelta}</span>
                 {processTree && (
                   <span>
-                    Process tree: {bytes(processTree.rssBytes)}
+                    Process tree: {formatBytes(processTree.rssBytes)}
                     {processTree.cpuPercent === null ? "" : ` · ${processTree.cpuPercent.toFixed(1)}% CPU`}
                   </span>
                 )}

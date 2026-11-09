@@ -394,16 +394,6 @@ fn nanos() -> u128 {
         .unwrap_or(0)
 }
 
-/// A fresh 256-bit bearer token for the local Pi bridge.
-pub(crate) fn make_token() -> Result<String, String> {
-    use ring::rand::{SecureRandom, SystemRandom};
-    let mut bytes = [0_u8; 32];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| "could not generate a secure Pi bridge token".to_string())?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
 fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -665,7 +655,7 @@ fn handle_request(
     // Rendered pixels of the main workspace view, captured by the main renderer
     // on request so remote inference providers can see what the user sees.
     if url == "/view" && method == Method::Get {
-        let request_id = match make_token() {
+        let request_id = match crate::hex::random_token() {
             Ok(id) => id,
             Err(error) => {
                 let _ = req.respond(Response::from_string(error).with_status_code(500));
@@ -835,16 +825,8 @@ fn bind_activity_server(first: u16, last: u16) -> Result<(Server, u16), String> 
 /// Start (or reuse) the loopback activity server and materialize the Pi
 /// extension. Idempotent: repeated calls return the same running server's
 /// port/token/extension path, so surface switches and context restarts never
-/// spawn duplicate servers.
-#[tauri::command]
-pub fn activity_start(
-    window: tauri::Window,
-    app: tauri::AppHandle,
-) -> Result<ActivityInfo, String> {
-    crate::require_main(window.label())?;
-    start_native(app)
-}
-
+/// spawn duplicate servers. Native-only: the bearer token never reaches a
+/// renderer.
 pub(crate) fn start_native(app: tauri::AppHandle) -> Result<ActivityInfo, String> {
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(existing) = guard.as_ref() {
@@ -852,7 +834,7 @@ pub(crate) fn start_native(app: tauri::AppHandle) -> Result<ActivityInfo, String
     }
 
     let (server, port) = bind_activity_server(PORT_FIRST, PORT_LAST)?;
-    let token = make_token()?;
+    let token = crate::hex::random_token()?;
     let (
         extension_path,
         goal_extension_path,
@@ -916,13 +898,6 @@ pub fn activity_set_context(window: tauri::Window, context: String) -> Result<()
     let mut current = context_state().lock().map_err(|e| e.to_string())?;
     *current = bounded_context(context);
     Ok(())
-}
-
-// Blocking work: run off the main (UI) thread.
-#[tauri::command(async)]
-pub fn activity_stop(window: tauri::Window) -> Result<(), String> {
-    crate::require_main(window.label())?;
-    stop_native()
 }
 
 pub(crate) fn stop_native() -> Result<(), String> {
@@ -1121,8 +1096,8 @@ mod tests {
 
     #[test]
     fn bridge_tokens_are_fresh_256_bit_values() {
-        let first = make_token().unwrap();
-        let second = make_token().unwrap();
+        let first = crate::hex::random_token().unwrap();
+        let second = crate::hex::random_token().unwrap();
         assert_eq!(first.len(), 64);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second);

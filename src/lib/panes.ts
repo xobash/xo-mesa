@@ -22,13 +22,6 @@ function splitSide(stack: PaneView[]): PaneView[] {
   return stack.slice(0, SIDE_PANES);
 }
 
-/** Add `view` if absent, remove it if present (top-bar button behaviour). */
-export function togglePanel(stack: PaneView[], view: RightPanel): PaneView[] {
-  return stack.includes(view)
-    ? stack.filter((v) => v !== view)
-    : [...stack, view];
-}
-
 /** Remove a panel from the stack. */
 export function removeView(stack: PaneView[], view: PaneView): PaneView[] {
   return stack.filter((v) => v !== view);

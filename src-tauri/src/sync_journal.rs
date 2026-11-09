@@ -123,12 +123,8 @@ pub(super) fn journal_path(root: &Path) -> PathBuf {
 /// A new journal's operation-origin identifier: 128 OS-random bits. It is
 /// never an authentication credential; an existing journal keeps its stored ID.
 pub(super) fn journal_device() -> std::io::Result<String> {
-    use ring::rand::SecureRandom;
-    let mut bytes = [0u8; 16];
-    ring::rand::SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| std::io::Error::other("could not generate a sync journal identity"))?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    super::hex::random_hex::<16>()
+        .ok_or_else(|| std::io::Error::other("could not generate a sync journal identity"))
 }
 
 pub(super) fn journal_mutex() -> &'static Mutex<()> {
@@ -508,11 +504,6 @@ pub fn retire_journal_peers(root: &Path, fingerprints: &[String]) -> std::io::Re
     Ok(())
 }
 
-#[cfg(test)]
-pub(super) fn retire_journal_peer(root: &Path, fingerprint: &str) -> std::io::Result<()> {
-    retire_journal_peers(root, &[fingerprint.to_string()])
-}
-
 const MAX_APPLIED_IDS: usize = 8192;
 const MAX_ACKED_IDS_PER_PEER: usize = 8192;
 /// Upper bounds for a stored or received journal. Retained acknowledgement
@@ -735,18 +726,8 @@ pub(super) fn save_journal_unlocked(
         return Err(error);
     }
     // The rename is durable only once its directory entry is flushed.
-    #[cfg(unix)]
-    std::fs::File::open(root)?.sync_all()?;
+    platform_fs::sync_directory(root)?;
     Ok(saved)
-}
-
-/// Atomically replace Mesa's own metadata. A crash leaves either the prior
-/// complete journal or the complete new journal; the uniquely named temp is
-/// ignored and can never enter a vault scan or sync manifest.
-#[cfg(test)]
-pub fn save_journal(root: &Path, journal: &SyncJournal) -> std::io::Result<()> {
-    let _guard = journal_guard()?;
-    save_journal_unlocked(root, journal).map(|_| ())
 }
 
 /// Exact-duplicate lookup for `append_operation`. Indices are bucketed by a
@@ -943,14 +924,6 @@ pub fn reconcile_complete_journal(
         let _guard = journal_guard()?;
         load_journal_unlocked(root)
     }
-}
-
-#[cfg(test)]
-pub fn merge_journal(root: &Path, remote: &SyncJournal) -> std::io::Result<SyncJournal> {
-    let _guard = journal_guard()?;
-    let mut local = load_journal_unlocked(root)?;
-    merge_remote_into(&mut local, remote)?;
-    save_journal_unlocked(root, &local)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -76,7 +76,7 @@ describe("DiagnosticsModal", () => {
       runs: [{ id: 1, file: { relPath: "manual.pdf", ext: "pdf" }, startedAt: 0, events: [], counters: { pagesPlanned: 4, rasterBytes: 8192 } }],
     };
     act(() => root.render(<DiagnosticsModal />));
-    expect(host.textContent).toContain("manual.pdf · 4 pages planned · ~8.0 KB raster memory");
+    expect(host.textContent).toContain("manual.pdf · 4 pages planned · ~8.0 KiB raster memory");
   });
 
   it("refreshes while open and stops when closed", () => {

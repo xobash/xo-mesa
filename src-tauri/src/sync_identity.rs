@@ -16,12 +16,7 @@ pub(super) fn identity_cache() -> &'static Mutex<Option<Arc<Identity>>> {
 
 /// Lowercase hex SHA-256 of arbitrary bytes.
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+    crate::hex::encode(&Sha256::digest(bytes))
 }
 
 /// Fingerprint (SHA-256 of the DER) of the first certificate in a PEM blob.
@@ -413,9 +408,7 @@ pub(crate) fn protect_private_directory(
         builder.create(dir).map_err(|e| e.to_string())?;
         for created in missing_parents {
             if let Some(parent) = created.parent() {
-                fs::File::open(parent)
-                    .and_then(|file| file.sync_all())
-                    .map_err(|e| e.to_string())?;
+                sync_core::platform_fs::sync_directory(parent).map_err(|e| e.to_string())?;
             }
         }
         use std::os::unix::fs::OpenOptionsExt;
@@ -521,20 +514,12 @@ pub(super) fn validate_identity(cert_pem: String, key_pem: String) -> Result<Ide
 }
 
 pub(super) fn flush_identity_directory(dir: &std::path::Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        std::fs::File::open(dir)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        // Also persist the first-run directory entry in its existing parent.
-        if let Some(parent) = dir.parent() {
-            std::fs::File::open(parent)
-                .and_then(|file| file.sync_all())
-                .map_err(|e| e.to_string())?;
-        }
+    // A no-op on Windows: file bytes are flushed; directory durability is not claimed.
+    sync_core::platform_fs::sync_directory(dir).map_err(|e| e.to_string())?;
+    // Also persist the first-run directory entry in its existing parent.
+    if let Some(parent) = dir.parent() {
+        sync_core::platform_fs::sync_directory(parent).map_err(|e| e.to_string())?;
     }
-    #[cfg(not(unix))]
-    let _ = dir; // Windows file bytes are flushed; directory durability is not claimed.
     Ok(())
 }
 

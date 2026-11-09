@@ -2,9 +2,12 @@
 pub(crate) mod file_metadata;
 #[path = "sync_fs.rs"]
 mod filesystem;
-#[cfg_attr(not(windows), allow(dead_code))]
+#[path = "hex.rs"]
+pub(crate) mod hex;
 #[path = "platform_fs.rs"]
 pub(crate) mod platform_fs;
+#[path = "vault_names.rs"]
+pub(crate) mod vault_names;
 pub use filesystem::*;
 
 #[path = "sync_journal.rs"]
@@ -237,7 +240,7 @@ fn hash_open_file_until(
 /// `.obsidian`, `.DS_Store`), `node_modules` and Windows shell artifacts
 /// (`desktop.ini`, `Thumbs.db`, `$RECYCLE.BIN`, `System Volume Information`).
 pub fn ignored_name(name: &str) -> bool {
-    name.starts_with('.') || name == "node_modules" || platform_fs::is_windows_shell_artifact(name)
+    vault_names::is_hidden_name(name) || platform_fs::is_windows_shell_artifact(name)
 }
 
 /// Peer-facing sync path policy: everything `safe_join` accepts, minus any
@@ -270,6 +273,8 @@ pub fn is_retired_shell_rel(rel: &str) -> bool {
 /// walkers report them as scan errors so a manifest or journal never holds a
 /// path the receiving side rejects.
 pub fn peer_reserved_name(seg: &str) -> bool {
+    // Case-insensitive on purpose, unlike `is_hidden_name`: on a
+    // case-insensitive peer filesystem (Windows) `Node_Modules` is `node_modules`.
     seg.eq_ignore_ascii_case("node_modules") || short_name_alias(seg)
 }
 
@@ -294,18 +299,6 @@ pub fn peer_join_confined(root: &Path, rel: &str) -> Option<PathBuf> {
         return None;
     }
     safe_join_confined(root, rel)
-}
-
-/// Recursively list every syncable file under `root` as
-/// (vault-relative path with forward slashes, absolute path), sorted by rel
-/// path for deterministic manifests. The compatibility helper keeps its old
-/// file-only shape for tests; production callers use the error-carrying walk
-/// below and must treat any error as incomplete coverage.
-#[cfg(test)]
-pub fn list_vault_files(root: &Path) -> Vec<VaultPath> {
-    list_vault_files_with_errors_until(root, None)
-        .map(|(files, _)| files)
-        .unwrap_or_default()
 }
 
 #[cfg(not(unix))]

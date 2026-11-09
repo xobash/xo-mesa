@@ -79,7 +79,7 @@ fn rename_no_replace(
     if [from_rel, to_rel].iter().any(|rel| {
         rel.replace('\\', "/")
             .split('/')
-            .any(|part| part.starts_with('.') || part == "node_modules")
+            .any(crate::vault_names::is_hidden_name)
     }) {
         return Err("rename accepts visible vault files only".into());
     }

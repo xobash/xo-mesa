@@ -123,63 +123,6 @@ function observed(activity: ResearchActivity[]): ResearchActivity[] {
   return activity.filter((a) => a.observed);
 }
 
-/**
- * A specific, multi-line diagnosis for a run that timed out from inactivity.
- * Branches on the most diagnostic signals: is Pi alive, did the model ever
- * call the progress tool, and did Mesa observe any real browsing.
- */
-export function explainResearchTimeout(input: {
-  run: ResearchRunSnapshot;
-  piSessionLive: boolean;
-  now?: number;
-}): string {
-  const { run, piSessionLive } = input;
-  const now = input.now ?? Date.now();
-  const self = selfReported(run.activity);
-  const seen = observed(run.activity);
-  const lastAt = run.activity.reduce((m, a) => Math.max(m, a.at), run.startedAt);
-  const lines: string[] = [
-    `Deep Research timed out after ${minutes(now - run.startedAt)} — no activity for the last ${minutes(now - lastAt)}.`,
-  ];
-  if (!piSessionLive) {
-    lines.push(
-      "The Pi session is no longer running — it may have crashed or been closed. Reopen the Pi agent, let it finish starting, then run again."
-    );
-  } else if (self.length === 0 && seen.length === 0) {
-    if (run.launchStage === "waiting-for-model" && run.promptSentAt) {
-      lines.push(
-        `Mesa submitted a ${run.promptBytes} B research prompt to Pi's PTY, but received NO model progress and observed NO web browsing. ` +
-          "The prompt may not have been accepted by Pi, or the provider may not have started the model turn. Check the Pi terminal for the submitted prompt and the model server logs."
-      );
-    } else {
-      lines.push(
-        "Mesa received NO progress reports from the model and observed NO web browsing. " +
-          "The model most likely never engaged the Deep Research protocol (the deep_research_progress / deep_research_finish tool calls) — " +
-          "smaller local models often cannot follow it. Check the Pi terminal scrollback to see what the model actually did; " +
-          "a stronger model, or the Quick preset, usually fixes this."
-      );
-    }
-  } else if (self.length === 0) {
-    lines.push(
-      `Mesa observed ${seen.length} real page visit${seen.length === 1 ? "" : "s"} in the browser harness, but the model never called deep_research_progress — ` +
-        "it browsed without following the structured protocol, so a finish envelope was never coming. " +
-        "Check the Pi terminal scrollback; a stronger model usually fixes this."
-    );
-  } else {
-    const doneSources = run.sources.filter((s) => s.status === "done").length;
-    const last = self[self.length - 1];
-    lines.push(
-      `The run went quiet after "${last.message.slice(0, 120)}" — round ${Math.max(1, run.currentRound)}/${run.depth.rounds}, ` +
-        `${doneSources}/${run.sources.length} sources read, ${utf8ByteLength(run.reportDraft)} B of report drafted. ` +
-        "The provider may have stalled mid-run. Check the Pi terminal, then run again (a lighter preset finishes faster)."
-    );
-  }
-  lines.push(
-    "Use “Copy troubleshooting kit” to capture the full run timeline for a bug report or an LLM."
-  );
-  return lines.join("\n");
-}
-
 /** Build the copy-pasteable, secret-scrubbed markdown troubleshooting kit. */
 export function buildResearchTroubleshootingKit(input: ResearchDiagnosticsInput): string {
   const now = input.now ?? new Date();

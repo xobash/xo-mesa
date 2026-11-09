@@ -18,11 +18,6 @@ use tauri::ipc::Channel;
 /// external edits still surface within the same latency envelope.
 const WATCH_DEBOUNCE_MS: u64 = 120;
 
-/// Directory names never watched-through, mirroring `vaultscan::walk` and
-/// `SKIPPED_DIRS` in `src/lib/vault.ts`. Dot-prefixed names (including `.git`)
-/// are already excluded by the leading-dot rule below.
-const SKIPPED_DIRS: [&str; 1] = ["node_modules"];
-
 /// One coalesced, pre-filtered batch item. Serializes to the shape of
 /// `VaultWatchEvent` in `src/lib/vault.ts` (`{ paths, kind }`). A path under
 /// the watched root is vault-relative with `/` separators and a leading
@@ -43,7 +38,7 @@ fn is_indexable_rel(rel: &str) -> bool {
         return false;
     }
     for seg in rel.split('/') {
-        if seg.is_empty() || seg.starts_with('.') || SKIPPED_DIRS.contains(&seg) {
+        if seg.is_empty() || crate::vault_names::is_hidden_name(seg) {
             return false;
         }
     }

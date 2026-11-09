@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSearchScan, searchVault, type SearchFile } from "./search";
-import {
-  canScanRawFor,
-  LENGTH_CHANGING_CHAR,
-  resetSearchEligibility,
-} from "./searchMatch";
+import { canScanRaw, LENGTH_CHANGING_CHAR } from "./searchMatch";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -18,7 +14,7 @@ describe("stateless search eligibility", () => {
   it("checks repeated calls instead of reusing source-keyed answers", () => {
     const raw = "ordinary text".repeat(1000);
     const check = vi.spyOn(String.prototype, "indexOf");
-    for (let i = 0; i < 3; i++) expect(canScanRawFor("same.txt", raw)).toBe(true);
+    for (let i = 0; i < 3; i++) expect(canScanRaw(raw)).toBe(true);
     // Every call reaches the predicate. No remembered source is needed to
     // answer a repeated key, even when a caller keeps exactly the same text.
     expect(check).toHaveBeenCalledTimes(3);
@@ -29,18 +25,9 @@ describe("stateless search eligibility", () => {
     const sources = ["", "clean", "İstanbul", "clean again", "I and K", "xİy"];
     for (let cycle = 0; cycle < 4; cycle++) {
       for (const raw of sources) {
-        expect(canScanRawFor("same.txt", raw)).toBe(!raw.includes("İ"));
-        expect(canScanRawFor(`new-${cycle}.txt`, raw)).toBe(!raw.includes("İ"));
+        expect(canScanRaw(raw)).toBe(!raw.includes("İ"));
       }
     }
-  });
-
-  it("preserves reset compatibility without changing subsequent answers", () => {
-    expect(canScanRawFor("same.txt", "İ")).toBe(false);
-    expect(resetSearchEligibility()).toBeUndefined();
-    expect(resetSearchEligibility()).toBeUndefined();
-    expect(canScanRawFor("same.txt", "İ")).toBe(false);
-    expect(canScanRawFor("same.txt", "plain")).toBe(true);
   });
 
   it("searches full large sources and substring values without a size cutoff", () => {
@@ -87,7 +74,6 @@ describe("search results across corpus changes", () => {
     const canceled = createSearchScan(files, oldCache, "ext:txt i");
     expect(canceled.advance(0)).toBe(false);
     const newScan = createSearchScan(files, newCache, "ext:txt i");
-    resetSearchEligibility();
     while (!newScan.advance(0)) { /* complete the replacement search */ }
     while (!oldScan.advance(0)) { /* interleaved older caller */ }
     expect(newScan.result().hits).toEqual([]);

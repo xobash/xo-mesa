@@ -125,7 +125,7 @@ it('probes a manual address with the typed key before offering download', async 
   await act(async () => { type(address, '192.0.2.20'); type(key, 'secret'); });
   await act(async () => button(host, 'Connect').click());
   expect(io.fetchInfo).toHaveBeenCalledWith(expect.stringContaining('192.0.2.20'), 'secret');
-  expect(host.textContent).toContain('3 files · 2 KB');
+  expect(host.textContent).toContain('3 files · 2.0 KiB');
   io.receive.mockResolvedValue(null);
   await act(async () => button(host, 'Choose folder').click());
   expect(io.receive).toHaveBeenCalledWith(expect.objectContaining({ token: 'secret', fingerprint: 'b'.repeat(64) }));

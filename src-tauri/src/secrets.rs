@@ -107,10 +107,7 @@ fn chunk_account(slot: &str, chunk: usize) -> String {
 }
 fn sha256_hex(value: &str) -> String {
     use sha2::Digest;
-    sha2::Sha256::digest(value.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::hex::encode(&sha2::Sha256::digest(value.as_bytes()))
 }
 fn split_utf16(value: &str, max_units: usize) -> Vec<String> {
     let mut chunks = vec![String::new()];
@@ -268,10 +265,7 @@ fn reset_to(
     save_to(store, layout, fresh)
 }
 fn random_key() -> Result<String, String> {
-    let mut bytes = [0u8; 32];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
-        .map_err(|_| "secure random source unavailable")?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(crate::hex::random_hex::<32>().ok_or("secure random source unavailable")?)
 }
 fn load() -> Result<SyncSecrets, String> {
     load_from(&OsStore, PLATFORM_LAYOUT)
@@ -377,12 +371,9 @@ pub async fn sync_secrets_write(window: tauri::Window, value: String) -> Result<
 pub fn sync_secrets_import(window: tauri::Window, value: String) -> Result<String, String> {
     main_window_label_only(window.label())?;
     crate::sync::require_sync_key(&value)?;
-    let mut bytes = [0u8; 32];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
-        .map_err(|_| "secure random source unavailable")?;
     let reference = format!(
         "credential:session:{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        crate::hex::random_hex::<32>().ok_or("secure random source unavailable")?
     );
     let mut temporary = temporary()
         .lock()

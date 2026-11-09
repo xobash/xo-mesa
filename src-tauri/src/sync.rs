@@ -2,6 +2,9 @@
 mod identity;
 pub(crate) use identity::protect_private_directory_once;
 pub use identity::*;
+#[path = "sync_discovery.rs"]
+mod discovery;
+pub use discovery::*;
 #[path = "sync_server.rs"]
 mod server;
 pub use server::*;
@@ -14,6 +17,7 @@ use crate::sync_policy::listener_address;
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
@@ -30,10 +34,7 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use rcgen::CertifiedKey;
-use ring::{
-    hmac,
-    rand::{SecureRandom, SystemRandom},
-};
+use ring::hmac;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -47,8 +48,6 @@ use tokio_util::io::ReaderStream;
 use crate::sync_core;
 use crate::sync_core::ManifestEntry;
 
-const DISCOVERY_PORT: u16 = 47887;
-const DISCOVERY_EVENT: &str = "sync://discovered";
 const LOG_EVENT: &str = "sync://log";
 const PROGRESS_EVENT: &str = "sync://progress";
 /// Server worker threads: enough that a slow manifest build or big file
@@ -164,24 +163,6 @@ struct ServerState {
     bind_address: std::net::IpAddr,
 }
 
-struct DiscoveryState {
-    running: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DiscoveryPacket {
-    #[serde(rename = "mesaDiscovery")]
-    mesa_discovery: bool,
-    version: String,
-    name: String,
-    host: String,
-    port: u16,
-    protocol: String,
-    listening: bool,
-    fingerprint: String,
-}
-
 /// Mirrors whether `state()` holds a server, so status never waits for a
 /// start/stop that holds the lock across a bounded join.
 static SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -210,11 +191,6 @@ pub(crate) fn require_sync_key(key: &str) -> Result<(), String> {
     } else {
         Err("Use a generated sync key: 64 lowercase hexadecimal characters with no repeated or short pattern. Copy the same generated key to each device.".into())
     }
-}
-
-fn discovery_state() -> &'static Mutex<Option<DiscoveryState>> {
-    static S: OnceLock<Mutex<Option<DiscoveryState>>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(None))
 }
 
 /// Serialize manifest scans so concurrent requests share the two-worker budget.
@@ -1467,218 +1443,20 @@ async fn run_sync(
 
     // 1. Remote manifest over pinned TLS. Establishes (and verifies, when a
     //    pin is known) the peer's certificate before any vault data moves.
-    let (client, token, fingerprint) =
-        establish_sync_credential(&base, &token, pin.clone()).await?;
-    let manifest_started = Instant::now();
-    let remote_manifest = match fetch_manifest_with(&client, &base, &token).await {
-        Ok(files) => files,
-        Err(e) => {
-            if cancelled() {
-                emit_log(
-                    &app,
-                    "info",
-                    "sync stopping — no incomplete manifest work was committed",
-                );
-                let report = cancelled_report(started);
-                emit_progress(&app, "done", 0, 0, "");
-                flush_sync_events(&app);
-                return Ok(report);
-            }
-            emit_log(&app, "error", format!("remote manifest failed: {e}"));
-            return Err(e);
-        }
+    let peer = match connect_peer(&app, &root, &base, &token, pin.clone(), started).await? {
+        ControlFlow::Continue(peer) => peer,
+        ControlFlow::Break(report) => return Ok(report),
     };
-    if remote_manifest.journal_version != sync_core::JOURNAL_VERSION {
-        return Err(
-            "Peer uses an unsupported journal protocol. Update Mesa before syncing.".to_string(),
-        );
-    }
-    if remote_manifest.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION {
-        return Err(
-            "Peer uses an unsupported sync protocol. Update Mesa before syncing.".to_string(),
-        );
-    }
-    // `fetch_manifest_with` already refused any entry that fails `is_peer_rel`.
-    let mut remote = remote_manifest.files;
-    emit_log(
-        &app,
-        "info",
-        format!(
-            "remote manifest — {} files, {} bytes total, fetched in {}ms (peer cert {})",
-            remote.len(),
-            remote.iter().map(|e| e.size).sum::<u64>(),
-            manifest_started.elapsed().as_millis(),
-            short_id(&fingerprint)
-        ),
-    );
-
-    let remote_journal = fetch_journal_with(&client, &base, &token).await?;
-    bind_peer_journal(
-        root.clone(),
-        fingerprint.clone(),
-        remote_journal.device.clone(),
-    )
-    .await?;
-    let own_fingerprint = get_identity_async(&app).await?.fingerprint.clone();
 
     // 2. Local manifest — fresh streaming hashes off the async runtime.
-    emit_progress(&app, "scan", 0, 0, "");
-    let scan_started = Instant::now();
-    let scan_root = root.clone();
-    let (mut local, skipped) = tokio::task::spawn_blocking(move || {
-        let _scan_guard = manifest_lock().lock().map_err(|e| e.to_string())?;
-        sync_core::build_manifest_cancellable(&scan_root, cancel_flag()).ok_or_else(cancelled_error)
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    if cancelled() {
-        emit_log(&app, "info", "sync stopping — local scan result discarded");
-        let report = cancelled_report(started);
-        emit_progress(&app, "done", 0, 0, "");
-        flush_sync_events(&app);
-        return Ok(report);
-    }
-    let mut failed: Vec<SyncFailureItem> = Vec::new();
-    for (rel, err) in &skipped {
-        emit_log(&app, "warn", format!("local scan skipped {rel}: {err}"));
-        failed.push(SyncFailureItem {
-            rel: rel.clone(),
-            op: "scan".to_string(),
-            error: err.clone(),
-        });
-    }
-    if !skipped.is_empty() {
-        emit_log(
-            &app,
-            "warn",
-            "local vault scan is incomplete; sync stopped before journal or file planning",
-        );
-        return Err("Local vault scan is incomplete. Fix the listed paths and retry; Mesa did not infer any deletes or renames.".to_string());
-    }
-    emit_log(
-        &app,
-        "info",
-        format!(
-            "local manifest — {} files hashed in {}ms{}",
-            local.len(),
-            scan_started.elapsed().as_millis(),
-            if skipped.is_empty() {
-                String::new()
-            } else {
-                format!(", {} unreadable (see warnings)", skipped.len())
-            }
-        ),
-    );
-
-    // Record externally-made deletes/renames before applying the peer's intent.
-    // The snapshot means a crash after an OS delete is reconstructed on the
-    // next sync instead of silently resurrecting the file.
-    let local_journal = tokio::task::spawn_blocking({
-        let root = root.clone();
-        let local = local.clone();
-        let skipped = skipped.clone();
-        move || sync_core::reconcile_complete_journal(&root, &local, &skipped)
-    })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())?;
-    // Deliver local intent before calculating the ordinary file transfer plan.
-    // The receiver applies a delete/rename and we then re-fetch its
-    // manifest, so an initiator cannot pull the old path back in the same run.
-    let remote_journal =
-        deliver_journal_with(&client, &base, &token, &local_journal, &own_fingerprint)
-            .await
-            .map_err(|error| format!("Peer rejected journal delivery: {error}"))?;
-    let refreshed = fetch_manifest_with(&client, &base, &token).await?;
-    if refreshed.journal_version != sync_core::JOURNAL_VERSION
-        || refreshed.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION
-    {
-        return Err("Peer sync protocol changed during transfer".to_string());
-    }
-    remote = refreshed.files;
-    {
-        let (_local_journal, outcomes) = tokio::task::spawn_blocking({
-            let root = root.clone();
-            let remote_journal = remote_journal.clone();
-            move || sync_core::apply_incoming_journal(&root, &remote_journal)
-        })
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
-        for outcome in outcomes {
-            let op = outcome.operation;
-            match outcome.result {
-                Ok(sync_core::JournalApply::Applied | sync_core::JournalApply::AlreadyApplied) => {
-                    emit_log(
-                        &app,
-                        "info",
-                        format!(
-                            "applied peer {} {}",
-                            match op.kind {
-                                sync_core::JournalOperationKind::Delete => "delete",
-                                sync_core::JournalOperationKind::Rename => "rename",
-                                sync_core::JournalOperationKind::Restore => "restore",
-                            },
-                            op.from
-                        ),
-                    );
-                }
-                Ok(sync_core::JournalApply::Conflict) => {
-                    failed.push(SyncFailureItem { rel: op.from.clone(), op: "journal".to_string(), error: "peer delete/rename conflicts with changed local content; local copy was preserved".to_string() });
-                    emit_log(
-                        &app,
-                        "warn",
-                        format!(
-                            "preserved local content for conflicting peer operation {}",
-                            op.from
-                        ),
-                    );
-                }
-                Err(error) => failed.push(SyncFailureItem {
-                    rel: op.from.clone(),
-                    op: "journal".to_string(),
-                    error: error.to_string(),
-                }),
-            }
-        }
-        // Remote operations changed the local filesystem. Rebuild from the
-        // fresh bytes before the ordinary file diff.
-        let scan_root = root.clone();
-        let (rescanned_local, rescanned_skipped) = tokio::task::spawn_blocking(move || {
-            let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
-            sync_core::build_manifest_cancellable(&scan_root, cancel_flag())
-                .ok_or_else(cancelled_error)
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        if !rescanned_skipped.is_empty() {
-            for (rel, error) in &rescanned_skipped {
-                failed.push(SyncFailureItem {
-                    rel: rel.clone(),
-                    op: "scan".to_string(),
-                    error: error.clone(),
-                });
-            }
-            emit_log(&app, "warn", "local vault scan became incomplete after peer operations; ordinary transfer planning was stopped");
-            return Err("Local vault scan is incomplete after peer operations. Fix the listed paths and retry; Mesa did not infer any deletes.".to_string());
-        }
-        local = rescanned_local;
-        let root_for_journal = root.clone();
-        let local_for_journal = local.clone();
-        tokio::task::spawn_blocking(move || {
-            sync_core::reconcile_complete_journal(
-                &root_for_journal,
-                &local_for_journal,
-                &rescanned_skipped,
-            )
-        })
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
-    }
+    let local = match scan_local_manifest(&app, &root, started).await? {
+        ControlFlow::Continue(local) => local,
+        ControlFlow::Break(report) => return Ok(report),
+    };
+    let (local, remote, mut failed) = exchange_journals(&app, &root, &base, &peer, local).await?;
 
     // 3. Diff.
-    let peer_base = load_peer_base(root.clone(), fingerprint.clone()).await?;
+    let peer_base = load_peer_base(root.clone(), peer.fingerprint.clone()).await?;
     let diff = sync_core::diff_manifests_from_base(&local, &remote, &peer_base);
     emit_log(
         &app,
@@ -1694,291 +1472,55 @@ async fn run_sync(
 
     // 4. Pin every transfer to the established fingerprint. A mismatch aborts
     //    during the TLS handshake, before the body is sent.
+    let PeerSession {
+        client,
+        token,
+        fingerprint,
+        own_fingerprint,
+    } = peer;
     let enforce = pin.clone().unwrap_or_else(|| fingerprint.clone());
     let transfer_client = if pin.is_some() {
         client // already pinned
     } else {
         build_pinned_client(Some(enforce), Arc::new(Mutex::new(None)))?
     };
-
-    // Build the job list.
-    let remote_by_rel: std::collections::HashMap<&str, &ManifestEntry> =
-        remote.iter().map(|e| (e.rel.as_str(), e)).collect();
-    let local_by_rel: std::collections::HashMap<&str, &ManifestEntry> =
-        local.iter().map(|e| (e.rel.as_str(), e)).collect();
-    let base_by_rel: std::collections::HashMap<&str, &sync_core::JournalEntry> = peer_base
-        .iter()
-        .map(|entry| (entry.rel.as_str(), entry))
-        .collect();
-    let host = sync_core::conflict_source(
-        peer_name.as_deref().unwrap_or(""),
-        &sync_core::host_of_base(&base),
-    );
-    let date = sync_core::utc_date_string();
-    let mut jobs: Vec<Job> = Vec::new();
-    for rel in &diff.pull {
-        if !retry_allows(retry_set.as_ref(), rel) {
-            continue;
-        }
-        let e = remote_by_rel[rel.as_str()];
-        jobs.push(Job {
-            op: Op::Pull,
-            rel: rel.clone(),
-            dest_rel: rel.clone(),
-            size: e.size,
-            hash: e.hash.clone(),
-            prior: None,
-        });
-    }
-    for rel in &diff.pull_replace {
-        if !retry_allows(retry_set.as_ref(), rel) {
-            continue;
-        }
-        let e = remote_by_rel[rel.as_str()];
-        let previous = base_by_rel[rel.as_str()];
-        jobs.push(Job {
-            op: Op::PullReplace,
-            rel: rel.clone(),
-            dest_rel: rel.clone(),
-            size: e.size,
-            hash: e.hash.clone(),
-            prior: Some((previous.size, previous.hash.clone())),
-        });
-    }
-    for rel in &diff.push {
-        if !retry_allows(retry_set.as_ref(), rel) {
-            continue;
-        }
-        let e = local_by_rel[rel.as_str()];
-        jobs.push(Job {
-            op: Op::Push,
-            rel: rel.clone(),
-            dest_rel: rel.clone(),
-            size: e.size,
-            hash: e.hash.clone(),
-            prior: None,
-        });
-    }
-    for rel in &diff.push_replace {
-        if !retry_allows(retry_set.as_ref(), rel) {
-            continue;
-        }
-        let e = local_by_rel[rel.as_str()];
-        let previous = base_by_rel[rel.as_str()];
-        jobs.push(Job {
-            op: Op::PushReplace,
-            rel: rel.clone(),
-            dest_rel: rel.clone(),
-            size: e.size,
-            hash: e.hash.clone(),
-            prior: Some((previous.size, previous.hash.clone())),
-        });
-    }
-    // Conflicts: never overwrite local — pull the remote copy alongside it.
-    // Skip when any contiguous numbered conflict copy is already identical.
-    // A different same-day copy gets the next suffix during the verified
-    // commit.
-    // Existing copies are hashed in one blocking task, not on the runtime.
-    let conflict_checks: Vec<(String, String, u64, String)> = diff
-        .conflict
-        .iter()
-        .filter(|rel| retry_allows(retry_set.as_ref(), rel))
-        .map(|rel| {
-            let e = remote_by_rel[rel.as_str()];
-            let dest_rel = sync_core::conflict_name(rel, &host, &date);
-            (rel.clone(), dest_rel, e.size, e.hash.clone())
-        })
-        .collect();
-    let conflict_present = {
-        let root = root.clone();
-        let checks: Vec<(String, u64, String)> = conflict_checks
-            .iter()
-            .map(|(_, dest_rel, size, hash)| (dest_rel.clone(), *size, hash.clone()))
-            .collect();
-        run_blocking(move || {
-            Ok(checks
-                .iter()
-                .map(|(dest_rel, size, hash)| {
-                    sync_core::conflict_copy_already_present(&root, dest_rel, *size, hash)
-                })
-                .collect::<Vec<_>>())
-        })
-        .await?
+    let plan = TransferPlan {
+        root: &root,
+        diff: &diff,
+        local: &local,
+        remote: &remote,
+        peer_base: &peer_base,
+        retry_set: retry_set.as_ref(),
+        host: sync_core::conflict_source(
+            peer_name.as_deref().unwrap_or(""),
+            &sync_core::host_of_base(&base),
+        ),
     };
-    for ((rel, dest_rel, _, _), present) in conflict_checks.iter().zip(conflict_present) {
-        let e = remote_by_rel[rel.as_str()];
-        let dest_rel = dest_rel.clone();
-        let already = match present {
-            Ok(already) => already,
-            Err(error) => {
-                emit_log(
-                    &app,
-                    "warn",
-                    format!("conflict copy scan for {rel} failed: {error}"),
-                );
-                failed.push(SyncFailureItem {
-                    rel: rel.clone(),
-                    op: Op::Conflict.name().to_string(),
-                    error: format!("conflict copy scan failed: {error}"),
-                });
-                continue;
-            }
-        };
-        if already {
-            emit_log(
-                &app,
-                "info",
-                format!("conflict copy for {rel} already current — skipped"),
-            );
-            continue;
-        }
-        jobs.push(Job {
-            op: Op::Conflict,
-            rel: rel.clone(),
-            dest_rel,
-            size: e.size,
-            hash: e.hash.clone(),
-            prior: None,
-        });
-    }
+    let jobs = plan_jobs(&app, plan, &mut failed).await?;
 
     // 5. Transfers — bounded concurrency over the one pooled client.
-    let total = jobs.len();
-    let mut done = 0usize;
-    let mut pulled = 0u32;
-    let mut pushed = 0u32;
-    let mut conflicts = 0u32;
-    let mut bytes_pulled = 0u64;
-    let mut bytes_pushed = 0u64;
-    let mut was_cancelled = false;
-    emit_progress(&app, "transfer", 0, total, "");
+    let totals = run_transfers(
+        &app,
+        &transfer_client,
+        &base,
+        &token,
+        &root,
+        jobs,
+        &mut failed,
+    )
+    .await;
 
-    // Admit only a small batch at a time. A semaphore limits active I/O but a
-    // task-per-file queue still allocates one future and captures several
-    // clones for every file in a large vault.
-    let mut queue = std::collections::VecDeque::from(jobs);
-    let sem = Arc::new(tokio::sync::Semaphore::new(TRANSFER_CONCURRENCY));
-    while !queue.is_empty() {
-        let mut set = tokio::task::JoinSet::new();
-        for _ in 0..TRANSFER_QUEUE_LIMIT {
-            let Some(job) = queue.pop_front() else { break };
-            let client = transfer_client.clone();
-            let base = base.clone();
-            let token = token.clone();
-            let root = root.clone();
-            let sem = sem.clone();
-            set.spawn(async move {
-                let permit = tokio::select! {
-                    _ = wait_for_cancel() => return JobOutcome { op: job.op, rel: job.rel, bytes: 0, result: Err(cancelled_error()) },
-                    permit = sem.acquire_owned() => match permit {
-                        Ok(permit) => permit,
-                        Err(_) => return JobOutcome { op: job.op, rel: job.rel, bytes: 0, result: Err("transfer scheduler stopped".to_string()) },
-                    },
-                };
-                if crate::sync::cancelled() {
-                    return JobOutcome { op: job.op, rel: job.rel, bytes: 0, result: Err(cancelled_error()) };
-                }
-                let result = run_job(client, base, token, root, job).await;
-                drop(permit);
-                result
-            });
-        }
-        while let Some(joined) = set.join_next().await {
-            let outcome = match joined {
-                Ok(o) => o,
-                Err(e) => {
-                    emit_log(&app, "error", format!("transfer task panicked: {e}"));
-                    continue;
-                }
-            };
-            done += 1;
-            emit_progress(&app, "transfer", done, total, &outcome.rel);
-            match outcome.result {
-                Ok(success) => {
-                    match outcome.op {
-                        Op::Pull | Op::PullReplace => {
-                            if success.changed {
-                                pulled += 1;
-                            }
-                            bytes_pulled += outcome.bytes;
-                        }
-                        Op::Push | Op::PushReplace => {
-                            pushed += 1;
-                            bytes_pushed += outcome.bytes;
-                        }
-                        Op::Conflict => {
-                            if success.changed {
-                                conflicts += 1;
-                            }
-                            bytes_pulled += outcome.bytes;
-                        }
-                    }
-                    emit_log(
-                        &app,
-                        "info",
-                        format!("{} {} — {}", outcome.op.name(), outcome.rel, success.detail),
-                    );
-                }
-                Err(error) => {
-                    if error == "cancelled" {
-                        was_cancelled = true;
-                    } else {
-                        emit_log(
-                            &app,
-                            "error",
-                            format!("{} {} failed: {error}", outcome.op.name(), outcome.rel),
-                        );
-                    }
-                    failed.push(SyncFailureItem {
-                        rel: outcome.rel,
-                        op: outcome.op.name().to_string(),
-                        error,
-                    });
-                }
-            }
-        }
-    }
-
-    if failed.is_empty() && !was_cancelled {
-        let final_root = root.clone();
-        let final_local = tokio::task::spawn_blocking(move || {
-            let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
-            let (entries, skipped) = sync_core::build_manifest(&final_root);
-            if !skipped.is_empty() {
-                return Err("final local scan is incomplete".to_string());
-            }
-            Ok::<_, String>(entries)
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-        let base_result = async {
-            let final_local = final_local?;
-            let final_remote = fetch_manifest_with(&transfer_client, &base, &token).await?;
-            if final_remote.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION
-                || final_remote.journal_version != sync_core::JOURNAL_VERSION
-            {
-                return Err("peer sync protocol changed during transfer".to_string());
-            }
-            let common = sync_core::common_baseline(&final_local, &final_remote.files);
-            let response = transfer_client
-                .put(format!("{}/sync/base", base.trim_end_matches('/')))
-                .bearer_auth(&token)
-                .header("x-mesa-fingerprint", own_fingerprint.as_str())
-                .header(reqwest::header::CONTENT_TYPE, "application/json")
-                .body(serde_json::to_vec(&common).map_err(|error| error.to_string())?)
-                .timeout(Duration::from_secs(300))
-                .send()
-                .await
-                .map_err(friendly_err)?;
-            if !response.status().is_success() {
-                return Err(format!(
-                    "peer did not accept sync base: {}",
-                    response.status()
-                ));
-            }
-            store_peer_base(root.clone(), fingerprint.clone(), common).await?;
-            Ok::<_, String>(())
-        }
+    if failed.is_empty() && !totals.was_cancelled {
+        let final_local = scan_final_local(&root).await?;
+        let base_result = record_sync_base(
+            final_local,
+            &transfer_client,
+            &base,
+            &token,
+            &own_fingerprint,
+            &root,
+            &fingerprint,
+        )
         .await;
         if let Err(error) = base_result {
             failed.push(SyncFailureItem {
@@ -1991,19 +1533,19 @@ async fn run_sync(
 
     let report = SyncReport {
         fingerprint,
-        pulled,
-        pushed,
-        conflicts,
+        pulled: totals.pulled,
+        pushed: totals.pushed,
+        conflicts: totals.conflicts,
         up_to_date: diff.same,
         failed,
-        bytes_pulled,
-        bytes_pushed,
+        bytes_pulled: totals.bytes_pulled,
+        bytes_pushed: totals.bytes_pushed,
         total_local: local.len() as u32,
         total_remote: remote.len() as u32,
         duration_ms: started.elapsed().as_millis() as u64,
-        cancelled: was_cancelled,
+        cancelled: totals.was_cancelled,
     };
-    emit_progress(&app, "done", done, total, "");
+    emit_progress(&app, "done", totals.done, totals.total, "");
     emit_log(
         &app,
         if report.failed.iter().any(|f| f.error != "cancelled") {
@@ -2028,247 +1570,582 @@ async fn run_sync(
     Ok(report)
 }
 
-// === Discovery ============================================================
-
-// Identity creation and the discovery lock can block: run off the UI thread.
-#[tauri::command(async)]
-pub fn sync_discovery_start(
-    app: tauri::AppHandle,
-    name: String,
-    port: u16,
-    listening: bool,
-) -> Result<(), String> {
-    use std::net::UdpSocket;
-
-    let mut guard = discovery_state().lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        return Ok(());
-    }
-
-    let socket = UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)).map_err(|e| e.to_string())?;
-    socket.set_broadcast(true).map_err(|e| e.to_string())?;
-    socket
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .map_err(|e| e.to_string())?;
-
-    let running = Arc::new(AtomicBool::new(true));
-    let running_thread = running.clone();
-    // Advertise this device's stable TLS certificate fingerprint so peers can
-    // pin it. It doubles as the self-filter id (own packets are ignored).
-    let fingerprint = get_identity(&app)?.fingerprint.clone();
-    let host = local_lan_ip().unwrap_or_else(|_| "0.0.0.0".to_string());
-    let own = DiscoveryPacket {
-        mesa_discovery: true,
-        version: "2.0".to_string(),
-        name: if name.trim().is_empty() {
-            "Mesa device".to_string()
-        } else {
-            name.trim().to_string()
-        },
-        host,
-        port,
-        protocol: "https".to_string(),
-        listening,
-        fingerprint: fingerprint.clone(),
-    };
-    let handle = std::thread::spawn(move || {
-        let Ok(payload) = serde_json::to_vec(&own) else {
-            return;
-        };
-        run_discovery_loop(
-            &socket,
-            &running_thread,
-            &payload,
-            DiscoveryFilter::new(fingerprint),
-            |packet| {
-                let _ = app.emit(DISCOVERY_EVENT, packet);
-            },
-            |pause| pause_while_running(&running_thread, pause),
-        );
-    });
-    *guard = Some(DiscoveryState {
-        running,
-        handle: Some(handle),
-    });
-    Ok(())
+/// End a run that was cancelled between phases: nothing incomplete was committed.
+fn finish_cancelled(app: &tauri::AppHandle, message: &str, started: Instant) -> SyncReport {
+    emit_log(app, "info", message);
+    let report = cancelled_report(started);
+    emit_progress(app, "done", 0, 0, "");
+    flush_sync_events(app);
+    report
 }
 
-/// The discovery socket operations, so the receive loop runs against injected
-/// error sequences in tests.
-trait DiscoverySocket {
-    fn announce(&self, payload: &[u8]);
-    fn receive(&self, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)>;
-}
-
-impl DiscoverySocket for std::net::UdpSocket {
-    fn announce(&self, payload: &[u8]) {
-        let _ = self.send_to(payload, (std::net::Ipv4Addr::BROADCAST, DISCOVERY_PORT));
-    }
-    fn receive(&self, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)> {
-        self.recv_from(buf)
-    }
-}
-
-const DISCOVERY_ANNOUNCE_EVERY: Duration = Duration::from_secs(2);
-const DISCOVERY_ERROR_PAUSE_MIN: Duration = Duration::from_millis(10);
-const DISCOVERY_ERROR_PAUSE_MAX: Duration = Duration::from_secs(1);
-
-/// Pause before the next receive after `consecutive` receive errors.
-///
-/// A receive error never ends discovery: Windows reports an oversized datagram
-/// (WSAEMSGSIZE, 10040) or an ICMP port-unreachable reply to an earlier
-/// broadcast (WSAECONNRESET, 10054) as a receive error on a healthy socket.
-/// The pause doubles per consecutive error up to one second, so a persistent
-/// error costs at most one wakeup per second instead of a busy loop.
-fn discovery_error_pause(consecutive: u32) -> Duration {
-    DISCOVERY_ERROR_PAUSE_MIN
-        .saturating_mul(1u32 << consecutive.saturating_sub(1).min(16))
-        .min(DISCOVERY_ERROR_PAUSE_MAX)
-}
-
-/// Sleep in short slices so `sync_discovery_stop`, which joins this thread
-/// while holding the discovery lock, never waits out a whole back-off pause.
-fn pause_while_running(running: &AtomicBool, pause: Duration) {
-    const SLICE: Duration = Duration::from_millis(50);
-    let until = Instant::now() + pause;
-    while running.load(Ordering::Relaxed) {
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        std::thread::sleep(left.min(SLICE));
-    }
-}
-
-fn run_discovery_loop(
-    socket: &impl DiscoverySocket,
-    running: &AtomicBool,
-    payload: &[u8],
-    mut filter: DiscoveryFilter,
-    mut emit: impl FnMut(DiscoveryPacket),
-    mut pause: impl FnMut(Duration),
-) {
-    let mut last_announce: Option<Instant> = None;
-    let mut buf = [0u8; 4096];
-    let mut consecutive_errors = 0u32;
-    while running.load(Ordering::Relaxed) {
-        if last_announce.is_none_or(|at| at.elapsed() >= DISCOVERY_ANNOUNCE_EVERY) {
-            socket.announce(payload);
-            last_announce = Some(Instant::now());
-        }
-        match socket.receive(&mut buf) {
-            Ok((n, from)) => {
-                consecutive_errors = 0;
-                let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..n]) else {
-                    continue;
-                };
-                if let Some(packet) = filter.admit(packet, from.ip(), Instant::now()) {
-                    emit(packet);
-                }
-            }
-            // The socket's read timeout paces an idle loop.
-            Err(e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                consecutive_errors = 0;
-            }
-            Err(_) => {
-                consecutive_errors = consecutive_errors.saturating_add(1);
-                pause(discovery_error_pause(consecutive_errors));
-            }
-        }
-    }
-}
-
-/// Received announcements become at most one event per device per refresh
-/// interval, plus changes. The reply address is the packet source, never the
-/// advertised host, so a LAN sender cannot point Mesa at another machine.
-struct DiscoveryFilter {
+/// The peer as established in phase 1: a pinned client, the scoped credential,
+/// and both sides' identities.
+struct PeerSession {
+    client: reqwest::Client,
+    token: String,
+    fingerprint: String,
     own_fingerprint: String,
-    seen: HashMap<String, (Instant, DiscoveryPacket)>,
-    window_start: Option<Instant>,
-    window_emits: usize,
 }
 
-const DISCOVERY_REFRESH: Duration = Duration::from_secs(5);
-const DISCOVERY_FORGET: Duration = Duration::from_secs(20);
-const DISCOVERY_MAX_DEVICES: usize = 64;
-const DISCOVERY_MAX_EMITS_PER_SECOND: usize = 16;
+/// Phase 1: establish the credential, fetch and check the peer's manifest and
+/// journal, and bind the peer's journal device to its certificate.
+async fn connect_peer(
+    app: &tauri::AppHandle,
+    root: &Path,
+    base: &str,
+    token: &str,
+    pin: Option<String>,
+    started: Instant,
+) -> Result<ControlFlow<SyncReport, PeerSession>, String> {
+    let (client, token, fingerprint) = establish_sync_credential(base, token, pin).await?;
+    let manifest_started = Instant::now();
+    let remote_manifest = match fetch_manifest_with(&client, base, &token).await {
+        Ok(files) => files,
+        Err(e) => {
+            if cancelled() {
+                return Ok(ControlFlow::Break(finish_cancelled(
+                    app,
+                    "sync stopping — no incomplete manifest work was committed",
+                    started,
+                )));
+            }
+            emit_log(app, "error", format!("remote manifest failed: {e}"));
+            return Err(e);
+        }
+    };
+    if remote_manifest.journal_version != sync_core::JOURNAL_VERSION {
+        return Err(
+            "Peer uses an unsupported journal protocol. Update Mesa before syncing.".to_string(),
+        );
+    }
+    if remote_manifest.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION {
+        return Err(
+            "Peer uses an unsupported sync protocol. Update Mesa before syncing.".to_string(),
+        );
+    }
+    // `fetch_manifest_with` already refused any entry that fails `is_peer_rel`.
+    let remote = remote_manifest.files;
+    emit_log(
+        app,
+        "info",
+        format!(
+            "remote manifest — {} files, {} bytes total, fetched in {}ms (peer cert {})",
+            remote.len(),
+            remote.iter().map(|e| e.size).sum::<u64>(),
+            manifest_started.elapsed().as_millis(),
+            short_id(&fingerprint)
+        ),
+    );
 
-impl DiscoveryFilter {
-    fn new(own_fingerprint: String) -> Self {
-        Self {
-            own_fingerprint,
-            seen: HashMap::new(),
-            window_start: None,
-            window_emits: 0,
+    let remote_journal = fetch_journal_with(&client, base, &token).await?;
+    bind_peer_journal(
+        root.to_path_buf(),
+        fingerprint.clone(),
+        remote_journal.device.clone(),
+    )
+    .await?;
+    let own_fingerprint = get_identity_async(app).await?.fingerprint.clone();
+    Ok(ControlFlow::Continue(PeerSession {
+        client,
+        token,
+        fingerprint,
+        own_fingerprint,
+    }))
+}
+
+/// Phase 2: a complete local manifest, or an error before any journal or file
+/// planning when the scan skipped a path.
+async fn scan_local_manifest(
+    app: &tauri::AppHandle,
+    root: &Path,
+    started: Instant,
+) -> Result<ControlFlow<SyncReport, Vec<ManifestEntry>>, String> {
+    emit_progress(app, "scan", 0, 0, "");
+    let scan_started = Instant::now();
+    let scan_root = root.to_path_buf();
+    let (local, skipped) = tokio::task::spawn_blocking(move || {
+        let _scan_guard = manifest_lock().lock().map_err(|e| e.to_string())?;
+        sync_core::build_manifest_cancellable(&scan_root, cancel_flag()).ok_or_else(cancelled_error)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if cancelled() {
+        return Ok(ControlFlow::Break(finish_cancelled(
+            app,
+            "sync stopping — local scan result discarded",
+            started,
+        )));
+    }
+    for (rel, err) in &skipped {
+        emit_log(app, "warn", format!("local scan skipped {rel}: {err}"));
+    }
+    if !skipped.is_empty() {
+        emit_log(
+            app,
+            "warn",
+            "local vault scan is incomplete; sync stopped before journal or file planning",
+        );
+        return Err("Local vault scan is incomplete. Fix the listed paths and retry; Mesa did not infer any deletes or renames.".to_string());
+    }
+    emit_log(
+        app,
+        "info",
+        format!(
+            "local manifest — {} files hashed in {}ms",
+            local.len(),
+            scan_started.elapsed().as_millis(),
+        ),
+    );
+    Ok(ControlFlow::Continue(local))
+}
+
+/// Record local deletes/renames, deliver them, apply the peer's operations and
+/// rescan. Returns the fresh local and remote manifests and per-operation
+/// failures.
+async fn exchange_journals(
+    app: &tauri::AppHandle,
+    root: &Path,
+    base: &str,
+    peer: &PeerSession,
+    local: Vec<ManifestEntry>,
+) -> Result<(Vec<ManifestEntry>, Vec<ManifestEntry>, Vec<SyncFailureItem>), String> {
+    let mut failed: Vec<SyncFailureItem> = Vec::new();
+    // Record externally-made deletes/renames before applying the peer's intent.
+    // The snapshot means a crash after an OS delete is reconstructed on the
+    // next sync instead of silently resurrecting the file.
+    let local_journal = tokio::task::spawn_blocking({
+        let root = root.to_path_buf();
+        move || sync_core::reconcile_complete_journal(&root, &local, &[])
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    // Deliver local intent before calculating the ordinary file transfer plan.
+    // The receiver applies a delete/rename and we then re-fetch its
+    // manifest, so an initiator cannot pull the old path back in the same run.
+    let remote_journal = deliver_journal_with(
+        &peer.client,
+        base,
+        &peer.token,
+        &local_journal,
+        &peer.own_fingerprint,
+    )
+    .await
+    .map_err(|error| format!("Peer rejected journal delivery: {error}"))?;
+    let refreshed = fetch_manifest_with(&peer.client, base, &peer.token).await?;
+    if refreshed.journal_version != sync_core::JOURNAL_VERSION
+        || refreshed.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION
+    {
+        return Err("Peer sync protocol changed during transfer".to_string());
+    }
+    let remote = refreshed.files;
+    let (_local_journal, outcomes) = tokio::task::spawn_blocking({
+        let root = root.to_path_buf();
+        let remote_journal = remote_journal.clone();
+        move || sync_core::apply_incoming_journal(&root, &remote_journal)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    for outcome in outcomes {
+        let op = outcome.operation;
+        match outcome.result {
+            Ok(sync_core::JournalApply::Applied | sync_core::JournalApply::AlreadyApplied) => {
+                emit_log(
+                    app,
+                    "info",
+                    format!(
+                        "applied peer {} {}",
+                        match op.kind {
+                            sync_core::JournalOperationKind::Delete => "delete",
+                            sync_core::JournalOperationKind::Rename => "rename",
+                            sync_core::JournalOperationKind::Restore => "restore",
+                        },
+                        op.from
+                    ),
+                );
+            }
+            Ok(sync_core::JournalApply::Conflict) => {
+                failed.push(SyncFailureItem { rel: op.from.clone(), op: "journal".to_string(), error: "peer delete/rename conflicts with changed local content; local copy was preserved".to_string() });
+                emit_log(
+                    app,
+                    "warn",
+                    format!(
+                        "preserved local content for conflicting peer operation {}",
+                        op.from
+                    ),
+                );
+            }
+            Err(error) => failed.push(SyncFailureItem {
+                rel: op.from.clone(),
+                op: "journal".to_string(),
+                error: error.to_string(),
+            }),
         }
     }
+    // Remote operations changed the local filesystem. Rebuild from the
+    // fresh bytes before the ordinary file diff.
+    let scan_root = root.to_path_buf();
+    let (local, rescanned_skipped) = tokio::task::spawn_blocking(move || {
+        let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
+        sync_core::build_manifest_cancellable(&scan_root, cancel_flag()).ok_or_else(cancelled_error)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    if !rescanned_skipped.is_empty() {
+        emit_log(app, "warn", "local vault scan became incomplete after peer operations; ordinary transfer planning was stopped");
+        return Err("Local vault scan is incomplete after peer operations. Fix the listed paths and retry; Mesa did not infer any deletes.".to_string());
+    }
+    let root_for_journal = root.to_path_buf();
+    let local_for_journal = local.clone();
+    tokio::task::spawn_blocking(move || {
+        sync_core::reconcile_complete_journal(
+            &root_for_journal,
+            &local_for_journal,
+            &rescanned_skipped,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    Ok((local, remote, failed))
+}
 
-    fn admit(
-        &mut self,
-        mut packet: DiscoveryPacket,
-        from: IpAddr,
-        now: Instant,
-    ) -> Option<DiscoveryPacket> {
-        if !packet.mesa_discovery
-            || packet.fingerprint == self.own_fingerprint
-            || packet.fingerprint.len() != 64
-            || !packet
-                .fingerprint
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            || packet.name.len() > 256
-        {
-            return None;
+/// Inputs for turning a diff into transfer jobs.
+struct TransferPlan<'a> {
+    root: &'a Path,
+    diff: &'a sync_core::ManifestDiff,
+    local: &'a [ManifestEntry],
+    remote: &'a [ManifestEntry],
+    peer_base: &'a [sync_core::JournalEntry],
+    retry_set: Option<&'a std::collections::HashSet<String>>,
+    host: String,
+}
+
+/// Phase 4: one job per pull, push, replace and new conflict copy. A conflict
+/// whose identical copy already exists is skipped; a failed copy scan is
+/// reported in `failed`.
+async fn plan_jobs(
+    app: &tauri::AppHandle,
+    plan: TransferPlan<'_>,
+    failed: &mut Vec<SyncFailureItem>,
+) -> Result<Vec<Job>, String> {
+    let TransferPlan {
+        root,
+        diff,
+        local,
+        remote,
+        peer_base,
+        retry_set,
+        host,
+    } = plan;
+    let remote_by_rel: std::collections::HashMap<&str, &ManifestEntry> =
+        remote.iter().map(|e| (e.rel.as_str(), e)).collect();
+    let local_by_rel: std::collections::HashMap<&str, &ManifestEntry> =
+        local.iter().map(|e| (e.rel.as_str(), e)).collect();
+    let base_by_rel: std::collections::HashMap<&str, &sync_core::JournalEntry> = peer_base
+        .iter()
+        .map(|entry| (entry.rel.as_str(), entry))
+        .collect();
+    let date = sync_core::utc_date_string();
+    let mut jobs: Vec<Job> = Vec::new();
+    for rel in &diff.pull {
+        if !retry_allows(retry_set, rel) {
+            continue;
         }
-        packet.host = from.to_string();
-        if let Some((at, previous)) = self.seen.get(&packet.fingerprint) {
-            let unchanged = previous.host == packet.host
-                && previous.port == packet.port
-                && previous.name == packet.name
-                && previous.listening == packet.listening
-                && previous.protocol == packet.protocol
-                && previous.version == packet.version;
-            if unchanged && now.duration_since(*at) < DISCOVERY_REFRESH {
-                return None;
-            }
-        } else if self.seen.len() >= DISCOVERY_MAX_DEVICES {
-            self.seen
-                .retain(|_, (at, _)| now.duration_since(*at) < DISCOVERY_FORGET);
-            if self.seen.len() >= DISCOVERY_MAX_DEVICES {
-                return None;
-            }
+        let e = remote_by_rel[rel.as_str()];
+        jobs.push(Job {
+            op: Op::Pull,
+            rel: rel.clone(),
+            dest_rel: rel.clone(),
+            size: e.size,
+            hash: e.hash.clone(),
+            prior: None,
+        });
+    }
+    for rel in &diff.pull_replace {
+        if !retry_allows(retry_set, rel) {
+            continue;
         }
-        match self.window_start {
-            Some(start) if now.duration_since(start) < Duration::from_secs(1) => {
-                if self.window_emits >= DISCOVERY_MAX_EMITS_PER_SECOND {
-                    return None;
+        let e = remote_by_rel[rel.as_str()];
+        let previous = base_by_rel[rel.as_str()];
+        jobs.push(Job {
+            op: Op::PullReplace,
+            rel: rel.clone(),
+            dest_rel: rel.clone(),
+            size: e.size,
+            hash: e.hash.clone(),
+            prior: Some((previous.size, previous.hash.clone())),
+        });
+    }
+    for rel in &diff.push {
+        if !retry_allows(retry_set, rel) {
+            continue;
+        }
+        let e = local_by_rel[rel.as_str()];
+        jobs.push(Job {
+            op: Op::Push,
+            rel: rel.clone(),
+            dest_rel: rel.clone(),
+            size: e.size,
+            hash: e.hash.clone(),
+            prior: None,
+        });
+    }
+    for rel in &diff.push_replace {
+        if !retry_allows(retry_set, rel) {
+            continue;
+        }
+        let e = local_by_rel[rel.as_str()];
+        let previous = base_by_rel[rel.as_str()];
+        jobs.push(Job {
+            op: Op::PushReplace,
+            rel: rel.clone(),
+            dest_rel: rel.clone(),
+            size: e.size,
+            hash: e.hash.clone(),
+            prior: Some((previous.size, previous.hash.clone())),
+        });
+    }
+    // Conflicts: never overwrite local — pull the remote copy alongside it.
+    // Skip when any contiguous numbered conflict copy is already identical.
+    // A different same-day copy gets the next suffix during the verified
+    // commit.
+    // Existing copies are hashed in one blocking task, not on the runtime.
+    let conflict_checks: Vec<(String, String, u64, String)> = diff
+        .conflict
+        .iter()
+        .filter(|rel| retry_allows(retry_set, rel))
+        .map(|rel| {
+            let e = remote_by_rel[rel.as_str()];
+            let dest_rel = sync_core::conflict_name(rel, &host, &date);
+            (rel.clone(), dest_rel, e.size, e.hash.clone())
+        })
+        .collect();
+    let conflict_present = {
+        let root = root.to_path_buf();
+        let checks: Vec<(String, u64, String)> = conflict_checks
+            .iter()
+            .map(|(_, dest_rel, size, hash)| (dest_rel.clone(), *size, hash.clone()))
+            .collect();
+        run_blocking(move || {
+            Ok(checks
+                .iter()
+                .map(|(dest_rel, size, hash)| {
+                    sync_core::conflict_copy_already_present(&root, dest_rel, *size, hash)
+                })
+                .collect::<Vec<_>>())
+        })
+        .await?
+    };
+    for ((rel, dest_rel, _, _), present) in conflict_checks.iter().zip(conflict_present) {
+        let e = remote_by_rel[rel.as_str()];
+        let dest_rel = dest_rel.clone();
+        let already = match present {
+            Ok(already) => already,
+            Err(error) => {
+                emit_log(
+                    app,
+                    "warn",
+                    format!("conflict copy scan for {rel} failed: {error}"),
+                );
+                failed.push(SyncFailureItem {
+                    rel: rel.clone(),
+                    op: Op::Conflict.name().to_string(),
+                    error: format!("conflict copy scan failed: {error}"),
+                });
+                continue;
+            }
+        };
+        if already {
+            emit_log(
+                app,
+                "info",
+                format!("conflict copy for {rel} already current — skipped"),
+            );
+            continue;
+        }
+        jobs.push(Job {
+            op: Op::Conflict,
+            rel: rel.clone(),
+            dest_rel,
+            size: e.size,
+            hash: e.hash.clone(),
+            prior: None,
+        });
+    }
+    Ok(jobs)
+}
+
+/// Counters from the transfer phase.
+#[derive(Default)]
+struct TransferTotals {
+    total: usize,
+    done: usize,
+    pulled: u32,
+    pushed: u32,
+    conflicts: u32,
+    bytes_pulled: u64,
+    bytes_pushed: u64,
+    was_cancelled: bool,
+}
+
+/// Phase 5: run every job over the one pooled client with bounded
+/// concurrency. Failures and cancellations land in `failed`.
+async fn run_transfers(
+    app: &tauri::AppHandle,
+    transfer_client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    root: &Path,
+    jobs: Vec<Job>,
+    failed: &mut Vec<SyncFailureItem>,
+) -> TransferTotals {
+    let mut totals = TransferTotals {
+        total: jobs.len(),
+        ..TransferTotals::default()
+    };
+    emit_progress(app, "transfer", 0, totals.total, "");
+
+    // Admit only a small batch at a time. A semaphore limits active I/O but a
+    // task-per-file queue still allocates one future and captures several
+    // clones for every file in a large vault.
+    let mut queue = std::collections::VecDeque::from(jobs);
+    let sem = Arc::new(tokio::sync::Semaphore::new(TRANSFER_CONCURRENCY));
+    while !queue.is_empty() {
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..TRANSFER_QUEUE_LIMIT {
+            let Some(job) = queue.pop_front() else { break };
+            let client = transfer_client.clone();
+            let base = base.to_string();
+            let token = token.to_string();
+            let root = root.to_path_buf();
+            let sem = sem.clone();
+            set.spawn(async move {
+                let permit = tokio::select! {
+                    _ = wait_for_cancel() => return JobOutcome { op: job.op, rel: job.rel, bytes: 0, result: Err(cancelled_error()) },
+                    permit = sem.acquire_owned() => match permit {
+                        Ok(permit) => permit,
+                        Err(_) => return JobOutcome { op: job.op, rel: job.rel, bytes: 0, result: Err("transfer scheduler stopped".to_string()) },
+                    },
+                };
+                if crate::sync::cancelled() {
+                    return JobOutcome { op: job.op, rel: job.rel, bytes: 0, result: Err(cancelled_error()) };
+                }
+                let result = run_job(client, base, token, root, job).await;
+                drop(permit);
+                result
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let outcome = match joined {
+                Ok(o) => o,
+                Err(e) => {
+                    emit_log(app, "error", format!("transfer task panicked: {e}"));
+                    continue;
+                }
+            };
+            totals.done += 1;
+            emit_progress(app, "transfer", totals.done, totals.total, &outcome.rel);
+            match outcome.result {
+                Ok(success) => {
+                    match outcome.op {
+                        Op::Pull | Op::PullReplace => {
+                            if success.changed {
+                                totals.pulled += 1;
+                            }
+                            totals.bytes_pulled += outcome.bytes;
+                        }
+                        Op::Push | Op::PushReplace => {
+                            totals.pushed += 1;
+                            totals.bytes_pushed += outcome.bytes;
+                        }
+                        Op::Conflict => {
+                            if success.changed {
+                                totals.conflicts += 1;
+                            }
+                            totals.bytes_pulled += outcome.bytes;
+                        }
+                    }
+                    emit_log(
+                        app,
+                        "info",
+                        format!("{} {} — {}", outcome.op.name(), outcome.rel, success.detail),
+                    );
+                }
+                Err(error) => {
+                    if error == "cancelled" {
+                        totals.was_cancelled = true;
+                    } else {
+                        emit_log(
+                            app,
+                            "error",
+                            format!("{} {} failed: {error}", outcome.op.name(), outcome.rel),
+                        );
+                    }
+                    failed.push(SyncFailureItem {
+                        rel: outcome.rel,
+                        op: outcome.op.name().to_string(),
+                        error,
+                    });
                 }
             }
-            _ => {
-                self.window_start = Some(now);
-                self.window_emits = 0;
-            }
         }
-        self.window_emits += 1;
-        self.seen
-            .insert(packet.fingerprint.clone(), (now, packet.clone()));
-        Some(packet)
     }
+    totals
 }
 
-// Blocking work: run off the main (UI) thread.
-#[tauri::command(async)]
-pub fn sync_discovery_stop() -> Result<(), String> {
-    let mut guard = discovery_state().lock().map_err(|e| e.to_string())?;
-    if let Some(mut st) = guard.take() {
-        st.running.store(false, Ordering::Relaxed);
-        if let Some(h) = st.handle.take() {
-            let _ = h.join();
+/// The post-transfer local manifest; an incomplete scan is the inner error.
+async fn scan_final_local(root: &Path) -> Result<Result<Vec<ManifestEntry>, String>, String> {
+    let final_root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
+        let (entries, skipped) = sync_core::build_manifest(&final_root);
+        if !skipped.is_empty() {
+            return Err("final local scan is incomplete".to_string());
         }
+        Ok::<_, String>(entries)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// After a clean run, agree on the common baseline with the peer and store it.
+async fn record_sync_base(
+    final_local: Result<Vec<ManifestEntry>, String>,
+    transfer_client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    own_fingerprint: &str,
+    root: &Path,
+    fingerprint: &str,
+) -> Result<(), String> {
+    let final_local = final_local?;
+    let final_remote = fetch_manifest_with(transfer_client, base, token).await?;
+    if final_remote.sync_protocol_version != sync_core::SYNC_PROTOCOL_VERSION
+        || final_remote.journal_version != sync_core::JOURNAL_VERSION
+    {
+        return Err("peer sync protocol changed during transfer".to_string());
     }
+    let common = sync_core::common_baseline(&final_local, &final_remote.files);
+    let response = transfer_client
+        .put(format!("{}/sync/base", base.trim_end_matches('/')))
+        .bearer_auth(token)
+        .header("x-mesa-fingerprint", own_fingerprint)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_vec(&common).map_err(|error| error.to_string())?)
+        .timeout(Duration::from_secs(300))
+        .send()
+        .await
+        .map_err(friendly_err)?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "peer did not accept sync base: {}",
+            response.status()
+        ));
+    }
+    store_peer_base(root.to_path_buf(), fingerprint.to_string(), common).await?;
     Ok(())
 }
 

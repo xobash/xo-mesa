@@ -15,14 +15,16 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-type SyncModule = typeof import("./sync");
+type SyncModules = typeof import("./sync") & typeof import("./syncUi");
 
-async function loadSync(inTauri: boolean): Promise<SyncModule> {
+/** Engine commands live in sync.ts; status, discovery and manifest probes in syncUi.ts. */
+async function loadSync(inTauri: boolean): Promise<SyncModules> {
   vi.resetModules();
   const host = window as unknown as Record<string, unknown>;
   if (inTauri) host.__TAURI_INTERNALS__ = {};
   else delete host.__TAURI_INTERNALS__;
-  return import("./sync");
+  const [engine, ui] = await Promise.all([import("./sync"), import("./syncUi")]);
+  return { ...engine, ...ui };
 }
 
 const reply = (cmd: string, value: (args?: Record<string, unknown>) => unknown) => native.replies.set(cmd, value);

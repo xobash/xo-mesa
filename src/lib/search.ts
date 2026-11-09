@@ -1,7 +1,7 @@
 import { documentMayMatch } from "./documentWorkingSet";
 import {
   buildRawMatcher,
-  canScanRawFor,
+  canScanRaw,
   createIncrementalRawScan,
   type IncrementalRawScan,
 } from "./searchMatch";
@@ -263,7 +263,7 @@ export function createSearchScan(
       // U+0130 lowercases to i plus a combining dot, so only the single-character
       // ASCII query i needs special handling. Snippets must index raw text.
       const canUseRaw =
-        rawMatcher && (term !== "i" || canScanRawFor(f.relPath, raw));
+        rawMatcher && (term !== "i" || canScanRaw(raw));
       if (canUseRaw) {
         active = {
           file: f,

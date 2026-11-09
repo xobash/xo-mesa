@@ -1,4 +1,4 @@
-import type { TextSaveIssue } from "../store";
+import type { TextSaveIssue } from "../storeTypes";
 
 interface SaveIssueState {
   textSaveIssues: Record<string, TextSaveIssue>;

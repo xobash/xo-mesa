@@ -23,7 +23,7 @@ import { createWorkspaceActions } from "../lib/workspaceActions";
 import { focusDocPane, openInRegion, openToSide, reconcileDocSplit, type DocSplitStep } from "../lib/docSplit";
 
 import type { StoreApi } from "zustand";
-import type { AppState } from "../store";
+import type { AppState } from "../storeTypes";
 type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 /** Secondary windows may create only native-validated peer document surfaces. */
 export async function createSurfaceWindow(

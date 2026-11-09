@@ -1,20 +1,27 @@
 // Windows filesystem policy shared by vault reads, saves, recovery and sync.
 // The classifiers and the retry policy are pure, so every platform tests them;
-// only the thin handle queries are Windows-only.
+// only the thin handle queries are Windows-only. Classifiers that only
+// Windows code calls carry a per-item `allow(dead_code)` off Windows.
 
 use std::io;
 use std::time::Duration;
 
 /// `FILE_ATTRIBUTE_REPARSE_POINT`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 
 // Reparse tags from winnt.h.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const IO_REPARSE_TAG_DEDUP: u32 = 0x8000_0013;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const IO_REPARSE_TAG_WOF: u32 = 0x8000_0017;
 /// `IO_REPARSE_TAG_CLOUD`; `CLOUD_1`..`CLOUD_F` differ only in bits 12-15.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const IO_REPARSE_TAG_CLOUD: u32 = 0x9000_001A;
+#[cfg_attr(not(windows), allow(dead_code))]
 const CLOUD_TAG_MASK: u32 = 0xFFFF_0FFF;
 /// Set on every tag that names another entry (symlink, junction, WSL link).
+#[cfg_attr(not(windows), allow(dead_code))]
 const NAME_SURROGATE_BIT: u32 = 0x2000_0000;
 
 /// True when a reparse point keeps the entry's own data at this path:
@@ -22,6 +29,7 @@ const NAME_SURROGATE_BIT: u32 = 0x2000_0000;
 /// providers), Data Deduplication and WOF-compressed files. Everything else,
 /// including every link-like and every unknown tag, is refused, so a new
 /// redirecting tag cannot open a path outside the vault.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn reparse_tag_keeps_data_in_place(tag: u32) -> bool {
     if tag & NAME_SURROGATE_BIT != 0 {
         return false;
@@ -32,6 +40,7 @@ pub fn reparse_tag_keeps_data_in_place(tag: u32) -> bool {
 
 /// An entry Mesa may treat as itself: no reparse point, or one whose tag keeps
 /// the data in place. Symlinks, junctions and mount points never pass.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn entry_is_in_place(attributes: u32, tag: u32) -> bool {
     attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 || reparse_tag_keeps_data_in_place(tag)
 }
@@ -99,8 +108,10 @@ pub fn path_is_in_place(path: &std::path::Path, attributes: u32) -> io::Result<b
 /// the cloud provider (OneDrive Files On-Demand, other Cloud Files providers,
 /// HSM). FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
 /// FILE_ATTRIBUTE_OFFLINE.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const NOT_DOWNLOADED_ATTRIBUTES: u32 = 0x0040_0000 | 0x0004_0000 | 0x0000_1000;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_not_downloaded(attributes: u32) -> bool {
     attributes & NOT_DOWNLOADED_ATTRIBUTES != 0
 }
@@ -109,6 +120,7 @@ pub fn is_not_downloaded(attributes: u32) -> bool {
 /// download the whole vault, and leaving it out of the manifest could look like
 /// a deletion to a peer. The scan reports it instead, and sync stops before it
 /// plans any change.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const NOT_DOWNLOADED_SYNC_ERROR: &str = "file is online-only (not downloaded from cloud storage); make this folder available offline (OneDrive: Always keep on this device), then sync again";
 
 /// Attributes for `path` without opening it, so a cloud file is not recalled.
@@ -179,6 +191,19 @@ pub(crate) fn retry_transient_lock<T>(op: impl FnMut() -> io::Result<T>) -> io::
     retry_with(op, is_transient_lock, std::thread::sleep)
 }
 
+/// Persist the entries (create, rename, remove) of directory `dir`. Unix only:
+/// FlushFileBuffers does not document directory handles, so Windows directory
+/// durability is not claimed and this is a no-op there.
+#[cfg(unix)]
+pub fn sync_directory(dir: &std::path::Path) -> io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+pub fn sync_directory(_dir: &std::path::Path) -> io::Result<()> {
+    Ok(())
+}
+
 /// Mark a Mesa-owned control entry hidden in Explorer, best effort. Use only for
 /// entries that are never published as a user file: a moved or renamed file
 /// keeps its attributes, so a hidden save stage would hide the saved note.
@@ -206,11 +231,13 @@ pub fn hide_control_entry(path: &std::path::Path) {
 }
 
 /// FILE_ATTRIBUTE_HIDDEN.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 
 /// A Mesa control folder (`.mesa-trash`) that Explorer still shows. Checked
 /// each time Mesa uses the folder, so one created by an older version, by
 /// another OS or by a sync client becomes hidden too.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn needs_hiding(name: &std::ffi::OsStr, attributes: u32) -> bool {
     name == ".mesa-trash"
         && attributes & FILE_ATTRIBUTE_HIDDEN == 0

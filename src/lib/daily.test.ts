@@ -10,12 +10,31 @@ import {
   editCalendarJson,
   holidaysForYear,
   shiftISO,
+  localTime,
 } from "./daily";
 
 describe("localISO", () => {
   it("formats a local date as YYYY-MM-DD", () => {
     expect(localISO(new Date(2026, 5, 23))).toBe("2026-06-23"); // month is 0-based
     expect(localISO(new Date(2026, 0, 1))).toBe("2026-01-01");
+  });
+
+  it("gives tomorrow as shiftISO(today, 1) for every local time, across DST changes", () => {
+    // The Tasks dashboard derives "tomorrow" this way; it must equal local
+    // calendar arithmetic on the current instant at any hour of the year.
+    for (let hour = 0; hour < 366 * 24; hour += 5) {
+      const now = new Date(2026, 0, 1, hour, 30);
+      const tomorrow = new Date(now);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      expect(shiftISO(localISO(now), 1)).toBe(localISO(tomorrow));
+    }
+  });
+});
+
+describe("localTime", () => {
+  it("formats local hours and minutes as zero-padded HH:MM", () => {
+    expect(localTime(new Date(2026, 5, 23, 7, 5, 59))).toBe("07:05");
+    expect(localTime(new Date(2026, 5, 23, 23, 0))).toBe("23:00");
   });
 });
 

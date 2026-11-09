@@ -10,13 +10,8 @@ import { parsePeerInput } from "../lib/pairing";
 import { refreshDiscoveredPeers } from "../lib/discoveryPeers";
 import { syncDiscovery } from "../lib/serialResource";
 import { IN_TAURI } from "../lib/vault";
+import { formatBytes } from "../lib/formatBytes";
 import { Modal } from "./Modal";
-
-function humanBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 /**
  * Welcome-screen flow for opening a vault another device is sharing.
@@ -235,7 +230,7 @@ export function ConnectVaultModal({ onClose }: { onClose: () => void }) {
             <span className="cv-found-icon">✦</span>
             <span>
               Connected — <b>{info.files}</b> file{info.files === 1 ? "" : "s"}
-              {info.bytes ? ` · ${humanBytes(info.bytes)}` : ""}. Choose a folder
+              {info.bytes ? ` · ${formatBytes(info.bytes)}` : ""}. Choose a folder
               to save this vault.
             </span>
           </div>

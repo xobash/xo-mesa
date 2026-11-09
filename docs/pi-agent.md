@@ -74,7 +74,7 @@ second, contextless one, Mesa hands the live session id to the new window
 through its launch URL (`openAgentWindow` in `store.ts`); the new window
 atomically claims the backend session with `terminal_attach` and reattaches its
 own xterm instance to that
-same session (`adoptSharedPiSession` in `AgentPanel.tsx`) instead of calling
+same session (`adoptSharedPiSession` in `piSession.ts`) instead of calling
 `terminal_start`. Rust retains a bounded output history for each PTY. The new
 window subscribes to live output first, requests `terminal_snapshot`, replays
 its ordered resize/output timeline, then drains only events with a newer

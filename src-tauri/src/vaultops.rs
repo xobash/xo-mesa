@@ -17,7 +17,7 @@ fn visible(rel: &str) -> bool {
     sync_core::safe_join(Path::new(""), rel).is_some()
         && rel
             .split('/')
-            .all(|p| !p.starts_with('.') && p != "node_modules")
+            .all(|p| !crate::vault_names::is_hidden_name(p))
 }
 fn recovery(rel: &str) -> bool {
     let parts: Vec<_> = rel.split('/').collect();
@@ -391,7 +391,7 @@ pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
                     walk(root, &path, true, out)?;
                 }
             } else if kind.is_dir()
-                && (name == ".mesa-trash" || (!name.starts_with('.') && name != "node_modules"))
+                && (name == ".mesa-trash" || !crate::vault_names::is_hidden_name(&name))
             {
                 walk(root, &path, name == ".mesa-trash", out)?;
             }

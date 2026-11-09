@@ -91,16 +91,6 @@ fn observed(path: &Path) -> Result<Option<([u8; 32], u64)>, String> {
     }
 }
 
-fn hex_hash(hash: &[u8; 32]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(64);
-    for byte in hash {
-        out.push(DIGITS[(byte >> 4) as usize] as char);
-        out.push(DIGITS[(byte & 15) as usize] as char);
-    }
-    out
-}
-
 fn matches_expected(
     actual: Option<([u8; 32], u64)>,
     expected: &ExpectedCurrent,
@@ -113,7 +103,7 @@ fn matches_expected(
                 return Err("invalid expected vault hash".into());
             }
             actual.is_some_and(|(hash, length)| {
-                length == *size && hex_hash(&hash) == sha256.to_ascii_lowercase()
+                length == *size && crate::hex::encode(&hash) == sha256.to_ascii_lowercase()
             })
         }
     };
@@ -161,21 +151,13 @@ fn write_staged(path: &Path, data: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("cannot flush staged vault file: {error}"))
 }
 
-#[cfg(unix)]
+/// Persist `target`'s directory entry (no-op on Windows; see `sync_directory`).
 fn sync_parent(target: &Path) -> io::Result<()> {
-    File::open(
-        target
-            .parent()
-            .ok_or_else(|| io::Error::other("vault file has no parent"))?,
-    )?
-    .sync_all()
-}
-
-#[cfg(windows)]
-fn sync_parent(_target: &Path) -> io::Result<()> {
-    // Windows directory durability still
-    // requires platform acceptance and is not claimed as a power-loss guarantee.
-    Ok(())
+    match target.parent() {
+        Some(parent) => super::sync_core::platform_fs::sync_directory(parent),
+        None if cfg!(unix) => Err(io::Error::other("vault file has no parent")),
+        None => Ok(()),
+    }
 }
 
 // Retain the actual destination displaced at publication, not a preflight copy.
@@ -648,10 +630,7 @@ mod tests {
     #[test]
     fn write_request_headers_and_raw_body_are_validated() {
         let body = tauri::ipc::InvokeBody::Raw(vec![0, 255, 7]);
-        let hex: String = "/v/näme.md"
-            .bytes()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let hex = crate::hex::encode("/v/näme.md".as_bytes());
         let (path, expected, data) =
             parse_write_request(&headers(&hex, r#"{"kind":"missing"}"#), &body).unwrap();
         assert_eq!(path, "/v/näme.md");
@@ -877,7 +856,7 @@ mod tests {
         let target = dir.join("note.md");
         fs::write(&target, b"old").unwrap();
         let expected = ExpectedCurrent::Hash {
-            sha256: hex_hash(&Sha256::digest(b"old").into()),
+            sha256: crate::hex::encode(&Sha256::digest(b"old")),
             size: 3,
         };
         write_atomic(&target, b"new", &expected).unwrap();
@@ -892,7 +871,7 @@ mod tests {
         let target = dir.join("note.md");
         fs::write(&target, b"old").unwrap();
         let expected = ExpectedCurrent::Hash {
-            sha256: hex_hash(&Sha256::digest(b"old").into()),
+            sha256: crate::hex::encode(&Sha256::digest(b"old")),
             size: 3,
         };
         let error = write_atomic_at_commit(&target, b"mine", &expected, || {

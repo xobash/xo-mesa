@@ -17,41 +17,12 @@ import {
   decayActivity,
   activeRecords,
   onActivityChange,
-  type ActivityOp,
 } from "../lib/activity";
 import { urlForPath } from "../lib/vault";
-import { PreviewCard } from "./PreviewCard";
 
-interface ActivityCard {
-  id: string;
-  op: ActivityOp;
-  status?: string;
-  detail?: string;
-  added?: number;
-  removed?: number;
-  filesChanged?: number;
-  seed?: string;
-  visible: boolean;
-  x: number;
-  y: number;
-}
-const ACTIVITY_CAP = 4; // most cards shown at once, strongest first
-const ACTIVITY_LINGER_MS = 1000;
-const ACTIVITY_FADE_MS = 240;
-const CARD_W = 360;
-const CARD_H = 300;
 const ACTIVE_FRAME_MS = 1000 / 60;
 const IDLE_FRAME_MS = 1000 / 30;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-// How many of the highest-degree nodes always get a title label (the rest
-// show only on hover/active). degreeSortedRef is pre-sorted by degree desc.
-const LABEL_TOP_N = 10;
-// World-space gap enforced by resolveOverlaps() every frame. Both forceCollide
-// and the ambient breathing budget key off it: breathing amplitude is clamped
-// below OVERLAP_GAP/2 so two nodes drifting toward each other can never
-// visually cross, giving a hard no-overlap guarantee that coexists with living
-// motion. Constant (not zoom-dependent) so layout is stable under zoom.
-const OVERLAP_GAP = 8;
 // Graphs this large tick slower than a frame, so their drag physics runs in a
 // worker and the canvas keeps drawing at display rate.
 const WORKER_DRAG_MIN_NODES = 500;
@@ -60,9 +31,7 @@ const DOUBLE_TICK_BELOW = 650;
 // Heavy graphs also settle (after open, data changes and retunes) in the
 // physics worker: one main-thread tick costs ~100 ms at 10,000 nodes.
 const WORKER_SETTLE_MIN_NODES = 2000;
-// Thumbnails decode only for visible nodes at least this many screen px in
-// radius; smaller ones draw as dots. At most THUMB_CACHE_MAX images stay cached.
-const THUMB_MIN_SCREEN_RADIUS = 4;
+// At most this many decoded node thumbnails stay cached.
 const THUMB_CACHE_MAX = 192;
 
 /** Uniform neighbour velocity cap during a drag — no hub boost. */
@@ -76,28 +45,14 @@ function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): nu
   return IDLE_FRAME_MS;
 }
 
-import { GraphHitIndex, clamp, graphLinkNodeId, incidentLinkIndices, nearestNodeLinear, nodeRadius, phaseFromId, rectContains, rectLinePenalty, resolveOverlaps, timelineSortValue } from "./graphGeometry";
-import { isSyntheticNode, nodeFill, readGraphColors, type GraphColors } from "./graphColors";
+import { GraphHitIndex, clamp, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { readGraphColors, type GraphColors } from "./graphColors";
+import { OVERLAP_GAP, drawGraph, type GraphBounds, type GraphDrawRefs, type GraphLinkEndpoints, type Transform } from "./graphDraw";
+import { GraphActivityCards, updateActivityCards, updateGraphHover, type ActivityCard, type GraphCardRefs, type GraphHoverCard } from "./GraphActivityCards";
+import { useGraphPointer, type DragPerf, type DragState } from "./useGraphPointer";
 import { GearIcon, GraphRangeRow, GraphSettingRow, GraphSettingSection, TimelapseIcon } from "./GraphSettingsControls";
 import { createGraphSimulation, graphPhysicsTransferables, graphSimulationTier, snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
-import { markMesaPerf } from "../lib/mesaPerf";
 export { resolveOverlaps } from "./graphGeometry";
-interface Transform {
-  x: number;
-  y: number;
-  k: number;
-}
-interface DragState {
-  node: GraphNode | null;
-  panning: boolean;
-  lastX: number;
-  lastY: number;
-  moved: boolean;
-  offsetX?: number;
-  offsetY?: number;
-  /** Configured collide passes, restored when a moved node drag ends. */
-  collideIterations?: number;
-}
 
 export function GraphView() {
   const notes = useAppStore((s) => s.notes);
@@ -138,7 +93,7 @@ export function GraphView() {
 
   const simRef = useRef<Simulation<GraphNode, GraphLink> | null>(null);
   // Bounded per-drag frame samples, summarized into one local `graph-drag` mark.
-  const dragPerfRef = useRef<{ startedAt: number; last: number; intervals: number[]; work: number[]; draw: number[]; physics: number } | null>(null);
+  const dragPerfRef = useRef<DragPerf | null>(null);
   // Off-thread drag physics: while active, the worker owns ticking and the
   // frame loop copies its latest state into these node objects.
   const physicsRef = useRef<{
@@ -177,14 +132,8 @@ export function GraphView() {
   // `k` eases 0→1 on hover and 1→0 on leave so the dim/undim glides instead of
   // snapping. `id` is kept during fade-out so the highlight releases in place.
   const focusRef = useRef<{ id: string | null; k: number }>({ id: null, k: 0 });
-  // Double-click (background) → fit view.
-  const lastBgClickRef = useRef(0);
   // Pre-computed flat arrays of link endpoints for fast iteration.
-  const linkEndpointsRef = useRef<{
-    sx: Float32Array; sy: Float32Array;
-    tx: Float32Array; ty: Float32Array;
-    sId: string[]; tId: string[];
-  }>({ sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] });
+  const linkEndpointsRef = useRef<GraphLinkEndpoints>({ sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] });
   // Dirty flag: when false and sim is settled, we skip the expensive redraw.
   const resumeRef = useRef<() => void>(() => {});
   const needsRedrawRef = useRef(true);
@@ -238,9 +187,7 @@ export function GraphView() {
   const graphNodeRadius = (n: GraphNode) =>
     nodeRadius(n, graphDisplayRef.current.nodeSize);
 
-  const [hover, setHover] = useState<{ id: string; x: number; y: number } | null>(
-    null
-  );
+  const [hover, setHover] = useState<GraphHoverCard | null>(null);
   const clearGraphHover = () => {
     hoverRef.current.id = null;
     hoverRef.current.since = 0;
@@ -276,6 +223,12 @@ export function GraphView() {
   const recentActivityRef = useRef<Map<string, number>>(new Map());
   const lastRectRef = useRef<DOMRectReadOnly | null>(null);
   const lastWindowPosRef = useRef<{ x: number; y: number } | null>(null);
+  const { onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onPointerLeave, endDrag } = useGraphPointer({
+    wrapRef, transformRef, dragRef, pointerRef, simRef, physicsRef, dragPerfRef,
+    needsRedrawRef, motionUntilRef, fastDrawUntilRef, replayCameraRef,
+    fitPendingRef, resumeRef, forceNodesRef,
+    nodeAtScreen, kickGraph, startDragPhysics, postPhysics,
+  });
 
   function publishVisibleGraph(
     visibleNodes: GraphNode[],
@@ -380,12 +333,7 @@ export function GraphView() {
     return index.nearest(gx, gy, t.k);
   }
 
-  function graphBounds(nodes: GraphNode[]): {
-    cx: number;
-    cy: number;
-    radius: number;
-    valid: boolean;
-  } {
+  function graphBounds(nodes: GraphNode[]): GraphBounds {
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -1145,818 +1093,36 @@ export function GraphView() {
   useEffect(() => {
     let raf = 0;
 
-    const draw = (now: number, activeItems: ReturnType<typeof activeRecords>) => {
-      const canvas = canvasRef.current;
-      const ctx = ctxRef.current;
-      if (!canvas || !ctx) return;
-      const { w, h } = sizeRef.current;
-      const t = transformRef.current;
-      const dpr = window.devicePixelRatio || 1;
-      const lnow = now / 1000;
-      const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
-      const fastDraw =
-        now < fastDrawUntilRef.current ||
-        dragRef.current.panning ||
-        !!dragRef.current.node ||
-        Math.abs(targetKRef.current - t.k) > 0.0005;
-
-      // ease zoom toward its target for buttery wheel response
-      if (Math.abs(targetKRef.current - t.k) > 0.0005) {
-        const cx = pointerRef.current.x || w / 2;
-        const cy = pointerRef.current.y || h / 2;
-        const k2 = t.k + (targetKRef.current - t.k) * 0.2;
-        t.x = cx - (cx - t.x) * (k2 / t.k);
-        t.y = cy - (cy - t.y) * (k2 / t.k);
-        t.k = k2;
-        needsRedrawRef.current = true;
-      }
-
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality =
-        nodesRef.current.length > 1500
-          ? "low"
-          : nodesRef.current.length > 700
-          ? "medium"
-          : "high";
-      ctx.translate(t.x, t.y);
-      ctx.scale(t.k, t.k);
-      if (animationsOn && nodesRef.current.length > 0) {
-        // Sparse, slow orbital drift — closer to Obsidian's near-still graph
-        // than a visibly swimming graph. World-space so it scales with zoom.
-        const driftPhase = lnow * 0.15;
-        ctx.translate(
-          Math.sin(driftPhase) * 0.8 / Math.max(0.7, t.k),
-          Math.cos(driftPhase * 0.87) * 0.55 / Math.max(0.7, t.k)
-        );
-      }
-
-      const nodes = nodesRef.current;
-      const forceNodes = forceNodesRef.current;
-      const links = linksRef.current;
-      const active = getStore().activePath;
-      const hoverId = hoverRef.current.id;
-      // The node currently being dragged (if any). Its incident links are
-      // highlighted in Batch 2 so the dragged cluster's edges read clearly
-      // while dragging — same idea as hover/active, but a brighter, steadier
-      // style so it stays legible against the moving cluster.
-      const dragNode = dragRef.current.node;
-      const dragId = dragNode?.id ?? null;
-      const c = colorsRef.current;
-      const display = graphDisplayRef.current;
-      // ---- Obsidian-style hover focus -----------------------------------
-      // While a node is hovered, its neighborhood stays at full strength and
-      // everything else dims; the transition is eased in the loop (focusRef.k)
-      // so it fades in/out instead of flashing. During drag the whole graph is
-      // in motion, so focus is released to keep the picture calm.
-      const focus = focusRef.current;
-      const focusK = focus.k * focus.k * (3 - 2 * focus.k); // smoothstep
-      const focusId = focusK > 0.02 && !dragId ? focus.id : null;
-      const focusSet = focusId ? neighborsRef.current.get(focusId) : undefined;
-      // Obsidian keeps the rest of the graph readable while a hovered
-      // neighborhood is emphasized. Do not fade the surrounding topology so
-      // deeply that the fitted graph becomes hard to inspect or drag.
-      const dimK = 1 - 0.38 * focusK;
-      const tail = clamp((motionUntilRef.current - now) / 4600, 0, 1);
-      const tailEase = tail * tail * (3 - 2 * tail);
-      const lifeBoost = 1 + tailEase * 0.3;
-      // Ambient motion changes render coordinates only. Cap offsets at half the scaled overlap gap.
-      const livingScale = animationsOn
-        ? nodes.length > 1200
-          ? 1.2
-          : 1.7
-        : 0;
-      // Screen-space breathing amplitude, clamped so two adjacent nodes (layout
-      // gap = OVERLAP_GAP world) breathing toward each other can never touch.
-      const livingScreenPx = Math.min(
-        livingScale * lifeBoost,
-        (OVERLAP_GAP * t.k) / 2 - 0.5
+    // Built once per loop lifetime so a frame passes them without allocating.
+    const drawRefs: GraphDrawRefs = {
+      canvasRef, ctxRef, sizeRef, transformRef, targetKRef, fastDrawUntilRef,
+      dragRef, pointerRef, needsRedrawRef, nodesRef, forceNodesRef, linksRef,
+      hoverRef, colorsRef, graphDisplayRef, focusRef, neighborsRef,
+      motionUntilRef, recentActivityRef, linkEndpointsRef, adjacencyRef,
+      nodeByIdRef, degreeSortedRef,
+      nodeRadius: graphNodeRadius,
+      graphBounds,
+      getImage,
+    };
+    const cardRefs: GraphCardRefs = {
+      transformRef, sizeRef, adjacencyRef, linksRef, nodeByIdRef,
+      graphControlsHoverRef, dragRef, hoverRef, shownIdRef, pointerRef,
+      activityRef, lastActAtRef, activitySigRef, activityHoldUntilRef,
+      activityClearTimerRef,
+      nodeRadius: graphNodeRadius,
+      nodeAtScreen,
+      clearGraphHover,
+      setHover,
+      setActivity,
+    };
+    const draw = (now: number, activeItems: ReturnType<typeof activeRecords>) =>
+      drawGraph(
+        drawRefs,
+        now,
+        activeItems,
+        getStore().settings.animations && !reducedMotionRef.current,
+        getStore().activePath
       );
-      const livingPx = livingScreenPx / Math.max(0.2, t.k);
-      // Radius twinkle/pulse is the primary visible living signal — large enough
-      // to read as the node gently growing/shrinking, but never so large it
-      // makes small nodes vanish. Non-positional, so it cannot cause overlap.
-      const pulseAmp = animationsOn
-        ? nodes.length > 1200
-          ? 0.2
-          : nodes.length > 700
-          ? 0.26
-          : 0.32
-        : 0;
-      const twinkleAmp = animationsOn
-        ? nodes.length > 1200
-          ? 0.26
-          : nodes.length > 700
-          ? 0.34
-          : 0.40
-        : 0;
-
-      // ---- Build activity cache once per frame (not per-node/per-link) ----
-      // Collect active node ids into a Map for O(1) lookup in the hot loops.
-      const actMap = new Map<string, { intensity: number; rate: number }>();
-      for (const { id, rec } of activeItems) {
-        actMap.set(id, { intensity: rec.intensity, rate: rec.rate });
-      }
-
-      // Track when each node last had live activity, so the steady "open file"
-      // highlight can fade back in smoothly after a typing burst instead of
-      // snapping on the moment flicker decays below threshold. Prune stale
-      // entries so the map can't grow unbounded over a long session.
-      const recentAct = recentActivityRef.current;
-      for (const { id, rec } of activeItems) {
-        if (rec.intensity > 0.001) recentAct.set(id, now);
-      }
-      if (recentAct.size > 64) {
-        for (const [id, t] of recentAct) {
-          if (now - t > 2000) recentAct.delete(id);
-        }
-      }
-      // Smooth fade-in of the active-file highlight after activity ends.
-      // While the file is being edited this is ~0 (and Batch 2 skips active
-      // links anyway because the node is in actMap); once flicker decays the
-      // steady highlight ramps 0->1 over ACTIVE_FADE_MS so it eases back in.
-      const ACTIVE_FADE_MS = 600;
-      let activeFade = 1;
-      if (active) {
-        const last = recentAct.get(active) ?? 0;
-        const since = now - last;
-        const f = since >= ACTIVE_FADE_MS ? 1 : since / ACTIVE_FADE_MS;
-        activeFade = f * f * (3 - 2 * f); // smoothstep
-      }
-
-      // ---- Render-layer liveness ----------------------------------------
-      // Covers cluster + halo: every node gets the same gentle render-only
-      // breathing/twinkle. The offsets below are render-only and never feed
-      // back into the simulation.
-      const dragged = dragRef.current.node;
-      for (const n of nodes) {
-        const x = n.x ?? 0;
-        const y = n.y ?? 0;
-        const phase = n.renderPhase ?? phaseFromId(n.id);
-        n.renderPhase = phase;
-        const r = graphNodeRadius(n);
-        const kvx = (n.renderKickVx ?? 0) * 0.82;
-        const kvy = (n.renderKickVy ?? 0) * 0.82;
-        const kx = ((n.renderKickX ?? 0) + kvx) * 0.84;
-        const ky = ((n.renderKickY ?? 0) + kvy) * 0.84;
-        n.renderKickVx = Math.abs(kvx) < 0.01 ? 0 : kvx;
-        n.renderKickVy = Math.abs(kvy) < 0.01 ? 0 : kvy;
-        n.renderKickX = Math.abs(kx) < 0.01 ? 0 : kx;
-        n.renderKickY = Math.abs(ky) < 0.01 ? 0 : ky;
-        // The dragged node is pinned to the cursor via fx/fy. Render it exactly
-        // at its layout position with no ambient wobble or radius pulse, so it
-        // tracks the pointer 1:1 instead of squirming under it — Obsidian pins
-        // the grabbed node. Ambient motion stays on every other node.
-        if (
-          n === dragged ||
-          !animationsOn ||
-          !Number.isFinite(x) ||
-          !Number.isFinite(y)
-        ) {
-          n.renderX = x;
-          n.renderY = y;
-          n.renderRadius = r;
-          continue;
-        }
-        const a = lnow * 0.42 + phase;
-        const b = lnow * 0.27 + phase * 1.37;
-        const cx = x - sizeRef.current.w / 2;
-        const cy = y - sizeRef.current.h / 2;
-        // Distance from viewport center, reused for both the radial breathe
-        // scale and the inward-unit-vector — one hypot per node per frame, not
-        // two (identical value; ~20% off this loop's cost at stress scale).
-        const len = Math.hypot(cx, cy);
-        const radial = Math.min(
-          1.8,
-          len / Math.max(240, sizeRef.current.w * 0.42)
-        );
-        const breathe =
-          Math.sin(lnow * 0.36 + phase * 0.18) * livingPx * 0.55 * radial;
-        const invLen = 1 / Math.max(1, len);
-        const mingle = Math.sin(lnow * 0.21 + phase * 0.51) * livingPx * 0.28;
-        n.renderX =
-          x +
-          (Math.sin(a) + Math.sin(b) * 0.35) * livingPx * 1.35 +
-          mingle * 0.5 +
-          cx * invLen * breathe +
-          kx;
-        n.renderY =
-          y +
-          (Math.cos(a * 0.82) + Math.sin(b * 0.7) * 0.32) * livingPx * 1.35 +
-          mingle * -0.28 +
-          cy * invLen * breathe +
-          ky;
-        // Radius pulse: slow enough to read as a gentle swell, fast enough to
-        // actually see (period ~3.5s). Non-positional so it can't cause overlap.
-        n.renderRadius = r * (1 + Math.sin(lnow * 1.8 + phase) * pulseAmp);
-      }
-
-      // ---- Viewport culling bounds (in graph/world space) ----------------
-      const margin = 60 / t.k;
-      const vx0 = -t.x / t.k - margin;
-      const vy0 = -t.y / t.k - margin;
-      const vx1 = (w - t.x) / t.k + margin;
-      const vy1 = (h - t.y) / t.k + margin;
-
-      // A soft breathing bloom behind the main cluster so the graph reads as
-      // a living field even when the force sim has settled. Stronger than before
-      // so it is actually visible, but kept soft (low alpha) and slow so it
-      // never reads as a busy glow. Pulses on a long breath + a slow radius
-      // swell so the halo itself feels alive.
-      const forceBounds = graphBounds(forceNodes);
-      if (animationsOn && forceBounds.valid) {
-        // Darker, softer, slower halo — a quiet bloom instead of cluster glow.
-        const bloomPulse = 0.7 + 0.22 * Math.sin(lnow * 0.26 + forceBounds.radius * 0.01);
-        const bloomRadius =
-          forceBounds.radius + Math.min(w, h) * 0.2 + Math.sin(lnow * 0.18) * 14;
-        const bloom = ctx.createRadialGradient(
-          forceBounds.cx,
-          forceBounds.cy,
-          Math.max(24, forceBounds.radius * 0.12),
-          forceBounds.cx,
-          forceBounds.cy,
-          bloomRadius
-        );
-        bloom.addColorStop(
-          0,
-          `rgba(${c.flickerRgb},${(0.045 * c.bloomAlpha * bloomPulse).toFixed(3)})`
-        );
-        bloom.addColorStop(
-          0.45,
-          `rgba(${c.flickerRgb},${(0.018 * c.bloomAlpha * bloomPulse).toFixed(3)})`
-        );
-        bloom.addColorStop(1, `rgba(${c.flickerRgb},0)`);
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = bloom;
-        ctx.beginPath();
-        ctx.arc(forceBounds.cx, forceBounds.cy, bloomRadius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // ---- LINKS: batched by style to minimise canvas state changes ------
-      // Collect into three batches: active-flicker, hot (hover/active), normal.
-      ctx.lineCap = "round";
-      const le = linkEndpointsRef.current;
-      const lc = links.length;
-
-      // Update the flat endpoint arrays from the current node positions.
-      for (let i = 0; i < lc; i++) {
-        const l = links[i];
-        const s = l.source as GraphNode;
-        const tg = l.target as GraphNode;
-        le.sx[i] = s.renderX ?? s.x ?? 0;
-        le.sy[i] = s.renderY ?? s.y ?? 0;
-        le.tx[i] = tg.renderX ?? tg.x ?? 0;
-        le.ty[i] = tg.renderY ?? tg.y ?? 0;
-        le.sId[i] = s.id;
-        le.tId[i] = tg.id;
-      }
-
-      // Batch 1: normal links (no activity, not hot) — single stroke style.
-      // Under hover focus every link in this batch is by definition outside
-      // the hovered neighborhood (incident links are "hot" → batch 2), so the
-      // whole batch dims with one globalAlpha — zero extra per-link cost.
-      ctx.beginPath();
-      ctx.strokeStyle = c.link;
-      ctx.lineWidth = (0.7 * display.linkThickness) / t.k;
-      ctx.globalAlpha = focusId ? dimK : 1;
-      for (let i = 0; i < lc; i++) {
-        const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
-        if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
-        // Viewport cull: skip links entirely outside the visible bounds.
-        if ((sx < vx0 && tx < vx0) || (sx > vx1 && tx > vx1)) continue;
-        if ((sy < vy0 && ty < vy0) || (sy > vy1 && ty > vy1)) continue;
-        const sId = le.sId[i], tId = le.tId[i];
-        const sa = actMap.get(sId);
-        const ta = actMap.get(tId);
-        if (sa || ta) continue; // active links drawn in batch 3
-        const hot =
-          (active != null && (sId === active || tId === active)) ||
-          (hoverId != null && (sId === hoverId || tId === hoverId)) ||
-          (dragId != null && (sId === dragId || tId === dragId));
-        if (hot) continue; // hot links drawn in batch 2
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(tx, ty);
-      }
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-
-      // Highlight hovered, active, and dragged links separately from activity flicker; ease hover and active fades.
-      const hotColor = `rgba(${c.flickerRgb},${(0.14 + 0.3 * focusK).toFixed(3)})`;
-      const activeColor = `rgba(${c.flickerRgb},${(0.22 * activeFade).toFixed(3)})`;
-      const dragColor = `rgba(${c.flickerRgb},0.22)`;
-      // Batches 2 and 3 visit only links incident to their nodes, in link order.
-      const adjacency = adjacencyRef.current;
-      for (const i of incidentLinkIndices(adjacency, [active, hoverId, dragId])) {
-        const sId = le.sId[i], tId = le.tId[i];
-        if (actMap.has(sId) || actMap.has(tId)) continue;
-        const touchActive =
-          active != null && (sId === active || tId === active);
-        const touchHover =
-          hoverId != null && (sId === hoverId || tId === hoverId);
-        const touchDrag =
-          dragId != null && (sId === dragId || tId === dragId);
-        if (!touchActive && !touchHover && !touchDrag) continue;
-        const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
-        if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
-        ctx.beginPath();
-        // Drag takes precedence (brightest), then active, then hover.
-        ctx.strokeStyle = touchDrag
-          ? dragColor
-          : touchActive
-          ? activeColor
-          : hotColor;
-        ctx.lineWidth =
-          ((touchDrag ? 1.05 : touchActive ? 1 : 0.9 + 0.4 * focusK) *
-            display.linkThickness) /
-          t.k;
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(tx, ty);
-        ctx.stroke();
-      }
-
-      // Batch 3: active (flickering) links — each needs its own style so
-      // can't be fully batched, but we skip viewport-culled ones.
-      for (const i of actMap.size ? incidentLinkIndices(adjacency, actMap.keys()) : []) {
-        const sId = le.sId[i], tId = le.tId[i];
-        const sa = actMap.get(sId);
-        const ta = actMap.get(tId);
-        if (!sa && !ta) continue;
-        const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
-        if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
-        if ((sx < vx0 && tx < vx0) || (sx > vx1 && tx > vx1)) continue;
-        if ((sy < vy0 && ty < vy0) || (sy > vy1 && ty > vy1)) continue;
-        const linkAct = Math.max(sa?.intensity ?? 0, ta?.intensity ?? 0);
-        if (linkAct <= 0.02) continue;
-        const amp = Math.min(1, linkAct);
-        const rate = Math.max(sa?.rate ?? 0, ta?.rate ?? 0);
-        const flick = 0.55 + 0.45 * Math.sin(lnow * (3 + rate * 1.4));
-        ctx.strokeStyle = `rgba(${c.flickerRgb},${(0.06 + 0.18 * amp * flick).toFixed(3)})`;
-        ctx.lineWidth = ((0.6 + 0.6 * amp) * display.linkThickness) / t.k;
-        ctx.beginPath();
-        ctx.moveTo(sx, sy);
-        ctx.lineTo(tx, ty);
-        ctx.stroke();
-      }
-
-      // Obsidian keeps direction hidden at fit zoom and reveals small arrows
-      // only when the user zooms into the graph.
-      if (display.arrows && t.k > 1.05) {
-        ctx.fillStyle = c.link;
-        ctx.globalAlpha = focusId ? dimK : 1;
-        for (let i = 0; i < lc; i++) {
-          const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
-          const dx = tx - sx;
-          const dy = ty - sy;
-          const len = Math.hypot(dx, dy);
-          if (!Number.isFinite(len) || len < 1) continue;
-          if ((sx < vx0 && tx < vx0) || (sx > vx1 && tx > vx1)) continue;
-          if ((sy < vy0 && ty < vy0) || (sy > vy1 && ty > vy1)) continue;
-          const targetNode = nodeByIdRef.current.get(le.tId[i]);
-          const targetRadius = targetNode ? graphNodeRadius(targetNode) : 6;
-          const ex = tx - (dx / len) * (targetRadius + 2);
-          const ey = ty - (dy / len) * (targetRadius + 2);
-          const size = 4.5 / t.k;
-          const ux = dx / len;
-          const uy = dy / len;
-          const px = -uy;
-          const py = ux;
-          ctx.beginPath();
-          ctx.moveTo(ex, ey);
-          ctx.lineTo(
-            ex - ux * size + px * size * 0.62,
-            ey - uy * size + py * size * 0.62
-          );
-          ctx.lineTo(
-            ex - ux * size - px * size * 0.62,
-            ey - uy * size - py * size * 0.62
-          );
-          ctx.closePath();
-          ctx.fill();
-        }
-        ctx.globalAlpha = 1;
-      }
-
-      // ---- NODES: viewport-culled, no per-node save/restore for non-image ----
-      // All nodes draw the same way — the connected cluster and the orphan halo.
-      for (const n of nodes) {
-        if (n.x == null || n.y == null) continue;
-        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
-        // Viewport cull: skip nodes entirely outside the visible bounds.
-        const r = n.renderRadius ?? graphNodeRadius(n);
-        const rx = n.renderX ?? n.x;
-        const ry = n.renderY ?? n.y;
-        if (rx == null || ry == null) continue;
-        if (rx < vx0 - r || rx > vx1 + r || ry < vy0 - r || ry > vy1 + r) continue;
-
-        const act = actMap.get(n.id);
-        const isActive = n.id === active;
-        const isHover = n.id === hoverId;
-
-        // smooth keystroke flicker (sum of sines, no random shimmer).
-        // Subtle by design: a soft blip per edit that fades with the activity
-        // decay. Kept clearly above the hover/ambient tint so agent telemetry
-        // is still the most visible thing on the graph, but not glaring.
-        if (act && act.intensity > 0.01) {
-          const amp = Math.min(1, act.intensity);
-          const ws = (now / 1000) * (3 + act.rate * 1.4);
-          const flick = 0.55 + 0.3 * Math.sin(ws) + 0.12 * Math.sin(ws * 1.7);
-          const glowR = r + (3 + amp * 6) * flick;
-          const alpha = 0.1 * amp * flick;
-          const g = ctx.createRadialGradient(rx, ry, r * 0.4, rx, ry, glowR);
-          g.addColorStop(0, `rgba(${c.flickerRgb},${alpha.toFixed(3)})`);
-          g.addColorStop(1, `rgba(${c.flickerRgb},0)`);
-          ctx.fillStyle = g;
-          ctx.beginPath();
-          ctx.arc(rx, ry, glowR, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // steady soft halo on the active node. Fades in with `activeFade`
-        // after a typing burst so it never snaps back on.
-        if (isActive && activeFade > 0.01) {
-          const halo = ctx.createRadialGradient(rx, ry, r, rx, ry, r + 11);
-          halo.addColorStop(0, `rgba(${c.flickerRgb},${(0.14 * activeFade).toFixed(3)})`);
-          halo.addColorStop(1, `rgba(${c.flickerRgb},0)`);
-          ctx.fillStyle = halo;
-          ctx.beginPath();
-          ctx.arc(rx, ry, r + 14, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        const img = !fastDraw && n.thumbPath && r * t.k >= THUMB_MIN_SCREEN_RADIUS ? getImage(n.thumbPath, now) : null;
-        // Clip image thumbnails to circles. Keep grabbed nodes steady while other nodes twinkle.
-        const twinkle =
-          animationsOn && !act && !isActive && n !== dragRef.current.node
-            ? 1 + Math.sin(lnow * 2.4 + (n.renderPhase ?? 0) * 2.7) * twinkleAmp
-            : 1;
-
-        // Hover focus: nodes outside the hovered neighborhood recede.
-        let nodeAlpha = Math.max(0.52, Math.min(1, twinkle));
-        if (focusId && n.id !== focusId && !focusSet?.has(n.id) && !act && !isActive) {
-          nodeAlpha *= dimK;
-        }
-        ctx.globalAlpha = nodeAlpha;
-        if (img && img.complete && img.naturalWidth > 0) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(rx, ry, r, 0, Math.PI * 2);
-          ctx.closePath();
-          ctx.clip();
-          ctx.drawImage(img, rx - r, ry - r, r * 2, r * 2);
-          ctx.restore();
-          ctx.beginPath();
-          ctx.arc(rx, ry, r, 0, Math.PI * 2);
-          ctx.lineWidth = (isActive ? 2.5 : 1.2) / t.k;
-          ctx.strokeStyle = isActive ? c.nodeActive : c.thumbBorder;
-          ctx.stroke();
-        } else {
-          ctx.beginPath();
-          ctx.arc(rx, ry, r, 0, Math.PI * 2);
-          ctx.closePath();
-          ctx.fillStyle = isActive ? c.nodeActive : nodeFill(n, c);
-          ctx.fill();
-        }
-        ctx.globalAlpha = 1;
-
-        if (isHover) {
-          ctx.beginPath();
-          ctx.arc(rx, ry, r + 3, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(${c.flickerRgb},0.35)`;
-          ctx.lineWidth = 1.2 / t.k;
-          ctx.stroke();
-        }
-      }
-
-      // --- labels: screen-space pass, Obsidian-style "text fade" ------------
-      // Text smoothly fades out as you zoom out — past LABEL_FADE_LO the graph
-      // shows only nodes, no text. Zoom in and labels fade in, de-overlapped so
-      // they never pile into a glob. Hovered/active notes are always labelled.
-      const LABEL_FADE_LO = clamp(display.textFadeThreshold, 0, 0.9);
-      const LABEL_FADE_HI = Math.min(0.98, LABEL_FADE_LO + 0.4);
-      const zoomAlpha = Math.max(
-        0,
-        Math.min(1, (t.k - LABEL_FADE_LO) / (LABEL_FADE_HI - LABEL_FADE_LO))
-      );
-      const anyForced = hoverId != null || active != null;
-      if (!fastDraw && (zoomAlpha > 0.02 || anyForced || focusK > 0.05)) {
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // identity → constant-size text
-        ctx.font = "12px -apple-system, system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.lineJoin = "round"; // round halo so text never gets spiky
-        ctx.miterLimit = 2;
-        const taken: { x0: number; y0: number; x1: number; y1: number }[] = [];
-        const done = new Set<string>();
-        let drawn = 0;
-
-        const place = (n: GraphNode, forced: boolean, alphaIn?: number): void => {
-          if (drawn >= 120 || done.has(n.id)) return;
-          if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return;
-          const alpha = alphaIn ?? (forced ? 1 : zoomAlpha);
-          if (alpha < 0.03) return;
-          const sx = (n.renderX ?? n.x!) * t.k + t.x;
-          const sy = (n.renderY ?? n.y!) * t.k + t.y;
-          if (sx < -60 || sy < -20 || sx > w + 60 || sy > h + 20) return;
-          const sr = (n.renderRadius ?? graphNodeRadius(n)) * t.k;
-          const tw = ctx.measureText(n.title).width;
-          const lx = sx;
-          const ly = sy + sr + 9;
-          const box = {
-            x0: lx - tw / 2 - 3,
-            y0: ly - 8,
-            x1: lx + tw / 2 + 3,
-            y1: ly + 8,
-          };
-          if (!forced) {
-            for (const o of taken) {
-              if (
-                box.x0 < o.x1 &&
-                box.x1 > o.x0 &&
-                box.y0 < o.y1 &&
-                box.y1 > o.y0
-              )
-                return;
-            }
-          }
-          taken.push(box);
-          done.add(n.id);
-          ctx.globalAlpha = alpha;
-          ctx.lineWidth = 3;
-          ctx.strokeStyle = c.labelHalo;
-          ctx.strokeText(n.title, lx, ly);
-          ctx.fillStyle = forced ? c.nodeActive : c.label;
-          ctx.fillText(n.title, lx, ly);
-          drawn++;
-        };
-
-        // hovered + active are always labelled, then the top-N highest-degree
-        // nodes (from the cached degree-desc order — no per-frame sort).
-        const byId = nodeByIdRef.current;
-        if (hoverId) {
-          const n = byId.get(hoverId);
-          if (n) place(n, true);
-        }
-        if (active && active !== hoverId) {
-          const n = byId.get(active);
-          if (n) place(n, true);
-        }
-        // Hover focus: the hovered node's neighbors get labels that fade in
-        // with the focus ease (Obsidian labels the highlighted neighborhood).
-        // Overlap-avoided (not forced) so a hub hover can't pile text.
-        if (focusId && focusSet) {
-          let labelled = 0;
-          for (const nid of focusSet) {
-            if (labelled >= 24 || drawn >= 120) break;
-            const nb = byId.get(nid);
-            if (!nb) continue;
-            place(nb, false, Math.max(zoomAlpha, focusK));
-            labelled++;
-          }
-        }
-        const topN = Math.min(LABEL_TOP_N, degreeSortedRef.current.length);
-        for (let i = 0; i < topN; i++) {
-          if (drawn >= 120) break;
-          const n = degreeSortedRef.current[i];
-          // Non-neighbor top-N labels recede along with their nodes.
-          const dimmed =
-            focusId && n.id !== focusId && !focusSet?.has(n.id);
-          place(n, false, dimmed ? zoomAlpha * dimK : undefined);
-        }
-        ctx.globalAlpha = 1;
-      }
-
-    };
-
-    const placePreviewCard = (
-      node: GraphNode,
-      placed: { x: number; y: number }[] = [],
-      preferred?: { x: number; y: number }
-    ) => {
-      const t = transformRef.current;
-      const { w, h } = sizeRef.current;
-      const sx = (node.x ?? 0) * t.k + t.x;
-      const sy = (node.y ?? 0) * t.k + t.y;
-      const r = graphNodeRadius(node) * t.k + 20;
-      const pref = preferred ?? { x: sx, y: sy };
-      const candidates = [
-        { x: pref.x + 18, y: pref.y + 18, corner: false },
-        { x: pref.x - CARD_W - 18, y: pref.y + 18, corner: false },
-        { x: pref.x + 18, y: pref.y - CARD_H - 18, corner: false },
-        { x: pref.x - CARD_W - 18, y: pref.y - CARD_H - 18, corner: false },
-        { x: sx + r, y: sy - CARD_H / 2, corner: false },
-        { x: sx - r - CARD_W, y: sy - CARD_H / 2, corner: false },
-        { x: sx - CARD_W / 2, y: sy + r, corner: false },
-        { x: sx - CARD_W / 2, y: sy - r - CARD_H, corner: false },
-        { x: sx + r * 0.8, y: sy + r * 0.8, corner: false },
-        { x: sx - CARD_W - r * 0.8, y: sy + r * 0.8, corner: false },
-        { x: sx + r * 0.8, y: sy - CARD_H - r * 0.8, corner: false },
-        { x: sx - CARD_W - r * 0.8, y: sy - CARD_H - r * 0.8, corner: false },
-        { x: 10, y: 10, corner: true },
-        { x: w - CARD_W - 10, y: 10, corner: true },
-        { x: 10, y: h - CARD_H - 10, corner: true },
-        { x: w - CARD_W - 10, y: h - CARD_H - 10, corner: true },
-      ].map((p) => ({
-        x: clamp(p.x, 8, Math.max(8, w - CARD_W - 8)),
-        y: clamp(p.y, 8, Math.max(8, h - CARD_H - 8)),
-        corner: p.corner,
-      }));
-
-      let best = candidates[0];
-      let bestScore = Infinity;
-      // Use precomputed adjacency — only scan links touching this node, not all.
-      const linkIndices = adjacencyRef.current.get(node.id) ?? [];
-      for (const p of candidates) {
-        const rect = { x: p.x, y: p.y, w: CARD_W, h: CARD_H };
-        // The card must never cover the node it describes, and should avoid
-        // its incident links — the flickering node + links are the point.
-        // Covering the node is a hard reject; link hits are penalized heavily
-        // so a corner (link-free) beats a near position that crosses links.
-        let score = rectContains(rect, sx, sy)
-          ? Infinity
-          : p.corner
-          ? 36_000
-          : 0;
-        for (const li of linkIndices) {
-          const l = linksRef.current[li];
-          if (!l) continue;
-          const s = l.source as GraphNode;
-          const tg = l.target as GraphNode;
-          if (s.x == null || s.y == null || tg.x == null || tg.y == null) continue;
-          score += rectLinePenalty(
-            rect,
-            s.x * t.k + t.x,
-            s.y * t.k + t.y,
-            tg.x * t.k + t.x,
-            tg.y * t.k + t.y
-          ) * 8000;
-        }
-        for (const other of placed) {
-          const overlap =
-            rect.x < other.x + CARD_W &&
-            rect.x + CARD_W > other.x &&
-            rect.y < other.y + CARD_H &&
-            rect.y + CARD_H > other.y;
-          if (overlap) score += 25_000;
-        }
-        const cx = p.x + CARD_W / 2;
-        const cy = p.y + CARD_H / 2;
-        const pdx = cx - pref.x;
-        const pdy = cy - pref.y;
-        const ndx = cx - sx;
-        const ndy = cy - sy;
-        score += Math.sqrt(pdx * pdx + pdy * pdy) * 0.55;
-        score += Math.sqrt(ndx * ndx + ndy * ndy) * 0.08;
-        if (score < bestScore) {
-          bestScore = score;
-          best = p;
-        }
-      }
-      return best;
-    };
-
-    const updateHover = (now: number) => {
-      if (graphControlsHoverRef.current) {
-        clearGraphHover();
-        return;
-      }
-      const d = dragRef.current;
-      // While dragging a node or panning, never show a preview — and dismiss any
-      // card that was already up before the drag began (5a).
-      if (d.node || d.panning) {
-        hoverRef.current.id = null;
-        if (shownIdRef.current !== null) {
-          shownIdRef.current = null;
-          setHover(null);
-        }
-        return;
-      }
-      const p = pointerRef.current;
-      if (!p.inside) {
-        hoverRef.current.id = null;
-        if (shownIdRef.current !== null) {
-          shownIdRef.current = null;
-          setHover(null);
-        }
-        return;
-      }
-      const hit = nodeAtScreen(p.x, p.y);
-      // Tag/phantom nodes have no underlying file, so they get no preview card.
-      const n = hit && !isSyntheticNode(hit) ? hit : null;
-      const id = n?.id ?? null;
-      const delay = getStore().settings.hoverDelayMs;
-      if (id !== hoverRef.current.id) {
-        hoverRef.current.id = id;
-        hoverRef.current.since = now;
-        // Prewarm the preview content the moment a node is hovered, so the
-        // card body is ready when the hover delay elapses (peek = capped read).
-        if (id) void getStore().ensurePeek(id);
-        if (id === null && shownIdRef.current !== null) {
-          shownIdRef.current = null;
-          setHover(null);
-        }
-      } else if (
-        id &&
-        n &&
-        now - hoverRef.current.since >= delay &&
-        shownIdRef.current !== id
-      ) {
-        shownIdRef.current = id;
-        const place = placePreviewCard(n, activityRef.current, {
-          x: p.x + 16,
-          y: p.y + 16,
-        });
-        setHover({ id, x: place.x, y: place.y });
-      }
-    };
-
-    // Float a live preview card over every node with current activity (the file
-    // being read/edited/written/created), strongest first. Throttled, and only
-    // pushes to React state when something actually changed.
-    const updateActivityCards = (
-      now: number,
-      activeItems: ReturnType<typeof activeRecords>
-    ) => {
-      if (now - lastActAtRef.current < 140) return;
-      lastActAtRef.current = now;
-      const t = transformRef.current;
-      const { w, h } = sizeRef.current;
-      const byId = nodeByIdRef.current;
-      const hoveredId = shownIdRef.current; // don't double-card the hovered node
-      const items: ActivityCard[] = [];
-      for (const { id, rec } of activeItems.slice(0, ACTIVITY_CAP)) {
-        if (id === hoveredId) continue;
-        const n = byId.get(id);
-        if (!n || n.x == null || n.y == null) continue;
-        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
-        const sx = n.x * t.k + t.x;
-        const sy = n.y * t.k + t.y;
-        if (sx < -CARD_W || sy < -CARD_H || sx > w + CARD_W || sy > h + CARD_H)
-          continue;
-        const place = placePreviewCard(n, items, {
-          x: sx + 22,
-          y: sy + 22,
-        });
-        items.push({
-          id,
-          op: rec.op,
-          status: rec.status,
-          detail: rec.detail,
-          added: rec.added ?? 0,
-          removed: rec.removed ?? 0,
-          filesChanged: Math.max(1, activeItems.length),
-          seed: `${id}:${rec.op}:${Math.floor(rec.last / 2500)}`,
-          visible: true,
-          x: place.x,
-          y: place.y,
-        });
-      }
-      if (items.length > 0) {
-        activityHoldUntilRef.current = now + ACTIVITY_LINGER_MS;
-        if (activityClearTimerRef.current) {
-          clearTimeout(activityClearTimerRef.current);
-          activityClearTimerRef.current = null;
-        }
-      }
-      const nextItems =
-        items.length > 0
-          ? items
-          : now < activityHoldUntilRef.current
-          ? activityRef.current
-          : activityRef.current.length > 0
-          ? activityRef.current.map((item) => ({ ...item, visible: false }))
-          : [];
-      if (
-        items.length === 0 &&
-        activityRef.current.length > 0 &&
-        now >= activityHoldUntilRef.current &&
-        !activityClearTimerRef.current
-      ) {
-        activityClearTimerRef.current = setTimeout(() => {
-          activityClearTimerRef.current = null;
-          activityRef.current = [];
-          activitySigRef.current = "";
-          setActivity([]);
-        }, ACTIVITY_FADE_MS);
-      }
-      const sig = nextItems
-        .map(
-          (i) =>
-            `${i.id}:${i.op}:${Math.round(i.x / 16)}:${Math.round(i.y / 16)}:${
-              i.added ?? 0
-            }:${i.removed ?? 0}:${i.filesChanged ?? 1}:${i.seed ?? ""}:${(
-              i.detail ?? ""
-            ).slice(0, 24)}:${i.visible ? 1 : 0}`
-        )
-        .join("|");
-      if (sig !== activitySigRef.current) {
-        activitySigRef.current = sig;
-        activityRef.current = nextItems;
-        setActivity(nextItems);
-      }
-    };
-
     let lastInputAt = performance.now();
     const frame = () => {
       const now = performance.now();
@@ -2109,9 +1275,9 @@ export function GraphView() {
       // every frame even when the graph is settled.
       if (shouldDraw || now - lastHoverAtRef.current >= 40) {
         lastHoverAtRef.current = now;
-        updateHover(now);
+        updateGraphHover(cardRefs, now);
       }
-      updateActivityCards(now, activeItems);
+      updateActivityCards(cardRefs, now, activeItems);
     };
 
     // One bad frame must never kill the graph. If `frame` threw and the rAF
@@ -2214,195 +1380,12 @@ export function GraphView() {
       window.removeEventListener("keydown", input);
       window.removeEventListener("wheel", input);
       cancelAnimationFrame(raf);
-      if (activityClearTimerRef.current) clearTimeout(activityClearTimerRef.current);
+      // The card updater owns this timer; clear its latest value on unmount.
+      const timer = cardRefs.activityClearTimerRef.current;
+      if (timer) clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- The animation loop owns a single mount lifetime.
   }, []);
-
-  // ---- pointer interactions ----------------------------------------------
-  function localPoint(clientX: number, clientY: number) {
-    const rect = wrapRef.current!.getBoundingClientRect();
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }
-
-  function onPointerDown(e: React.PointerEvent) {
-    resumeRef.current();
-    if (e.button !== 0 || dragRef.current.node || dragRef.current.panning) return;
-    replayCameraRef.current = false;
-    const { x, y } = localPoint(e.clientX, e.clientY);
-    const n = nodeAtScreen(x, y);
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* pointer capture is best-effort across webviews */
-    }
-    e.preventDefault();
-    if (n) {
-      fastDrawUntilRef.current = performance.now() + 500;
-      const t = transformRef.current;
-      const gx = (x - t.x) / t.k;
-      const gy = (y - t.y) / t.k;
-      n.fx = n.x;
-      n.fy = n.y;
-      dragRef.current = { node: n, panning: false, lastX: x, lastY: y, moved: false,
-        offsetX: n.x! - gx, offsetY: n.y! - gy };
-    } else {
-      fastDrawUntilRef.current = performance.now() + 500;
-      dragRef.current = { node: null, panning: true, lastX: x, lastY: y, moved: false };
-    }
-  }
-
-  function onPointerMove(e: React.PointerEvent) {
-    resumeRef.current();
-    const { x, y } = localPoint(e.clientX, e.clientY);
-    pointerRef.current = { x, y, inside: true };
-    const d = dragRef.current;
-    if (d.node) {
-      const t = transformRef.current;
-      const gx = (x - t.x) / t.k;
-      const gy = (y - t.y) / t.k;
-      d.node.fx = gx + (d.offsetX ?? 0);
-      d.node.fy = gy + (d.offsetY ?? 0);
-      if (Math.abs(x - d.lastX) + Math.abs(y - d.lastY) > 3) {
-        const firstMove = !d.moved;
-        d.moved = true;
-        if (firstMove) {
-          const sim = simRef.current;
-          // Reheat with a uniform drag target so neighbours follow the pointer.
-          // Degree-based boosts can make hub drags jittery.
-          const target = 0.3;
-          sim?.alpha(Math.max(sim.alpha(), target));
-          sim?.alphaTarget(target);
-          // A drag frame is dominated by the whole-graph tick. One collide pass
-          // per tick keeps the drag within layout noise of the configured
-          // passes; idle overlap cleanup still runs after release.
-          const collide = sim?.force("collide") as ForceCollide<GraphNode> | null | undefined;
-          if (collide) {
-            d.collideIterations = collide.iterations();
-            collide.iterations(1);
-          }
-          startDragPhysics(d.node, d.collideIterations);
-          const startedAt = performance.now();
-          dragPerfRef.current = { startedAt, last: startedAt, intervals: [], work: [], draw: [], physics: 0 };
-        }
-        motionUntilRef.current = performance.now() + 2400;
-        fastDrawUntilRef.current = performance.now() + 260;
-      }
-      const physics = physicsRef.current;
-      const physicsIndex = d.moved && physics.active ? physics.index.get(d.node) : undefined;
-      if (physicsIndex != null) {
-        // The worker trails the pointer by a step; draw the grabbed node at the pointer now.
-        d.node.x = d.node.fx;
-        d.node.y = d.node.fy;
-        postPhysics({ type: "move", session: physics.session, index: physicsIndex, fx: d.node.fx, fy: d.node.fy });
-      }
-      needsRedrawRef.current = true;
-      resumeRef.current();
-    } else if (d.panning) {
-      const t = transformRef.current;
-      const dx = x - d.lastX;
-      const dy = y - d.lastY;
-      t.x += dx;
-      t.y += dy;
-      d.lastX = x;
-      d.lastY = y;
-      d.moved = true;
-      kickGraph(dx, dy, 0.65);
-      motionUntilRef.current = performance.now() + 2400;
-      fastDrawUntilRef.current = performance.now() + 260;
-      needsRedrawRef.current = true;
-      resumeRef.current();
-    }
-  }
-
-  function endDrag(click: boolean) {
-    const d = dragRef.current;
-    if (d.node) {
-      // a click (no drag) pops the note out into its own window. Tag/phantom
-      // nodes have no file to open, so a click on them just releases the drag.
-      if (click && !d.moved && !isSyntheticNode(d.node))
-        void getStore().openDocWindow(d.node.id);
-      d.node.fx = null;
-      d.node.fy = null;
-      const physics = physicsRef.current;
-      const physicsIndex = physics.active ? physics.index.get(d.node) : undefined;
-      if (physicsIndex != null) postPhysics({ type: "release", session: physics.session, index: physicsIndex });
-      const sim = simRef.current;
-      if (sim) {
-        // Let existing energy decay; releasing a hub must not add a kick.
-        sim.alphaTarget(0);
-        if (d.collideIterations != null) {
-          (sim.force("collide") as ForceCollide<GraphNode> | null)?.iterations(d.collideIterations);
-        }
-      }
-      // Longer, eased motion tail so the post-drag settle reads as living
-      // motion, not a hard stop. The draw loop scales ambient amplitude with
-      // this tail (lifeBoost), so the graph visibly breathes out.
-      motionUntilRef.current = performance.now() + 4600;
-      fastDrawUntilRef.current = performance.now() + 220;
-      needsRedrawRef.current = true;
-      resumeRef.current();
-    } else if (click && !d.moved && d.panning) {
-      // Double-click on empty canvas → re-fit the whole graph (Obsidian-style
-      // quick reset after wandering off while panning/zooming).
-      const now = performance.now();
-      if (now - lastBgClickRef.current < 350) {
-        lastBgClickRef.current = 0;
-        fitPendingRef.current = true;
-        resumeRef.current();
-        motionUntilRef.current = now + 1200;
-        fastDrawUntilRef.current = now + 300;
-        needsRedrawRef.current = true;
-        resumeRef.current();
-      } else {
-        lastBgClickRef.current = now;
-      }
-    }
-    const perf = dragPerfRef.current;
-    dragPerfRef.current = null;
-    if (perf && perf.work.length > 1) {
-      const quantile = (values: number[], q: number) =>
-        Math.round([...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * q)] * 10) / 10;
-      const seconds = (performance.now() - perf.startedAt) / 1000;
-      markMesaPerf("graph-drag", {
-        nodes: forceNodesRef.current.length,
-        worker: physicsRef.current.active,
-        fps: Math.round((perf.work.length / seconds) * 10) / 10,
-        frameGapP90Ms: quantile(perf.intervals.slice(1), 0.9),
-        frameWorkP50Ms: quantile(perf.work, 0.5),
-        frameWorkP90Ms: quantile(perf.work, 0.9),
-        drawP50Ms: perf.draw.length ? quantile(perf.draw, 0.5) : 0,
-        physicsPerSec: Math.round((physicsRef.current.active ? perf.physics : perf.work.length) / seconds),
-      });
-    }
-    dragRef.current = { node: null, panning: false, lastX: 0, lastY: 0, moved: false };
-  }
-
-  function onPointerUp(e: React.PointerEvent) {
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    endDrag(true);
-  }
-  function onPointerCancel(e: React.PointerEvent) {
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    pointerRef.current = { ...pointerRef.current, inside: false };
-    endDrag(false);
-  }
-  function onPointerLeave() {
-    resumeRef.current();
-    pointerRef.current = { ...pointerRef.current, inside: false };
-    // Pointer capture keeps a drag alive while the cursor crosses the canvas
-    // edge. Do not turn that normal path into an accidental cancellation.
-    if (dragRef.current.node || dragRef.current.panning) return;
-    endDrag(false);
-  }
 
   return (
     <div
@@ -2422,27 +1405,7 @@ export function GraphView() {
       {canvasUnavailable && <div className="graph-index-status" role="status">Graph drawing is unavailable in this webview.</div>}
       {drawingFailed && <div className="graph-index-status" role="status">Graph drawing was interrupted. Resize the pane or reopen the graph to retry.</div>}
       {indexingTextFiles > 0 && <div className="graph-index-status" role="status">{awaitingNotes ? `Indexing ${indexingTextFiles} text files before the graph is drawn…` : `Indexing ${indexingTextFiles} text files; graph may grow.`}</div>}
-      {hover && (
-        <PreviewCard target={{ kind: "note", id: hover.id }} x={hover.x} y={hover.y} />
-      )}
-      {activity.map((a) => (
-        <PreviewCard
-          key={"act-" + a.id}
-          target={{ kind: "note", id: a.id }}
-          x={a.x}
-          y={a.y}
-          visible={a.visible}
-          status={{
-            op: a.op,
-            label: a.status,
-            detail: a.detail,
-            added: a.added,
-            removed: a.removed,
-            filesChanged: a.filesChanged,
-            seed: a.seed,
-          }}
-        />
-      ))}
+      <GraphActivityCards hover={hover} activity={activity} />
       <div
         className="graph-controls"
         onPointerDown={(e) => e.stopPropagation()}

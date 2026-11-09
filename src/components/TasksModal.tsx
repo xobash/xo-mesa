@@ -6,21 +6,12 @@ import {
   taskProject,
   type TaskItem,
 } from "../lib/tasks";
-import { localISO } from "../lib/daily";
+import { localISO, shiftISO } from "../lib/daily";
 import { Modal } from "./Modal";
 
 type Filter = "all" | "personal" | "agent";
 type TaskView = "list" | "board";
 const TASK_PAGE_SIZE = 50;
-
-function offsetISO(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 /** The Tasks dashboard body — used both in the modal and docked in a pane. */
 export function TasksPanel({ onPick }: { onPick?: () => void }) {
@@ -36,7 +27,7 @@ export function TasksPanel({ onPick }: { onPick?: () => void }) {
   const [draft, setDraft] = useState("");
   const [pageLimits, setPageLimits] = useState<Record<string, number>>({});
   const today = localISO();
-  const next = offsetISO(1);
+  const next = shiftISO(today, 1);
 
   // The configured file is the creation destination; inline markers own classification.
   const all = useMemo(

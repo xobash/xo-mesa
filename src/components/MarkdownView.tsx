@@ -5,7 +5,8 @@ import { resolveAssetPath } from "../lib/graph";
 import { urlForPath } from "../lib/vault";
 import { useAppStore } from "../store";
 import { markMesaPerf } from "../lib/mesaPerf";
-import { rewriteSrcset, useRemoteImageRewrite, type RemoteImageRewrite } from "../lib/remoteImages";
+import { rewriteSrcset, type RemoteImageRewrite } from "../lib/remoteImages";
+import { useRemoteImageRewrite } from "./useRemoteImageRewrite";
 
 /**
  * Parses Markdown in a worker, sanitizes accepted output, delegates wiki clicks,

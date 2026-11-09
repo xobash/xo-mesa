@@ -31,7 +31,7 @@ import {
 } from "../lib/textSaveCoordinator";
 
 import type { StoreApi } from "zustand";
-import type { AppState } from "../store";
+import type { AppState } from "../storeTypes";
 type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
 const CALENDAR_FILE = "calendar.json";

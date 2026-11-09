@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import nativeApp from "../../src-tauri/src/lib.rs?raw";
-import activity from "../../src-tauri/src/activity.rs?raw";
-import sync from "../../src-tauri/src/sync.rs?raw";
+import syncDiscovery from "../../src-tauri/src/sync_discovery.rs?raw";
 import syncServer from "../../src-tauri/src/sync_server.rs?raw";
 import syncIdentity from "../../src-tauri/src/sync_identity.rs?raw";
 import vaultscope from "../../src-tauri/src/vaultscope.rs?raw";
@@ -9,8 +8,7 @@ import vaultwatch from "../../src-tauri/src/vaultwatch.rs?raw";
 
 // Both native command forms dispatch blocking work away from the webview thread.
 const OFF_MAIN_THREAD: Record<string, { source: string; commands: string[] }> = {
-  "activity.rs": { source: activity, commands: ["activity_stop"] },
-  "sync.rs": { source: sync, commands: ["sync_discovery_stop", "sync_discovery_start"] },
+  "sync_discovery.rs": { source: syncDiscovery, commands: ["sync_discovery_stop", "sync_discovery_start"] },
   "sync_server.rs": { source: syncServer, commands: ["sync_stop"] },
   "sync_identity.rs": { source: syncIdentity, commands: ["sync_identity"] },
   "vaultscope.rs": { source: vaultscope, commands: ["vault_flush_file", "vault_authorize", "vault_authorize_artifacts"] },
@@ -39,14 +37,13 @@ describe("native commands that block stay off the main thread", () => {
         const macroWorker = /command\(async\)/.test(attribute);
         const explicitWorker = /\basync\s+fn\b/.test(signature) && body.includes("spawn_blocking");
         expect(macroWorker || explicitWorker).toBe(true);
-        if (name === "activity_stop") {
-          const exit = nativeApp.slice(nativeApp.indexOf("if let tauri::RunEvent::Exit = event"));
-          expect(exit).toContain("activity::stop_native()");
-          expect(exit).not.toContain("activity::activity_stop()");
-        }
       });
     }
   }
+  it("lib.rs: app exit stops the Pi bridge natively", () => {
+    const exit = nativeApp.slice(nativeApp.indexOf("if let tauri::RunEvent::Exit = event"));
+    expect(exit).toContain("activity::stop_native()");
+  });
 });
 
 describe("watcher shutdown lock lifetime", () => {

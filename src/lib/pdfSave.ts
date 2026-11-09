@@ -3,22 +3,10 @@ import {
   type VerifiedWriteFs,
   type VerifiedWriteOptions,
 } from "./verifiedWrite";
+import { loadPdfEditModule } from "./pdfEditModule";
 
 export type PdfSaveFs = VerifiedWriteFs;
 export type PdfSaveOptions = Pick<VerifiedWriteOptions, "expectedCurrentBytes">;
-
-type PdfEditModule = typeof import("./pdf");
-let pdfEditModulePromise: Promise<PdfEditModule> | null = null;
-
-function loadPdfEditModule(): Promise<PdfEditModule> {
-  if (!pdfEditModulePromise) {
-    pdfEditModulePromise = import("./pdf").catch((error) => {
-      pdfEditModulePromise = null;
-      throw error;
-    });
-  }
-  return pdfEditModulePromise;
-}
 
 // Exact in-memory buffers already parsed by assertValidPdfSnapshot. Callers
 // must not mutate a buffer after validating it.

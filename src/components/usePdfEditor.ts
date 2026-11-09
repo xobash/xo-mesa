@@ -1,48 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 // The legacy display build supplies the runtime compatibility shims required
 // by Mesa's supported Safari 16.4 / WebView2 111 floor (notably
 // Promise.withResolvers). Keep the worker from the same distribution: mixing
 // modern display code with a legacy worker is an unsupported PDF.js pairing.
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import workerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
-import { exists, readFile, remove, rename, writeFile } from "@tauri-apps/plugin-fs";
-import { authorizeWriteArtifacts, flushVaultFile, nativeVaultWriteAtomic, IN_TAURI, urlForPath } from "../lib/vault";
+import { readFile } from "@tauri-apps/plugin-fs";
+import { IN_TAURI, urlForPath } from "../lib/vault";
 import type { VaultFile } from "../types";
 import {
   copyPdfBytes,
-  isLikelyBlankPdfPaint,
   isNotAPdf,
   pdfBytesEqual,
   sanitizePdfBytes,
 } from "../lib/pdfBytes";
 import type { FormField } from "../lib/pdf";
-import { assertValidPdfSnapshot, persistPdfBytes } from "../lib/pdfSave";
+import { loadPdfEditModule } from "../lib/pdfEditModule";
 import { pdfHistoryBytes, trimPdfHistory } from "../lib/pdfHistory";
-import {
-  mergePdfTextRunSources,
-  projectPdfTextRuns,
-  type PdfTextRun,
-  type PdfTextRunSource,
-} from "../lib/pdfTextRuns";
-import {
-  addStalePages,
-  stalePageNumbers,
-  type StalePages,
-} from "../lib/pdfStalePages";
-import { pdfPageWindow } from "../lib/pdfPageWindow";
-import {
-  pdfCanvasBackingScale,
-  pdfPaintAheadPages,
-  planPdfCanvasRelease,
-} from "../lib/pdfCanvasBudget";
-import { pdfPagesToRender } from "../lib/pdfRenderPlan";
+import type { PdfTextRunSource } from "../lib/pdfTextRuns";
+import { addStalePages, type StalePages } from "../lib/pdfStalePages";
 import {
   primePdfWorker,
   releaseUnusedPdfWorker,
   takePdfWorker,
 } from "../lib/pdfWorkerPool";
-import { countPdfPerf, markPdfPerf, startPdfPerfRun } from "./pdfPerf";
+import { markPdfPerf, startPdfPerfRun } from "./pdfPerf";
 import { useDevicePixelRatio } from "./useDevicePixelRatio";
+import { isPdfjsCancellation } from "./pdfjsTasks";
+import { usePdfPagePaint } from "./usePdfPagePaint";
+import { usePdfTextRunExtraction } from "./usePdfTextRunExtraction";
+import { savePdfEditorBytes } from "./pdfEditorSave";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -66,91 +53,14 @@ interface PdfApplyOptions {
   structural?: boolean;
 }
 
-/** Pages kept painted on either side of the ones the viewer says are on screen,
- *  so ordinary scrolling always lands on pixels that are already there. */
-const PAINT_AHEAD_PAGES = 3;
-/** Painted pages are only released once they fall outside this wider band. The
- *  gap between the two bounds is hysteresis: scrolling back and forth across a
- *  page boundary must not thrash a page between painted and released. */
-const RELEASE_AFTER_PAGES = 8;
-
 type PdfTransform = (current: Uint8Array) => Promise<Uint8Array>;
-
-function nextFrame(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
-}
 
 /**
  * All of the PDF *document* logic — loading bytes, rendering pages with pdf.js,
  * the undo/redo history, and saving — extracted from the view so the component
  * is just annotation UI. Returns the canvas/viewport refs the view binds to.
+ * Page painting, text-run extraction and saving live in their own modules.
  */
-/** pdf.js failures caused by our own cancel/destroy during cleanup — not real
- *  render errors, so they must never flip the UI into the error/fallback state. */
-function isPdfjsCancellation(err: unknown): boolean {
-  const name = (err as { name?: string } | null)?.name;
-  if (name === "RenderingCancelledException" || name === "AbortException") return true;
-  return /destroyed|cancell/i.test(String((err as Error)?.message ?? err));
-}
-
-type PdfEditModule = typeof import("../lib/pdf");
-let pdfEditModulePromise: Promise<PdfEditModule> | null = null;
-
-function loadPdfEditModule(): Promise<PdfEditModule> {
-  if (!pdfEditModulePromise) {
-    pdfEditModulePromise = import("../lib/pdf").catch((error) => {
-      pdfEditModulePromise = null;
-      throw error;
-    });
-  }
-  return pdfEditModulePromise;
-}
-
-/** Confirm blank paints against drawing operations; fall back if pdf.js cannot
- * answer. Unreadable canvas pixels are inconclusive. */
-export async function paintedBlankUnexpectedly(
-  ctx: { getImageData: (x: number, y: number, w: number, h: number) => { data: Uint8ClampedArray } },
-  canvas: { width: number; height: number },
-  page: Pick<pdfjs.PDFPageProxy, "getOperatorList">
-): Promise<boolean> {
-  let blank: boolean;
-  try {
-    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    blank = isLikelyBlankPdfPaint(pixels.data, canvas.width, canvas.height);
-  } catch {
-    // Reading the pixels back can fail on its own; that is not a render failure.
-    return false;
-  }
-  if (!blank) return false;
-  try {
-    const { fnArray } = await page.getOperatorList();
-    return fnArray.length > 0;
-  } catch {
-    // If pdf.js cannot say, keep the protective behaviour rather than guessing.
-    return true;
-  }
-}
-
-/** The bitmap the page-1 blank check reads. A display-scaled bitmap is
- * first drawn down to the CSS box, so the read-back costs what it did at
- * ratio 1 and a mark that was visible there is still visible. */
-function blankProbe(
-  canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D,
-  viewport: { width: number; height: number }
-): [CanvasRenderingContext2D, { width: number; height: number }] {
-  const width = Math.max(1, Math.floor(viewport.width));
-  const height = Math.max(1, Math.floor(viewport.height));
-  if (canvas.width <= width && canvas.height <= height) return [ctx, canvas];
-  const probe = document.createElement("canvas");
-  probe.width = width;
-  probe.height = height;
-  const probeCtx = probe.getContext("2d");
-  if (!probeCtx) return [ctx, canvas];
-  probeCtx.drawImage(canvas, 0, 0, width, height);
-  return [probeCtx, probe];
-}
-
 export function usePdfEditor(
   file: VaultFile | undefined,
   { enabled = true, extractText = false, formFields = false, reloadToken }: PdfEditorOptions = {}
@@ -173,10 +83,7 @@ export function usePdfEditor(
   // only first-page completion requires a UI publication.
   const paintedPagesRef = useRef<Map<number, number>>(new Map());
   const allPagesPaintedRef = useRef(false);
-  // Pixels are drawn at renderScale × this ratio (capped per page), so a ratio
-  // change invalidates every page's paint credit.
   const devicePixelRatio = useDevicePixelRatio();
-  const paintedRatioRef = useRef(devicePixelRatio);
   const [history, setHistory] = useState<Uint8Array[]>([]);
   const [future, setFuture] = useState<Uint8Array[]>([]);
   const viewports = useRef<Map<number, pdfjs.PageViewport>>(new Map());
@@ -722,344 +629,41 @@ export function usePdfEditor(
     };
   }, [enabled, formFields, bytes]);
 
-  // Render pages into their canvases whenever the parsed document, settled
-  // zoom, or the mounted canvas set changes. No parsing happens here anymore.
-  useEffect(() => {
-    if (!enabled || !doc) return;
-    // Consume page-scoped staleness only for its document change; zoom and canvas remounts repaint their band.
-    const isDocumentChange = lastRenderedDocRef.current !== doc;
-    lastRenderedDocRef.current = doc;
-    const stalePages = isDocumentChange ? stalePaintPagesRef.current : "all";
-    if (isDocumentChange) stalePaintPagesRef.current = null;
-    if (paintedRatioRef.current !== devicePixelRatio) {
-      paintedRatioRef.current = devicePixelRatio;
-      paintedPagesRef.current.clear();
-      allPagesPaintedRef.current = false;
-    }
-    let cancelled = false;
-    let activeTask: pdfjs.RenderTask | null = null;
-    (async () => {
-      try {
-        const mountedPageNumbers = Array.from(canvasRefs.current.keys())
-          .map((pageIdx) => pageIdx + 1)
-          .filter((pageNumber) => pageNumber >= 1 && pageNumber <= doc.numPages)
-          .sort((a, b) => a - b);
-        const mountedPages = new Set(mountedPageNumbers);
-        // Estimate page bytes at the current scale to bound paint-ahead work.
-        // Use the configured band until page geometry is available.
-        const typicalPageBytes = (): number => {
-          const size =
-            pageSizesRef.current.get(0) ??
-            pageSizesRef.current.values().next().value;
-          if (!size) return 0;
-          const cssWidth = size.width * renderScale;
-          const cssHeight = size.height * renderScale;
-          const backing = pdfCanvasBackingScale(cssWidth, cssHeight, devicePixelRatio);
-          return cssWidth * backing * cssHeight * backing * 4;
-        };
-        const window = pdfPageWindow(onscreenPagesRef.current, doc.numPages, {
-          ahead: pdfPaintAheadPages(typicalPageBytes(), PAINT_AHEAD_PAGES),
-          keep: RELEASE_AFTER_PAGES,
-        });
-        // Release off-screen pixels before painting and invalidate their paint
-        // credit. Bound retained canvases by bytes as well as page distance.
-        const backingBytesOf = (pageIdx: number): number => {
-          const canvas = canvasRefs.current.get(pageIdx);
-          return canvas ? canvas.width * canvas.height * 4 : 0;
-        };
-        const releasePlan = planPdfCanvasRelease(
-          paintedPagesRef.current.keys(),
-          window,
-          backingBytesOf
-        );
-        for (const pageIdx of releasePlan.release) {
-          const canvas = canvasRefs.current.get(pageIdx);
-          if (canvas) {
-            canvas.width = 0;
-            canvas.height = 0;
-          }
-          paintedPagesRef.current.delete(pageIdx);
-          allPagesPaintedRef.current = false;
-          countPdfPerf(pdfPerfRunRef.current, "pagesReleased");
-        }
-        // Paint only mounted pages in the paint band that lack pixels at the current scale.
-        const pageNumbers = pdfPagesToRender(
-          mountedPageNumbers,
-          window.paint,
-          stalePages,
-          doc.numPages,
-          paintedPagesRef.current,
-          renderScale
-        );
-        // Reported from both exits. The window can be finished by a pass that
-        // still had pages to paint OR by one that found nothing left to do —
-        // mounting a canvas reopens the question without creating any work.
-        const noteWindowComplete = () => {
-          if (allPagesPaintedRef.current) return;
-          const complete = [...window.paint].every(
-            (pageNumber) =>
-              !mountedPages.has(pageNumber) ||
-              paintedPagesRef.current.get(pageNumber - 1) === renderScale
-          );
-          if (!complete) return;
-          allPagesPaintedRef.current = true;
-          markPdfPerf(pdfPerfRunRef.current, "window-painted", {
-            paintedPages: paintedPagesRef.current.size,
-            windowPages: window.paint.size,
-            totalPages: doc.numPages,
-          });
-        };
-        if (!pageNumbers.length) {
-          markPdfPerf(pdfPerfRunRef.current, "render-pass-skipped", {
-            mountedCanvases: canvasRefs.current.size,
-          });
-          noteWindowComplete();
-          return;
-        }
-        // Allocate one effect-local scratch canvas only when work exists; replace visible pixels after painting.
-        const renderCanvas = document.createElement("canvas");
-        countPdfPerf(pdfPerfRunRef.current, "renderPasses");
-        countPdfPerf(pdfPerfRunRef.current, "pagesPlanned", pageNumbers.length);
-        markPdfPerf(pdfPerfRunRef.current, "render-pass-start", {
-          pages: pageNumbers.length,
-          mountedCanvases: canvasRefs.current.size,
-          totalPages: doc.numPages,
-          documentChange: isDocumentChange,
-        });
-        for (const i of pageNumbers) {
-          if (i === 1) markPdfPerf(pdfPerfRunRef.current, "page-1-render-start");
-          const page = await doc.getPage(i);
-          // Splits the first page's cost into the worker's side (fetching and
-          // parsing the page's content stream and resources) and the main
-          // thread's raster. They have completely different remedies, so a
-          // combined number cannot tell you which one to attack.
-          if (i === 1) markPdfPerf(pdfPerfRunRef.current, "page-1-ready");
-          if (cancelled) return;
-          const viewport = page.getViewport({ scale: renderScale });
-          viewports.current.set(i - 1, viewport);
-          // Record the page's box as soon as it is known, so the viewer can
-          // reserve space for the pages around it without waiting for the
-          // background measure pass to reach them.
-          if (!pageSizesRef.current.has(i - 1)) {
-            const unit = page.getViewport({ scale: 1 });
-            pageSizesRef.current.set(i - 1, {
-              width: unit.width,
-              height: unit.height,
-            });
-            setPageSizeVersion((v) => v + 1);
-          }
-          const canvas = canvasRefs.current.get(i - 1);
-          if (!canvas) continue;
-          // `viewport` stays in CSS pixels (pointer and annotation geometry use
-          // it); only the bitmap is scaled up for the display.
-          const backing = pdfCanvasBackingScale(viewport.width, viewport.height, devicePixelRatio);
-          renderCanvas.width = Math.floor(viewport.width * backing);
-          renderCanvas.height = Math.floor(viewport.height * backing);
-          const renderCtx = renderCanvas.getContext("2d");
-          if (!renderCtx) continue;
-          activeTask = page.render({
-            canvasContext: renderCtx,
-            viewport,
-            ...(backing !== 1 ? { transform: [backing, 0, 0, backing, 0, 0] } : {}),
-          });
-          await activeTask.promise;
-          activeTask = null;
-          countPdfPerf(pdfPerfRunRef.current, "pageRasters");
-          countPdfPerf(pdfPerfRunRef.current, "rasterBytes", renderCanvas.width * renderCanvas.height * 4);
-          if (i === 1) markPdfPerf(pdfPerfRunRef.current, "page-1-raster-end");
-          if (cancelled) return;
-          if (i === 1) markPdfPerf(pdfPerfRunRef.current, "blank-check-start");
-          if (i === 1 && (await paintedBlankUnexpectedly(...blankProbe(renderCanvas, renderCtx, viewport), page))) {
-            if (cancelled) return;
-            throw new Error("pdf.js rendered a blank first page");
-          }
-          if (i === 1) markPdfPerf(pdfPerfRunRef.current, "blank-check-end");
-          if (cancelled) return;
-          canvas.width = renderCanvas.width;
-          canvas.height = renderCanvas.height;
-          const ctx = canvas.getContext("2d");
-          if (!ctx) continue;
-          ctx.drawImage(renderCanvas, 0, 0);
-          // Credit the page only once its pixels are actually on the visible
-          // canvas, and only for the scale they were drawn at.
-          paintedPagesRef.current.set(i - 1, renderScale);
-          if (i === 1) {
-            setFirstPagePainted(true);
-            setStatus("");
-            markPdfPerf(pdfPerfRunRef.current, "first-meaningful-page");
-          } else if (doc.numPages > 8) {
-            await nextFrame();
-          }
-        }
-        markPdfPerf(pdfPerfRunRef.current, "render-pass-end", {
-          renderedPages: paintedPagesRef.current.size,
-          totalPages: doc.numPages,
-        });
-        noteWindowComplete();
-        setRenderError(false);
-      } catch (err) {
-        if (!cancelled && !isPdfjsCancellation(err)) {
-          console.error("[mesa] PDF render failed:", err);
-          setStatus("");
-          setRenderError(true);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-      activeTask?.cancel();
-    };
-  }, [enabled, doc, renderScale, devicePixelRatio, canvasVersion, onscreenVersion]);
+  usePdfPagePaint({
+    enabled,
+    doc,
+    renderScale,
+    devicePixelRatio,
+    canvasVersion,
+    onscreenVersion,
+    firstPagePainted,
+    lastRenderedDocRef,
+    stalePaintPagesRef,
+    paintedPagesRef,
+    allPagesPaintedRef,
+    canvasRefs,
+    viewports,
+    pageSizesRef,
+    onscreenPagesRef,
+    pdfPerfRunRef,
+    setPageSizeVersion,
+    setFirstPagePainted,
+    setStatus,
+    setRenderError,
+  });
 
-  // Measure scale-1 geometry after first paint in yielding batches; reserve page layout without rasterizing.
-  useEffect(() => {
-    if (!enabled || !doc || !firstPagePainted) return;
-    if (pageSizesRef.current.size >= doc.numPages) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        markPdfPerf(pdfPerfRunRef.current, "page-measure-start", {
-          totalPages: doc.numPages,
-        });
-        for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
-          if (cancelled) return;
-          if (pageSizesRef.current.has(pageNumber - 1)) continue;
-          const page = await doc.getPage(pageNumber);
-          if (cancelled) return;
-          const unit = page.getViewport({ scale: 1 });
-          pageSizesRef.current.set(pageNumber - 1, {
-            width: unit.width,
-            height: unit.height,
-          });
-          countPdfPerf(pdfPerfRunRef.current, "pagesMeasured");
-          if (pageNumber % 16 === 0) {
-            setPageSizeVersion((v) => v + 1);
-            await nextFrame();
-          }
-        }
-        if (cancelled) return;
-        setPageSizeVersion((v) => v + 1);
-        markPdfPerf(pdfPerfRunRef.current, "page-measure-end", {
-          measured: pageSizesRef.current.size,
-        });
-      } catch (err) {
-        // Measurement is an optimization, never a reason to fail the document:
-        // without it the viewer falls back to estimating from a known page.
-        if (!cancelled && !isPdfjsCancellation(err)) {
-          console.warn("[mesa] PDF page measure failed:", err);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, doc, firstPagePainted]);
-
-  // Extract zoom-independent text at scale 1; project to screen coordinates below.
-  useEffect(() => {
-    if (!enabled || !extractText || !doc) {
-      textRunSourcesRef.current = [];
-      extractedPageCountRef.current = 0;
-      setTextRunSources([]);
-      return;
-    }
-    // A page-scoped edit only changes the page it touched, so re-extract just
-    // those pages and keep the rest. Anything that could shift page indices or
-    // touch unknown pages (structural edits, undo/redo, an external reload, the
-    // first pass) falls back to the whole document — a stale run would place a
-    // replacement on the wrong glyphs.
-    const pending = staleTextPagesRef.current;
-    staleTextPagesRef.current = null;
-    const canReuse =
-      textRunSourcesRef.current.length > 0 &&
-      extractedPageCountRef.current === doc.numPages;
-    const scopedPages = canReuse ? stalePageNumbers(pending, doc.numPages) : null;
-    let cancelled = false;
-    let published = false;
-    (async () => {
-      try {
-        markPdfPerf(pdfPerfRunRef.current, "text-extraction-start", {
-          scopedPages: scopedPages?.length ?? null,
-          totalPages: doc.numPages,
-        });
-        const nextSources: PdfTextRunSource[] = [];
-        const pageNumbers =
-          scopedPages ??
-          Array.from({ length: doc.numPages }, (_, pageIdx) => pageIdx + 1);
-        for (const i of pageNumbers) {
-          const page = await doc.getPage(i);
-          if (cancelled) return;
-          const viewport = page.getViewport({ scale: 1 });
-          const text = await page.getTextContent();
-          if (cancelled) return;
-          for (const item of text.items) {
-            const raw = item as {
-              str?: string;
-              width?: number;
-              height?: number;
-              transform?: number[];
-            };
-            const value = raw.str?.trim();
-            if (!value || !raw.transform) continue;
-            const matrix = pdfjs.Util.transform(viewport.transform, raw.transform);
-            nextSources.push({
-              page: i - 1,
-              text: raw.str ?? "",
-              unitLeft: matrix[4],
-              unitTop: matrix[5],
-              unitHeight: Math.hypot(matrix[2], matrix[3]),
-              rawWidth: raw.width,
-              rawHeight: raw.height,
-              fallbackWidth: value.length * 6,
-              pdfX: raw.transform[4],
-              pdfYBase: raw.transform[5],
-            });
-          }
-          if (i % 4 === 0) await nextFrame();
-        }
-        if (cancelled) return;
-        const merged = scopedPages
-          ? mergePdfTextRunSources(
-              textRunSourcesRef.current,
-              nextSources,
-              new Set(scopedPages.map((pageNumber) => pageNumber - 1))
-            )
-          : nextSources;
-        textRunSourcesRef.current = merged;
-        extractedPageCountRef.current = doc.numPages;
-        published = true;
-        setTextRunSources(merged);
-        markPdfPerf(pdfPerfRunRef.current, "text-extraction-end", {
-          runs: merged.length,
-        });
-      } catch {
-        if (!cancelled) {
-          textRunSourcesRef.current = [];
-          extractedPageCountRef.current = 0;
-          setTextRunSources([]);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-      // This pass consumed the pending work up front. If it never published,
-      // hand exactly that work back, or the next pass would merge fresh runs
-      // into sources this one was meant to replace — stale hit boxes place a
-      // replacement on the wrong glyphs.
-      if (published) return;
-      staleTextPagesRef.current = addStalePages(
-        staleTextPagesRef.current,
-        scopedPages
-          ? new Set(scopedPages.map((pageNumber) => pageNumber - 1))
-          : "all"
-      );
-    };
-  }, [enabled, extractText, doc]);
-
-  const textRuns: PdfTextRun[] = useMemo(
-    () => projectPdfTextRuns(textRunSources, renderScale),
-    [textRunSources, renderScale]
-  );
+  const textRuns = usePdfTextRunExtraction({
+    enabled,
+    extractText,
+    doc,
+    renderScale,
+    textRunSources,
+    setTextRunSources,
+    staleTextPagesRef,
+    textRunSourcesRef,
+    extractedPageCountRef,
+    pdfPerfRunRef,
+  });
 
   /** Run a byte transform, pushing the previous bytes onto the undo stack. */
   const apply = (transform: PdfTransform, options: PdfApplyOptions = {}) => {
@@ -1165,50 +769,17 @@ export function usePdfEditor(
       const current = bytesRef.current;
       const baseline = savedBytesRef.current;
       if (!current || !baseline) return;
-      const snapshot = copyPdfBytes(current);
-      // Both buffers are immutable snapshots: edits replace bytesRef rather
-      // than mutating it, and the verified writer only reads its precondition.
-      // Reusing them avoids two full-document copies on every successful save.
-      const expectedCurrentBytes = baseline;
-      try {
-        await assertValidPdfSnapshot(snapshot);
-        if (!isCurrentDocumentGeneration(document)) return;
-        if (IN_TAURI) {
-          // The expected bytes are enforced inside the verified-write
-          // transaction (and checked again immediately before commit), so an
-          // external rewrite cannot slip between a UI pre-check and the save.
-          await persistPdfBytes(
-            targetFile.path,
-            snapshot,
-            {
-              readFile,
-              writeFile,
-              remove,
-              exists,
-              rename,
-              authorizeArtifacts: authorizeWriteArtifacts,
-              flush: flushVaultFile,
-              atomicWrite: nativeVaultWriteAtomic,
-            },
-            { expectedCurrentBytes }
-          );
-          if (!isCurrentDocumentGeneration(document)) return;
+      await savePdfEditorBytes({
+        path: targetFile.path,
+        current,
+        baseline,
+        isCurrent: () => isCurrentDocumentGeneration(document),
+        onSaved: (snapshot) => {
           savedBytesRef.current = snapshot;
           setDirty(false);
-          setStatus("Saved.");
-        } else {
-          setStatus("Editing is read-only in the browser demo.");
-        }
-      } catch (e) {
-        if (!isCurrentDocumentGeneration(document)) return;
-        if (/changed before the verified write/i.test(String(e))) {
-          setStatus(
-            "Save blocked: this PDF changed on disk after it was opened. Your edits are still here — reopen the file to load the newer version, or duplicate it to keep both."
-          );
-        } else {
-          setStatus(`Save failed: ${String(e)}`);
-        }
-      }
+        },
+        setStatus,
+      });
     });
   };
 

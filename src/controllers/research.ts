@@ -27,8 +27,9 @@ import type {
 import { isDeepResearchBindingCurrent } from "../lib/deepResearchBinding";
 import {
   DEFAULT_DEEP_RESEARCH_LIMITS,
-  RESEARCH_DEPTH_PRESETS,
   clampDepth,
+  createRunId,
+  depthForPreset,
   limitsForDepth,
   truncateUtf8,
   utf8ByteLength,
@@ -52,12 +53,11 @@ export function deepResearchHasUnappliedProposal(run: Pick<DeepResearchRunState,
 }
 
 const loadDeepResearch = () => import("../lib/deepResearch");
-const createRunId = () => `dr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const currentPiSessionId = () => getPiSessionSnapshot().sessionId;
 const loadDeepResearchRun = () => import("../lib/deepResearchRun");
 
 import type { StoreApi } from "zustand";
-import type { AppState, DeepResearchRunState } from "../store";
+import type { AppState, DeepResearchRunState } from "../storeTypes";
 type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
 interface Dependencies extends Port {
@@ -641,13 +641,7 @@ export function createResearchController({ get, set, getGeneration, registerExte
             promptBytes: 0,
             promptSentAt: null,
             firstSignalAt: null,
-            depth: clampDepth(
-              RESEARCH_DEPTH_PRESETS[
-              (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS) in RESEARCH_DEPTH_PRESETS
-                ? (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS)
-                : "standard"
-              ]
-            ),
+            depth: depthForPreset(get().settings.researchDepth),
             context: null,
             activity: [],
             subQuestions: [],
@@ -693,14 +687,7 @@ export function createResearchController({ get, set, getGeneration, registerExte
         return;
       }
 
-      const depth = clampDepth(
-        opts?.depth ??
-        RESEARCH_DEPTH_PRESETS[
-        (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS) in RESEARCH_DEPTH_PRESETS
-          ? (get().settings.researchDepth as keyof typeof RESEARCH_DEPTH_PRESETS)
-          : "standard"
-        ]
-      );
+      const depth = opts?.depth ? clampDepth(opts.depth) : depthForPreset(get().settings.researchDepth);
       const limits = limitsForDepth(DEFAULT_DEEP_RESEARCH_LIMITS, depth);
       const scope: ResearchContextScope =
         (opts?.scope ?? get().settings.researchContextScope) === "vault" ? "vault" : "workspace";

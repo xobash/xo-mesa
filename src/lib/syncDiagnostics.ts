@@ -1,5 +1,6 @@
 import type { SyncLogEntry, SyncPhase, SyncReport } from "./sync";
 import { formatFingerprint } from "./syncProtocol";
+import { formatBytes } from "./formatBytes";
 
 /** Export sync diagnostics with all strings passed through redactSecrets; exclude keys and absolute vault roots. */
 
@@ -64,13 +65,6 @@ export function formatLogLine(entry: SyncLogEntry): string {
   return `${formatLogTime(entry.ts)} ${level} ${entry.msg}`;
 }
 
-function bytesHuman(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MiB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GiB`;
-}
-
 function redactPaths(text: string, paths: DiagnosticsInput["paths"]): string {
   let out = text;
   for (const [path, label] of [[paths?.vaultRoot, "<vault>"], [paths?.home, "~"]] as const) {
@@ -131,9 +125,9 @@ export function buildTroubleshootingPackage(input: DiagnosticsInput): string {
     push("## Last sync report");
     push("");
     push(
-      `- Result: ↓${r.pulled} pulled (${bytesHuman(r.bytesPulled)}), ↑${
+      `- Result: ↓${r.pulled} pulled (${formatBytes(r.bytesPulled)}), ↑${
         r.pushed
-      } pushed (${bytesHuman(r.bytesPushed)}), ${r.conflicts} conflict cop${
+      } pushed (${formatBytes(r.bytesPushed)}), ${r.conflicts} conflict cop${
         r.conflicts === 1 ? "y" : "ies"
       }, ${r.upToDate} already up-to-date`
     );

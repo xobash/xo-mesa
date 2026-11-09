@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  togglePanel,
   removeView,
   placeInCenter,
   placeInRight,
@@ -12,10 +11,10 @@ import {
   openViewInWorkspace,
 } from "./panes";
 
-describe("togglePanel", () => {
-  it("adds when absent, removes when present", () => {
-    expect(togglePanel(["preview"], "graph")).toEqual(["preview", "graph"]);
-    expect(togglePanel(["preview", "graph"], "graph")).toEqual(["preview"]);
+describe("toggleWorkspacePanel", () => {
+  it("adds a side panel when absent and removes it when present", () => {
+    expect(toggleWorkspacePanel("doc", [], "graph")).toEqual({ centerView: "doc", rightStack: ["graph"] });
+    expect(toggleWorkspacePanel("doc", ["graph"], "graph")).toEqual({ centerView: "doc", rightStack: [] });
   });
 });
 

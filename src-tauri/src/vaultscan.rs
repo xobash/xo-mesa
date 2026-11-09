@@ -8,10 +8,6 @@ use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-/// Directory names the walk never descends into. Dot-prefixed names (including
-/// `.git`) are already excluded by the leading-dot rule.
-const SKIPPED_DIRS: [&str; 1] = ["node_modules"];
-
 #[derive(serde::Serialize)]
 pub struct ScanEntry {
     /// Vault-relative path, always forward-slashed.
@@ -114,7 +110,7 @@ fn walk(dir: &Path, prefix: &str, out: &mut ScanResult) -> std::io::Result<()> {
             format!("{prefix}/{name}")
         };
         if ft.is_dir() {
-            if SKIPPED_DIRS.contains(&name.as_str()) {
+            if name == crate::vault_names::SKIPPED_DIR {
                 continue;
             }
             // A child can disappear or become unreadable during a long scan;

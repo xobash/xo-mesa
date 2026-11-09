@@ -1,13 +1,17 @@
-import { beforeEach, describe, it, expect } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   buildRawMatcher,
-  scanRaw,
   createIncrementalRawScan,
   canScanRaw,
-  canScanRawFor,
-  resetSearchEligibility,
   LENGTH_CHANGING_CHAR,
 } from "./searchMatch";
+
+/** One unsliced pass: a single window covers the whole text. */
+function scanRaw(raw: string, re: RegExp, width: number): { first: number; count: number } {
+  const scan = createIncrementalRawScan(raw, re, width, Math.max(1, raw.length));
+  while (!scan.advance()) { /* one window */ }
+  return scan.result();
+}
 
 /** The exact predicate the fast path must reproduce. */
 function legacy(raw: string, termLower: string): { first: number; count: number } {
@@ -180,59 +184,6 @@ describe("fast path parity with toLowerCase()", () => {
       }
       term = term.toLowerCase();
       expect(fast(raw, term)).toEqual(legacy(raw, term));
-    }
-  });
-});
-
-describe("canScanRawFor: compatible keyed eligibility", () => {
-  beforeEach(() => resetSearchEligibility());
-
-  it("returns exactly what canScanRaw returns on every call", () => {
-    const plain = "ordinary text";
-    const dotted = `x${LENGTH_CHANGING_CHAR}y`;
-    // Repeated calls must not change the answer.
-    expect(canScanRawFor("a.md", plain)).toBe(canScanRaw(plain));
-    expect(canScanRawFor("a.md", plain)).toBe(canScanRaw(plain));
-    expect(canScanRawFor("b.md", dotted)).toBe(canScanRaw(dotted));
-    expect(canScanRawFor("b.md", dotted)).toBe(canScanRaw(dotted));
-  });
-
-  it("re-derives when the same key's text changes", () => {
-    // A reused path must always answer for its current text.
-    expect(canScanRawFor("note.md", "clean")).toBe(true);
-    expect(canScanRawFor("note.md", `now ${LENGTH_CHANGING_CHAR} dirty`)).toBe(false);
-    expect(canScanRawFor("note.md", "clean again")).toBe(true);
-  });
-
-  it("keeps separate answers per key", () => {
-    expect(canScanRawFor("clean.md", "abc")).toBe(true);
-    expect(canScanRawFor("dirty.md", LENGTH_CHANGING_CHAR)).toBe(false);
-    expect(canScanRawFor("clean.md", "abc")).toBe(true);
-    expect(canScanRawFor("dirty.md", LENGTH_CHANGING_CHAR)).toBe(false);
-  });
-
-  it("does not answer from a previous vault after a reset", () => {
-    expect(canScanRawFor("Note.md", LENGTH_CHANGING_CHAR)).toBe(false);
-    resetSearchEligibility();
-    // Same key, different vault, different text.
-    expect(canScanRawFor("Note.md", "fresh vault text")).toBe(true);
-  });
-
-  it("agrees with canScanRaw over a randomized corpus", () => {
-    let seed = 20260728;
-    const rand = () => {
-      seed ^= seed << 13;
-      seed ^= seed >>> 17;
-      seed ^= seed << 5;
-      return (seed >>> 0) / 0xffffffff;
-    };
-    const alphabet = `abc İé K\n.`;
-    for (let trial = 0; trial < 400; trial++) {
-      let raw = "";
-      const len = Math.floor(rand() * 30);
-      for (let i = 0; i < len; i++) raw += alphabet[Math.floor(rand() * alphabet.length)];
-      const key = `f${trial % 17}.md`;
-      expect(canScanRawFor(key, raw)).toBe(canScanRaw(raw));
     }
   });
 });

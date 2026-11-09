@@ -49,22 +49,6 @@ export interface RawScan {
   count: number;
 }
 
-/** Return first offset and non-overlapping count. Reset the shared fixed-width matcher before each file;
- * match start is lastIndex minus pattern width. */
-export function scanRaw(raw: string, re: RegExp, width: number): RawScan {
-  re.lastIndex = 0;
-  let first = -1;
-  let count = 0;
-  while (re.test(raw)) {
-    if (first < 0) first = re.lastIndex - width;
-    count++;
-    // A zero-width pattern cannot occur for a non-empty term, but guard so a
-    // future pattern change can never spin forever.
-    if (width === 0) re.lastIndex++;
-  }
-  return { first, count };
-}
-
 /** Characters inspected per resumable step; bounded windows allow intra-file yields. */
 const RAW_SCAN_CHUNK_CHARS = 64 * 1024;
 
@@ -76,7 +60,8 @@ export interface IncrementalRawScan {
 }
 
 /**
- * Resumable equivalent of `scanRaw` for a fixed-width matcher.
+ * Resumable first-offset and non-overlapping-count scan for a fixed-width
+ * matcher. Match start is lastIndex minus pattern width.
  *
  * Each window includes `width - 1` trailing characters so a match that starts
  * before the boundary and ends after it is visible. A match belongs to the
@@ -132,11 +117,3 @@ export function createIncrementalRawScan(
 export function canScanRaw(raw: string): boolean {
   return raw.indexOf(LENGTH_CHANGING_CHAR) < 0;
 }
-
-/** Check raw-search eligibility without retaining source strings or keys. */
-export function canScanRawFor(_key: string, raw: string): boolean {
-  return canScanRaw(raw);
-}
-
-/** Compatibility hook for existing vault-open callers; no state is retained. */
-export function resetSearchEligibility(): void {}

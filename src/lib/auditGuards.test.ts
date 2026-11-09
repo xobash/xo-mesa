@@ -6,7 +6,7 @@ import nodeVersion from "../../.node-version?raw";
 import dockerfile from "../../Dockerfile?raw";
 import readme from "../../README.md?raw";
 import terminal from "../../src-tauri/src/terminal.rs?raw";
-import agent from "../components/AgentPanel.tsx?raw";
+import agent from "../components/piSession.ts?raw";
 import config from "../../vite.config.ts?raw";
 
 it("removes renderer argv from both sides of terminal launch", () => {

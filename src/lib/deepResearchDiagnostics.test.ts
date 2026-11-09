@@ -3,7 +3,6 @@ import type { ResearchActivity } from "./deepResearch";
 import {
   buildResearchTroubleshootingKit,
   buildResearchCompletionExport,
-  explainResearchTimeout,
   RESEARCH_TROUBLESHOOTING_IDLE_MS,
   researchTroubleshootingTrigger,
   type ResearchRunSnapshot,
@@ -62,79 +61,7 @@ function run(partial: Partial<ResearchRunSnapshot> = {}): ResearchRunSnapshot {
   };
 }
 
-describe("explainResearchTimeout", () => {
-  it("diagnoses a dead Pi session first", () => {
-    const msg = explainResearchTimeout({ run: run(), piSessionLive: false, now: T0 + 400_000 });
-    expect(msg).toContain("no longer running");
-  });
-
-  it("diagnoses zero self-reports AND zero observed browsing as protocol never engaged", () => {
-    const msg = explainResearchTimeout({
-      run: run({ sources: [], subQuestions: [] }),
-      piSessionLive: true,
-      now: T0 + 400_000,
-    });
-    expect(msg).toContain("NO progress reports");
-    expect(msg).toContain("NO web browsing");
-    expect(msg).toContain("deep_research_progress");
-    expect(msg).toContain("Pi terminal");
-  });
-
-  it("distinguishes a submitted prompt with no model signal", () => {
-    const msg = explainResearchTimeout({
-      run: run({
-        launchStage: "waiting-for-model",
-        activity: [act({ kind: "status", message: "Research task submitted to Pi" })],
-        subQuestions: [],
-        sources: [],
-        firstSignalAt: null,
-      }),
-      piSessionLive: true,
-      now: T0 + 400_000,
-    });
-    expect(msg).toContain("submitted a 2048 B research prompt");
-    expect(msg).toContain("model server logs");
-  });
-
-  it("diagnoses observed browsing without self-reports as protocol not followed", () => {
-    const msg = explainResearchTimeout({
-      run: run({
-        activity: [
-          act({ kind: "status", message: "Preparing research context…", at: T0 }),
-          act({ kind: "search", message: "Searched for “tides”", observed: true }),
-          act({ kind: "source", message: "Opened a.com/x", observed: true }),
-        ],
-      }),
-      piSessionLive: true,
-      now: T0 + 400_000,
-    });
-    expect(msg).toContain("observed 2 real page visits");
-    expect(msg).toContain("never called deep_research_progress");
-  });
-
-  it("diagnoses a stalled run with the last self-reported activity and progress counts", () => {
-    const msg = explainResearchTimeout({
-      run: run({
-        activity: [
-          act({ kind: "plan", message: "q1\nq2" }),
-          act({ kind: "subquestion", message: "Researching q1", at: T0 + 60_000 }),
-        ],
-        reportDraft: "## Draft",
-      }),
-      piSessionLive: true,
-      now: T0 + 460_000,
-    });
-    expect(msg).toContain('went quiet after "Researching q1"');
-    expect(msg).toContain("round 1/2");
-    expect(msg).toContain("1/2 sources read");
-    expect(msg).toContain("no activity for the last");
-  });
-
-  it("always points at the troubleshooting kit", () => {
-    const msg = explainResearchTimeout({ run: run(), piSessionLive: true, now: T0 + 400_000 });
-    expect(msg).toContain("Copy troubleshooting kit");
-  });
-
+describe("researchTroubleshootingTrigger after a rejected finish", () => {
   it("exposes diagnostics after a rejected finish while the run stays active", () => {
     expect(
       researchTroubleshootingTrigger(

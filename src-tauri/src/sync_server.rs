@@ -125,16 +125,10 @@ pub(super) fn scoped_sync_credential(key: &str, fingerprint: &str) -> String {
     hex_bytes(hmac::sign(&key, format!("mesa-sync-cert-v1:{fingerprint}").as_bytes()).as_ref())
 }
 
-pub(super) fn hex_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
+pub(super) use crate::hex::encode as hex_bytes;
 
 pub(super) fn nonce() -> Result<[u8; 32], String> {
-    let mut value = [0u8; 32];
-    SystemRandom::new()
-        .fill(&mut value)
-        .map_err(|_| "Could not create sync challenge.".to_string())?;
-    Ok(value)
+    crate::hex::random_bytes::<32>().ok_or_else(|| "Could not create sync challenge.".to_string())
 }
 
 pub(super) fn server_proof(key: &str, challenge: &[u8; 32], fingerprint: &str) -> hmac::Tag {
@@ -507,36 +501,7 @@ pub(super) async fn handle_hyper(
 ) -> HyperResponse<HyperBody> {
     let method = req.method().clone();
     if method == HyperMethod::GET && req.uri().path() == "/sync/identity" {
-        // First contact is unauthenticated; the client continues on a fresh
-        // pinned connection, so this one always closes.
-        if !auth_limiter.admit_identity(peer) {
-            return closing(hyper_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "too many attempts",
-            ));
-        }
-        let Some((message, challenge)) = parse_identity_request(req.uri().query().unwrap_or(""))
-        else {
-            return closing(hyper_response(
-                StatusCode::BAD_REQUEST,
-                "invalid key exchange",
-            ));
-        };
-        let identity = match get_identity_async(&app).await {
-            Ok(identity) => identity,
-            Err(_) => {
-                return closing(hyper_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "identity unavailable",
-                ))
-            }
-        };
-        return closing(
-            match make_identity_proof(&token, &message, &challenge, &identity.fingerprint) {
-                Ok(proof) => hyper_json(serde_json::to_string(&proof).expect("serializable proof")),
-                Err(_) => hyper_response(StatusCode::BAD_REQUEST, "invalid key exchange"),
-            },
-        );
+        return serve_identity(&req, &token, &app, peer, &auth_limiter).await;
     }
     let fingerprint = match get_identity_async(&app).await {
         Ok(identity) => identity.fingerprint.clone(),
@@ -579,504 +544,591 @@ pub(super) async fn handle_hyper(
     let query = req.uri().query().unwrap_or("").to_string();
 
     if path == "/activity" && method == HyperMethod::POST {
-        let mut body = Vec::new();
-        while let Some(frame) = next_body_frame(req.body_mut()).await {
-            let frame = match frame {
-                Ok(frame) => frame,
-                Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "read error"),
-            };
-            if let Some(bytes) = frame.data_ref() {
-                if body.len().saturating_add(bytes.len()) > MAX_ACTIVITY_BYTES {
-                    return hyper_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "activity body too large",
-                    );
-                }
-                body.extend_from_slice(bytes);
-            }
-        }
-        match String::from_utf8(body) {
-            Ok(body) => {
-                let _ = app.emit("activity", body);
-                return hyper_response(StatusCode::OK, "ok");
-            }
-            Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "read error"),
-        }
+        return serve_activity(&mut req, &app).await;
     }
 
     if path == "/sync/manifest" && method == HyperMethod::GET {
-        let started = Instant::now();
-        let manifest_root = root.as_ref().clone();
-        // Journal reconciliation takes a std mutex and fsyncs: keep it on the
-        // blocking pool with the scan.
-        let (entries, skipped, reconciled) = match tokio::task::spawn_blocking(move || {
-            let _scan_guard = manifest_lock()
-                .lock()
-                .map_err(|_| "manifest lock poisoned".to_string())?;
-            let (entries, skipped) = sync_core::build_manifest(&manifest_root);
-            let reconciled = if skipped.is_empty() {
-                sync_core::reconcile_complete_journal(&manifest_root, &entries, &skipped)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            } else {
-                Ok(())
-            };
-            Ok::<_, String>((entries, skipped, reconciled))
-        })
-        .await
-        {
-            Ok(Ok(manifest)) => manifest,
-            Ok(Err(error)) => return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error),
-            Err(error) => {
-                return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            }
-        };
-        if !skipped.is_empty() {
-            for (rel, err) in &skipped {
-                emit_log(
-                    &app,
-                    "warn",
-                    format!("[serve] manifest incomplete at {rel}: {err}"),
-                );
-            }
-            // A partial manifest is not a safe sync baseline.  Returning an
-            // explicit failure prevents both current and older peers from
-            // interpreting omitted paths as deletion or rename intent.
-            return hyper_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "vault scan incomplete; fix the listed path and retry",
-            );
-        }
-        if let Err(error) = reconciled {
-            emit_log(
-                &app,
-                "warn",
-                format!("[serve] journal reconciliation failed: {error}"),
-            );
-        }
-        emit_log(
-            &app,
-            "info",
-            format!(
-                "[serve] manifest served — {} files in {}ms",
-                entries.len(),
-                started.elapsed().as_millis()
-            ),
-        );
-        return hyper_json(sync_core::manifest_to_json(&entries));
+        return serve_manifest(&root, &app).await;
     }
 
     if path == "/sync/journal" && method == HyperMethod::GET {
-        let journal_root = root.as_ref().clone();
-        let loaded = tokio::task::spawn_blocking(move || {
-            let journal = sync_core::load_journal(&journal_root)
-                .map_err(|error| format!("journal unavailable: {error}"))?;
-            sync_core::journal_wire_bytes(&journal)
-                .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
-                .map_err(|error| format!("journal encode failed: {error}"))
-        })
-        .await;
-        return match loaded {
-            Ok(Ok(body)) => hyper_json(body),
-            Ok(Err(error)) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error),
-            Err(error) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        };
+        return serve_journal_get(&root).await;
     }
 
     if path == "/sync/journal" && method == HyperMethod::PUT {
-        // The shared sync key authenticates incoming requests. This identity
-        // associates their journal participant with the saved peer for retirement;
-        // it is not a substitute for the client's TLS server pin.
-        let sender_fingerprint = req
-            .headers()
-            .get("x-mesa-fingerprint")
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .map(str::to_ascii_lowercase);
-        // Journal operations are control-plane data, not ordinary vault files.
-        // Apply them while the receiver owns the request so an initiator's
-        // delete cannot be immediately reintroduced by the receiver's stale
-        // manifest during that same sync.
-        let mut body = Vec::new();
-        while let Some(frame) = next_body_frame(req.body_mut()).await {
-            let frame = match frame {
-                Ok(frame) => frame,
-                Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "could not read journal"),
-            };
-            if let Some(bytes) = frame.data_ref() {
-                if body.len().saturating_add(bytes.len()) > sync_core::MAX_JOURNAL_WIRE_BYTES {
-                    return hyper_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "journal exceeds the 32 MiB exchange limit",
-                    );
-                }
-                body.extend_from_slice(bytes);
-            }
-        }
-        let mut incoming: sync_core::SyncJournal = match serde_json::from_slice(&body) {
-            Ok(journal) => journal,
-            Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "invalid sync journal"),
-        };
-        let root_for_apply = root.as_ref().clone();
-        let result = tokio::task::spawn_blocking(move || {
-            sync_core::accept_peer_journal(&mut incoming, "peer journal")
-                .map_err(|error| error.to_string())?;
-            if let Some(fingerprint) = sender_fingerprint {
-                sync_core::bind_journal_peer(
-                    &root_for_apply,
-                    &fingerprint,
-                    &incoming.device,
-                    false,
-                )
-                .map_err(|error| error.to_string())?;
-            }
-            sync_core::apply_incoming_journal(&root_for_apply, &incoming)
-                .map_err(|error| error.to_string())
-        })
-        .await;
-        return match result {
-            Ok(Ok((journal, outcomes))) => {
-                for outcome in outcomes {
-                    match outcome.result {
-                        Ok(sync_core::JournalApply::Applied | sync_core::JournalApply::AlreadyApplied) => emit_log(&app, "info", format!("[serve] applied peer journal operation {}", outcome.operation.id)),
-                        Ok(sync_core::JournalApply::Conflict) => emit_log(&app, "warn", format!("[serve] preserved local bytes for conflicting peer journal operation {}", outcome.operation.id)),
-                        Err(error) => emit_log(&app, "warn", format!("[serve] peer journal operation {} failed: {error}", outcome.operation.id)),
-                    }
-                }
-                sync_core::journal_wire_bytes(&journal)
-                    .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
-                    .map(hyper_json)
-                    .unwrap_or_else(|error| {
-                        hyper_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("journal encode failed: {error}"),
-                        )
-                    })
-            }
-            Ok(Err(error)) => hyper_response(StatusCode::CONFLICT, error),
-            Err(error) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        };
+        return serve_journal_put(&mut req, &root, &app).await;
     }
 
     if path == "/sync/base" && method == HyperMethod::PUT {
-        // The fingerprint is self-reported by a shared-key holder, who is fully
-        // trusted; it selects a bound record and is not client authentication.
-        let Some(sender) = req
-            .headers()
-            .get("x-mesa-fingerprint")
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .map(str::to_ascii_lowercase)
-        else {
-            return hyper_response(StatusCode::BAD_REQUEST, "missing peer identity");
-        };
-        let mut body = Vec::new();
-        while let Some(frame) = next_body_frame(req.body_mut()).await {
-            let frame = match frame {
-                Ok(frame) => frame,
-                Err(_) => {
-                    return hyper_response(StatusCode::BAD_REQUEST, "could not read sync base")
-                }
-            };
-            if let Some(bytes) = frame.data_ref() {
-                if body.len().saturating_add(bytes.len()) > sync_core::MAX_JOURNAL_WIRE_BYTES {
-                    return hyper_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "sync base exceeds 32 MiB",
-                    );
-                }
-                body.extend_from_slice(bytes);
-            }
-        }
-        let offered: Vec<sync_core::JournalEntry> = match serde_json::from_slice(&body) {
-            Ok(entries) => entries,
-            Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "invalid sync base"),
-        };
-        let base_root = root.as_ref().clone();
-        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
-            let (current, skipped) = sync_core::build_manifest(&base_root);
-            drop(_scan_guard);
-            if !skipped.is_empty() {
-                return Err("receiver scan is incomplete".into());
-            }
-            let offered: Vec<ManifestEntry> = offered
-                .into_iter()
-                .filter_map(|entry| {
-                    sync_core::is_peer_rel(&entry.rel).then_some(ManifestEntry {
-                        rel: entry.rel,
-                        size: entry.size,
-                        hash: entry.hash,
-                    })
-                })
-                .collect();
-            let common = sync_core::common_baseline(&current, &offered);
-            sync_core::save_bound_peer_baseline(&base_root, &sender, common)
-                .map_err(|error| error.to_string())
-        })
-        .await;
-        return match result {
-            Ok(Ok(())) => hyper_response(StatusCode::OK, "ok"),
-            Ok(Err(error)) => hyper_response(StatusCode::CONFLICT, error),
-            Err(error) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        };
+        return serve_base_put(&mut req, &root).await;
     }
 
     if path == "/sync/file" {
-        let Some(rel) = sync_core::query_param(&query, "rel") else {
-            return hyper_response(StatusCode::BAD_REQUEST, "missing rel");
-        };
-        let Some(full) = sync_core::peer_join_confined(&root, &rel) else {
-            emit_log(
-                &app,
-                "warn",
-                format!("[serve] rejected unsafe path {rel:?}"),
-            );
-            return hyper_response(StatusCode::BAD_REQUEST, "bad path");
-        };
-        if method == HyperMethod::GET {
-            #[cfg(not(unix))]
-            let path = full.clone();
-            #[cfg(unix)]
-            let root_for_read = root.clone();
-            #[cfg(unix)]
-            let rel_for_read = rel.clone();
-            let file = match tokio::task::spawn_blocking(move || {
-                #[cfg(unix)]
-                {
-                    sync_core::RootedTarget::resolve(&root_for_read, &rel_for_read, false)?
-                        .open_read()
-                }
-                #[cfg(not(unix))]
-                {
-                    open_sync_file_no_follow(&path)
-                }
-            })
-            .await
-            {
-                Ok(Ok(file)) => tokio::fs::File::from_std(file),
-                Ok(Err(_)) => return hyper_response(StatusCode::NOT_FOUND, "not found"),
-                Err(_) => {
-                    return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, "file open failed")
-                }
-            };
-            let stream = ReaderStream::with_capacity(file, TRANSFER_CHUNK_BYTES).map(|chunk| {
-                chunk
-                    .map(Frame::data)
-                    .map_err(|error| Box::new(error) as BoxError)
-            });
-            return HyperResponse::builder()
-                .status(StatusCode::OK)
-                .body(BodyExt::boxed(StreamBody::new(stream)))
-                .unwrap_or_else(|_| {
-                    hyper_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "response construction failed",
-                    )
-                });
-        }
-        if method == HyperMethod::PUT {
-            let prior = match req.headers().get(hyper::header::IF_MATCH) {
-                None => None,
-                Some(value) => {
-                    let parsed = value
-                        .to_str()
-                        .ok()
-                        .and_then(|text| text.strip_prefix('"'))
-                        .and_then(|text| text.strip_suffix('"'))
-                        .and_then(|text| text.split_once(':'))
-                        .and_then(|(size, hash)| {
-                            if hash.len() != 64
-                                || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                            {
-                                return None;
-                            }
-                            Some((size.parse::<u64>().ok()?, hash.to_string()))
-                        });
-                    let Some(parsed) = parsed else {
-                        return hyper_response(StatusCode::BAD_REQUEST, "invalid If-Match base");
-                    };
-                    Some(parsed)
-                }
-            };
-            let expected_size = req
-                .headers()
-                .get(hyper::header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok());
-            let max_bytes = match transfer_limit() {
-                Ok(limit) => limit,
-                Err(error) => return hyper_response(StatusCode::SERVICE_UNAVAILABLE, error),
-            };
-            if expected_size.is_some_and(|size| size > max_bytes) {
-                return hyper_response(StatusCode::PAYLOAD_TOO_LARGE, "too large");
-            }
-            static UPLOAD_BUDGET: OnceLock<UploadBudget> = OnceLock::new();
-            let _reservation = match UPLOAD_BUDGET.get_or_init(UploadBudget::default).reserve(
-                peer,
-                expected_size.unwrap_or(max_bytes),
-                Instant::now(),
-            ) {
-                Ok(reservation) => reservation,
-                Err(error) => return hyper_response(StatusCode::TOO_MANY_REQUESTS, error),
-            };
-            let expected_hash = sync_core::query_param(&query, "hash");
-            let (sender, receiver) = tokio::sync::mpsc::channel(2);
-            #[cfg(not(unix))]
-            let target = full.clone();
-            #[cfg(unix)]
-            let root_for_stage = root.clone();
-            #[cfg(unix)]
-            let rel_for_stage = rel.clone();
-            let expected_hash_for_worker = expected_hash.clone();
-            let worker = tokio::task::spawn_blocking(move || {
-                #[cfg(unix)]
-                let mut staged = sync_core::StagedFile::begin_rooted(
-                    &root_for_stage,
-                    &rel_for_stage,
-                    max_bytes,
-                    expected_size,
-                    expected_hash_for_worker.as_deref(),
-                )?;
-                #[cfg(not(unix))]
-                let mut staged = sync_core::StagedFile::begin(
-                    &target,
-                    max_bytes,
-                    expected_size,
-                    expected_hash_for_worker.as_deref(),
-                )?;
-                let mut reader = TransferReader {
-                    receiver,
-                    current: std::io::Cursor::new(Vec::new()),
-                    finished: false,
-                };
-                let mut buffer = [0u8; TRANSFER_CHUNK_BYTES];
-                loop {
-                    let count = reader
-                        .read(&mut buffer)
-                        .map_err(sync_core::ReceiveError::Read)?;
-                    if count == 0 {
-                        break;
-                    }
-                    staged.write_chunk(&buffer[..count])?;
-                }
-                staged.finish()
-            });
-            let mut transfer_error = None;
-            let mut received_bytes = 0u64;
-            let admitted_bytes = expected_size.unwrap_or(max_bytes);
-            let body_deadline = tokio::time::Instant::now() + transfer_timeout(admitted_bytes);
-            loop {
-                let Some(frame) = (match tokio::time::timeout_at(
-                    body_deadline.min(tokio::time::Instant::now() + REQUEST_BODY_IDLE_TIMEOUT),
-                    req.body_mut().frame(),
-                )
-                .await
-                {
-                    Ok(frame) => frame,
-                    Err(_) => {
-                        transfer_error = Some((
-                            StatusCode::REQUEST_TIMEOUT,
-                            "upload body timed out".to_string(),
-                        ));
-                        break;
-                    }
-                }) else {
-                    break;
-                };
-                let frame = match frame {
-                    Ok(frame) => frame,
-                    Err(error) => {
-                        transfer_error = Some((
-                            StatusCode::BAD_REQUEST,
-                            format!("could not read upload body: {error}"),
-                        ));
-                        break;
-                    }
-                };
-                if let Some(chunk) = frame.data_ref() {
-                    if (chunk.len() as u64) > admitted_bytes.saturating_sub(received_bytes) {
-                        transfer_error = Some((
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            "upload exceeds admitted byte budget".to_string(),
-                        ));
-                        break;
-                    }
-                    received_bytes += chunk.len() as u64;
-                    if sender
-                        .send(TransferChunk::Data(chunk.to_vec()))
-                        .await
-                        .is_err()
-                    {
-                        transfer_error = Some((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "upload staging worker stopped".to_string(),
-                        ));
-                        break;
-                    }
-                }
-            }
-            if transfer_error.is_none() {
-                let _ = sender.send(TransferChunk::End).await;
-            }
-            drop(sender);
-            let worker_result = worker.await;
-            if let Some((code, detail)) = transfer_error {
-                emit_log(
-                    &app,
-                    "warn",
-                    format!("[serve] PUT {rel} rejected — {detail}"),
-                );
-                return hyper_response(code, detail);
-            }
-            let staged = match worker_result {
-                Ok(Ok(staged)) => staged,
-                Ok(Err(error)) => {
-                    let code = receive_error_status(&error);
-                    return hyper_response(code, error.to_string());
-                }
-                Err(error) => {
-                    return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-                }
-            };
-            let size = staged.size;
-            let commit_root = root.clone();
-            let commit_rel = rel.clone();
-            let commit_result = tokio::task::spawn_blocking(move || match prior {
-                Some((prior_size, prior_hash)) => {
-                    staged.commit_replace(&commit_root, &commit_rel, prior_size, &prior_hash)
-                }
-                None => staged.commit(&full),
-            })
-            .await;
-            return match commit_result {
-                Ok(Ok(outcome)) => {
-                    emit_log(
-                        &app,
-                        "info",
-                        format!("[serve] received {rel} ({size} bytes, {outcome:?})"),
-                    );
-                    hyper_response(StatusCode::OK, "ok")
-                }
-                Ok(Err(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    emit_log(
-                        &app,
-                        "warn",
-                        format!("[serve] PUT {rel} rejected — destination has different content"),
-                    );
-                    hyper_response(
-                        StatusCode::CONFLICT,
-                        "destination exists with different content",
-                    )
-                }
-                Ok(Err(e)) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-                Err(e) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            };
-        }
-        return hyper_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed");
+        return serve_file(&mut req, &root, &app, peer, &method, &query).await;
     }
 
     hyper_response(StatusCode::NOT_FOUND, "not found")
+}
+
+/// `GET /sync/identity`: unauthenticated first contact (key exchange proof).
+async fn serve_identity(
+    req: &HyperRequest<Incoming>,
+    token: &str,
+    app: &tauri::AppHandle,
+    peer: IpAddr,
+    auth_limiter: &AuthLimiter,
+) -> HyperResponse<HyperBody> {
+    // First contact is unauthenticated; the client continues on a fresh
+    // pinned connection, so this one always closes.
+    if !auth_limiter.admit_identity(peer) {
+        return closing(hyper_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts",
+        ));
+    }
+    let Some((message, challenge)) = parse_identity_request(req.uri().query().unwrap_or("")) else {
+        return closing(hyper_response(
+            StatusCode::BAD_REQUEST,
+            "invalid key exchange",
+        ));
+    };
+    let identity = match get_identity_async(app).await {
+        Ok(identity) => identity,
+        Err(_) => {
+            return closing(hyper_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "identity unavailable",
+            ))
+        }
+    };
+    closing(
+        match make_identity_proof(token, &message, &challenge, &identity.fingerprint) {
+            Ok(proof) => hyper_json(serde_json::to_string(&proof).expect("serializable proof")),
+            Err(_) => hyper_response(StatusCode::BAD_REQUEST, "invalid key exchange"),
+        },
+    )
+}
+
+/// `POST /activity`: forward a bounded UTF-8 body as the `activity` event.
+async fn serve_activity(
+    req: &mut HyperRequest<Incoming>,
+    app: &tauri::AppHandle,
+) -> HyperResponse<HyperBody> {
+    let mut body = Vec::new();
+    while let Some(frame) = next_body_frame(req.body_mut()).await {
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "read error"),
+        };
+        if let Some(bytes) = frame.data_ref() {
+            if body.len().saturating_add(bytes.len()) > MAX_ACTIVITY_BYTES {
+                return hyper_response(StatusCode::PAYLOAD_TOO_LARGE, "activity body too large");
+            }
+            body.extend_from_slice(bytes);
+        }
+    }
+    match String::from_utf8(body) {
+        Ok(body) => {
+            let _ = app.emit("activity", body);
+            hyper_response(StatusCode::OK, "ok")
+        }
+        Err(_) => hyper_response(StatusCode::BAD_REQUEST, "read error"),
+    }
+}
+
+/// `GET /sync/manifest`: a complete manifest, or 503 when the scan skipped a path.
+async fn serve_manifest(root: &Arc<PathBuf>, app: &tauri::AppHandle) -> HyperResponse<HyperBody> {
+    let started = Instant::now();
+    let manifest_root = root.as_ref().clone();
+    // Journal reconciliation takes a std mutex and fsyncs: keep it on the
+    // blocking pool with the scan.
+    let (entries, skipped, reconciled) = match tokio::task::spawn_blocking(move || {
+        let _scan_guard = manifest_lock()
+            .lock()
+            .map_err(|_| "manifest lock poisoned".to_string())?;
+        let (entries, skipped) = sync_core::build_manifest(&manifest_root);
+        let reconciled = if skipped.is_empty() {
+            sync_core::reconcile_complete_journal(&manifest_root, &entries, &skipped)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        } else {
+            Ok(())
+        };
+        Ok::<_, String>((entries, skipped, reconciled))
+    })
+    .await
+    {
+        Ok(Ok(manifest)) => manifest,
+        Ok(Err(error)) => return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        Err(error) => return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    if !skipped.is_empty() {
+        for (rel, err) in &skipped {
+            emit_log(
+                app,
+                "warn",
+                format!("[serve] manifest incomplete at {rel}: {err}"),
+            );
+        }
+        // A partial manifest is not a safe sync baseline.  Returning an
+        // explicit failure prevents both current and older peers from
+        // interpreting omitted paths as deletion or rename intent.
+        return hyper_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vault scan incomplete; fix the listed path and retry",
+        );
+    }
+    if let Err(error) = reconciled {
+        emit_log(
+            app,
+            "warn",
+            format!("[serve] journal reconciliation failed: {error}"),
+        );
+    }
+    emit_log(
+        app,
+        "info",
+        format!(
+            "[serve] manifest served — {} files in {}ms",
+            entries.len(),
+            started.elapsed().as_millis()
+        ),
+    );
+    hyper_json(sync_core::manifest_to_json(&entries))
+}
+
+/// `GET /sync/journal`: this vault's journal in wire form.
+async fn serve_journal_get(root: &Arc<PathBuf>) -> HyperResponse<HyperBody> {
+    let journal_root = root.as_ref().clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        let journal = sync_core::load_journal(&journal_root)
+            .map_err(|error| format!("journal unavailable: {error}"))?;
+        sync_core::journal_wire_bytes(&journal)
+            .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
+            .map_err(|error| format!("journal encode failed: {error}"))
+    })
+    .await;
+    match loaded {
+        Ok(Ok(body)) => hyper_json(body),
+        Ok(Err(error)) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error),
+        Err(error) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// `PUT /sync/journal`: apply the peer's journal operations, reply with ours.
+async fn serve_journal_put(
+    req: &mut HyperRequest<Incoming>,
+    root: &Arc<PathBuf>,
+    app: &tauri::AppHandle,
+) -> HyperResponse<HyperBody> {
+    // The shared sync key authenticates incoming requests. This identity
+    // associates their journal participant with the saved peer for retirement;
+    // it is not a substitute for the client's TLS server pin.
+    let sender_fingerprint = req
+        .headers()
+        .get("x-mesa-fingerprint")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase);
+    // Journal operations are control-plane data, not ordinary vault files.
+    // Apply them while the receiver owns the request so an initiator's
+    // delete cannot be immediately reintroduced by the receiver's stale
+    // manifest during that same sync.
+    let mut body = Vec::new();
+    while let Some(frame) = next_body_frame(req.body_mut()).await {
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "could not read journal"),
+        };
+        if let Some(bytes) = frame.data_ref() {
+            if body.len().saturating_add(bytes.len()) > sync_core::MAX_JOURNAL_WIRE_BYTES {
+                return hyper_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "journal exceeds the 32 MiB exchange limit",
+                );
+            }
+            body.extend_from_slice(bytes);
+        }
+    }
+    let mut incoming: sync_core::SyncJournal = match serde_json::from_slice(&body) {
+        Ok(journal) => journal,
+        Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "invalid sync journal"),
+    };
+    let root_for_apply = root.as_ref().clone();
+    let result = tokio::task::spawn_blocking(move || {
+        sync_core::accept_peer_journal(&mut incoming, "peer journal")
+            .map_err(|error| error.to_string())?;
+        if let Some(fingerprint) = sender_fingerprint {
+            sync_core::bind_journal_peer(&root_for_apply, &fingerprint, &incoming.device, false)
+                .map_err(|error| error.to_string())?;
+        }
+        sync_core::apply_incoming_journal(&root_for_apply, &incoming)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok((journal, outcomes))) => {
+            for outcome in outcomes {
+                match outcome.result {
+                    Ok(sync_core::JournalApply::Applied | sync_core::JournalApply::AlreadyApplied) => emit_log(app, "info", format!("[serve] applied peer journal operation {}", outcome.operation.id)),
+                    Ok(sync_core::JournalApply::Conflict) => emit_log(app, "warn", format!("[serve] preserved local bytes for conflicting peer journal operation {}", outcome.operation.id)),
+                    Err(error) => emit_log(app, "warn", format!("[serve] peer journal operation {} failed: {error}", outcome.operation.id)),
+                }
+            }
+            sync_core::journal_wire_bytes(&journal)
+                .map(|bytes| String::from_utf8(bytes).expect("JSON is UTF-8"))
+                .map(hyper_json)
+                .unwrap_or_else(|error| {
+                    hyper_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("journal encode failed: {error}"),
+                    )
+                })
+        }
+        Ok(Err(error)) => hyper_response(StatusCode::CONFLICT, error),
+        Err(error) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// `PUT /sync/base`: store the common baseline with the sending peer.
+async fn serve_base_put(
+    req: &mut HyperRequest<Incoming>,
+    root: &Arc<PathBuf>,
+) -> HyperResponse<HyperBody> {
+    // The fingerprint is self-reported by a shared-key holder, who is fully
+    // trusted; it selects a bound record and is not client authentication.
+    let Some(sender) = req
+        .headers()
+        .get("x-mesa-fingerprint")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+    else {
+        return hyper_response(StatusCode::BAD_REQUEST, "missing peer identity");
+    };
+    let mut body = Vec::new();
+    while let Some(frame) = next_body_frame(req.body_mut()).await {
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "could not read sync base"),
+        };
+        if let Some(bytes) = frame.data_ref() {
+            if body.len().saturating_add(bytes.len()) > sync_core::MAX_JOURNAL_WIRE_BYTES {
+                return hyper_response(StatusCode::PAYLOAD_TOO_LARGE, "sync base exceeds 32 MiB");
+            }
+            body.extend_from_slice(bytes);
+        }
+    }
+    let offered: Vec<sync_core::JournalEntry> = match serde_json::from_slice(&body) {
+        Ok(entries) => entries,
+        Err(_) => return hyper_response(StatusCode::BAD_REQUEST, "invalid sync base"),
+    };
+    let base_root = root.as_ref().clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
+        let (current, skipped) = sync_core::build_manifest(&base_root);
+        drop(_scan_guard);
+        if !skipped.is_empty() {
+            return Err("receiver scan is incomplete".into());
+        }
+        let offered: Vec<ManifestEntry> = offered
+            .into_iter()
+            .filter_map(|entry| {
+                sync_core::is_peer_rel(&entry.rel).then_some(ManifestEntry {
+                    rel: entry.rel,
+                    size: entry.size,
+                    hash: entry.hash,
+                })
+            })
+            .collect();
+        let common = sync_core::common_baseline(&current, &offered);
+        sync_core::save_bound_peer_baseline(&base_root, &sender, common)
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => hyper_response(StatusCode::OK, "ok"),
+        Ok(Err(error)) => hyper_response(StatusCode::CONFLICT, error),
+        Err(error) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// `/sync/file?rel=`: `GET` streams a confined vault file; `PUT` stages,
+/// verifies and commits an upload.
+async fn serve_file(
+    req: &mut HyperRequest<Incoming>,
+    root: &Arc<PathBuf>,
+    app: &tauri::AppHandle,
+    peer: IpAddr,
+    method: &HyperMethod,
+    query: &str,
+) -> HyperResponse<HyperBody> {
+    let Some(rel) = sync_core::query_param(query, "rel") else {
+        return hyper_response(StatusCode::BAD_REQUEST, "missing rel");
+    };
+    let Some(full) = sync_core::peer_join_confined(root, &rel) else {
+        emit_log(app, "warn", format!("[serve] rejected unsafe path {rel:?}"));
+        return hyper_response(StatusCode::BAD_REQUEST, "bad path");
+    };
+    if method == HyperMethod::GET {
+        return serve_file_get(root, rel, full).await;
+    }
+    if method == HyperMethod::PUT {
+        return serve_file_put(req, root, app, peer, query, rel, full).await;
+    }
+    hyper_response(StatusCode::METHOD_NOT_ALLOWED, "method not allowed")
+}
+
+/// `GET /sync/file`: stream the confined file without following links. Unix
+/// reopens `rel` under the held `root`; other platforms open `full`.
+async fn serve_file_get(
+    #[cfg_attr(not(unix), allow(unused_variables))] root: &Arc<PathBuf>,
+    #[cfg_attr(not(unix), allow(unused_variables))] rel: String,
+    #[cfg_attr(unix, allow(unused_variables))] full: PathBuf,
+) -> HyperResponse<HyperBody> {
+    #[cfg(not(unix))]
+    let path = full.clone();
+    #[cfg(unix)]
+    let root_for_read = root.clone();
+    #[cfg(unix)]
+    let rel_for_read = rel.clone();
+    let file = match tokio::task::spawn_blocking(move || {
+        #[cfg(unix)]
+        {
+            sync_core::RootedTarget::resolve(&root_for_read, &rel_for_read, false)?.open_read()
+        }
+        #[cfg(not(unix))]
+        {
+            open_sync_file_no_follow(&path)
+        }
+    })
+    .await
+    {
+        Ok(Ok(file)) => tokio::fs::File::from_std(file),
+        Ok(Err(_)) => return hyper_response(StatusCode::NOT_FOUND, "not found"),
+        Err(_) => return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, "file open failed"),
+    };
+    let stream = ReaderStream::with_capacity(file, TRANSFER_CHUNK_BYTES).map(|chunk| {
+        chunk
+            .map(Frame::data)
+            .map_err(|error| Box::new(error) as BoxError)
+    });
+    HyperResponse::builder()
+        .status(StatusCode::OK)
+        .body(BodyExt::boxed(StreamBody::new(stream)))
+        .unwrap_or_else(|_| {
+            hyper_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "response construction failed",
+            )
+        })
+}
+
+/// `PUT /sync/file`: stage within the admitted byte budget, verify, then
+/// commit as a create or as a replace of the `If-Match` base.
+async fn serve_file_put(
+    req: &mut HyperRequest<Incoming>,
+    root: &Arc<PathBuf>,
+    app: &tauri::AppHandle,
+    peer: IpAddr,
+    query: &str,
+    rel: String,
+    full: PathBuf,
+) -> HyperResponse<HyperBody> {
+    let prior = match req.headers().get(hyper::header::IF_MATCH) {
+        None => None,
+        Some(value) => {
+            let parsed = value
+                .to_str()
+                .ok()
+                .and_then(|text| text.strip_prefix('"'))
+                .and_then(|text| text.strip_suffix('"'))
+                .and_then(|text| text.split_once(':'))
+                .and_then(|(size, hash)| {
+                    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                        return None;
+                    }
+                    Some((size.parse::<u64>().ok()?, hash.to_string()))
+                });
+            let Some(parsed) = parsed else {
+                return hyper_response(StatusCode::BAD_REQUEST, "invalid If-Match base");
+            };
+            Some(parsed)
+        }
+    };
+    let expected_size = req
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let max_bytes = match transfer_limit() {
+        Ok(limit) => limit,
+        Err(error) => return hyper_response(StatusCode::SERVICE_UNAVAILABLE, error),
+    };
+    if expected_size.is_some_and(|size| size > max_bytes) {
+        return hyper_response(StatusCode::PAYLOAD_TOO_LARGE, "too large");
+    }
+    static UPLOAD_BUDGET: OnceLock<UploadBudget> = OnceLock::new();
+    let _reservation = match UPLOAD_BUDGET.get_or_init(UploadBudget::default).reserve(
+        peer,
+        expected_size.unwrap_or(max_bytes),
+        Instant::now(),
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => return hyper_response(StatusCode::TOO_MANY_REQUESTS, error),
+    };
+    let expected_hash = sync_core::query_param(query, "hash");
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    #[cfg(not(unix))]
+    let target = full.clone();
+    #[cfg(unix)]
+    let root_for_stage = root.clone();
+    #[cfg(unix)]
+    let rel_for_stage = rel.clone();
+    let expected_hash_for_worker = expected_hash.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        #[cfg(unix)]
+        let mut staged = sync_core::StagedFile::begin_rooted(
+            &root_for_stage,
+            &rel_for_stage,
+            max_bytes,
+            expected_size,
+            expected_hash_for_worker.as_deref(),
+        )?;
+        #[cfg(not(unix))]
+        let mut staged = sync_core::StagedFile::begin(
+            &target,
+            max_bytes,
+            expected_size,
+            expected_hash_for_worker.as_deref(),
+        )?;
+        let mut reader = TransferReader {
+            receiver,
+            current: std::io::Cursor::new(Vec::new()),
+            finished: false,
+        };
+        let mut buffer = [0u8; TRANSFER_CHUNK_BYTES];
+        loop {
+            let count = reader
+                .read(&mut buffer)
+                .map_err(sync_core::ReceiveError::Read)?;
+            if count == 0 {
+                break;
+            }
+            staged.write_chunk(&buffer[..count])?;
+        }
+        staged.finish()
+    });
+    let mut transfer_error = None;
+    let mut received_bytes = 0u64;
+    let admitted_bytes = expected_size.unwrap_or(max_bytes);
+    let body_deadline = tokio::time::Instant::now() + transfer_timeout(admitted_bytes);
+    loop {
+        let Some(frame) = (match tokio::time::timeout_at(
+            body_deadline.min(tokio::time::Instant::now() + REQUEST_BODY_IDLE_TIMEOUT),
+            req.body_mut().frame(),
+        )
+        .await
+        {
+            Ok(frame) => frame,
+            Err(_) => {
+                transfer_error = Some((
+                    StatusCode::REQUEST_TIMEOUT,
+                    "upload body timed out".to_string(),
+                ));
+                break;
+            }
+        }) else {
+            break;
+        };
+        let frame = match frame {
+            Ok(frame) => frame,
+            Err(error) => {
+                transfer_error = Some((
+                    StatusCode::BAD_REQUEST,
+                    format!("could not read upload body: {error}"),
+                ));
+                break;
+            }
+        };
+        if let Some(chunk) = frame.data_ref() {
+            if (chunk.len() as u64) > admitted_bytes.saturating_sub(received_bytes) {
+                transfer_error = Some((
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "upload exceeds admitted byte budget".to_string(),
+                ));
+                break;
+            }
+            received_bytes += chunk.len() as u64;
+            if sender
+                .send(TransferChunk::Data(chunk.to_vec()))
+                .await
+                .is_err()
+            {
+                transfer_error = Some((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "upload staging worker stopped".to_string(),
+                ));
+                break;
+            }
+        }
+    }
+    if transfer_error.is_none() {
+        let _ = sender.send(TransferChunk::End).await;
+    }
+    drop(sender);
+    let worker_result = worker.await;
+    if let Some((code, detail)) = transfer_error {
+        emit_log(
+            app,
+            "warn",
+            format!("[serve] PUT {rel} rejected — {detail}"),
+        );
+        return hyper_response(code, detail);
+    }
+    let staged = match worker_result {
+        Ok(Ok(staged)) => staged,
+        Ok(Err(error)) => {
+            let code = receive_error_status(&error);
+            return hyper_response(code, error.to_string());
+        }
+        Err(error) => {
+            return hyper_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+        }
+    };
+    let size = staged.size;
+    let commit_root = root.clone();
+    let commit_rel = rel.clone();
+    let commit_result = tokio::task::spawn_blocking(move || match prior {
+        Some((prior_size, prior_hash)) => {
+            staged.commit_replace(&commit_root, &commit_rel, prior_size, &prior_hash)
+        }
+        None => staged.commit(&full),
+    })
+    .await;
+    match commit_result {
+        Ok(Ok(outcome)) => {
+            emit_log(
+                app,
+                "info",
+                format!("[serve] received {rel} ({size} bytes, {outcome:?})"),
+            );
+            hyper_response(StatusCode::OK, "ok")
+        }
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            emit_log(
+                app,
+                "warn",
+                format!("[serve] PUT {rel} rejected — destination has different content"),
+            );
+            hyper_response(
+                StatusCode::CONFLICT,
+                "destination exists with different content",
+            )
+        }
+        Ok(Err(e)) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => hyper_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 pub(super) fn sync_server_config(id: &Identity) -> Result<Arc<rustls::ServerConfig>, String> {

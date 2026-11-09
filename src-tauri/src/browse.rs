@@ -5,31 +5,37 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// The public-only client shape shared by page and resource fetches: public
+/// DNS answers only, at most 10 redirects and none to a private address.
+fn public_client_builder(timeout: std::time::Duration) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        // A modest, honest UA. Sites that sniff UAs serve their simple-HTML
+        // variant, which is exactly what reader mode renders best.
+        .user_agent("Mozilla/5.0 (compatible; MesaBrowser/0.1)")
+        // A proxy can resolve a hostname outside this process and bypass
+        // the address check. The fetchers never use proxy settings.
+        .no_proxy()
+        .dns_resolver(Arc::new(PublicResolver))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            if public_url(attempt.url()).is_err() {
+                return attempt.error("redirect to a private network is blocked");
+            }
+            attempt.follow()
+        }))
+        .timeout(timeout)
+}
+
 /// User browsing and Pi's browse tool keep separate in-memory cookie jars.
 fn client_for_agent(agent: bool) -> Result<&'static reqwest::Client, String> {
     static USER_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     static AGENT_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     let cell = if agent { &AGENT_CLIENT } else { &USER_CLIENT };
     cell.get_or_init(|| {
-        reqwest::Client::builder()
-            // A modest, honest UA. Sites that sniff UAs serve their simple-HTML
-            // variant, which is exactly what reader mode renders best.
-            .user_agent("Mozilla/5.0 (compatible; MesaBrowser/0.1)")
+        public_client_builder(std::time::Duration::from_secs(20))
             .cookie_store(true)
-            // A proxy can resolve a hostname outside this process and bypass
-            // the address check. The page fetcher never uses proxy settings.
-            .no_proxy()
-            .dns_resolver(Arc::new(PublicResolver))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 10 {
-                    return attempt.error("too many redirects");
-                }
-                if public_url(attempt.url()).is_err() {
-                    return attempt.error("redirect to a private network is blocked");
-                }
-                attempt.follow()
-            }))
-            .timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|e| format!("browser client setup failed: {e}"))
     })
@@ -425,7 +431,7 @@ fn resource_tokens() -> &'static Mutex<std::collections::HashMap<String, Resourc
     TOKENS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 fn create_resource_token(owner: &str) -> Result<String, String> {
-    let token = crate::activity::make_token()?;
+    let token = crate::hex::random_token()?;
     let mut tokens = resource_tokens()
         .lock()
         .map_err(|_| "resources unavailable")?;
@@ -476,20 +482,9 @@ fn charge_resource_at(
     budget.bytes += bytes;
     Ok(())
 }
+/// Resource fetches carry no cookies and no `Referer`.
 fn resource_client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (compatible; MesaBrowser/0.1)")
-        .no_proxy()
-        .referer(false)
-        .dns_resolver(Arc::new(PublicResolver))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 || public_url(attempt.url()).is_err() {
-                attempt.error("blocked redirect")
-            } else {
-                attempt.follow()
-            }
-        }))
-        .timeout(std::time::Duration::from_secs(15))
+    public_client_builder(std::time::Duration::from_secs(15)).referer(false)
 }
 fn resource_client() -> Result<&'static reqwest::Client, String> {
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();

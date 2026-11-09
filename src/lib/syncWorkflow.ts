@@ -1,4 +1,4 @@
-import type { AppState } from '../store';
+import type { AppState } from '../storeTypes';
 import type { SyncLogEntry, SyncReport } from './sync';
 import { markMesaPerf } from './mesaPerf';
 import { BackgroundWorkCancelledError, backgroundWork, type BackgroundWorkHandle } from './backgroundWorkGovernor';

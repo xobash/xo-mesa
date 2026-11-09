@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const confirmAction = vi.hoisted(() => vi.fn<(message: string) => Promise<boolean>>());
 vi.mock("../lib/confirmAction", () => ({ confirmAction }));
 
-import { PI_TERMINAL_LINK_HANDLER } from "./AgentPanel";
+import { PI_TERMINAL_LINK_HANDLER } from "./piSession";
 import { useAppStore } from "../store";
 
 const click = () => new MouseEvent("click");

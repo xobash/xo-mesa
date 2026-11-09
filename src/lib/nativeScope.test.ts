@@ -84,12 +84,18 @@ it("keeps arbitrary HTTPS connections out of the privileged renderer", () => {
 
 it("does not let secondary windows mint privileged window labels or bridge authority", () => {
   const grants = (label: string) => capabilities.filter(c => c.windows?.some(p => matchesWindow(p, label))).flatMap(c => c.permissions ?? []);
-  for (const permission of ["core:webview:allow-create-webview-window", "allow-activity-start", "allow-activity-stop", "allow-activity-set-context", "allow-sync-cancel"]) {
+  for (const permission of ["core:webview:allow-create-webview-window", "allow-activity-set-context", "allow-sync-cancel"]) {
     expect(grants("main")).toContain(permission);
     for (const label of ["doc-one", "panel-one", "agent-one"]) expect(grants(label)).not.toContain(permission);
   }
   for (const label of ["doc-one", "panel-one"]) expect(grants(label)).not.toContain("allow-browse-fetch");
   expect(grants("agent-one")).toContain("allow-browse-fetch");
+  // The bridge starts and stops natively; no renderer may receive its bearer token.
+  for (const capability of capabilities) for (const permission of capability.permissions ?? []) {
+    const identifier = typeof permission === "string" ? permission : permission.identifier;
+    expect(identifier).not.toMatch(/^allow-activity-(start|stop)$/);
+  }
+  expect(registered).not.toMatch(/activity::activity_(start|stop)\b/);
 });
 
 it("resolves every capability command and confines destructive lifecycle grants to main", () => {

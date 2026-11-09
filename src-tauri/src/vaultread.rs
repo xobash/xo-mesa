@@ -43,7 +43,7 @@ fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
     for seg in rel.replace('\\', "/").split('/') {
         // Hidden entries (`.git`, `.env`, recovery folders) and `node_modules`
         // are not vault documents; `vault_scan` never lists them.
-        if seg.is_empty() || seg.starts_with('.') || seg == "node_modules" {
+        if seg.is_empty() || crate::vault_names::is_hidden_name(seg) {
             return None;
         }
         // Only plain names: a Windows drive prefix such as `D:x` would make
@@ -70,7 +70,7 @@ fn visible_under(canonical_root: &Path, resolved: &Path) -> bool {
     resolved.strip_prefix(canonical_root).is_ok_and(|rel| {
         rel.components().all(|part| {
             matches!(part, std::path::Component::Normal(name)
-                if name.to_str().is_some_and(|name| !name.starts_with('.') && name != "node_modules"))
+                if name.to_str().is_some_and(|name| !crate::vault_names::is_hidden_name(name)))
         })
     })
 }

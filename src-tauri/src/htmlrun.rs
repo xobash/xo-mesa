@@ -68,7 +68,7 @@ fn create_session(
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or("document name unavailable")?;
-    let token = crate::activity::make_token()?;
+    let token = crate::hex::random_token()?;
     let now = Instant::now();
     let mut map = sessions().lock().map_err(|_| "HTML sessions unavailable")?;
     map.retain(|_, s| now.duration_since(s.touched) <= Duration::from_secs(600));

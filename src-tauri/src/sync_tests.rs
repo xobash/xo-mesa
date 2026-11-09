@@ -1,6 +1,150 @@
 use super::*;
 use std::cell::{Cell, RefCell};
 
+// Test-only commit and journal helpers over the production primitives.
+
+fn stage_candidate<F: CommitFs>(
+    fs: &F,
+    path: &Path,
+    bytes: &[u8],
+    size: u64,
+    hash: &str,
+) -> std::io::Result<PathBuf> {
+    for _ in 0..16 {
+        let candidate = candidate_path(path);
+        match fs.write_new(&candidate, bytes) {
+            Ok(()) => {
+                let staged = match fs.fingerprint(&candidate) {
+                    Ok(staged) => staged,
+                    Err(e) => {
+                        let _ = fs.remove_file(&candidate);
+                        return Err(std::io::Error::new(
+                            e.kind(),
+                            format!(
+                                "sync candidate read-back failed at {}: {e}",
+                                candidate.display()
+                            ),
+                        ));
+                    }
+                };
+                if !fingerprint_matches(&staged, size, hash) {
+                    let _ = fs.remove_file(&candidate);
+                    return Err(invalid_data(format!(
+                        "sync candidate failed read-back verification: {}",
+                        candidate.display()
+                    )));
+                }
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                // `write_all` or `sync_all` can fail after creating a partial
+                // candidate. It is uniquely ours and safe to remove.
+                let _ = fs.remove_file(&candidate);
+                return Err(e);
+            }
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique sync candidate",
+    ))
+}
+
+fn commit_verified_create_with_fs<F: CommitFs>(
+    fs: &F,
+    path: &Path,
+    bytes: &[u8],
+    size: u64,
+    hash: &str,
+) -> std::io::Result<CommitOutcome> {
+    if let Some(parent) = path.parent() {
+        fs.create_dir_all(parent)?;
+    }
+    match destination_state(fs, path, size, hash)? {
+        Some(true) => return Ok(CommitOutcome::Unchanged),
+        Some(false) => return Err(collision_error(path)),
+        None => {}
+    }
+
+    let candidate = stage_candidate(fs, path, bytes, size, hash)?;
+    let mut preserve_candidate = false;
+    let result =
+        publish_verified_candidate(fs, &candidate, path, size, hash, &mut preserve_candidate);
+    if !preserve_candidate {
+        let _ = fs.remove_file(&candidate);
+    }
+    result
+}
+
+/// Commit a verified candidate only when `path` is missing. The platform's
+/// native exclusive-rename primitive publishes the complete sibling candidate
+/// without a check-then-rename race. A hard link is used only when the native
+/// primitive reports that the filesystem does not support exclusive rename.
+fn commit_verified_create(path: &Path, bytes: &[u8]) -> std::io::Result<CommitOutcome> {
+    let size = bytes.len() as u64;
+    let hash = content_hash_hex(bytes);
+    commit_verified_create_with_fs(&StdCommitFs, path, bytes, size, &hash)
+}
+
+/// Commit a conflict copy without replacing any existing same-day copy.
+/// Identical bytes reuse the first matching numbered destination; different
+/// bytes advance until an unused sibling is available.
+fn commit_conflict_verified(
+    root: &Path,
+    base_rel: &str,
+    bytes: &[u8],
+) -> std::io::Result<(CommitOutcome, String)> {
+    for ordinal in 1..=10_000 {
+        let dest_rel = numbered_conflict_name(base_rel, ordinal);
+        let dest = safe_join_confined(root, &dest_rel).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe destination path {dest_rel:?}"),
+            )
+        })?;
+        match commit_verified_create(&dest, bytes) {
+            Ok(outcome) => return Ok((outcome, dest_rel)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "too many same-day conflict copies",
+    ))
+}
+
+fn retire_journal_peer(root: &Path, fingerprint: &str) -> std::io::Result<()> {
+    retire_journal_peers(root, &[fingerprint.to_string()])
+}
+
+/// Atomically replace Mesa's own metadata. A crash leaves either the prior
+/// complete journal or the complete new journal; the uniquely named temp is
+/// ignored and can never enter a vault scan or sync manifest.
+fn save_journal(root: &Path, journal: &SyncJournal) -> std::io::Result<()> {
+    let _guard = journal_guard()?;
+    save_journal_unlocked(root, journal).map(|_| ())
+}
+
+fn merge_journal(root: &Path, remote: &SyncJournal) -> std::io::Result<SyncJournal> {
+    let _guard = journal_guard()?;
+    let mut local = load_journal_unlocked(root)?;
+    merge_remote_into(&mut local, remote)?;
+    save_journal_unlocked(root, &local)
+}
+
+/// Recursively list every syncable file under `root` as
+/// (vault-relative path with forward slashes, absolute path), sorted by rel
+/// path for deterministic manifests. The compatibility helper keeps its old
+/// file-only shape for tests; production callers use the error-carrying walk
+/// below and must treat any error as incomplete coverage.
+fn list_vault_files(root: &Path) -> Vec<VaultPath> {
+    list_vault_files_with_errors_until(root, None)
+        .map(|(files, _)| files)
+        .unwrap_or_default()
+}
+
 #[test]
 fn sync_documentation_matches_current_protocol_constants() {
     let doc = include_str!("../../docs/sync.md");

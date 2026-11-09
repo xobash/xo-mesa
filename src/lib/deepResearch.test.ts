@@ -4,19 +4,12 @@ import type { NoteMeta, VaultFile } from "../types";
 import {
   DEFAULT_DEEP_RESEARCH_LIMITS,
   RESEARCH_DEPTH_PRESETS,
-  DEPTH_LIMITS,
-  clampDepth,
-  limitsForDepth,
   buildResearchContext,
   redactResearchContent,
   buildResearchPrompt,
   canonicalizeSourceUrl,
   dedupeSources,
-  searchQueryOf,
-  activityForNavigation,
-  buildResearchGraph,
   presentResearchSource,
-  parseResultEnvelope,
   buildChangeSet,
   safeNoteTitle,
   safeFolderName,
@@ -24,8 +17,6 @@ import {
   validateResearchResult,
   researchReportQualityIssues,
   utf8ByteLength,
-  truncateUtf8,
-  createRunId,
   type DeepResearchResult,
   type ProposedNote,
 } from "./deepResearch";
@@ -107,193 +98,6 @@ describe("presentResearchSource", () => {
 
   it("rejects non-web sources", () => {
     expect(presentResearchSource("file:///tmp/private", "Private")).toBeNull();
-  });
-});
-
-describe("buildResearchGraph", () => {
-  it("does not invent planned or source nodes before real activity exists", () => {
-    const graph = buildResearchGraph("How do tides work?", [
-      { kind: "status", message: "Waiting for the model", at: 1_000 },
-    ]);
-    expect(graph.nodes.map((n) => n.kind)).toEqual(["query"]);
-    expect(graph.edges).toEqual([]);
-  });
-
-  it("builds a chronological graph from announced and observed actions", () => {
-    const graph = buildResearchGraph("How do tides work?", [
-      { kind: "plan", message: "Cause\nEvidence", at: 1_000 },
-      { kind: "subquestion", message: "Researching cause", subQuestion: "What causes tides?", at: 2_000 },
-      { kind: "search", message: "Searched for “tide causes”", observed: true, sourceUrl: "https://search.test", at: 3_000 },
-      { kind: "source", message: "Opened source", sourceTitle: "NOAA tides", sourceUrl: "https://noaa.test", at: 4_000 },
-      { kind: "note", message: "Finished source", sourceUrl: "https://noaa.test", at: 5_000 },
-    ]);
-    expect(graph.nodes.map((n) => n.kind)).toEqual(["query", "plan", "subquestion", "search", "source", "note"]);
-    expect(graph.nodes.find((n) => n.kind === "search")?.observed).toBe(true);
-    expect(graph.edges).toHaveLength(5);
-    expect(graph.edges[0]).toEqual({ id: "edge-0", source: "query", target: "activity-0" });
-  });
-
-  it("keeps complete labels at readable size and spaces same-column nodes apart", () => {
-    const longLabel =
-      "This complete source description must wrap across every required line without being truncated";
-    const graph = buildResearchGraph("Question", [
-      { kind: "source", message: "Opened one", sourceTitle: longLabel, at: 1_000 },
-      { kind: "source", message: "Opened two", sourceTitle: "Second source", at: 2_000 },
-    ]);
-    const first = graph.nodes[1];
-    const second = graph.nodes[2];
-    expect(first.label).toBe(longLabel);
-    expect(first.truncated).toBe(true);
-    expect(first.lines[first.lines.length - 1]?.endsWith("...")).toBe(true);
-    expect(second.y).toBeGreaterThanOrEqual(first.y + first.height + 16);
-  });
-
-  it("reflows dense activity into bounded circular nodes", () => {
-    const graph = buildResearchGraph(
-      "Question",
-      Array.from({ length: 47 }, (_, i) => ({
-        kind: "source" as const,
-        message: `Opened source ${i + 1}`,
-        sourceTitle: `Source ${i + 1}`,
-        at: 1_000 + i,
-      })),
-      48,
-      { width: 640, height: 360 }
-    );
-
-    expect(graph.width).toBe(640);
-    expect(graph.height).toBe(360);
-    expect(graph.nodeWidth).toBeLessThan(130);
-    expect(graph.nodes.every((node) => node.radius > 0)).toBe(true);
-    expect(
-      graph.nodes.every(
-        (node) =>
-          node.x - node.hoverRadius >= 0 &&
-          node.x + node.hoverRadius <= graph.width &&
-          node.y - node.hoverRadius >= 0 &&
-          node.y + node.hoverRadius <= graph.height
-      )
-    ).toBe(true);
-    expect(new Set(graph.nodes.map((node) => `${node.x}:${node.y}`)).size).toBe(graph.nodes.length);
-    expect(graph.nodes.map((node) => node.step)).toEqual(
-      Array.from({ length: graph.nodes.length }, (_, i) => i + 1)
-    );
-    expect(graph.nodes.every((node) => node.lines[0]?.startsWith(`${node.step} `))).toBe(true);
-
-    for (let i = 0; i < graph.nodes.length; i++) {
-      for (let j = i + 1; j < graph.nodes.length; j++) {
-        const a = graph.nodes[i];
-        const b = graph.nodes[j];
-        expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(
-          a.hoverRadius + b.hoverRadius
-        );
-      }
-    }
-
-    const firstRowY = graph.nodes[0].y;
-    const firstRow = graph.nodes.filter((node) => node.y === firstRowY);
-    const secondRowY = graph.nodes.find((node) => node.y !== firstRowY)?.y;
-    const secondRow = graph.nodes.filter((node) => node.y === secondRowY);
-    expect(firstRow.map((node) => node.x)).toEqual(
-      [...firstRow].map((node) => node.x).sort((a, b) => a - b)
-    );
-    expect(secondRow.map((node) => node.x)).toEqual(
-      [...secondRow].map((node) => node.x).sort((a, b) => b - a)
-    );
-  });
-
-  it("recomputes the collision-free chronological grid for the measured graph section", () => {
-    const activity = Array.from({ length: 30 }, (_, i) => ({
-      kind: (i % 3 === 0 ? "search" : i % 3 === 1 ? "source" : "note") as "search" | "source" | "note",
-      message: `Research action ${i + 1}`,
-      at: i + 1,
-    }));
-    const narrow = buildResearchGraph("Question", activity, 48, { width: 320, height: 240 });
-    const wide = buildResearchGraph("Question", activity, 48, { width: 900, height: 500 });
-
-    expect(narrow.nodes.map((node) => `${node.x}:${node.y}`)).not.toEqual(
-      wide.nodes.map((node) => `${node.x}:${node.y}`)
-    );
-    expect(Math.max(...wide.nodes.map((node) => node.radius))).toBeGreaterThan(
-      Math.max(...narrow.nodes.map((node) => node.radius))
-    );
-    for (const graph of [narrow, wide]) {
-      expect(graph.nodes.every((node) => node.labelMaxWidth <= graph.nodeWidth)).toBe(true);
-      expect(graph.nodes.every((node) => node.labelY < graph.height)).toBe(true);
-    }
-  });
-
-  it("joins canonical source records with activity nodes", () => {
-    const graph = buildResearchGraph(
-      "Question",
-      [{
-        kind: "source",
-        message: "Opened source",
-        sourceTitle: "Observed research page",
-        sourceUrl: "https://www.example.com/research/?utm_source=pi",
-        at: 1,
-      }],
-      48,
-      { width: 640, height: 360 },
-      [{ url: "https://example.com/research?utm_source=mesa", title: "Research page", status: "reading", observed: true }]
-    );
-
-    const source = graph.nodes.find((node) => node.sourceUrl === "https://example.com/research");
-    expect(graph.nodes.filter((node) => node.kind === "source")).toHaveLength(1);
-    expect(source).toMatchObject({
-      kind: "source",
-      label: "Research page",
-      sourceStatus: "reading",
-      sourceObserved: true,
-    });
-  });
-
-  it("condenses a long query node without losing the full text", () => {
-    const query =
-      "Map every Epstein-Speckel-Seckel source relationship, origin story, contradiction, and confidence caveat across the current vault and external sources";
-    const graph = buildResearchGraph(query, []);
-    expect(graph.nodes).toHaveLength(1);
-    expect(graph.nodes[0].label).toBe(query);
-    expect(graph.nodes[0].truncated).toBe(true);
-    expect(graph.nodes[0].lines[graph.nodes[0].lines.length - 1]?.endsWith("...")).toBe(true);
-  });
-});
-
-// --- observed navigation (queries + sources the harness actually visited) ----
-describe("searchQueryOf", () => {
-  it("extracts the query from common search engines", () => {
-    expect(searchQueryOf("https://duckduckgo.com/?q=aleister+crowley&ia=web")).toBe("aleister crowley");
-    expect(searchQueryOf("https://html.duckduckgo.com/html/?q=test")).toBe("test");
-    expect(searchQueryOf("https://www.google.com/search?q=epstein+timeline&hl=en")).toBe("epstein timeline");
-    expect(searchQueryOf("https://www.bing.com/search?q=abc")).toBe("abc");
-    expect(searchQueryOf("https://search.brave.com/search?q=abc")).toBe("abc");
-    expect(searchQueryOf("https://www.startpage.com/sp/search?query=abc")).toBe("abc");
-  });
-  it("returns null for ordinary pages, non-search engine paths, and bad URLs", () => {
-    expect(searchQueryOf("https://en.wikipedia.org/wiki/Aleister_Crowley")).toBeNull();
-    expect(searchQueryOf("https://google.com/maps?q=pizza")).toBeNull(); // not /search
-    expect(searchQueryOf("https://duckduckgo.com/")).toBeNull(); // no query
-    expect(searchQueryOf("javascript:alert(1)")).toBeNull();
-    expect(searchQueryOf("not a url")).toBeNull();
-  });
-});
-
-describe("activityForNavigation", () => {
-  it("labels a search-engine navigation as an observed search with its query", () => {
-    const a = activityForNavigation("https://duckduckgo.com/?q=sex+magick+history", 123);
-    expect(a).toMatchObject({ kind: "search", observed: true, at: 123 });
-    expect(a?.message).toContain("sex magick history");
-  });
-  it("labels an ordinary page navigation as an observed source", () => {
-    const a = activityForNavigation("https://en.wikipedia.org/wiki/Thelema?utm_source=x", 5);
-    expect(a).toMatchObject({ kind: "source", observed: true, at: 5 });
-    expect(a?.sourceUrl).toBe("https://en.wikipedia.org/wiki/Thelema");
-    expect(a?.message).toBe("Opened en.wikipedia.org/wiki/Thelema");
-  });
-  it("rejects non-web navigations", () => {
-    expect(activityForNavigation("about:blank", 1)).toBeNull();
-    expect(activityForNavigation("file:///etc/passwd", 1)).toBeNull();
-    expect(activityForNavigation("", 1)).toBeNull();
   });
 });
 
@@ -517,14 +321,6 @@ describe("redactResearchContent cost", () => {
   });
 });
 
-describe("UTF-8 byte limits", () => {
-  it("truncates on code-point boundaries by bytes, not JavaScript code units", () => {
-    expect(utf8ByteLength("😀a")).toBe(5);
-    expect(truncateUtf8("😀a", 4)).toBe("😀");
-    expect(truncateUtf8("😀a", 3)).toBe("");
-  });
-});
-
 // --- prompt -----------------------------------------------------------------
 describe("buildResearchPrompt", () => {
   it("instructs read-only research, the tools, and no direct vault writes", () => {
@@ -564,47 +360,6 @@ describe("buildResearchPrompt", () => {
     expect(p).toContain("methodology");
     expect(p).toContain("draftMarkdown");
     expect(p).toContain("high-confidence, source-backed addition");
-  });
-});
-
-// --- envelope parsing + validation -------------------------------------------
-describe("extractEnvelope / parseResultEnvelope", () => {
-  it("parses a valid envelope from model text", () => {
-    const result: DeepResearchResult = {
-      version: 1,
-      report: { title: "Report", markdown: "# Hi [[A]]" },
-      notes: [],
-      sources: [{ url: "https://a.com/x", title: "A" }],
-      claims: [],
-      related: [],
-    };
-    const env = JSON.stringify({ type: "mesa_deep_research", runId: "r1", result });
-    const out = parseResultEnvelope(`some prose\n\`\`\`json\n${env}\n\`\`\`\ntrailing`, "r1");
-    expect(out.ok).toBe(true);
-    if (out.ok) expect(out.result.report.title).toBe("Report");
-  });
-
-  it("rejects an envelope for a different run id", () => {
-    const env = JSON.stringify({
-      type: "mesa_deep_research", runId: "other",
-      result: { version: 1, report: { title: "t", markdown: "m" }, notes: [], sources: [], claims: [], related: [] },
-    });
-    const out = parseResultEnvelope(env, "r1");
-    expect(out.ok).toBe(false);
-  });
-
-  it("rejects malformed / missing envelope", () => {
-    expect(parseResultEnvelope("no json here", "r1").ok).toBe(false);
-    expect(parseResultEnvelope('{"type":"nope"}', "r1").ok).toBe(false);
-  });
-
-  it("rejects a result missing the report markdown", () => {
-    const env = JSON.stringify({
-      type: "mesa_deep_research", runId: "r1",
-      result: { version: 1, report: { title: "t", markdown: "" }, notes: [], sources: [], claims: [], related: [] },
-    });
-    const out = parseResultEnvelope(env, "r1");
-    expect(out.ok).toBe(false);
   });
 });
 
@@ -1039,41 +794,6 @@ describe("buildApplyPlan", () => {
     ];
     const plan = buildApplyPlan({ ops, existingContent: {}, files, notes });
     expect(plan.ok).toBe(false);
-  });
-});
-
-// --- depth presets + clamping ---------------------------------------------------
-describe("clampDepth / limitsForDepth / presets", () => {
-  it("clamps depth to the allowed ranges", () => {
-    const d = clampDepth({ rounds: 99, subQuestions: 0, maxSources: 999, maxGeneratedNotes: -3 });
-    expect(d.rounds).toBe(DEPTH_LIMITS.rounds.max);
-    expect(d.subQuestions).toBe(DEPTH_LIMITS.subQuestions.min);
-    expect(d.maxSources).toBe(DEPTH_LIMITS.maxSources.max);
-    expect(d.maxGeneratedNotes).toBe(DEPTH_LIMITS.maxGeneratedNotes.min);
-  });
-
-  it("merges depth into limits, overriding source/note caps only", () => {
-    const merged = limitsForDepth(DEFAULT_DEEP_RESEARCH_LIMITS, { rounds: 3, subQuestions: 6, maxSources: 20, maxGeneratedNotes: 10 });
-    expect(merged.maxSources).toBe(20);
-    expect(merged.maxGeneratedNotes).toBe(10);
-    expect(merged.maxContextNotes).toBe(DEFAULT_DEEP_RESEARCH_LIMITS.maxContextNotes);
-    expect(merged.maxTotalBytes).toBe(DEFAULT_DEEP_RESEARCH_LIMITS.maxTotalBytes);
-  });
-
-  it("presets are ordered quick < standard < deep in thoroughness", () => {
-    expect(RESEARCH_DEPTH_PRESETS.quick.maxSources).toBeLessThan(RESEARCH_DEPTH_PRESETS.standard.maxSources);
-    expect(RESEARCH_DEPTH_PRESETS.standard.maxSources).toBeLessThan(RESEARCH_DEPTH_PRESETS.deep.maxSources);
-    expect(RESEARCH_DEPTH_PRESETS.quick.subQuestions).toBeLessThan(RESEARCH_DEPTH_PRESETS.deep.subQuestions);
-    expect(RESEARCH_DEPTH_PRESETS.quick.rounds).toBeLessThan(RESEARCH_DEPTH_PRESETS.deep.rounds);
-  });
-});
-
-// --- run id -----------------------------------------------------------------
-describe("createRunId", () => {
-  it("creates unique run ids", () => {
-    const a = createRunId();
-    const b = createRunId();
-    expect(a).not.toBe(b);
   });
 });
 

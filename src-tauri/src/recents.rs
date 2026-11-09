@@ -151,12 +151,7 @@ fn remember(catalogue: &mut Catalogue, root: String) -> Result<(), String> {
         .map(|e| e.id.clone())
         .unwrap_or_else(String::new);
     let id = if id.is_empty() {
-        use ring::rand::SecureRandom;
-        let mut bytes = [0u8; 16];
-        ring::rand::SystemRandom::new()
-            .fill(&mut bytes)
-            .map_err(|_| "Cannot create a recent vault id")?;
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
+        crate::hex::random_hex::<16>().ok_or("Cannot create a recent vault id")?
     } else {
         id
     };
@@ -284,13 +279,7 @@ fn namespace(key: &[u8], root: &str) -> String {
         &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key),
         root.as_bytes(),
     );
-    format!(
-        "vault:{}",
-        tag.as_ref()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    )
+    format!("vault:{}", crate::hex::encode(tag.as_ref()))
 }
 fn storage_key(path: &Path) -> Result<[u8; 32], String> {
     use std::io::Read;
@@ -310,11 +299,7 @@ fn storage_key(path: &Path) -> Result<[u8; 32], String> {
             Ok(bytes)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            use ring::rand::SecureRandom;
-            let mut bytes = [0; 32];
-            ring::rand::SystemRandom::new()
-                .fill(&mut bytes)
-                .map_err(|_| "Cannot generate storage key")?;
+            let bytes = crate::hex::random_bytes::<32>().ok_or("Cannot generate storage key")?;
             crate::vaultwrite::write_atomic(
                 path,
                 &bytes,

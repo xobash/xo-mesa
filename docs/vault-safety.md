@@ -46,7 +46,7 @@ sudden-power-loss recovery still need native acceptance.
   after checking the approved vault. The compatibility and recovery paths grant
   their filesystem plugin each exact hidden artifact path inside that vault.
 - Crash recovery runs when a vault opens. `src/lib/writeRecovery.ts` makes the
-  plan, and `recoverWriteArtifacts` in `src/lib/vault.ts` applies the plan:
+  plan, and `recoverWriteArtifacts` in `src/lib/vaultRecovery.ts` applies the plan:
   - The vault scan finds the artifacts. `vault_scan` reads every directory to
     make the file listing. The same operation collects the artifacts. Recovery
     does not read the directories a second time.

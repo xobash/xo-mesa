@@ -377,7 +377,7 @@ pub(crate) fn remember_pi_process(app: &AppHandle, root: &Path) -> Result<(), St
 fn visible_vault_path(path: &Path) -> bool {
     path.components().all(|part| {
         matches!(part, Component::Normal(name)
-        if name.to_str().is_some_and(|name| !name.starts_with('.') && name != "node_modules"))
+        if name.to_str().is_some_and(|name| !crate::vault_names::is_hidden_name(name)))
     })
 }
 
@@ -500,19 +500,6 @@ fn require_approved_file_from(approval_path: &Path, path: &str) -> Result<PathBu
     Ok(canonical)
 }
 
-#[cfg(unix)]
-fn sync_parent(parent: &Path) -> std::io::Result<()> {
-    fs::File::open(parent)?.sync_all()
-}
-
-#[cfg(windows)]
-fn sync_parent(_parent: &Path) -> std::io::Result<()> {
-    // FlushFileBuffers does not document directory handles as supported.
-    // Windows writes flush the file; metadata durability still needs native
-    // acceptance before Mesa can promise power-loss safety on that platform.
-    Ok(())
-}
-
 #[cfg(windows)]
 fn sync_file(path: &Path) -> std::io::Result<()> {
     fs::OpenOptions::new().write(true).open(path)?.sync_all()
@@ -530,8 +517,10 @@ fn sync_file(path: &Path) -> std::io::Result<()> {
 pub fn vault_flush_file(app: AppHandle, path: String) -> Result<(), String> {
     let canonical = require_approved_file_from(&approved_roots_path(&app)?, &path)?;
     sync_file(&canonical).map_err(|error| format!("cannot flush vault file: {error}"))?;
-    sync_parent(canonical.parent().ok_or("vault file has no parent")?)
-        .map_err(|error| format!("cannot flush vault folder: {error}"))
+    crate::sync_core::platform_fs::sync_directory(
+        canonical.parent().ok_or("vault file has no parent")?,
+    )
+    .map_err(|error| format!("cannot flush vault folder: {error}"))
 }
 
 fn load_for_authorization(path: &Path, granted_by_dialog: bool) -> Result<ApprovedRoots, String> {
@@ -1395,7 +1384,7 @@ mod tests {
         save_approved_roots(&record, &roots).unwrap();
         let checked = require_approved_file_from(&record, inside.to_str().unwrap()).unwrap();
         sync_file(&checked).unwrap();
-        sync_parent(checked.parent().unwrap()).unwrap();
+        crate::sync_core::platform_fs::sync_directory(checked.parent().unwrap()).unwrap();
         assert!(require_approved_file_from(&record, outside.to_str().unwrap()).is_err());
         assert!(
             require_approved_file_from(&record, dir.join("missing.md").to_str().unwrap()).is_err()

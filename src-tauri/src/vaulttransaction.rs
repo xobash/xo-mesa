@@ -67,11 +67,7 @@ mod hex_bytes {
     use std::fmt;
 
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        let mut text = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            text.push_str(&format!("{byte:02x}"));
-        }
-        serializer.serialize_str(&text)
+        serializer.serialize_str(&crate::hex::encode(bytes))
     }
 
     struct BytesVisitor;
