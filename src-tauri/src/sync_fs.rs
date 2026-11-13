@@ -201,10 +201,7 @@ pub enum CommitOutcome {
 pub(super) static ARTIFACT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn artifact_token() -> (u64, String) {
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let stamp = now_ms();
     let counter = ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed);
     (
         stamp,
@@ -1523,5 +1520,5 @@ pub fn conflict_copy_already_present(
 }
 
 #[cfg(test)]
-#[path = "sync_tests.rs"]
+#[path = "sync_fs_tests.rs"]
 mod tests;

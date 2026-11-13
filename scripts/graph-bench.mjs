@@ -16,7 +16,7 @@ try {
   writeFileSync(entry, [
     `export { buildGraph } from ${JSON.stringify(resolve('src/lib/graph.ts'))};`,
     `export { createGraphSimulation, graphSimulationTier, GraphPhysicsSession, snapshotGraphPhysics, GRAPH_SETTLED_ALPHA } from ${JSON.stringify(resolve('src/lib/graphPhysics.ts'))};`,
-    `export { nodeRadius, resolveOverlaps, GraphHitIndex, nearestNodeLinear } from ${JSON.stringify(resolve('src/components/graphGeometry.ts'))};`,
+    `export { nodeRadius, resolveOverlaps, GraphHitIndex, nearestNodeLinear } from ${JSON.stringify(resolve('src/lib/graphGeometry.ts'))};`,
     `export { buildNeighbors } from ${JSON.stringify(resolve('src/lib/graph.ts'))};`,
   ].join('\n'));
   buildSync({ entryPoints: [entry], outfile: modulePath, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent' });

@@ -3,8 +3,10 @@ import type { DeepResearchResult, RelatedNote, ResearchClaim, SourceKind } from 
 import { DEFAULT_DEEP_RESEARCH_LIMITS, truncateUtf8, utf8ByteLength, type DeepResearchLimits } from "./deepResearchConfig";
 import { safeFolderName, safeNoteTitle, titleSlug } from "./deepResearchNaming";
 import { canonicalizeSourceUrl } from "./deepResearchUrls";
+import { localISO } from "./daily";
 import { makeResolver } from "./graph";
 import { extractLinks } from "./markdownExtract";
+import { uniqueRelPath } from "./fsnames";
 import type { ProposedOp } from "./researchApplyPlan";
 
 /** Deterministic report/source-note change set built from a validated research result. */
@@ -68,7 +70,7 @@ export function buildChangeSet(input: {
   const updatedRelPaths: string[] = [];
   const skippedDuplicates: { title: string; relPath: string; reason: string }[] = [];
 
-  const dateISO = input.now.toISOString().slice(0, 10);
+  const dateISO = localISO(input.now);
 
   // --- Source notes (only new, non-duplicate). ---
   const sourceNoteTargets: { title: string; relPath: string; linkTarget: string }[] = [];
@@ -94,7 +96,7 @@ export function buildChangeSet(input: {
     const extraLinks = (n.links ?? [])
       .map((l) => resolve(l))
       .filter((t): t is string => Boolean(t));
-    const relPath = uniqueRel(taken, `${folder}/${title}.md`);
+    const relPath = uniqueRelPath(taken, `${folder}/${title}.md`);
     taken.add(relPath.toLowerCase());
     slugToRel.set(slug, relPath);
     if (canon) urlToRel.set(canon, relPath);
@@ -118,7 +120,7 @@ export function buildChangeSet(input: {
 
   // --- Report / index note. ---
   const reportTitle = safeNoteTitle(result.report.title);
-  const reportRel = uniqueRel(taken, `${folder}/${reportTitle}.md`);
+  const reportRel = uniqueRelPath(taken, `${folder}/${reportTitle}.md`);
   taken.add(reportRel.toLowerCase());
   createdRelPaths.push(reportRel);
 
@@ -209,19 +211,4 @@ export function buildChangeSet(input: {
   }
 
   return { ops, folder, reportRelPath: reportRel, createdRelPaths, updatedRelPaths, skippedDuplicates };
-}
-
-/** Collision-free relPath against a lowercase `taken` set (appends " 1", " 2"…). */
-function uniqueRel(takenLower: Set<string>, desiredRel: string): string {
-  if (!takenLower.has(desiredRel.toLowerCase())) return desiredRel;
-  const dot = desiredRel.lastIndexOf(".");
-  const base = dot > 0 ? desiredRel.slice(0, dot) : desiredRel;
-  const ext = dot > 0 ? desiredRel.slice(dot) : "";
-  let n = 1;
-  let candidate = `${base} ${n}${ext}`;
-  while (takenLower.has(candidate.toLowerCase())) {
-    n++;
-    candidate = `${base} ${n}${ext}`;
-  }
-  return candidate;
 }

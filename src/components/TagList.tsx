@@ -1,7 +1,9 @@
-import { useMemo } from "react";
+import { memo, useMemo, useRef } from "react";
 import { useAppStore } from "../store";
 import { previewEnter, previewLeave } from "./previewTriggers";
 import { hueFor } from "../lib/hue";
+
+type TagCount = [string, number];
 
 export function TagList() {
   const notes = useAppStore((s) => s.notes);
@@ -9,12 +11,18 @@ export function TagList() {
   const collapsed = useAppStore((s) => s.settings.tagsCollapsed);
   const setSetting = useAppStore((s) => s.setSetting);
 
+  // Keeps the previous array identity when the recount is equal, so a notes
+  // republication with unchanged tags does not re-render the chips.
+  const previous = useRef<TagCount[]>([]);
   const counts = useMemo(() => {
     const m = new Map<string, number>();
     for (const id of Object.keys(notes)) {
       for (const t of notes[id].tags) m.set(t, (m.get(t) ?? 0) + 1);
     }
-    return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const next = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const prev = previous.current;
+    if (next.length === prev.length && next.every(([t, c], i) => prev[i][0] === t && prev[i][1] === c)) return prev;
+    return (previous.current = next);
   }, [notes]);
 
   if (counts.length === 0) return null;
@@ -31,40 +39,44 @@ export function TagList() {
         Tags
         <span className="tag-section-count">{counts.length}</span>
       </button>
-      {!collapsed && (
-      <div className="tag-list">
-        {counts.map(([t, c]) => {
-          const h = hueFor(t);
-          return (
-            <button
-              key={t}
-              className="tag-chip"
-              style={{
-                background: `hsl(${h} 45% 50% / 0.08)`,
-                borderColor: `hsl(${h} 40% 55% / 0.28)`,
-              }}
-              onClick={() => {
-                previewLeave();
-                openSearch("#" + t);
-              }}
-              onMouseEnter={(e) =>
-                previewEnter(
-                  { kind: "tag", tag: t },
-                  e.currentTarget.getBoundingClientRect()
-                )
-              }
-              onMouseLeave={previewLeave}
-            >
-              <span className="tag-hash" style={{ color: `hsl(${h} 45% 60%)` }}>
-                #
-              </span>
-              {t}
-              <span className="tag-count">{c}</span>
-            </button>
-          );
-        })}
-      </div>
-      )}
+      {!collapsed && <TagChips counts={counts} openSearch={openSearch} />}
     </div>
   );
 }
+
+const TagChips = memo(function TagChips({ counts, openSearch }: { counts: TagCount[]; openSearch: (q: string) => void }) {
+  return (
+    <div className="tag-list">
+      {counts.map(([t, c]) => {
+        const h = hueFor(t);
+        return (
+          <button
+            key={t}
+            className="tag-chip"
+            style={{
+              background: `hsl(${h} 45% 50% / 0.08)`,
+              borderColor: `hsl(${h} 40% 55% / 0.28)`,
+            }}
+            onClick={() => {
+              previewLeave();
+              openSearch("#" + t);
+            }}
+            onMouseEnter={(e) =>
+              previewEnter(
+                { kind: "tag", tag: t },
+                e.currentTarget.getBoundingClientRect()
+              )
+            }
+            onMouseLeave={previewLeave}
+          >
+            <span className="tag-hash" style={{ color: `hsl(${h} 45% 60%)` }}>
+              #
+            </span>
+            {t}
+            <span className="tag-count">{c}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+});

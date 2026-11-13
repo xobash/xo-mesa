@@ -393,13 +393,6 @@
   margin: 0 auto;
   border-radius: var(--radius);
 }
-.doc-pdf {
-  width: 100%;
-  height: 78vh;
-  border: none;
-  border-radius: var(--radius);
-  background: #fff;
-}
 
 /* ---------- richer status bar ---------- */
 .sb-path {

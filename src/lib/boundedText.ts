@@ -1,8 +1,10 @@
+import { MAX_TEXT_CACHE_FILE_BYTES } from "./textCachePlan";
+
 export interface TextReadHandle { read(buffer: Uint8Array): Promise<number | null>; close(): Promise<void> }
 /** Require EOF within the byte limit; a prefix can never become editable authority. */
 export async function readBoundedText(handle: TextReadHandle, maxBytes: number): Promise<string> {
   try {
-    if (!Number.isInteger(maxBytes) || maxBytes < 0 || maxBytes > 8 * 1024 * 1024) throw new Error('Invalid text read limit');
+    if (!Number.isInteger(maxBytes) || maxBytes < 0 || maxBytes > MAX_TEXT_CACHE_FILE_BYTES) throw new Error('Invalid text read limit');
     const buffer = new Uint8Array(maxBytes + 1);
     let filled = 0;
     while (filled < buffer.length) {

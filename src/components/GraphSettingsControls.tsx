@@ -1,4 +1,4 @@
-import { clamp } from "./graphGeometry";
+import { clamp } from "../lib/graphGeometry";
 
 /** A gear glyph for the graph-settings button. */
 export function GearIcon() {

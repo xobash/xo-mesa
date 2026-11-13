@@ -1,21 +1,14 @@
 import { VaultImage } from "./VaultImage";
 import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { readTextFile } from "@tauri-apps/plugin-fs";
 import { useAppStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
-import { IN_TAURI, fileKind, isTextExt, urlForPath } from "../lib/vault";
+import { fileKind, isTextExt, urlForPath } from "../lib/vault";
+import { readSavedStylesheet } from "../lib/vaultStylesheet";
 import { rtfToText } from "../lib/rtf";
 import { statusLine } from "../lib/faces";
 import { compareNames } from "../lib/sort";
 import type { ActivityOp } from "../lib/activity";
 import type { PreviewTarget, VaultFile } from "../types";
-
-async function readSavedStylesheet(path: string, maxBytes: number): Promise<string> {
-  if (!IN_TAURI) return readTextFile(path);
-  const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes, requireComplete: true });
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
 
 const LazyPdfThumb = lazy(() =>
   import("./PdfThumb").then((module) => ({ default: module.PdfThumb }))

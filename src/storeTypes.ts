@@ -94,8 +94,6 @@ export interface DeepResearchRunState {
   error: string | null;
   /** RelPaths written by a successful apply (for the done phase + refresh). */
   appliedRelPaths: string[];
-  /** Monotonic id so a stale event from a previous run is ignored. */
-  seq: number;
 }
 
 export interface VaultUnavailableState {

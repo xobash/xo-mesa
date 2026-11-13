@@ -1,5 +1,8 @@
 import type { Settings } from "../types";
 
+/** Narrowest width, in CSS pixels, of every Pi surface: docked pane and floating window. */
+export const PI_MIN_WIDTH = 420;
+
 export interface AgentContext {
   vaultName: string;
   vaultPath: string | null;

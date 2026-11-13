@@ -46,6 +46,9 @@ class BackgroundWorkGovernor {
   private listeners = new Set<() => void>();
   private observed = false;
   private nextOrder = 0;
+  // One pending pump timer; when it fires early it re-arms to the latest deadline.
+  private pumpTimer: number | undefined;
+  private pumpAt = 0;
 
   constructor() {
     // Long-task observation is local, optional, and never retained as telemetry.
@@ -73,9 +76,12 @@ class BackgroundWorkGovernor {
 
   noteInteraction(kind: "typing" | "scroll" | "drag" | "pdf" | "resize" = "typing"): void {
     const quiet = kind === "typing" ? 180 : kind === "resize" ? 260 : 140;
-    this.interactiveUntil = Math.max(this.interactiveUntil, Date.now() + quiet);
+    const now = Date.now();
+    const wasInteractive = now < this.interactiveUntil;
+    this.interactiveUntil = Math.max(this.interactiveUntil, now + quiet);
     this.schedulePump(quiet);
-    this.emit();
+    // Snapshot pressure and limit change only when interaction starts.
+    if (!wasInteractive) this.emit();
   }
 
   run<T>(kind: BackgroundWorkKind, task: () => Promise<T>): Promise<T> {
@@ -130,10 +136,25 @@ class BackgroundWorkGovernor {
     }
     this.interactiveUntil = 0;
     this.longTaskUntil = 0;
+    if (this.pumpTimer !== undefined && typeof window !== "undefined") window.clearTimeout(this.pumpTimer);
+    this.pumpTimer = undefined;
+    this.pumpAt = 0;
     this.emit();
   }
   private emit(): void { this.listeners.forEach((listener) => listener()); }
-  private schedulePump(delay: number): void { if (typeof window !== "undefined") window.setTimeout(() => this.pump(), delay + 1); }
+  private schedulePump(delay: number): void {
+    if (typeof window === "undefined") return;
+    this.pumpAt = Math.max(this.pumpAt, Date.now() + delay + 1);
+    if (this.pumpTimer === undefined) this.armPump();
+  }
+  private armPump(): void {
+    this.pumpTimer = window.setTimeout(() => {
+      this.pumpTimer = undefined;
+      if (Date.now() < this.pumpAt) { this.armPump(); return; }
+      this.pumpAt = 0;
+      this.pump();
+    }, Math.max(0, this.pumpAt - Date.now()));
+  }
   private sortQueue(): void {
     const now = Date.now();
     this.queue.sort((a, b) => {

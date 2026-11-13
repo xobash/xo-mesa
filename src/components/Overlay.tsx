@@ -1,26 +1,24 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAppStore } from "../store";
-import { localISO, localTime } from "../lib/daily";
-import { IN_TAURI, isImageExt, urlForPath } from "../lib/vault";
-import { detachedWindowPlacement, isWindowTearOffPoint, type DetachedWindowPlacement } from "../lib/windowTearOff";
-import { AgentSurface } from "./AgentPanel";
+import { localTime } from "../lib/daily";
+import { IN_TAURI } from "../lib/vault";
 import { DeepResearchPanel } from "./DeepResearchPanel";
 import { DeepResearchPhaseChip } from "./DeepResearchPhaseChip";
-import { OVERLAY_BOTTOM, fitWin, keyboardWinPatch, mergeStoredWins, type OverlayWinRec } from "../lib/overlayWins";
+import { OVERLAY_BOTTOM, fitWin, mergeStoredWins } from "../lib/overlayWins";
 import { readLocalNote, writeLocalNote } from "../lib/localNotes";
-import { useOverlayDraft } from "./useOverlayDraft";
 import { SearchSurface } from "./SearchSurface";
 import { TasksPanel } from "./TasksModal";
-import { claimKeyboardShortcut, isWindowTransferShortcut } from "../lib/shortcuts";
+import { claimKeyboardShortcut } from "../lib/shortcuts";
 import { OverlayCalendar } from "./overlay/OverlayCalendar";
 import { OverlayHelp, OverlayTour } from "./overlay/OverlayGuide";
 import { OverlaySettings } from "./overlay/OverlaySettings";
 import { trapOverlayFocus } from "./overlay/trapOverlayFocus";
 import { Whiteboard } from "./overlay/Whiteboard";
+import { type WinRec, PiOverlayWindow, FloatingWindow } from "./overlay/OverlayWindows";
+import { Scratchpad, Gallery } from "./overlay/OverlayBodies";
 
 const OVERLAY_TOURED_KEY = "mesa:overlayToured";
 const OVERLAY_FADE_MS = 240;
-const SCRATCH_PREFIX = "mesa:scratch:";
 const WINS_KEY = "mesa:overlayWins";
 
 type WinId =
@@ -34,7 +32,6 @@ type WinId =
   | "gallery"
   | "settings";
 
-type WinRec = OverlayWinRec;
 type Wins = Record<WinId, WinRec>;
 
 const DEFAULT_WINS: Wins = {
@@ -61,7 +58,6 @@ const DOCK: { id: WinId; label: string; icon: string }[] = [
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
 
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 /** Render-time projection into the current viewport. NEVER write the result
  *  back into `wins` — the stored geometry is the user's intent, and a
  *  transiently tiny viewport (0×0 during startup, a briefly shrunken OS
@@ -106,327 +102,16 @@ function Clock() {
   );
 }
 
-/** Use the shared Pi title bar for movement and edge tear-off; persist geometry with the overlay. */
-/**
- * Shared bottom-right resize gesture for overlay windows. Grows the window
- * from its current size, clamped to `minW`/`minH` and the viewport, with
- * text selection suppressed for the drag duration.
- */
-function startOverlayResize(
-  e: React.PointerEvent,
-  rec: WinRec,
-  minW: number,
-  minH: number,
-  onChange: (patch: Partial<WinRec>) => void,
-  onFocus: () => void
-): void {
-  e.stopPropagation();
-  e.preventDefault();
-  onFocus();
-  const sx = e.clientX;
-  const sy = e.clientY;
-  const sw = rec.w;
-  const sh = rec.h;
-  const prevUserSelect = document.body.style.userSelect;
-  document.body.style.userSelect = "none";
-  const move = (ev: PointerEvent) => {
-    onChange({
-      w: clamp(sw + (ev.clientX - sx), minW, window.innerWidth - rec.x - 8),
-      h: clamp(sh + (ev.clientY - sy), minH, window.innerHeight - rec.y - 8),
-    });
-  };
-  const up = () => {
-    window.removeEventListener("pointermove", move);
-    window.removeEventListener("pointerup", up);
-    document.body.style.userSelect = prevUserSelect;
-  };
-  window.addEventListener("pointermove", move);
-  window.addEventListener("pointerup", up);
-}
-
-function PiOverlayWindow({
-  rec,
-  z,
-  onChange,
-  onClose,
-  onFocus,
-  onPlaceInWorkspace,
-}: {
-  rec: WinRec;
-  z: number;
-  onChange: (patch: Partial<WinRec>) => void;
-  onClose: () => void;
-  onFocus: () => void;
-  onPlaceInWorkspace: () => void;
-}) {
-  const openAgentWindow = useAppStore((s) => s.openAgentWindow);
-  const [tearOffArmed, setTearOffArmed] = useState(false);
-  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    onFocus();
-    // Pointer capture keeps the drag alive as it crosses the webview edge,
-    // which is what makes release-to-native-window tear-off possible.
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* best-effort across system webviews */
-    }
-    const ox = e.clientX - rec.x;
-    const oy = e.clientY - rec.y;
-    const w = rec.w;
-    const h = rec.h;
-    const prevUserSelect = document.body.style.userSelect;
-    document.body.style.userSelect = "none";
-    const move = (ev: PointerEvent) => {
-      setTearOffArmed(
-        isWindowTearOffPoint(ev.clientX, ev.clientY, window.innerWidth, window.innerHeight)
-      );
-      onChange({
-        x: clamp(ev.clientX - ox, 4, window.innerWidth - 80),
-        y: clamp(ev.clientY - oy, 56, window.innerHeight - 96),
-      });
-    };
-    const up = (ev: PointerEvent) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", cancel);
-      document.body.style.userSelect = prevUserSelect;
-      setTearOffArmed(false);
-      if (
-        IN_TAURI &&
-        isWindowTearOffPoint(ev.clientX, ev.clientY, window.innerWidth, window.innerHeight)
-      ) {
-        void openAgentWindow(
-          detachedWindowPlacement({
-            screenX: ev.screenX,
-            screenY: ev.screenY,
-            grabOffsetX: ox,
-            grabOffsetY: oy,
-            width: w,
-            height: h,
-          })
-        ).then((opened) => {
-          if (opened) onClose();
-        });
-      }
-    };
-    const cancel = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", cancel);
-      document.body.style.userSelect = prevUserSelect;
-      setTearOffArmed(false);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    window.addEventListener("pointercancel", cancel);
-  };
-  const startResize = (e: React.PointerEvent) =>
-    startOverlayResize(e, rec, 420, 320, onChange, onFocus);
-  const handleTitleBarKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget) return;
-    if (isWindowTransferShortcut(event)) {
-      claimKeyboardShortcut(event.nativeEvent);
-      void openAgentWindow().then((opened) => {
-        if (opened) onClose();
-      });
-      return;
-    }
-    const next = keyboardWinPatch(
-      rec,
-      event.key,
-      event.shiftKey,
-      { width: window.innerWidth, height: window.innerHeight },
-      { width: 420, height: 320 }
-    );
-    if (!next) return;
-    claimKeyboardShortcut(event.nativeEvent);
-    onChange(next);
-  };
-  return (
-    <div
-      className={"ov-win pi-ov-win" + (tearOffArmed ? " tear-off-armed" : "")}
-      data-native-webview-occluder=""
-      style={{ left: rec.x, top: rec.y, width: rec.w, height: rec.h, zIndex: z }}
-      onPointerDown={onFocus}
-    >
-      <AgentSurface
-        embedded
-        browserSlideOut
-        windowTitle="Pi agent"
-        onTitleBarPointerDown={startDrag}
-        onTitleBarKeyDown={handleTitleBarKeyDown}
-        titleBarHint="Arrow keys move · Shift+Arrow resizes · Ctrl/Cmd+Shift+Enter separates"
-        onClose={onClose}
-        onPlaceInWorkspace={onPlaceInWorkspace}
-      />
-      <div className="ov-win-resize" onPointerDown={startResize} aria-hidden="true" />
-    </div>
-  );
-}
-
-/** A draggable, resizable, closable floating window inside the overlay. */
-export function FloatingWindow({
-  title,
-  accessory,
-  rec,
-  z,
-  onChange,
-  onClose,
-  onFocus,
-  onTearOff,
-  children,
-}: {
-  title: string;
-  /** Optional live status rendered in the ONE window bar (e.g. the Deep
-   *  Research phase chip) — panels must not stack a second in-body header. */
-  accessory?: React.ReactNode;
-  rec: WinRec;
-  z: number;
-  onChange: (patch: Partial<WinRec>) => void;
-  onClose: () => void;
-  onFocus: () => void;
-  onTearOff?: (placement?: DetachedWindowPlacement) => void;
-  children: React.ReactNode;
-}) {
-  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || (e.target as HTMLElement).closest("button")) return;
-    // Prevent the drag from starting a text-selection gesture (the overlay
-    // windows live over arbitrary content and Safari/WebKit will otherwise
-    // highlight text while moving them).
-    e.preventDefault();
-    e.currentTarget.focus();
-    onFocus();
-    const ox = e.clientX - rec.x;
-    const oy = e.clientY - rec.y;
-    const prevUserSelect = document.body.style.userSelect;
-    document.body.style.userSelect = "none";
-    const move = (ev: PointerEvent) => {
-      onChange({
-        x: clamp(ev.clientX - ox, 4, window.innerWidth - 80),
-        y: clamp(ev.clientY - oy, 56, window.innerHeight - 96),
-      });
-    };
-    const finish = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", finish);
-      document.body.style.userSelect = prevUserSelect;
-    };
-    const up = (ev: PointerEvent) => {
-      finish();
-      if (onTearOff && isWindowTearOffPoint(ev.clientX, ev.clientY, window.innerWidth, window.innerHeight)) {
-        onTearOff(detachedWindowPlacement({ screenX: ev.screenX, screenY: ev.screenY,
-          grabOffsetX: ox, grabOffsetY: oy, width: rec.w, height: rec.h }));
-      }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    window.addEventListener("pointercancel", finish);
-  };
-  const startResize = (e: React.PointerEvent) =>
-    startOverlayResize(e, rec, 280, 180, onChange, onFocus);
-  const handleTitleBarKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget) return;
-    if (onTearOff && isWindowTransferShortcut(event)) {
-      claimKeyboardShortcut(event.nativeEvent);
-      onTearOff();
-      return;
-    }
-    const next = keyboardWinPatch(
-      rec,
-      event.key,
-      event.shiftKey,
-      { width: window.innerWidth, height: window.innerHeight },
-      { width: 280, height: 180 }
-    );
-    if (!next) return;
-    claimKeyboardShortcut(event.nativeEvent);
-    onFocus();
-    onChange(next);
-  };
-  return (
-    <div
-      className="ov-win"
-      data-native-webview-occluder=""
-      style={{ left: rec.x, top: rec.y, width: rec.w, height: rec.h, zIndex: z }}
-      onPointerDown={onFocus}
-    >
-      <div
-        className="ov-win-bar"
-        onPointerDown={startDrag}
-        onKeyDown={handleTitleBarKeyDown}
-        tabIndex={0}
-        aria-label={`${title} window. Arrow keys move; Shift plus Arrow resizes.${onTearOff ? " Control or Command plus Shift plus Enter separates." : ""}`}
-        title={`Arrow keys move · Shift+Arrow resizes${onTearOff ? " · Ctrl/Cmd+Shift+Enter separates" : ""}`}
-      >
-        <span className="ov-win-title">{title}</span>
-        <span className="ov-window-hint" aria-hidden="true">Arrows move · Shift+arrows resize{onTearOff ? " · Ctrl/Cmd+Shift+Enter separates" : ""}</span>
-        {accessory}
-        <button className="ov-win-close" onClick={onClose} aria-label={`Close ${title}`}>
-          ×
-        </button>
-      </div>
-      <div className="ov-win-body">{children}</div>
-      <div className="ov-win-resize" onPointerDown={startResize} aria-hidden="true" />
-    </div>
-  );
-}
-
-/** Draft identity includes the vault session and the selected day. */
-function Scratchpad() {
-  const [day, setDay] = useState(localISO());
-  const identity = useAppStore(s => `${s.vaultPath}\0${s.getVaultGeneration()}`);
-  return <div className="ov-scratch-win">
-    <input aria-label="Scratchpad date" type="date" className="text-input" value={day}
-      onChange={e => setDay(e.target.value || localISO())} />
-    <ScratchpadDocument key={`${identity}\0${day}`} day={day} />
-  </div>;
-}
-
-function ScratchpadDocument({ day }: { day: string }) {
-  const draft = useOverlayDraft("scratchpad", `Scratchpad/${day}.md`, SCRATCH_PREFIX + day, day);
-  return <>
-    <textarea aria-label="Scratchpad draft" className="ov-scratch" placeholder="A quick note for this day…"
-      value={draft.content} onChange={e => draft.edit(e.target.value)} />
-    <button className="btn ghost ov-save-vault" disabled={!draft.ready || draft.saving || !draft.root}
-      onClick={() => void draft.save()}>{draft.saving ? "Saving…" : "Save as vault document"}</button>
-    {draft.status && <p className="ov-vault-status" role="status">{draft.status}</p>}
-    {draft.error && <p className="ov-local-warn" role="alert">{draft.error}</p>}
-  </>;
-}
-
-/** Gallery of the vault's images. */
-function Gallery() {
-  const files = useAppStore((s) => s.files);
-  const selectFile = useAppStore((s) => s.selectFile);
-  const setOverlayOpen = useAppStore((s) => s.setOverlayOpen);
-  const images = useMemo(
-    () => files.filter((f) => isImageExt(f.ext) || f.ext === "svg"),
-    [files]
-  );
-  if (images.length === 0)
-    return <div className="palette-empty ov-empty">No images in this vault yet.</div>;
-  return (
-    <div className="ov-gallery">
-      {images.map((f) => (
-        <button
-          key={f.relPath}
-          className="ov-gallery-cell"
-          title={f.relPath}
-          onClick={() => {
-            void selectFile(f.relPath);
-            setOverlayOpen(false);
-          }}
-        >
-          <img src={urlForPath(f.path)} alt={f.name} loading="lazy" />
-          <span className="ov-gallery-name">{f.name}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
+// Window bodies take only stable props, so a frame-only update (drag, resize,
+// focus order) re-renders the FloatingWindow frame and not its body.
+const CalendarBody = memo(OverlayCalendar);
+const SearchBody = memo(SearchSurface);
+const ResearchBody = memo(DeepResearchPanel);
+const TasksBody = memo(TasksPanel);
+const ScratchBody = memo(Scratchpad);
+const WhiteboardBody = memo(Whiteboard);
+const SettingsBody = memo(OverlaySettings);
+const GalleryBody = memo(Gallery);
 
 const WIN_TITLE: Record<WinId, string> = {
   calendar: "Calendar",
@@ -596,44 +281,43 @@ export function Overlay() {
     restoreFocus.current = null;
   }, [open]);
 
+  const focus = useCallback((id: WinId) => setOrder((o) => [...o.filter((x) => x !== id), id]), []);
+  const openWindow = useCallback((id: WinId) => {
+    setWins((w) => ({ ...w, [id]: { ...w[id], open: true } }));
+    focus(id);
+  }, [focus]);
+  const resetOverlayLayout = useCallback(() => {
+    setWins(mergeStoredWins(DEFAULT_WINS, {}));
+    setOrder(["scratch", "whiteboard", "gallery", "settings", "search", "agent", "research", "tasks", "calendar"]);
+  }, []);
+  const closeOverlay = useCallback(() => setOpen(false), [setOpen]);
+  const openAgentWindow = useCallback(() => openWindow("agent"), [openWindow]);
+
   if (!renderOverlay) return null;
 
-  const focus = (id: WinId) => setOrder((o) => [...o.filter((x) => x !== id), id]);
   const patch = (id: WinId, p: Partial<WinRec>) =>
     setWins((w) => ({ ...w, [id]: { ...w[id], ...p } }));
   const toggle = (id: WinId) => {
     setWins((w) => ({ ...w, [id]: { ...w[id], open: !w[id].open } }));
     focus(id);
   };
-  const openWindow = (id: WinId) => {
-    setWins((w) => ({ ...w, [id]: { ...w[id], open: true } }));
-    focus(id);
-  };
-  const resetOverlayLayout = () => {
-    setWins(mergeStoredWins(DEFAULT_WINS, {}));
-    setOrder(["scratch", "whiteboard", "gallery", "settings", "search", "agent", "research", "tasks", "calendar"]);
-  };
   const content = (id: WinId) =>
     id === "calendar" ? (
-      <OverlayCalendar />
+      <CalendarBody />
     ) : id === "search" ? (
-      <SearchSurface
-        initialQuery={searchSeed}
-        onClose={() => setOpen(false)}
-        onAgent={() => openWindow("agent")}
-      />
+      <SearchBody initialQuery={searchSeed} onClose={closeOverlay} onAgent={openAgentWindow} />
     ) : id === "research" ? (
-      <DeepResearchPanel />
+      <ResearchBody />
     ) : id === "tasks" ? (
-      <TasksPanel onPick={() => setOpen(false)} />
+      <TasksBody onPick={closeOverlay} />
     ) : id === "scratch" ? (
-      <Scratchpad />
+      <ScratchBody />
     ) : id === "whiteboard" ? (
-      <Whiteboard />
+      <WhiteboardBody />
     ) : id === "settings" ? (
-      <OverlaySettings onReset={resetOverlayLayout} />
+      <SettingsBody onReset={resetOverlayLayout} />
     ) : (
-      <Gallery />
+      <GalleryBody />
     );
 
   return (

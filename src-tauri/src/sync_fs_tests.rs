@@ -1,0 +1,2784 @@
+use super::*;
+use std::cell::{Cell, RefCell};
+
+// Test-only commit and journal helpers over the production primitives.
+
+fn stage_candidate<F: CommitFs>(
+    fs: &F,
+    path: &Path,
+    bytes: &[u8],
+    size: u64,
+    hash: &str,
+) -> std::io::Result<PathBuf> {
+    for _ in 0..16 {
+        let candidate = candidate_path(path);
+        match fs.write_new(&candidate, bytes) {
+            Ok(()) => {
+                let staged = match fs.fingerprint(&candidate) {
+                    Ok(staged) => staged,
+                    Err(e) => {
+                        let _ = fs.remove_file(&candidate);
+                        return Err(std::io::Error::new(
+                            e.kind(),
+                            format!(
+                                "sync candidate read-back failed at {}: {e}",
+                                candidate.display()
+                            ),
+                        ));
+                    }
+                };
+                if !fingerprint_matches(&staged, size, hash) {
+                    let _ = fs.remove_file(&candidate);
+                    return Err(invalid_data(format!(
+                        "sync candidate failed read-back verification: {}",
+                        candidate.display()
+                    )));
+                }
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                // `write_all` or `sync_all` can fail after creating a partial
+                // candidate. It is uniquely ours and safe to remove.
+                let _ = fs.remove_file(&candidate);
+                return Err(e);
+            }
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique sync candidate",
+    ))
+}
+
+fn commit_verified_create_with_fs<F: CommitFs>(
+    fs: &F,
+    path: &Path,
+    bytes: &[u8],
+    size: u64,
+    hash: &str,
+) -> std::io::Result<CommitOutcome> {
+    if let Some(parent) = path.parent() {
+        fs.create_dir_all(parent)?;
+    }
+    match destination_state(fs, path, size, hash)? {
+        Some(true) => return Ok(CommitOutcome::Unchanged),
+        Some(false) => return Err(collision_error(path)),
+        None => {}
+    }
+
+    let candidate = stage_candidate(fs, path, bytes, size, hash)?;
+    let mut preserve_candidate = false;
+    let result =
+        publish_verified_candidate(fs, &candidate, path, size, hash, &mut preserve_candidate);
+    if !preserve_candidate {
+        let _ = fs.remove_file(&candidate);
+    }
+    result
+}
+
+/// Commit a verified candidate only when `path` is missing. The platform's
+/// native exclusive-rename primitive publishes the complete sibling candidate
+/// without a check-then-rename race. A hard link is used only when the native
+/// primitive reports that the filesystem does not support exclusive rename.
+fn commit_verified_create(path: &Path, bytes: &[u8]) -> std::io::Result<CommitOutcome> {
+    let size = bytes.len() as u64;
+    let hash = crate::hex::sha256_hex(bytes);
+    commit_verified_create_with_fs(&StdCommitFs, path, bytes, size, &hash)
+}
+
+/// Commit a conflict copy without replacing any existing same-day copy.
+/// Identical bytes reuse the first matching numbered destination; different
+/// bytes advance until an unused sibling is available.
+fn commit_conflict_verified(
+    root: &Path,
+    base_rel: &str,
+    bytes: &[u8],
+) -> std::io::Result<(CommitOutcome, String)> {
+    for ordinal in 1..=10_000 {
+        let dest_rel = numbered_conflict_name(base_rel, ordinal);
+        let dest = safe_join_confined(root, &dest_rel).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe destination path {dest_rel:?}"),
+            )
+        })?;
+        match commit_verified_create(&dest, bytes) {
+            Ok(outcome) => return Ok((outcome, dest_rel)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "too many same-day conflict copies",
+    ))
+}
+
+fn retire_journal_peer(root: &Path, fingerprint: &str) -> std::io::Result<()> {
+    retire_journal_peers(root, &[fingerprint.to_string()])
+}
+
+/// Atomically replace Mesa's own metadata. A crash leaves either the prior
+/// complete journal or the complete new journal; the uniquely named temp is
+/// ignored and can never enter a vault scan or sync manifest.
+fn save_journal(root: &Path, journal: &SyncJournal) -> std::io::Result<()> {
+    let _guard = journal_guard()?;
+    save_journal_unlocked(root, journal).map(|_| ())
+}
+
+fn merge_journal(root: &Path, remote: &SyncJournal) -> std::io::Result<SyncJournal> {
+    let _guard = journal_guard()?;
+    let mut local = load_journal_unlocked(root)?;
+    merge_remote_into(&mut local, remote)?;
+    save_journal_unlocked(root, &local)
+}
+
+/// Recursively list every syncable file under `root` as
+/// (vault-relative path with forward slashes, absolute path), sorted by rel
+/// path for deterministic manifests. The compatibility helper keeps its old
+/// file-only shape for tests; production callers use the error-carrying walk
+/// below and must treat any error as incomplete coverage.
+fn list_vault_files(root: &Path) -> Vec<VaultPath> {
+    list_vault_files_with_errors_until(root, None)
+        .map(|(files, _)| files)
+        .unwrap_or_default()
+}
+
+#[test]
+fn sync_documentation_matches_current_protocol_constants() {
+    let doc = include_str!("../../docs/sync.md");
+    assert!(doc.contains(&format!(
+        "journal version {JOURNAL_VERSION} and sync protocol version {SYNC_PROTOCOL_VERSION}"
+    )));
+    assert!(doc.contains(&format!("journalVersion: {JOURNAL_VERSION}")));
+    assert!(doc.contains(&format!("syncProtocolVersion: {SYNC_PROTOCOL_VERSION}")));
+    for line in doc.lines() {
+        if line.contains("Every peer must advertise") {
+            assert!(line.contains(&format!("journal version {JOURNAL_VERSION} and sync protocol version {SYNC_PROTOCOL_VERSION}")));
+        }
+    }
+    let wire: serde_json::Value = serde_json::from_str(&manifest_to_json(&[])).unwrap();
+    assert_eq!(wire["journalVersion"], JOURNAL_VERSION);
+    assert_eq!(wire["syncProtocolVersion"], SYNC_PROTOCOL_VERSION);
+}
+
+#[test]
+fn version_one_journal_upgrades_live_and_recovery_bytes() {
+    let v = ManifestVault::new("journal-upgrade");
+    std::fs::write(v.0.join("live.md"), b"live").unwrap();
+    std::fs::create_dir(v.0.join(".mesa-trash")).unwrap();
+    let deleted = v.0.join(".mesa-trash/deleted.md");
+    std::fs::write(&deleted, b"deleted").unwrap();
+    let mut journal = SyncJournal::empty("old-device".into());
+    journal.version = 1;
+    journal.known = vec![
+        JournalEntry {
+            rel: "live.md".into(),
+            size: 4,
+            hash: legacy_fingerprint(&v.0.join("live.md")).unwrap().1,
+        },
+        JournalEntry {
+            rel: "deleted.md".into(),
+            size: 7,
+            hash: legacy_fingerprint(&deleted).unwrap().1,
+        },
+    ];
+    std::fs::write(journal_path(&v.0), serde_json::to_vec(&journal).unwrap()).unwrap();
+    let upgraded = load_journal(&v.0).unwrap();
+    assert_eq!(upgraded.version, JOURNAL_VERSION);
+    assert_eq!(upgraded.known[0].hash, crate::hex::sha256_hex(b"live"));
+    assert_eq!(upgraded.operations.len(), 1);
+    assert_eq!(
+        upgraded.operations[0].hash,
+        crate::hex::sha256_hex(b"deleted")
+    );
+    assert_eq!(load_journal(&v.0).unwrap().version, JOURNAL_VERSION);
+}
+
+#[test]
+fn version_one_upgrade_without_original_retains_exact_record() {
+    let v = ManifestVault::new("journal-upgrade-missing");
+    let mut journal = SyncJournal::empty("old-device".into());
+    journal.version = 1;
+    journal.known = vec![JournalEntry {
+        rel: "missing.md".into(),
+        size: 7,
+        hash: "0123456789abcdef".into(),
+    }];
+    let bytes = serde_json::to_vec(&journal).unwrap();
+    std::fs::write(journal_path(&v.0), &bytes).unwrap();
+    assert!(load_journal(&v.0).is_err());
+    assert_eq!(std::fs::read(journal_path(&v.0)).unwrap(), bytes);
+}
+
+#[test]
+fn idle_large_baseline_stays_local() {
+    let mut journal = SyncJournal::empty("local".into());
+    journal.known = (0..12_000)
+        .map(|i| JournalEntry {
+            rel: format!("Research/long-document-name-{i:06}-source-material.md"),
+            size: 100,
+            hash: "0123456789abcdef".repeat(4),
+        })
+        .collect();
+    assert!(serde_json::to_vec(&journal).unwrap().len() > 1_048_576);
+    let wire = journal_wire_bytes(&journal).unwrap();
+    assert!(wire.len() < 1024);
+    let received: SyncJournal = serde_json::from_slice(&wire).unwrap();
+    assert!(received.known.is_empty());
+    assert_eq!(journal.known.len(), 12_000);
+}
+
+#[test]
+fn removed_peer_cannot_be_reintroduced_by_gossip() {
+    let mut journal = SyncJournal::empty("local".into());
+    journal.retired_peers.push("retired".into());
+    let mut remote = SyncJournal::empty("current".into());
+    remote.peers_seen.push("retired".into());
+    remote
+        .acked_by
+        .insert("retired".into(), vec!["current:1".into()]);
+    merge_remote_into(&mut journal, &remote).unwrap();
+    compact_journal(&mut journal);
+    assert!(!journal.peers_seen.contains(&"retired".to_string()));
+    assert!(!journal.acked_by.contains_key("retired"));
+}
+
+#[test]
+fn peer_removal_persists_and_rejoining_reactivates_identity() {
+    let dir = std::env::temp_dir().join(format!("mesa-retire-peer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    bind_journal_peer(&dir, "fingerprint", "peer", true).unwrap();
+    retire_journal_peer(&dir, "fingerprint").unwrap();
+    let retired = load_journal(&dir).unwrap();
+    assert!(retired.retired_peers.contains(&"peer".to_string()));
+    assert!(!retired.peers_seen.contains(&"peer".to_string()));
+    bind_journal_peer(&dir, "fingerprint", "peer", true).unwrap();
+    assert!(load_journal(&dir).unwrap().retired_peers.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn incoming_sync_bases_need_a_bound_unretired_peer_and_stay_bounded() {
+    let dir = std::env::temp_dir().join(format!("mesa-bound-base-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = || {
+        vec![JournalEntry {
+            rel: "note.md".into(),
+            size: 1,
+            hash: "a".into(),
+        }]
+    };
+    assert!(save_bound_peer_baseline(&dir, "unknown", base()).is_err());
+    assert!(load_journal(&dir).unwrap().peer_bases.is_empty());
+    bind_journal_peer(&dir, "known", "peer", false).unwrap();
+    save_bound_peer_baseline(&dir, "known", base()).unwrap();
+    assert_eq!(peer_baseline(&dir, "known").unwrap(), base());
+    retire_journal_peer(&dir, "known").unwrap();
+    assert!(save_bound_peer_baseline(&dir, "known", base()).is_err());
+    for index in 1..MAX_JOURNAL_PEERS {
+        save_peer_baseline(&dir, &format!("peer-{index}"), base()).unwrap();
+    }
+    assert!(save_peer_baseline(&dir, "one-more", base()).is_err());
+    save_peer_baseline(&dir, "peer-1", Vec::new()).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn retired_identity_stays_retired_when_first_seen_incoming() {
+    let dir = std::env::temp_dir().join(format!("mesa-retired-incoming-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    retire_journal_peers(&dir, &["removed-fingerprint".into()]).unwrap();
+    bind_journal_peer(&dir, "removed-fingerprint", "incoming-device", false).unwrap();
+    let journal = load_journal(&dir).unwrap();
+    assert!(journal
+        .retired_peers
+        .contains(&"incoming-device".to_string()));
+    assert!(!journal.peers_seen.contains(&"incoming-device".to_string()));
+    bind_journal_peer(&dir, "removed-fingerprint", "incoming-device", true).unwrap();
+    let journal = load_journal(&dir).unwrap();
+    assert!(journal.retired_fingerprints.is_empty());
+    assert!(journal.retired_peers.is_empty());
+    assert!(journal.peers_seen.contains(&"incoming-device".to_string()));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn removal_retires_all_historical_identities_and_migrates_single_binding() {
+    let dir = std::env::temp_dir().join(format!("mesa-retired-history-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut old = serde_json::to_value(SyncJournal::empty("local".into())).unwrap();
+    old["peer_bindings"] = serde_json::json!({"fingerprint": "old-device"});
+    old["peers_seen"] = serde_json::json!(["old-device"]);
+    std::fs::write(journal_path(&dir), serde_json::to_vec(&old).unwrap()).unwrap();
+    bind_journal_peer(&dir, "fingerprint", "new-device", true).unwrap();
+    retire_journal_peer(&dir, "fingerprint").unwrap();
+    let journal = load_journal(&dir).unwrap();
+    assert_eq!(
+        journal.peer_bindings["fingerprint"],
+        vec!["old-device", "new-device"]
+    );
+    assert!(journal.peers_seen.is_empty());
+    assert!(journal.retired_peers.contains(&"old-device".into()));
+    assert!(journal.retired_peers.contains(&"new-device".into()));
+    bind_journal_peer(&dir, "fingerprint", "new-device", true).unwrap();
+    let journal = load_journal(&dir).unwrap();
+    assert_eq!(journal.peers_seen, vec!["new-device"]);
+    assert_eq!(journal.retired_peers, vec!["old-device"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn unidentified_legacy_peer_removal_preserves_journal_until_associated() {
+    let dir = std::env::temp_dir().join(format!("mesa-retired-unbound-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut journal = SyncJournal::empty("local".into());
+    journal.peers_seen.push("old-peer".into());
+    save_journal_unlocked(&dir, &journal).unwrap();
+    let before = std::fs::read(journal_path(&dir)).unwrap();
+    assert!(retire_journal_peer(&dir, "fingerprint")
+        .unwrap_err()
+        .to_string()
+        .contains("Sync with the device once"));
+    assert_eq!(std::fs::read(journal_path(&dir)).unwrap(), before);
+    bind_journal_peer(&dir, "fingerprint", "old-peer", true).unwrap();
+    retire_journal_peer(&dir, "fingerprint").unwrap();
+    assert!(load_journal(&dir).unwrap().peers_seen.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[derive(Clone, Copy, Default)]
+enum ExclusiveMode {
+    #[default]
+    Supported,
+    Unsupported,
+    Fail,
+}
+
+#[derive(Default)]
+struct MemoryCommitFs {
+    files: RefCell<HashMap<PathBuf, Vec<u8>>>,
+    destination_on_publish: RefCell<Option<Vec<u8>>>,
+    corrupt_published_target: Cell<bool>,
+    exclusive_mode: Cell<ExclusiveMode>,
+    hard_link_fail: Cell<bool>,
+    hard_link_calls: Cell<u32>,
+}
+
+impl MemoryCommitFs {
+    fn get(&self, path: &Path) -> Option<Vec<u8>> {
+        self.files.borrow().get(path).cloned()
+    }
+}
+
+impl CommitFs for MemoryCommitFs {
+    fn create_dir_all(&self, _path: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn write_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut files = self.files.borrow_mut();
+        if files.contains_key(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "exists",
+            ));
+        }
+        files.insert(path.to_path_buf(), bytes.to_vec());
+        Ok(())
+    }
+
+    fn fingerprint(&self, path: &Path) -> std::io::Result<(u64, String)> {
+        let files = self.files.borrow();
+        let bytes = files
+            .get(path)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))?;
+        Ok((bytes.len() as u64, crate::hex::sha256_hex(bytes)))
+    }
+
+    fn exclusive_publish(&self, from: &Path, to: &Path) -> Result<(), ExclusivePublishError> {
+        match self.exclusive_mode.get() {
+            ExclusiveMode::Unsupported => {
+                return Err(ExclusivePublishError::Unsupported(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "injected unsupported exclusive rename",
+                )));
+            }
+            ExclusiveMode::Fail => {
+                return Err(ExclusivePublishError::Failed(std::io::Error::other(
+                    "injected exclusive rename failure",
+                )));
+            }
+            ExclusiveMode::Supported => {}
+        }
+        if let Some(bytes) = self.destination_on_publish.borrow_mut().take() {
+            self.files.borrow_mut().insert(to.to_path_buf(), bytes);
+            return Err(ExclusivePublishError::Failed(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "racing destination",
+            )));
+        }
+        let mut files = self.files.borrow_mut();
+        if files.contains_key(to) {
+            return Err(ExclusivePublishError::Failed(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "exists",
+            )));
+        }
+        let bytes = files.remove(from).ok_or_else(|| {
+            ExclusivePublishError::Failed(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "candidate missing",
+            ))
+        })?;
+        if self.corrupt_published_target.replace(false) {
+            files.insert(to.to_path_buf(), b"external-replacement".to_vec());
+        } else {
+            files.insert(to.to_path_buf(), bytes);
+        }
+        Ok(())
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        self.hard_link_calls
+            .set(self.hard_link_calls.get().saturating_add(1));
+        if self.hard_link_fail.get() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "injected hard-link failure",
+            ));
+        }
+        if let Some(bytes) = self.destination_on_publish.borrow_mut().take() {
+            self.files.borrow_mut().insert(to.to_path_buf(), bytes);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "racing destination",
+            ));
+        }
+        let bytes = self
+            .get(from)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "not found"))?;
+        let mut files = self.files.borrow_mut();
+        if files.contains_key(to) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "exists",
+            ));
+        }
+        if self.corrupt_published_target.replace(false) {
+            files.insert(to.to_path_buf(), b"external-replacement".to_vec());
+        } else {
+            files.insert(to.to_path_buf(), bytes);
+        }
+        Ok(())
+    }
+
+    fn remove_file(&self, path: &Path) -> std::io::Result<()> {
+        if self.files.borrow_mut().remove(path).is_some() {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "not found",
+            ))
+        }
+    }
+}
+
+#[test]
+fn sha256_matches_standard_vectors() {
+    // Same vectors as src/lib/sync.test.ts.
+    assert_eq!(
+        crate::hex::sha256_hex(b""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        crate::hex::sha256_hex(b"hello world"),
+        crate::hex::sha256_hex(b"hello world")
+    );
+    assert_ne!(crate::hex::sha256_hex(b"a"), crate::hex::sha256_hex(b"b"));
+    assert_eq!(crate::hex::sha256_hex(b"hello world").len(), 64);
+}
+
+#[test]
+fn streamed_hash_equals_whole_buffer_hash() {
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    let whole = crate::hex::sha256_hex(&data);
+    let mut chunked = ContentHasher::new();
+    for chunk in data.chunks(7) {
+        chunked.update(chunk);
+    }
+    assert_eq!(whole, chunked.hex());
+}
+
+#[test]
+fn hash_file_streams() {
+    let dir = std::env::temp_dir().join(format!("mesa-core-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("a.bin");
+    std::fs::write(&f, b"hello world").unwrap();
+    let (size, hash) = hash_file_streaming(&f).unwrap();
+    assert_eq!(size, 11);
+    assert_eq!(hash, crate::hex::sha256_hex(b"hello world"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Scratch vault for the manifest tests. Enough files to cross
+/// `PARALLEL_HASH_MIN_FILES`, with sizes that span the streaming buffer.
+struct ManifestVault(PathBuf);
+impl ManifestVault {
+    fn new(tag: &str) -> Self {
+        let p = std::env::temp_dir().join(format!(
+            "mesa-manifest-{tag}-{}-{:?}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        ManifestVault(p)
+    }
+    fn write(&self, rel: &str, bytes: &[u8]) {
+        let full = self.0.join(rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, bytes).unwrap();
+    }
+    /// 40 files: empty, sub-chunk, and several megabytes (many 64 KiB
+    /// reads), nested so the walk order is not the creation order.
+    fn populate(&self) -> Vec<(String, Vec<u8>)> {
+        let mut made = Vec::new();
+        for i in 0..40usize {
+            let rel = if i % 3 == 0 {
+                format!("deep/sub{}/file{i}.bin", i % 4)
+            } else {
+                format!("file{i}.bin")
+            };
+            let len = match i % 4 {
+                0 => 0,
+                1 => 11,
+                2 => 70_000,
+                _ => 2_000_000,
+            };
+            let bytes: Vec<u8> = (0..len).map(|n| ((n + i) % 251) as u8).collect();
+            self.write(&rel, &bytes);
+            made.push((rel, bytes));
+        }
+        made
+    }
+}
+impl Drop for ManifestVault {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The parallel build must produce exactly the digests the serial
+/// whole-buffer hash produces — the manifest is a wire format shared with
+/// `src/lib/sync.ts` and with peers running older builds.
+#[test]
+fn build_manifest_hashes_match_whole_buffer_hashes() {
+    let v = ManifestVault::new("equal");
+    let made = v.populate();
+    let (entries, skipped) = build_manifest(&v.0);
+    assert!(skipped.is_empty(), "unexpected skips: {skipped:?}");
+    assert_eq!(entries.len(), made.len());
+    for (rel, bytes) in &made {
+        let e = entries
+            .iter()
+            .find(|e| &e.rel == rel)
+            .unwrap_or_else(|| panic!("missing {rel}"));
+        assert_eq!(
+            e.hash,
+            crate::hex::sha256_hex(bytes),
+            "hash mismatch for {rel}"
+        );
+        assert_eq!(e.size, bytes.len() as u64, "size mismatch for {rel}");
+    }
+}
+
+/// Threads finish in nondeterministic order; the manifest must not.
+#[test]
+fn build_manifest_order_is_deterministic_and_sorted() {
+    let v = ManifestVault::new("order");
+    v.populate();
+    let first = build_manifest(&v.0).0;
+    let second = build_manifest(&v.0).0;
+    let rels = |m: &[ManifestEntry]| m.iter().map(|e| e.rel.clone()).collect::<Vec<_>>();
+    assert_eq!(rels(&first), rels(&second));
+    let mut sorted = rels(&first);
+    sorted.sort();
+    assert_eq!(rels(&first), sorted, "manifest must stay in rel order");
+    // Same bytes ⇒ same digests, whichever thread produced them.
+    let hashes = |m: &[ManifestEntry]| m.iter().map(|e| e.hash.clone()).collect::<Vec<_>>();
+    assert_eq!(hashes(&first), hashes(&second));
+}
+
+#[test]
+fn cancellable_manifest_returns_no_partial_result() {
+    let v = ManifestVault::new("cancel");
+    v.populate();
+    let cancelled = AtomicBool::new(true);
+    assert!(build_manifest_cancellable(&v.0, &cancelled).is_none());
+}
+
+#[test]
+fn build_manifest_detects_edits_with_preserved_size_and_coarse_mtime() {
+    let v = ManifestVault::new("warm");
+    v.populate();
+    let target = v.0.join("file1.bin");
+    let meta = std::fs::metadata(&target).unwrap();
+    let mtime = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let f = std::fs::File::options().write(true).open(&target).unwrap();
+    f.set_modified(mtime).unwrap();
+    drop(f);
+    assert_eq!(meta.len(), 11);
+    let (first, _) = build_manifest(&v.0);
+    std::fs::write(&target, b"DIFFERENT!!").unwrap(); // same 11-byte length
+    let f = std::fs::File::options().write(true).open(&target).unwrap();
+    f.set_modified(mtime).unwrap();
+    drop(f);
+
+    let (second, _) = build_manifest(&v.0);
+    let pick = |m: &[ManifestEntry]| {
+        m.iter()
+            .find(|e| e.rel == "file1.bin")
+            .unwrap()
+            .hash
+            .clone()
+    };
+    assert_ne!(pick(&first), pick(&second));
+    assert_eq!(pick(&second), crate::hex::sha256_hex(b"DIFFERENT!!"));
+    let diff = diff_manifests_from_base(&second, &first, &[]);
+    assert!(diff.conflict.contains(&"file1.bin".to_string()));
+    let base: Vec<JournalEntry> = first
+        .iter()
+        .map(|entry| JournalEntry {
+            rel: entry.rel.clone(),
+            size: entry.size,
+            hash: entry.hash.clone(),
+        })
+        .collect();
+    let diff = diff_manifests_from_base(&second, &first, &base);
+    assert!(diff.push_replace.contains(&"file1.bin".to_string()));
+    assert!(diff.conflict.is_empty());
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().modified().unwrap(),
+        mtime
+    );
+
+    // Every subsequent scan observes the actual bytes.
+    let (third, _) = build_manifest(&v.0);
+    assert_eq!(pick(&third), crate::hex::sha256_hex(b"DIFFERENT!!"));
+}
+
+/// Unreadable files must land in `skipped` rather than dropping out of the
+/// sync set silently, and the readable ones around them must survive.
+#[cfg(unix)]
+#[test]
+fn build_manifest_reports_unreadable_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = ManifestVault::new("perm");
+    v.populate();
+    let locked = v.0.join("file2.bin");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root ignores the mode bits; skip rather than assert a false negative.
+    if std::fs::File::open(&locked).is_ok() {
+        return;
+    }
+    let (entries, skipped) = build_manifest(&v.0);
+    assert_eq!(skipped.len(), 1, "expected one skip, got {skipped:?}");
+    assert_eq!(skipped[0].0, "file2.bin");
+    assert!(!entries.iter().any(|e| e.rel == "file2.bin"));
+    assert_eq!(entries.len(), 39, "other files must still be manifested");
+    let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644));
+}
+
+#[test]
+fn missing_root_is_an_explicit_incomplete_scan() {
+    let root = std::env::temp_dir().join(format!(
+        "mesa-sync-missing-root-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    let (entries, errors) = build_manifest(&root);
+    assert!(entries.is_empty());
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].0, ".");
+    assert!(errors[0].1.contains("directory failed") || errors[0].1.contains("vault root failed"));
+}
+
+#[test]
+fn diff_matches_ts_vectors() {
+    // Same scenario as src/lib/sync.test.ts "diffManifests".
+    let e = |rel: &str, hash: &str| ManifestEntry {
+        rel: rel.to_string(),
+        hash: hash.to_string(),
+        size: hash.len() as u64,
+    };
+    let local = vec![e("a.md", "1"), e("b.md", "x"), e("local.md", "9")];
+    let remote = vec![e("a.md", "1"), e("b.md", "y"), e("remote.md", "7")];
+    let d = diff_manifests_from_base(&local, &remote, &[]);
+    assert_eq!(d.pull, vec!["remote.md"]);
+    assert_eq!(d.push, vec!["local.md"]);
+    assert_eq!(d.conflict, vec!["b.md"]);
+    assert_eq!(d.same, 1);
+
+    let m = vec![e("a.md", "1"), e("b.md", "2")];
+    let d = diff_manifests_from_base(&m, &m.clone(), &[]);
+    assert!(d.pull.is_empty() && d.push.is_empty() && d.conflict.is_empty());
+    assert_eq!(d.same, 2);
+}
+
+#[test]
+fn one_sided_edits_follow_the_peer_baseline() {
+    let entry = |hash: &str| ManifestEntry {
+        rel: "note.md".into(),
+        size: 1,
+        hash: hash.into(),
+    };
+    let base = vec![JournalEntry {
+        rel: "note.md".into(),
+        size: 1,
+        hash: "a".into(),
+    }];
+    let outbound = diff_manifests_from_base(&[entry("b")], &[entry("a")], &base);
+    assert_eq!(outbound.push_replace, ["note.md"]);
+    assert!(outbound.conflict.is_empty());
+    let inbound = diff_manifests_from_base(&[entry("a")], &[entry("b")], &base);
+    assert_eq!(inbound.pull_replace, ["note.md"]);
+    assert!(inbound.conflict.is_empty());
+    let diverged = diff_manifests_from_base(&[entry("b")], &[entry("c")], &base);
+    assert_eq!(diverged.conflict, ["note.md"]);
+}
+
+#[test]
+fn conditional_edit_replaces_only_the_expected_bytes_and_keeps_recovery() {
+    let root = std::env::temp_dir().join(format!("mesa-sync-edit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let target = root.join("note.md");
+    std::fs::write(&target, b"old").unwrap();
+    let candidate = StagedFile::receive(
+        &target,
+        &b"new"[..],
+        1024,
+        Some(3),
+        Some(&crate::hex::sha256_hex(b"new")),
+    )
+    .unwrap();
+    assert_eq!(
+        candidate
+            .commit_replace(&root, "note.md", 3, &crate::hex::sha256_hex(b"old"))
+            .unwrap(),
+        CommitOutcome::Created
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    assert_eq!(
+        std::fs::read_dir(root.join(".mesa-trash")).unwrap().count(),
+        1
+    );
+    let rejected = StagedFile::receive(
+        &target,
+        &b"third"[..],
+        1024,
+        Some(5),
+        Some(&crate::hex::sha256_hex(b"third")),
+    )
+    .unwrap();
+    assert!(rejected
+        .commit_replace(&root, "note.md", 3, &crate::hex::sha256_hex(b"old"))
+        .is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn conflict_name_matches_ts() {
+    // Same shape as src/lib/sync.test.ts "conflictName".
+    assert_eq!(
+        conflict_name("sub/Note.md", "peer.example", "2026-06-23"),
+        "sub/Note (conflict from peer.example 2026-06-23).md"
+    );
+    assert_eq!(
+        conflict_name("README", "host", "2026-06-23"),
+        "README (conflict from host 2026-06-23)"
+    );
+    // A dot in a folder name must not be mistaken for an extension.
+    assert_eq!(
+        conflict_name("v1.2/notes", "h", "2026-01-01"),
+        "v1.2/notes (conflict from h 2026-01-01)"
+    );
+}
+
+#[test]
+fn numbered_conflicts_preserve_every_same_day_copy() {
+    let base = "sub/Note (conflict from peer 2026-06-23).md";
+    assert_eq!(numbered_conflict_name(base, 1), base);
+    assert_eq!(
+        numbered_conflict_name(base, 2),
+        "sub/Note (conflict from peer 2026-06-23) (2).md"
+    );
+    assert_eq!(numbered_conflict_name("README", 3), "README (3)");
+}
+
+#[test]
+fn conflict_commit_reuses_identical_and_numbers_different_bytes() {
+    let dir = std::env::temp_dir().join(format!("mesa-cc-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = "Note (conflict from peer 2026-06-23).md";
+    std::fs::write(dir.join(base), b"first").unwrap();
+
+    let (created, second_rel) = commit_conflict_verified(&dir, base, b"second").unwrap();
+    assert_eq!(created, CommitOutcome::Created);
+    assert_eq!(second_rel, "Note (conflict from peer 2026-06-23) (2).md");
+    assert_eq!(std::fs::read(dir.join(base)).unwrap(), b"first");
+    assert_eq!(std::fs::read(dir.join(&second_rel)).unwrap(), b"second");
+
+    let (same, same_rel) = commit_conflict_verified(&dir, base, b"second").unwrap();
+    assert_eq!(same, CommitOutcome::Unchanged);
+    assert_eq!(same_rel, second_rel);
+
+    let (third, third_rel) = commit_conflict_verified(&dir, base, b"third").unwrap();
+    assert_eq!(third, CommitOutcome::Created);
+    assert_eq!(third_rel, "Note (conflict from peer 2026-06-23) (3).md");
+    assert_eq!(std::fs::read(dir.join(&third_rel)).unwrap(), b"third");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn conflict_prescan_finds_an_identical_numbered_copy() {
+    let dir = std::env::temp_dir().join(format!("mesa-cp-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let base = "Note (conflict from peer 2026-06-23).md";
+    std::fs::write(dir.join(base), b"first").unwrap();
+    std::fs::write(
+        dir.join("Note (conflict from peer 2026-06-23) (2).md"),
+        b"remote",
+    )
+    .unwrap();
+    let remote_hash = crate::hex::sha256_hex(b"remote");
+    assert!(
+        conflict_copy_already_present(&dir, base, b"remote".len() as u64, &remote_hash,).unwrap()
+    );
+    assert!(!conflict_copy_already_present(
+        &dir,
+        base,
+        b"third".len() as u64,
+        &crate::hex::sha256_hex(b"third"),
+    )
+    .unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn host_of_base_strips_scheme_port_path() {
+    assert_eq!(host_of_base("https://peer.example:8787"), "peer.example");
+    assert_eq!(host_of_base("http://notes-host/x"), "notes-host");
+    assert_eq!(host_of_base("notes-host:8787"), "notes-host");
+    assert_eq!(host_of_base("https://[2001:db8::1]:8787"), "2001-db8--1");
+    assert_eq!(host_of_base("[2001:db8::2]:8787"), "2001-db8--2");
+}
+
+#[test]
+fn conflict_source_uses_safe_saved_name() {
+    assert_eq!(conflict_source("Toasty Lemon", "peer"), "Toasty Lemon");
+    assert_eq!(conflict_source("../A: B?", "peer"), "A B");
+    assert_eq!(conflict_source("/:", "peer"), "peer");
+}
+
+#[test]
+fn utc_date_string_is_iso_shaped() {
+    let d = utc_date_string();
+    assert_eq!(d.len(), 10);
+    assert_eq!(&d[4..5], "-");
+    assert_eq!(&d[7..8], "-");
+    assert!(d[..4].parse::<u32>().unwrap() >= 2024);
+}
+
+#[test]
+fn safe_join_rejects_traversal() {
+    let root = Path::new("/vault");
+    assert!(safe_join(root, "notes/a.md").is_some());
+    assert!(safe_join(root, "../etc/passwd").is_none());
+    assert!(safe_join(root, "a/../../b").is_none());
+    assert!(safe_join(root, "/abs").is_none());
+    assert!(safe_join(root, "").is_none());
+    assert!(safe_join(root, "a\\..\\b").is_none());
+    assert!(safe_join(root, "C:\\outside").is_none());
+    assert!(safe_join(root, "notes:stream").is_none());
+    assert!(safe_join(root, "CON").is_none());
+    assert!(safe_join(root, "CON.txt").is_none());
+    assert!(safe_join(root, "lpt1.log").is_none());
+    assert!(safe_join(root, "name.").is_none());
+    assert!(safe_join(root, "name ").is_none());
+    for rel in [
+        "bad?.md",
+        "bad*.md",
+        "bad|.md",
+        "COM¹.txt",
+        "LPT²",
+        "a\u{1f}b.md",
+    ] {
+        assert!(safe_join(root, rel).is_none(), "accepted {rel:?}");
+    }
+}
+
+#[test]
+fn manifest_reports_unportable_names_and_case_collisions() {
+    let root = std::env::temp_dir().join(format!("mesa-portable-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("good.md"), b"good").unwrap();
+    #[cfg(unix)]
+    {
+        std::fs::write(root.join("bad?.md"), b"bad").unwrap();
+        std::fs::write(root.join("Case.md"), b"one").unwrap();
+        std::fs::write(root.join("case.md"), b"two").unwrap();
+    }
+    let (entries, skipped) = build_manifest(&root);
+    assert!(entries.iter().any(|entry| entry.rel == "good.md"));
+    #[cfg(not(unix))]
+    assert!(skipped.is_empty());
+    #[cfg(unix)]
+    {
+        assert!(skipped.iter().any(|(rel, _)| rel == "bad?.md"));
+        if std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .count()
+            == 4
+        {
+            assert!(skipped.iter().any(|(rel, _)| rel == "Case.md"));
+            assert!(skipped.iter().any(|(rel, _)| rel == "case.md"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Linux can hold NFC and NFD spellings of one name side by side; APFS treats
+/// them as one entry, so the portable key must map them together.
+#[test]
+fn portable_name_key_folds_case_and_unicode_normalization() {
+    let nfc = "Caf\u{e9}/R\u{e9}sum\u{e9}.md";
+    let nfd = "cafe\u{301}/re\u{301}sume\u{301}.md";
+    assert_eq!(portable_name_key(nfc), portable_name_key(nfd));
+    assert_eq!(
+        portable_name_key("Notes/A.md"),
+        portable_name_key("notes/a.md")
+    );
+    assert_ne!(portable_name_key("cafe.md"), portable_name_key(nfc));
+}
+
+#[cfg(unix)]
+#[test]
+fn safe_join_rejects_symlink_escape() {
+    let dir = std::env::temp_dir().join(format!("mesa-safe-{}", std::process::id()));
+    let root = dir.join("vault");
+    let outside = dir.join("outside");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.md"), b"private").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("linked")).unwrap();
+    assert!(safe_join_confined(&root, "linked/secret.md").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn anchored_parent_creation_rejects_replaced_ancestor_without_writing_outside() {
+    let dir = std::env::temp_dir().join(format!("mesa-ancestor-{}", std::process::id()));
+    let root = dir.join("vault");
+    let outside = dir.join("outside");
+    let swap = root.join("swap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &swap).unwrap();
+    let target = root.join("swap").join("new").join("note.md");
+    let result = ensure_real_parent(&target);
+    assert!(result.is_err());
+    assert!(!outside.join("new").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn journal_read_rejects_a_symlink_without_touching_its_target() {
+    let vault = ManifestVault::new("journal-symlink");
+    let target = vault.0.join("outside.json");
+    let bytes = serde_json::to_vec(&SyncJournal::empty("outside".into())).unwrap();
+    std::fs::write(&target, &bytes).unwrap();
+    std::os::unix::fs::symlink(&target, journal_path(&vault.0)).unwrap();
+    assert!(load_journal_unlocked(&vault.0).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), bytes);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_held_parent_cannot_be_renamed_during_receive() {
+    let vault = ManifestVault::new("windows-parent-guard");
+    let parent = vault.0.join("notes");
+    std::fs::create_dir(&parent).unwrap();
+    let target = parent.join("new.md");
+    let mut receive = StagedFile::begin(&target, 32, Some(4), None).unwrap();
+    let moved = vault.0.join("moved");
+    assert!(std::fs::rename(&parent, &moved).is_err());
+    assert!(std::fs::rename(&vault.0, vault.0.with_extension("moved")).is_err());
+    receive.write_chunk(b"safe").unwrap();
+    receive.finish().unwrap().commit(&target).unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"safe");
+    std::fs::rename(&parent, &moved).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_parent_locks_release_after_an_interrupted_receive() {
+    let vault = ManifestVault::new("windows-parent-guard");
+    // An existing parent stays after the receive and must be unlocked.
+    std::fs::create_dir_all(vault.0.join("notes")).unwrap();
+    let target = vault.0.join("notes/new.md");
+    let receive = StagedFile::begin(&target, 32, Some(4), None).unwrap();
+    assert!(std::fs::rename(target.parent().unwrap(), vault.0.join("moved")).is_err());
+    drop(receive);
+    std::fs::rename(target.parent().unwrap(), vault.0.join("moved")).unwrap();
+    assert_eq!(std::fs::read_dir(vault.0.join("moved")).unwrap().count(), 0);
+
+    // A parent the interrupted receive created is removed with it.
+    let fresh = vault.0.join("fresh/new.md");
+    let receive = StagedFile::begin(&fresh, 32, Some(4), None).unwrap();
+    drop(receive);
+    assert!(!vault.0.join("fresh").exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_parent_creation_rejects_junction_without_writing_outside() {
+    let base = std::env::temp_dir().join(format!(
+        "mesa-windows-parent-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    let root = base.join("vault");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let junction = root.join("linked");
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&outside)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(ensure_real_parent(&junction.join("new/note.md")).is_err());
+    assert!(!outside.join("new").exists());
+    std::fs::remove_dir(&junction).unwrap();
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn rooted_transfer_rejects_swap_before_stage_and_publishes_inside_open_parent() {
+    let base =
+        std::env::temp_dir().join(format!("mesa-rooted-{}-{}", std::process::id(), now_ms()));
+    let root = base.join("vault");
+    let outside = base.join("outside");
+    let swap = root.join("swap");
+    std::fs::create_dir_all(&swap).unwrap();
+    std::fs::create_dir_all(outside.join("existing")).unwrap();
+    let rel = "swap/existing/new/note.md";
+    assert!(safe_join_confined(&root, rel).is_some());
+    std::fs::rename(&swap, root.join("old")).unwrap();
+    std::os::unix::fs::symlink(&outside, &swap).unwrap();
+    assert!(StagedFile::receive_rooted(&root, rel, b"payload".as_slice(), 64, None, None).is_err());
+    assert!(!outside.join("existing/new").exists());
+    std::fs::remove_file(&swap).unwrap();
+    std::fs::rename(root.join("old"), &swap).unwrap();
+    let mut stage = StagedFile::begin_rooted(
+        &root,
+        rel,
+        64,
+        Some(7),
+        Some(&crate::hex::sha256_hex(b"payload")),
+    )
+    .unwrap();
+    stage.write_chunk(b"payload").unwrap();
+    let stage = stage.finish().unwrap();
+    std::fs::rename(&swap, root.join("old")).unwrap();
+    std::os::unix::fs::symlink(&outside, &swap).unwrap();
+    assert_eq!(
+        stage.commit(&root.join(rel)).unwrap(),
+        CommitOutcome::Created
+    );
+    assert_eq!(
+        std::fs::read(root.join("old/existing/new/note.md")).unwrap(),
+        b"payload"
+    );
+    assert!(!outside.join("existing/new").exists());
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn rooted_read_never_follows_replaced_ancestor() {
+    let base = std::env::temp_dir().join(format!(
+        "mesa-rooted-read-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    let root = base.join("vault");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(root.join("swap")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(root.join("swap/note.md"), b"inside").unwrap();
+    std::fs::write(outside.join("note.md"), b"outside").unwrap();
+    let opened = RootedTarget::resolve(&root, "swap/note.md", false).unwrap();
+    std::fs::rename(root.join("swap"), root.join("old")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("swap")).unwrap();
+    let mut bytes = Vec::new();
+    opened.open_read().unwrap().read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"inside");
+    assert!(RootedTarget::resolve(&root, "swap/note.md", false).is_err());
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn conflict_copy_probe_rejects_replaced_ancestor() {
+    let base = std::env::temp_dir().join(format!(
+        "mesa-conflict-probe-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    let root = base.join("vault");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(root.join("swap")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("copy.md"), b"outside").unwrap();
+    assert!(safe_join_confined(&root, "swap/copy.md").is_some());
+    std::fs::rename(root.join("swap"), root.join("old")).unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("swap")).unwrap();
+    assert!(conflict_copy_already_present(
+        &root,
+        "swap/copy.md",
+        7,
+        &crate::hex::sha256_hex(b"outside")
+    )
+    .is_err());
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
+fn nested_receive_creates_missing_confined_parents() {
+    let dir = std::env::temp_dir().join(format!("mesa-nested-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = safe_join_confined(&dir, "new/deep/attachment.bin").unwrap();
+    let stage = StagedFile::receive(
+        &target,
+        b"nested bytes".as_slice(),
+        64,
+        Some(12),
+        Some(&crate::hex::sha256_hex(b"nested bytes")),
+    )
+    .unwrap();
+    stage.commit(&target).unwrap();
+    assert_eq!(std::fs::read(&target).unwrap(), b"nested bytes");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn stage_test_bytes(target: &Path, bytes: &[u8]) -> StagedFile {
+    StagedFile::receive(
+        target,
+        bytes,
+        bytes.len() as u64,
+        Some(bytes.len() as u64),
+        Some(&crate::hex::sha256_hex(bytes)),
+    )
+    .unwrap()
+}
+
+fn assert_no_staged_files(dir: &Path) {
+    assert!(std::fs::read_dir(dir).unwrap().flatten().all(|entry| !entry
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".mesa-sync-tmp")));
+}
+
+#[test]
+fn streamed_receive_is_bounded_verified_and_idempotent() {
+    let vault = ManifestVault::new("streamed");
+    let target = vault.0.join("file.bin");
+    let bytes: Vec<_> = (0..170_000).map(|n| (n % 251) as u8).collect();
+    struct SmallReads<'a>(&'a [u8]);
+    impl Read for SmallReads<'_> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            assert!(
+                output.len() <= 64 * 1024,
+                "receive allocated a file-sized buffer"
+            );
+            let size = output.len().min(97).min(self.0.len());
+            output[..size].copy_from_slice(&self.0[..size]);
+            self.0 = &self.0[size..];
+            Ok(size)
+        }
+    }
+    let stage = StagedFile::receive(
+        &target,
+        SmallReads(&bytes),
+        bytes.len() as u64,
+        Some(bytes.len() as u64),
+        Some(&crate::hex::sha256_hex(&bytes).to_uppercase()),
+    )
+    .unwrap();
+    assert!(!target.exists());
+    assert_eq!(stage.commit(&target).unwrap(), CommitOutcome::Created);
+    assert_eq!(std::fs::read(&target).unwrap(), bytes);
+    assert_eq!(
+        stage_test_bytes(&target, &bytes).commit(&target).unwrap(),
+        CommitOutcome::Unchanged
+    );
+    assert_no_staged_files(&vault.0);
+}
+
+#[test]
+fn streamed_receive_rejects_limits_truncation_and_hash_failures() {
+    let vault = ManifestVault::new("streamed-errors");
+    let target = vault.0.join("file.bin");
+    vault.write("file.bin", b"existing");
+    assert!(matches!(
+        StagedFile::receive(&target, &b"abc"[..], 2, None, None),
+        Err(ReceiveError::TooLarge { limit: 2 })
+    ));
+    assert!(matches!(
+        StagedFile::receive(&target, &b"abc"[..], 10, Some(4), None),
+        Err(ReceiveError::SizeMismatch {
+            expected: 4,
+            actual: 3
+        })
+    ));
+    assert!(matches!(
+        StagedFile::receive(&target, &b"abc"[..], 3, Some(3), Some("bad")),
+        Err(ReceiveError::HashMismatch { .. })
+    ));
+    assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+    assert_no_staged_files(&vault.0);
+}
+
+#[test]
+fn streamed_receive_cleans_partial_read_failure_and_dropped_stage() {
+    let vault = ManifestVault::new("streamed-interrupted");
+    let target = vault.0.join("file.bin");
+    struct BrokenRead(bool);
+    impl Read for BrokenRead {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::other("connection lost"));
+            }
+            self.0 = true;
+            out[0] = b'x';
+            Ok(1)
+        }
+    }
+    assert!(matches!(
+        StagedFile::receive(&target, BrokenRead(false), 5, None, None),
+        Err(ReceiveError::Read(_))
+    ));
+    assert_no_staged_files(&vault.0);
+    drop(stage_test_bytes(&target, b"pending"));
+    assert!(!target.exists());
+    assert_no_staged_files(&vault.0);
+}
+
+#[test]
+fn streamed_receive_retries_interrupted_reads() {
+    let vault = ManifestVault::new("streamed-eintr");
+    let target = vault.0.join("file.bin");
+    struct InterruptedOnce(bool, std::io::Cursor<Vec<u8>>);
+    impl Read for InterruptedOnce {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if !self.0 {
+                self.0 = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            self.1.read(out)
+        }
+    }
+    let stage = StagedFile::receive(
+        &target,
+        InterruptedOnce(false, std::io::Cursor::new(b"bytes".to_vec())),
+        5,
+        Some(5),
+        Some(&crate::hex::sha256_hex(b"bytes")),
+    )
+    .unwrap();
+    assert_eq!(stage.commit(&target).unwrap(), CommitOutcome::Created);
+    assert_eq!(std::fs::read(&target).unwrap(), b"bytes");
+    assert_no_staged_files(&vault.0);
+}
+
+#[test]
+fn streamed_receive_empty_file_and_write_failure() {
+    let vault = ManifestVault::new("streamed-empty");
+    let target = vault.0.join("empty.bin");
+    assert_eq!(
+        stage_test_bytes(&target, b"").commit(&target).unwrap(),
+        CommitOutcome::Created
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"");
+    vault.write("blocked", b"parent is a file");
+    assert!(matches!(
+        StagedFile::receive(&vault.0.join("blocked/file.bin"), &b"x"[..], 1, None, None),
+        Err(ReceiveError::Write(_))
+    ));
+    assert_eq!(
+        std::fs::read(vault.0.join("blocked")).unwrap(),
+        b"parent is a file"
+    );
+    assert_no_staged_files(&vault.0);
+}
+
+#[test]
+fn streamed_commit_preserves_late_target_and_reuses_numbered_conflict() {
+    let vault = ManifestVault::new("streamed-conflict");
+    let target = vault.0.join("file.bin");
+    let stage = stage_test_bytes(&target, b"incoming");
+    vault.write("file.bin", b"late external edit");
+    assert_eq!(
+        stage.commit(&target).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"late external edit");
+    let (outcome, rel) = stage_test_bytes(&target, b"incoming")
+        .commit_conflict(&vault.0, "file.bin")
+        .unwrap();
+    assert_eq!(
+        (outcome, rel.as_str()),
+        (CommitOutcome::Created, "file (2).bin")
+    );
+    let (outcome, rel) = stage_test_bytes(&target, b"incoming")
+        .commit_conflict(&vault.0, "file.bin")
+        .unwrap();
+    assert_eq!(
+        (outcome, rel.as_str()),
+        (CommitOutcome::Unchanged, "file (2).bin")
+    );
+    assert_no_staged_files(&vault.0);
+}
+
+#[test]
+fn staged_publisher_preserves_candidate_for_conflict_retry() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    let candidate = Path::new("/vault/.candidate");
+    fs.write_new(candidate, b"incoming").unwrap();
+    *fs.destination_on_publish.borrow_mut() = Some(b"racing external".to_vec());
+    let mut preserve = false;
+    assert_eq!(
+        publish_verified_candidate(
+            &fs,
+            candidate,
+            target,
+            8,
+            &crate::hex::sha256_hex(b"incoming"),
+            &mut preserve
+        )
+        .unwrap_err()
+        .kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(fs.get(candidate).unwrap(), b"incoming");
+    assert_eq!(fs.get(target).unwrap(), b"racing external");
+    assert!(!preserve);
+}
+
+#[test]
+fn staged_publisher_preserves_link_after_failed_final_readback() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    let candidate = Path::new("/vault/.candidate");
+    fs.write_new(candidate, b"incoming").unwrap();
+    fs.exclusive_mode.set(ExclusiveMode::Unsupported);
+    fs.corrupt_published_target.set(true);
+    let mut preserve = false;
+    assert!(publish_verified_candidate(
+        &fs,
+        candidate,
+        target,
+        8,
+        &crate::hex::sha256_hex(b"incoming"),
+        &mut preserve
+    )
+    .is_err());
+    assert!(preserve);
+    assert_eq!(fs.get(candidate).unwrap(), b"incoming");
+    assert_eq!(fs.get(target).unwrap(), b"external-replacement");
+}
+
+#[test]
+fn verified_create_is_idempotent_and_never_replaces() {
+    let dir = std::env::temp_dir().join(format!("mesa-vc-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let target = dir.join("deep/nested/n.md");
+    assert_eq!(
+        commit_verified_create(&target, b"one").unwrap(),
+        CommitOutcome::Created
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"one");
+    assert_eq!(
+        commit_verified_create(&target, b"one").unwrap(),
+        CommitOutcome::Unchanged
+    );
+    let err = commit_verified_create(&target, b"two").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(std::fs::read(&target).unwrap(), b"one");
+    // No temp litter left behind.
+    let litter: Vec<_> = std::fs::read_dir(target.parent().unwrap())
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with(".mesa-sync-tmp")
+        })
+        .collect();
+    assert!(litter.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exclusive_publish_race_preserves_the_other_writer() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    *fs.destination_on_publish.borrow_mut() = Some(b"external".to_vec());
+    let incoming = b"remote";
+    let err = commit_verified_create_with_fs(
+        &fs,
+        target,
+        incoming,
+        incoming.len() as u64,
+        &crate::hex::sha256_hex(incoming),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(fs.get(target).unwrap(), b"external");
+}
+
+#[test]
+fn hard_link_is_only_used_when_exclusive_rename_is_unsupported() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    fs.exclusive_mode.set(ExclusiveMode::Unsupported);
+    let incoming = b"remote";
+    let outcome = commit_verified_create_with_fs(
+        &fs,
+        target,
+        incoming,
+        incoming.len() as u64,
+        &crate::hex::sha256_hex(incoming),
+    )
+    .unwrap();
+    assert_eq!(outcome, CommitOutcome::Created);
+    assert_eq!(fs.get(target).unwrap(), incoming);
+    assert_eq!(fs.hard_link_calls.get(), 1);
+}
+
+#[test]
+fn supported_exclusive_rename_never_uses_hard_link() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    let incoming = b"remote";
+    let outcome = commit_verified_create_with_fs(
+        &fs,
+        target,
+        incoming,
+        incoming.len() as u64,
+        &crate::hex::sha256_hex(incoming),
+    )
+    .unwrap();
+    assert_eq!(outcome, CommitOutcome::Created);
+    assert_eq!(fs.hard_link_calls.get(), 0);
+}
+
+#[test]
+fn platform_exclusive_publish_refuses_an_existing_target() {
+    let dir = std::env::temp_dir().join(format!("mesa-xr-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let candidate = dir.join("candidate");
+    let target = dir.join("target");
+    std::fs::write(&candidate, b"incoming").unwrap();
+    std::fs::write(&target, b"existing").unwrap();
+
+    match platform_exclusive_publish(&candidate, &target).unwrap_err() {
+        ExclusivePublishError::Failed(error) => {
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists)
+        }
+        ExclusivePublishError::Unsupported(error) => {
+            panic!("exclusive publish is unsupported: {error}")
+        }
+    }
+    assert_eq!(std::fs::read(&target).unwrap(), b"existing");
+    assert_eq!(std::fs::read(&candidate).unwrap(), b"incoming");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unsupported_exclusive_rename_and_hard_link_fail_closed() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    fs.exclusive_mode.set(ExclusiveMode::Unsupported);
+    fs.hard_link_fail.set(true);
+    let incoming = b"remote";
+    let err = commit_verified_create_with_fs(
+        &fs,
+        target,
+        incoming,
+        incoming.len() as u64,
+        &crate::hex::sha256_hex(incoming),
+    )
+    .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("native exclusive rename is unsupported"));
+    assert!(err.to_string().contains("safe hard-link fallback failed"));
+    assert!(fs.get(target).is_none());
+}
+
+#[test]
+fn arbitrary_exclusive_rename_failure_does_not_fallback_or_publish() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    fs.exclusive_mode.set(ExclusiveMode::Fail);
+    let incoming = b"remote";
+    let err = commit_verified_create_with_fs(
+        &fs,
+        target,
+        incoming,
+        incoming.len() as u64,
+        &crate::hex::sha256_hex(incoming),
+    )
+    .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("injected exclusive rename failure"));
+    assert_eq!(fs.hard_link_calls.get(), 0);
+    assert!(fs.get(target).is_none());
+}
+
+#[test]
+fn final_readback_failure_preserves_a_possible_replacement() {
+    let fs = MemoryCommitFs::default();
+    let target = Path::new("/vault/n.md");
+    fs.corrupt_published_target.set(true);
+    let incoming = b"remote";
+    let err = commit_verified_create_with_fs(
+        &fs,
+        target,
+        incoming,
+        incoming.len() as u64,
+        &crate::hex::sha256_hex(incoming),
+    )
+    .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("portable file-identity proof is unavailable"));
+    assert_eq!(fs.get(target).unwrap(), b"external-replacement");
+}
+
+#[test]
+fn candidate_names_are_unique_and_recovery_visible() {
+    let target = Path::new("/vault/n.md");
+    let first = candidate_path(target);
+    let second = candidate_path(target);
+    assert_ne!(first, second);
+    for path in [first, second] {
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&format!(".mesa-sync-tmp-{}-", std::process::id())));
+    }
+}
+
+#[test]
+fn list_vault_files_skips_hidden_and_node_modules() {
+    let dir = std::env::temp_dir().join(format!("mesa-ls-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("notes")).unwrap();
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
+    std::fs::write(dir.join("notes/a.md"), b"a").unwrap();
+    std::fs::write(dir.join("b.md"), b"b").unwrap();
+    std::fs::write(dir.join(".DS_Store"), b"x").unwrap();
+    std::fs::write(dir.join(".git/config"), b"x").unwrap();
+    std::fs::write(dir.join("node_modules/pkg/i.js"), b"x").unwrap();
+    // Windows shell files never sync, so peers do not exchange view state.
+    std::fs::write(dir.join("desktop.ini"), b"x").unwrap();
+    std::fs::write(dir.join("notes/Thumbs.db"), b"x").unwrap();
+    std::fs::create_dir_all(dir.join("$RECYCLE.BIN")).unwrap();
+    std::fs::write(dir.join("$RECYCLE.BIN/old.md"), b"x").unwrap();
+    let rels: Vec<String> = list_vault_files(&dir).into_iter().map(|(r, _)| r).collect();
+    assert_eq!(rels, vec!["b.md".to_string(), "notes/a.md".to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn journal_recovers_delete_and_unique_rename_from_snapshot() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("old.md"), b"same").unwrap();
+    std::fs::write(dir.join("gone.md"), b"gone").unwrap();
+    let (first, _) = build_manifest(&dir);
+    reconcile_journal(&dir, &first).unwrap();
+    std::fs::rename(dir.join("old.md"), dir.join("new.md")).unwrap();
+    std::fs::remove_file(dir.join("gone.md")).unwrap();
+    let (second, _) = build_manifest(&dir);
+    let journal = reconcile_journal(&dir, &second).unwrap();
+    assert!(journal
+        .operations
+        .iter()
+        .any(|op| op.kind == JournalOperationKind::Rename
+            && op.from == "old.md"
+            && op.to.as_deref() == Some("new.md")));
+    assert!(journal
+        .operations
+        .iter()
+        .any(|op| op.kind == JournalOperationKind::Delete && op.from == "gone.md"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn manifest_entry(rel: &str, size: u64, hash: &str) -> ManifestEntry {
+    ManifestEntry {
+        rel: rel.to_string(),
+        size,
+        hash: hash.to_string(),
+    }
+}
+
+#[test]
+fn journal_rename_matching_is_unique_case_folded_and_deduplicated() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-match-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (a, b, c) = ("a".repeat(64), "b".repeat(64), "c".repeat(64));
+    let first = vec![
+        manifest_entry("old/one.md", 1, &a),
+        manifest_entry("old/two.md", 2, &b),
+        manifest_entry("old/three.md", 3, &c),
+        manifest_entry("old/twin.md", 3, &c),
+    ];
+    reconcile_journal(&dir, &first).unwrap();
+    // `one` reappears once with an upper-case hash: a rename. `two` has two
+    // same-byte candidates: ambiguous, so a delete. `three` takes the only
+    // copy of its bytes, which leaves `twin` nothing unique: a delete.
+    let second = vec![
+        manifest_entry("new/one.md", 1, &a.to_uppercase()),
+        manifest_entry("new/two-a.md", 2, &b),
+        manifest_entry("new/two-b.md", 2, &b),
+        manifest_entry("new/three.md", 3, &c),
+    ];
+    let journal = reconcile_journal(&dir, &second).unwrap();
+    let ops: Vec<(JournalOperationKind, &str, Option<&str>)> = journal
+        .operations
+        .iter()
+        .map(|op| (op.kind.clone(), op.from.as_str(), op.to.as_deref()))
+        .collect();
+    assert_eq!(
+        ops,
+        vec![
+            (
+                JournalOperationKind::Rename,
+                "old/one.md",
+                Some("new/one.md")
+            ),
+            (JournalOperationKind::Delete, "old/two.md", None),
+            (
+                JournalOperationKind::Rename,
+                "old/three.md",
+                Some("new/three.md")
+            ),
+            (JournalOperationKind::Delete, "old/twin.md", None),
+        ]
+    );
+    // Deleting and restoring a file records one restore, however often the
+    // unchanged vault is reconciled afterwards.
+    reconcile_journal(&dir, &second[1..]).unwrap();
+    for _ in 0..3 {
+        reconcile_journal(&dir, &second).unwrap();
+    }
+    let journal = load_journal(&dir).unwrap();
+    let restores = journal
+        .operations
+        .iter()
+        .filter(|op| op.kind == JournalOperationKind::Restore)
+        .count();
+    assert_eq!(restores, 1);
+    assert_eq!(journal.operations.len(), 6);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One folder move of `n` files: renames plus duplicate checks for every one.
+fn folder_move_reconcile_time(n: usize, run: usize) -> std::time::Duration {
+    let dir = std::env::temp_dir().join(format!(
+        "mesa-journal-linear-{}-{n}-{run}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let entries = |folder: &str| -> Vec<ManifestEntry> {
+        (0..n)
+            .map(|i| {
+                manifest_entry(
+                    &format!("{folder}/{i}.md"),
+                    (i % 7) as u64,
+                    &format!("{i:064x}"),
+                )
+            })
+            .collect()
+    };
+    reconcile_journal(&dir, &entries("a")).unwrap();
+    let moved = entries("b");
+    let started = std::time::Instant::now();
+    reconcile_journal(&dir, &moved).unwrap();
+    let elapsed = started.elapsed();
+    let _ = std::fs::remove_dir_all(&dir);
+    elapsed
+}
+
+#[test]
+fn journal_reconcile_of_a_folder_move_is_linear() {
+    // One large run against eight eighth-size runs, interleaved, best of five.
+    let (mut large, mut small) = (std::time::Duration::MAX, std::time::Duration::MAX);
+    for run in 0..5 {
+        large = large.min(folder_move_reconcile_time(12_000, run));
+        small = small.min(
+            (0..8)
+                .map(|part| folder_move_reconcile_time(1_500, run * 8 + part))
+                .sum(),
+        );
+    }
+    assert!(
+        large < small * 4,
+        "12,000-file move took {large:?}; eight 1,500-file moves took {small:?}"
+    );
+}
+
+#[test]
+fn journal_delete_preserves_changed_local_content() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-conflict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.md"), b"changed locally").unwrap();
+    let op = JournalOperation {
+        id: "peer:1".to_string(),
+        device: "peer".to_string(),
+        sequence: 1,
+        at_ms: 0,
+        kind: JournalOperationKind::Delete,
+        from: "note.md".to_string(),
+        to: None,
+        size: 6,
+        hash: crate::hex::sha256_hex(b"remote"),
+    };
+    assert_eq!(
+        apply_journal_operation(&dir, &op).unwrap(),
+        JournalApply::Conflict
+    );
+    assert_eq!(
+        std::fs::read(dir.join("note.md")).unwrap(),
+        b"changed locally"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn incomplete_scan_never_replaces_the_complete_journal_baseline() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-partial-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("keep.md"), b"keep").unwrap();
+    let (complete, _) = build_manifest(&dir);
+    reconcile_journal(&dir, &complete).unwrap();
+
+    let partial = Vec::new();
+    let journal = reconcile_complete_journal(
+        &dir,
+        &partial,
+        &[("locked".to_string(), "permission denied".to_string())],
+    )
+    .unwrap();
+    assert!(journal.operations.is_empty());
+    assert_eq!(journal.known.len(), 1);
+    assert_eq!(journal.known[0].rel, "keep.md");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn received_delete_moves_matching_bytes_into_recovery_storage() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-trash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.md"), b"remote").unwrap();
+    let op = JournalOperation {
+        id: "peer:1".to_string(),
+        device: "peer".to_string(),
+        sequence: 1,
+        at_ms: 0,
+        kind: JournalOperationKind::Delete,
+        from: "note.md".to_string(),
+        to: None,
+        size: 6,
+        hash: crate::hex::sha256_hex(b"remote"),
+    };
+    assert_eq!(
+        apply_journal_operation(&dir, &op).unwrap(),
+        JournalApply::Applied
+    );
+    assert!(!dir.join("note.md").exists());
+    let trash = std::fs::read_dir(dir.join(".mesa-trash")).unwrap().count();
+    assert_eq!(trash, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn merged_journal_keeps_numeric_device_order() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-order-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let remote = SyncJournal {
+        version: JOURNAL_VERSION,
+        device: "peer".to_string(),
+        next_sequence: 11,
+        known: Vec::new(),
+        peer_bases: HashMap::new(),
+        peer_bindings: HashMap::new(),
+        retired_peers: Vec::new(),
+        retired_fingerprints: Vec::new(),
+        applied: Vec::new(),
+        acked_by: HashMap::new(),
+        peers_seen: Vec::new(),
+        operations: vec![
+            JournalOperation {
+                id: "peer:10".to_string(),
+                device: "peer".to_string(),
+                sequence: 10,
+                at_ms: 0,
+                kind: JournalOperationKind::Delete,
+                from: "ten".to_string(),
+                to: None,
+                size: 0,
+                hash: crate::hex::sha256_hex(b""),
+            },
+            JournalOperation {
+                id: "peer:2".to_string(),
+                device: "peer".to_string(),
+                sequence: 2,
+                at_ms: 0,
+                kind: JournalOperationKind::Delete,
+                from: "two".to_string(),
+                to: None,
+                size: 0,
+                hash: crate::hex::sha256_hex(b""),
+            },
+        ],
+    };
+    let merged = merge_journal(&dir, &remote).unwrap();
+    let sequences: Vec<u64> = merged
+        .operations
+        .iter()
+        .filter(|op| op.device == "peer")
+        .map(|op| op.sequence)
+        .collect();
+    assert_eq!(sequences, vec![2, 10]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn apply_incoming_journal_applies_and_acks_received_delete() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-incoming-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.md"), b"remote").unwrap();
+    let op = JournalOperation {
+        id: "peer:1".to_string(),
+        device: "peer".to_string(),
+        sequence: 1,
+        at_ms: 0,
+        kind: JournalOperationKind::Delete,
+        from: "note.md".to_string(),
+        to: None,
+        size: 6,
+        hash: crate::hex::sha256_hex(b"remote"),
+    };
+    let incoming = SyncJournal {
+        version: JOURNAL_VERSION,
+        device: "peer".to_string(),
+        next_sequence: 2,
+        operations: vec![op.clone()],
+        applied: Vec::new(),
+        acked_by: HashMap::new(),
+        peers_seen: Vec::new(),
+        known: Vec::new(),
+        peer_bases: HashMap::new(),
+        peer_bindings: HashMap::new(),
+        retired_peers: Vec::new(),
+        retired_fingerprints: Vec::new(),
+    };
+
+    let (journal, outcomes) = apply_incoming_journal(&dir, &incoming).unwrap();
+
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(outcomes[0].operation.id, op.id);
+    assert_eq!(outcomes[0].result, Ok(JournalApply::Applied));
+    assert!(journal.applied.iter().any(|id| id == "peer:1"));
+    assert!(!dir.join("note.md").exists());
+    assert_eq!(
+        std::fs::read_dir(dir.join(".mesa-trash")).unwrap().count(),
+        1
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn compaction_waits_for_offline_known_peer_ack() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-compact-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let op = JournalOperation {
+        id: "local:1".to_string(),
+        device: "local".to_string(),
+        sequence: 1,
+        at_ms: 0,
+        kind: JournalOperationKind::Delete,
+        from: "gone.md".to_string(),
+        to: None,
+        size: 4,
+        hash: crate::hex::sha256_hex(b"gone"),
+    };
+    let mut journal = SyncJournal {
+        version: JOURNAL_VERSION,
+        device: "local".to_string(),
+        next_sequence: 2,
+        operations: vec![op.clone()],
+        applied: Vec::new(),
+        acked_by: HashMap::from([("peer-a".to_string(), vec![op.id.clone()])]),
+        peers_seen: vec!["peer-a".to_string(), "peer-b".to_string()],
+        known: Vec::new(),
+        peer_bases: HashMap::new(),
+        peer_bindings: HashMap::new(),
+        retired_peers: Vec::new(),
+        retired_fingerprints: Vec::new(),
+    };
+    save_journal(&dir, &journal).unwrap();
+    assert!(load_journal(&dir)
+        .unwrap()
+        .operations
+        .iter()
+        .any(|saved| saved.id == op.id));
+
+    journal
+        .acked_by
+        .insert("peer-b".to_string(), vec![op.id.clone()]);
+    save_journal(&dir, &journal).unwrap();
+    assert!(!load_journal(&dir)
+        .unwrap()
+        .operations
+        .iter()
+        .any(|saved| saved.id == op.id));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn delete_op(device: &str, sequence: u64) -> JournalOperation {
+    JournalOperation {
+        id: format!("{device}:{sequence}"),
+        device: device.to_string(),
+        sequence,
+        at_ms: 0,
+        kind: JournalOperationKind::Delete,
+        from: format!("gone-{sequence}.md"),
+        to: None,
+        size: 4,
+        hash: crate::hex::sha256_hex(b"gone"),
+    }
+}
+
+#[test]
+fn gossiped_names_without_operations_never_block_compaction() {
+    let op = delete_op("local", 1);
+    let mut local = SyncJournal::empty("local".into());
+    local.operations.push(op.clone());
+    local.next_sequence = 2;
+    // An authenticated peer gossips names that carry no operation. Such a
+    // participant could never acknowledge, so the delete would stay forever.
+    let mut remote = SyncJournal::empty("peer-a".into());
+    remote.applied.push(op.id.clone());
+    remote.peers_seen = vec!["phantom-1".into(), "phantom-2".into()];
+    remote
+        .acked_by
+        .insert("phantom-3".into(), vec!["peer-a:9".into()]);
+    merge_remote_into(&mut local, &remote).unwrap();
+    compact_journal(&mut local);
+    assert_eq!(local.peers_seen, vec!["peer-a".to_string()]);
+    assert!(!local
+        .acked_by
+        .keys()
+        .any(|peer| peer.starts_with("phantom")));
+    assert!(local.operations.is_empty());
+}
+
+#[test]
+fn gossiped_peer_with_an_operation_still_gates_compaction() {
+    let local_op = delete_op("local", 1);
+    let mut local = SyncJournal::empty("local".into());
+    local.operations.push(local_op.clone());
+    local.next_sequence = 2;
+    let mut remote = SyncJournal::empty("peer-a".into());
+    remote.applied.push(local_op.id.clone());
+    remote.peers_seen = vec!["peer-c".into()];
+    remote.operations.push(delete_op("peer-c", 1));
+    merge_remote_into(&mut local, &remote).unwrap();
+    compact_journal(&mut local);
+    assert_eq!(
+        local.peers_seen,
+        vec!["peer-a".to_string(), "peer-c".to_string()]
+    );
+    assert!(local.operations.iter().any(|op| op.id == local_op.id));
+
+    let mut gossip = SyncJournal::empty("peer-a".into());
+    gossip
+        .acked_by
+        .insert("peer-c".into(), vec![local_op.id.clone()]);
+    gossip.applied.push(local_op.id.clone());
+    gossip.applied.push("peer-c:1".into());
+    local.applied.push("peer-c:1".into());
+    merge_remote_into(&mut local, &gossip).unwrap();
+    compact_journal(&mut local);
+    assert!(local.operations.is_empty());
+}
+
+#[test]
+fn journal_validation_bounds_participant_and_acknowledgement_counts() {
+    let base = || SyncJournal::empty("peer".into());
+    assert!(validate_journal(&base(), "j").is_ok());
+
+    let mut peers = base();
+    peers.peers_seen = (0..=MAX_JOURNAL_PEERS).map(|n| format!("p{n}")).collect();
+    assert!(validate_journal(&peers, "j").is_err());
+    peers.peers_seen.pop();
+    assert!(validate_journal(&peers, "j").is_ok());
+
+    let mut ack_peers = base();
+    ack_peers.acked_by = (0..=MAX_JOURNAL_PEERS)
+        .map(|n| (format!("p{n}"), Vec::new()))
+        .collect();
+    assert!(validate_journal(&ack_peers, "j").is_err());
+
+    let mut ack_ids = base();
+    ack_ids.acked_by.insert(
+        "p".into(),
+        (0..=MAX_JOURNAL_ACK_IDS)
+            .map(|n| format!("p:{n}"))
+            .collect(),
+    );
+    assert!(validate_journal(&ack_ids, "j").is_err());
+    let mut applied = base();
+    applied.applied = (0..=MAX_JOURNAL_ACK_IDS)
+        .map(|n| format!("p:{n}"))
+        .collect();
+    assert!(validate_journal(&applied, "j").is_err());
+
+    let mut long_name = base();
+    long_name.peers_seen.push("x".repeat(129));
+    assert!(validate_journal(&long_name, "j").is_err());
+
+    let mut devices = base();
+    devices.operations = (0..=MAX_JOURNAL_PEERS)
+        .map(|n| delete_op(&format!("d{n}"), 1))
+        .collect();
+    assert!(validate_journal(&devices, "j").is_err());
+    devices.operations.pop();
+    assert!(validate_journal(&devices, "j").is_ok());
+
+    let mut operations = base();
+    operations.operations = (1..=MAX_JOURNAL_OPERATIONS as u64 + 1)
+        .map(|n| delete_op("d", n))
+        .collect();
+    assert!(validate_journal(&operations, "j").is_err());
+}
+
+#[test]
+fn journal_restore_emits_an_explicit_operation_after_local_delete() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-restore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.md"), b"restore me").unwrap();
+    let (first, _) = build_manifest(&dir);
+    reconcile_journal(&dir, &first).unwrap();
+
+    std::fs::remove_file(dir.join("note.md")).unwrap();
+    let (deleted, _) = build_manifest(&dir);
+    let with_delete = reconcile_journal(&dir, &deleted).unwrap();
+    assert!(with_delete
+        .operations
+        .iter()
+        .any(|op| { op.kind == JournalOperationKind::Delete && op.from == "note.md" }));
+
+    std::fs::write(dir.join("note.md"), b"restore me").unwrap();
+    let (restored, _) = build_manifest(&dir);
+    let journal = reconcile_journal(&dir, &restored).unwrap();
+    assert!(journal
+        .operations
+        .iter()
+        .any(|op| { op.kind == JournalOperationKind::Delete && op.from == "note.md" }));
+    assert!(journal
+        .operations
+        .iter()
+        .any(|op| { op.kind == JournalOperationKind::Restore && op.from == "note.md" }));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn received_restore_recovers_matching_remote_deletion() {
+    let dir = std::env::temp_dir().join(format!(
+        "mesa-journal-restore-incoming-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.md"), b"restore me").unwrap();
+    let hash = crate::hex::sha256_hex(b"restore me");
+    let delete = JournalOperation {
+        id: "peer:1".to_string(),
+        device: "peer".to_string(),
+        sequence: 1,
+        at_ms: 0,
+        kind: JournalOperationKind::Delete,
+        from: "note.md".to_string(),
+        to: None,
+        size: 10,
+        hash: hash.clone(),
+    };
+    assert_eq!(
+        apply_journal_operation(&dir, &delete).unwrap(),
+        JournalApply::Applied
+    );
+    let restore = JournalOperation {
+        id: "peer:2".to_string(),
+        device: "peer".to_string(),
+        sequence: 2,
+        at_ms: 0,
+        kind: JournalOperationKind::Restore,
+        from: "note.md".to_string(),
+        to: None,
+        size: 10,
+        hash,
+    };
+    assert_eq!(
+        apply_journal_operation(&dir, &restore).unwrap(),
+        JournalApply::Applied
+    );
+    assert_eq!(std::fs::read(dir.join("note.md")).unwrap(), b"restore me");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn incoming_journal_rejects_malformed_operation_identity() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-invalid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let incoming = SyncJournal {
+        version: JOURNAL_VERSION,
+        device: "peer".to_string(),
+        next_sequence: 2,
+        operations: vec![JournalOperation {
+            id: "not-peer:1".to_string(),
+            device: "peer".to_string(),
+            sequence: 1,
+            at_ms: 0,
+            kind: JournalOperationKind::Delete,
+            from: "note.md".to_string(),
+            to: None,
+            size: 0,
+            hash: crate::hex::sha256_hex(b""),
+        }],
+        applied: Vec::new(),
+        acked_by: HashMap::new(),
+        peers_seen: Vec::new(),
+        known: Vec::new(),
+        peer_bases: HashMap::new(),
+        peer_bindings: HashMap::new(),
+        retired_peers: Vec::new(),
+        retired_fingerprints: Vec::new(),
+    };
+    assert!(apply_incoming_journal(&dir, &incoming).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn incoming_rename_chain_uses_numeric_sequence_not_wire_order() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-chain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("old.md"), b"same").unwrap();
+    let hash = crate::hex::sha256_hex(b"same");
+    let first = JournalOperation {
+        id: "peer:2".to_string(),
+        device: "peer".to_string(),
+        sequence: 2,
+        at_ms: 0,
+        kind: JournalOperationKind::Rename,
+        from: "middle.md".to_string(),
+        to: Some("new.md".to_string()),
+        size: 4,
+        hash: hash.clone(),
+    };
+    let second = JournalOperation {
+        id: "peer:1".to_string(),
+        device: "peer".to_string(),
+        sequence: 1,
+        at_ms: 0,
+        kind: JournalOperationKind::Rename,
+        from: "old.md".to_string(),
+        to: Some("middle.md".to_string()),
+        size: 4,
+        hash,
+    };
+    let incoming = SyncJournal {
+        version: JOURNAL_VERSION,
+        device: "peer".to_string(),
+        next_sequence: 3,
+        operations: vec![first, second],
+        applied: Vec::new(),
+        acked_by: HashMap::new(),
+        peers_seen: Vec::new(),
+        known: Vec::new(),
+        peer_bases: HashMap::new(),
+        peer_bindings: HashMap::new(),
+        retired_peers: Vec::new(),
+        retired_fingerprints: Vec::new(),
+    };
+    let (_, outcomes) = apply_incoming_journal(&dir, &incoming).unwrap();
+    assert_eq!(
+        outcomes
+            .iter()
+            .map(|outcome| outcome.operation.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(std::fs::read(dir.join("new.md")).unwrap(), b"same");
+    assert!(!dir.join("old.md").exists());
+    assert!(!dir.join("middle.md").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manifest_json_escapes() {
+    let entries = vec![ManifestEntry {
+        rel: "we\"ird\nname.md".to_string(),
+        size: 3,
+        hash: "abc".to_string(),
+    }];
+    let j = manifest_to_json(&entries);
+    assert_eq!(
+            j,
+            "{\"journalVersion\":2,\"syncProtocolVersion\":3,\"files\":[{\"rel\":\"we\\\"ird\\nname.md\",\"size\":3,\"hash\":\"abc\"}]}"
+        );
+}
+
+#[test]
+fn malformed_percent_escapes_preserve_unicode_without_panicking() {
+    for input in [
+        "%oΚ",
+        "%Κ",
+        "%a😀",
+        "relrel=setn%oΚњd\n",
+        "%",
+        "%a",
+        "100%文",
+    ] {
+        assert_eq!(url_decode(input), input);
+    }
+    assert_eq!(url_decode("%CE%9A+%f0%9f%98%80"), "Κ 😀");
+    assert_eq!(query_param("rel=%oΚ", "rel").as_deref(), Some("%oΚ"));
+}
+
+#[test]
+fn query_param_decodes() {
+    assert_eq!(
+        query_param("rel=notes%2Fa%20b.md&x=1", "rel").as_deref(),
+        Some("notes/a b.md")
+    );
+    assert_eq!(query_param("rel=a+b", "rel").as_deref(), Some("a b"));
+    assert_eq!(query_param("x=1", "rel"), None);
+}
+
+#[test]
+fn peer_path_policy_rejects_hidden_and_ignored_segments() {
+    for rel in [
+        ".git/config",
+        "a/.hidden/b.md",
+        "node_modules/x",
+        "a/node_modules/x.js",
+        ".mesa-sync-journal.json",
+        ".mesa-trash/old.md",
+        ".env",
+        "../escape.md",
+        "",
+        "GIT~1/hooks/pre-commit",
+        "OBSIDI~1/plugins/x/main.js",
+        "a/MESA-T~1/old.md",
+        "ENV~12",
+        "Node_Modules/x.js",
+        "desktop.ini",
+        "a/Thumbs.db",
+        "$Recycle.Bin/x.md",
+        "System Volume Information/x",
+    ] {
+        assert!(!is_peer_rel(rel), "{rel:?} must be rejected");
+        let dir = std::env::temp_dir();
+        assert!(peer_join_confined(&dir, rel).is_none(), "{rel:?}");
+    }
+    for rel in [
+        "note.md",
+        "a/b/c.md",
+        "name with space.txt",
+        "draft~v2.md",
+        "notes~1 copy.md",
+    ] {
+        assert!(is_peer_rel(rel), "{rel:?} must be accepted");
+    }
+}
+
+#[test]
+fn incoming_journal_rejects_hidden_sources_and_destinations() {
+    let op = |kind, from: &str, to: Option<&str>| SyncJournal {
+        version: JOURNAL_VERSION,
+        device: "peer".to_string(),
+        next_sequence: 2,
+        operations: vec![JournalOperation {
+            id: "peer:1".to_string(),
+            device: "peer".to_string(),
+            sequence: 1,
+            at_ms: 0,
+            kind,
+            from: from.to_string(),
+            to: to.map(str::to_string),
+            size: 1,
+            hash: crate::hex::sha256_hex(b"x"),
+        }],
+        applied: vec![],
+        acked_by: Default::default(),
+        peers_seen: vec![],
+        known: vec![],
+        peer_bases: Default::default(),
+        peer_bindings: Default::default(),
+        retired_peers: vec![],
+        retired_fingerprints: vec![],
+    };
+    for from in [".git/config", "node_modules/x", "a/.x/b.md"] {
+        assert!(validate_journal(&op(JournalOperationKind::Delete, from, None), "j").is_err());
+        assert!(
+            validate_journal(&op(JournalOperationKind::Rename, "ok.md", Some(from)), "j").is_err()
+        );
+        assert!(
+            validate_journal(&op(JournalOperationKind::Rename, from, Some("ok2.md")), "j").is_err()
+        );
+    }
+    assert!(validate_journal(&op(JournalOperationKind::Delete, "ok.md", None), "j").is_ok());
+}
+
+#[test]
+fn local_walk_reports_names_peers_refuse_instead_of_advertising_them() {
+    let v = ManifestVault::new("peer-reserved-walk");
+    std::fs::write(v.0.join("draft~1.md"), b"x").unwrap();
+    std::fs::create_dir(v.0.join("Node_Modules")).unwrap();
+    std::fs::write(v.0.join("Node_Modules/n.md"), b"y").unwrap();
+    std::fs::write(v.0.join("ok.md"), b"z").unwrap();
+    let (entries, skipped) = build_manifest(&v.0);
+    let rels: Vec<_> = entries.iter().map(|entry| entry.rel.as_str()).collect();
+    assert_eq!(rels, ["ok.md"]);
+    assert!(entries.iter().all(|entry| is_peer_rel(&entry.rel)));
+    let mut skipped: Vec<_> = skipped.into_iter().map(|(rel, _)| rel).collect();
+    skipped.sort();
+    assert_eq!(skipped, ["Node_Modules", "draft~1.md"]);
+}
+
+#[test]
+fn reconcile_ignores_legacy_known_names_peers_refuse() {
+    let v = ManifestVault::new("peer-reserved-journal");
+    let hash = "a".repeat(64);
+    let legacy = |rel: &str| ManifestEntry {
+        rel: rel.into(),
+        size: 1,
+        hash: hash.clone(),
+    };
+    // Simulates a journal written before walkers reported reserved names.
+    reconcile_journal(&v.0, &[legacy("draft~1.md"), legacy("keep.md")]).unwrap();
+    reconcile_journal(&v.0, &[legacy("keep.md")]).unwrap();
+    let journal = load_journal(&v.0).expect("journal must still load");
+    assert!(journal.operations.iter().all(|op| op.from != "draft~1.md"));
+    assert!(journal.known.iter().all(|entry| is_peer_rel(&entry.rel)));
+}
+
+#[test]
+fn load_repairs_a_journal_holding_operations_peers_refuse() {
+    let v = ManifestVault::new("peer-reserved-legacy-op");
+    let mut journal = SyncJournal::empty("local".into());
+    for (sequence, from) in [(1, "draft~1.md"), (2, "keep.md")] {
+        journal.operations.push(JournalOperation {
+            id: format!("local:{sequence}"),
+            device: "local".into(),
+            sequence,
+            at_ms: 0,
+            kind: JournalOperationKind::Delete,
+            from: from.into(),
+            to: None,
+            size: 1,
+            hash: "a".repeat(64),
+        });
+    }
+    journal.next_sequence = 3;
+    save_journal(&v.0, &journal).unwrap();
+    let loaded = load_journal(&v.0).expect("journal written by an older walk must load");
+    let froms: Vec<_> = loaded
+        .operations
+        .iter()
+        .map(|op| op.from.as_str())
+        .collect();
+    assert_eq!(froms, ["keep.md"]);
+    assert_eq!(loaded.next_sequence, 3);
+    let bytes = std::fs::read(v.0.join(".mesa-sync-journal.json")).unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("draft~1.md"));
+}
+
+#[test]
+fn older_peer_journal_with_shell_file_records_is_accepted_without_them() {
+    // A peer from before shell files were skipped still journals them. The
+    // exchange must continue, and those records must never apply here.
+    let v = ManifestVault::new("older-peer-shell-journal");
+    std::fs::write(v.0.join("desktop.ini"), b"[.ShellClassInfo]").unwrap();
+    let op = |sequence: u64, kind, from: &str, to: Option<&str>| JournalOperation {
+        id: format!("peer:{sequence}"),
+        device: "peer".into(),
+        sequence,
+        at_ms: 0,
+        kind,
+        from: from.into(),
+        to: to.map(Into::into),
+        size: 1,
+        hash: "a".repeat(64),
+    };
+    let mut remote = SyncJournal::empty("peer".into());
+    remote.operations = vec![
+        op(1, JournalOperationKind::Delete, "desktop.ini", None),
+        op(
+            2,
+            JournalOperationKind::Rename,
+            "a.md",
+            Some("Photos/Thumbs.db"),
+        ),
+        op(3, JournalOperationKind::Delete, "gone.md", None),
+    ];
+    remote.next_sequence = 4;
+    assert!(validate_journal(&remote, "peer journal").is_err());
+    accept_peer_journal(&mut remote, "peer journal").unwrap();
+    let froms: Vec<_> = remote
+        .operations
+        .iter()
+        .map(|op| op.from.as_str())
+        .collect();
+    assert_eq!(froms, ["gone.md"]);
+    apply_incoming_journal(&v.0, &remote).unwrap();
+    assert_eq!(
+        std::fs::read(v.0.join("desktop.ini")).unwrap(),
+        b"[.ShellClassInfo]"
+    );
+    // Hidden or traversal paths are still refused, not dropped.
+    let mut hostile = SyncJournal::empty("peer".into());
+    hostile.operations = vec![op(
+        1,
+        JournalOperationKind::Delete,
+        ".git/desktop.ini",
+        None,
+    )];
+    hostile.next_sequence = 2;
+    assert!(accept_peer_journal(&mut hostile, "peer journal").is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn rooted_sync_operations_keep_the_vault_root_acl() {
+    use std::process::Command;
+    let v = ManifestVault::new("root-acl");
+    let acl = |path: &Path| {
+        let out = Command::new("ls").arg("-led").arg(path).output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(Command::new("chmod")
+        .args(["+a", "everyone allow list,search"])
+        .arg(&v.0)
+        .status()
+        .unwrap()
+        .success());
+    let before = acl(&v.0);
+    assert!(!before.is_empty());
+    v.write("note.md", b"hello");
+    let (entries, skipped) = build_manifest(&v.0);
+    assert_eq!(entries.len(), 1, "{skipped:?}");
+    let staged = StagedFile::receive_rooted(
+        &v.0,
+        "put.md",
+        &b"pushed"[..],
+        1024,
+        Some(6),
+        Some(&crate::hex::sha256_hex(b"pushed")),
+    )
+    .unwrap();
+    staged.commit(&v.0.join("put.md")).unwrap();
+    let mut read = String::new();
+    RootedTarget::resolve(&v.0, "note.md", false)
+        .unwrap()
+        .open_read()
+        .unwrap()
+        .read_to_string(&mut read)
+        .unwrap();
+    assert_eq!(read, "hello");
+    assert_eq!(acl(&v.0), before, "sync must not strip the root's ACL");
+    let _ = Command::new("chmod").arg("-RN").arg(&v.0).status();
+    let _ = std::fs::remove_dir_all(&v.0);
+}
+
+#[test]
+fn conditional_edit_restores_a_racing_local_edit_and_reports_conflict() {
+    let v = ManifestVault::new("replace-race");
+    v.write("note.md", b"old");
+    let target = v.0.join("note.md");
+    let staged = StagedFile::receive(
+        &target,
+        &b"new"[..],
+        1024,
+        Some(3),
+        Some(&crate::hex::sha256_hex(b"new")),
+    )
+    .unwrap();
+    let racing = target.clone();
+    set_before_move_hook(move || std::fs::write(&racing, b"racing edit").unwrap());
+    let error = staged
+        .commit_replace(&v.0, "note.md", 3, &crate::hex::sha256_hex(b"old"))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"racing edit");
+    let trash = v.0.join(".mesa-trash");
+    let stranded = std::fs::read_dir(&trash)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(stranded, 0, "the racing edit must not stay in recovery");
+}
+
+#[test]
+fn journal_delete_restores_bytes_changed_during_the_move() {
+    let v = ManifestVault::new("journal-delete-race");
+    v.write("note.md", b"old");
+    let target = v.0.join("note.md");
+    let op = JournalOperation {
+        id: "d:1".into(),
+        device: "d".into(),
+        sequence: 1,
+        at_ms: 1,
+        kind: JournalOperationKind::Delete,
+        from: "note.md".into(),
+        to: None,
+        size: 3,
+        hash: crate::hex::sha256_hex(b"old"),
+    };
+    let racing = target.clone();
+    set_before_move_hook(move || std::fs::write(&racing, b"racing edit").unwrap());
+    assert_eq!(
+        apply_journal_operation(&v.0, &op).unwrap(),
+        JournalApply::Conflict
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"racing edit");
+}
+
+#[test]
+fn rejected_nested_receive_leaves_no_created_folders() {
+    let v = ManifestVault::new("rejected-parents");
+    std::fs::create_dir(v.0.join("kept")).unwrap();
+    let wrong = crate::hex::sha256_hex(b"other");
+    #[cfg(unix)]
+    let rejected =
+        StagedFile::receive_rooted(&v.0, "a/b/c.md", &b"body"[..], 1024, None, Some(&wrong));
+    #[cfg(unix)]
+    assert!(matches!(rejected, Err(ReceiveError::HashMismatch { .. })));
+    let rejected = StagedFile::receive(
+        &v.0.join("kept/x/y/c.md"),
+        &b"body"[..],
+        1024,
+        None,
+        Some(&wrong),
+    );
+    assert!(matches!(rejected, Err(ReceiveError::HashMismatch { .. })));
+    assert!(!v.0.join("a").exists(), "rejected PUT left a/");
+    assert!(
+        !v.0.join("kept/x").exists(),
+        "rejected receive left kept/x/"
+    );
+    assert!(v.0.join("kept").is_dir(), "an existing folder was removed");
+    #[cfg(unix)]
+    {
+        let accepted = StagedFile::receive_rooted(
+            &v.0,
+            "a/b/c.md",
+            &b"body"[..],
+            1024,
+            None,
+            Some(&crate::hex::sha256_hex(b"body")),
+        )
+        .unwrap();
+        accepted.commit(&v.0.join("a/b/c.md")).unwrap();
+        assert_eq!(std::fs::read(v.0.join("a/b/c.md")).unwrap(), b"body");
+    }
+}
+
+#[test]
+fn new_journal_identities_are_random_and_failed_saves_leave_no_temp() {
+    let first = journal_device().unwrap();
+    assert_eq!(first.len(), 32);
+    assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_ne!(first, journal_device().unwrap());
+    let v = ManifestVault::new("journal-save-fail");
+    std::fs::create_dir_all(v.0.join(JOURNAL_FILE).join("occupied")).unwrap();
+    assert!(save_journal(&v.0, &SyncJournal::empty(first)).is_err());
+    let leftovers: Vec<_> = std::fs::read_dir(&v.0)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".tmp"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
+fn ensure_real_parent_keeps_the_folders_it_creates() {
+    let v = ManifestVault::new("parent-keep");
+    ensure_real_parent(&v.0.join("a/b/c.md")).unwrap();
+    assert!(v.0.join("a/b").is_dir());
+}
+
+/// A run that changes nothing must not rewrite or flush the journal; the
+/// first save and every real change still must.
+#[test]
+fn unchanged_journal_steps_do_not_rewrite_the_file() {
+    let dir = std::env::temp_dir().join(format!("mesa-journal-idle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.md"), b"alpha").unwrap();
+    std::fs::write(dir.join("b.md"), b"beta").unwrap();
+    let journal_file = dir.join(JOURNAL_FILE);
+    let stamp = |path: &Path| {
+        let meta = std::fs::metadata(path).unwrap();
+        // A rewrite is a new file renamed into place.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            (meta.ino(), meta.modified().unwrap())
+        }
+        #[cfg(not(unix))]
+        {
+            (0u64, meta.modified().unwrap())
+        }
+    };
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(30));
+
+    let (manifest, _) = build_manifest(&dir);
+    assert!(!journal_file.exists());
+    let first = reconcile_journal(&dir, &manifest).unwrap();
+    let written = stamp(&journal_file);
+
+    pause();
+    let again = reconcile_journal(&dir, &manifest).unwrap();
+    assert_eq!(again, first);
+    assert_eq!(stamp(&journal_file), written, "unchanged reconcile rewrote");
+
+    let fingerprint = "ab".repeat(32);
+    bind_journal_peer(&dir, &fingerprint, "peer-device", false).unwrap();
+    let bound = stamp(&journal_file);
+    assert_ne!(bound, written, "a new binding was not saved");
+    pause();
+    bind_journal_peer(&dir, &fingerprint, "peer-device", false).unwrap();
+    assert_eq!(stamp(&journal_file), bound, "repeated binding rewrote");
+
+    let base = vec![JournalEntry {
+        rel: "a.md".into(),
+        size: 5,
+        hash: crate::hex::sha256_hex(b"alpha"),
+    }];
+    save_peer_baseline(&dir, &fingerprint, base.clone()).unwrap();
+    let based = stamp(&journal_file);
+    assert_ne!(based, bound, "a new baseline was not saved");
+    pause();
+    save_peer_baseline(&dir, &fingerprint, base).unwrap();
+    assert_eq!(stamp(&journal_file), based, "identical baseline rewrote");
+
+    pause();
+    std::fs::write(dir.join("c.md"), b"gamma").unwrap();
+    let (changed, _) = build_manifest(&dir);
+    let after = reconcile_journal(&dir, &changed).unwrap();
+    assert_eq!(after.known.len(), 3);
+    assert_ne!(
+        stamp(&journal_file),
+        based,
+        "a changed manifest was not saved"
+    );
+    assert_eq!(load_journal(&dir).unwrap(), after);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A peer path is bounded in bytes and in folder depth, and a local walk
+/// reports a deeper tree instead of listing or following it.
+#[test]
+fn peer_paths_and_local_walks_share_the_depth_and_length_caps() {
+    let cap = vault_names::MAX_REL_SEGMENTS;
+    let at_cap = vec!["d"; cap - 1].join("/");
+    assert!(is_peer_rel(&format!("{at_cap}/note.md")));
+    assert!(!is_peer_rel(&format!("{at_cap}/e/note.md")));
+    assert!(is_peer_rel(&"x".repeat(MAX_PEER_REL_BYTES)));
+    assert!(!is_peer_rel(&"x".repeat(MAX_PEER_REL_BYTES + 1)));
+
+    let dir = std::env::temp_dir().join(format!("mesa-sync-depth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(&at_cap).join("e")).unwrap();
+    std::fs::write(dir.join(&at_cap).join("kept.md"), b"kept").unwrap();
+    std::fs::write(dir.join(&at_cap).join("e/lost.md"), b"lost").unwrap();
+    let (manifest, errors) = build_manifest(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        manifest
+            .iter()
+            .map(|entry| entry.rel.clone())
+            .collect::<Vec<_>>(),
+        vec![format!("{at_cap}/kept.md")]
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|(rel, error)| rel == &format!("{at_cap}/e/lost.md") && error.contains("nesting")),
+        "{errors:?}"
+    );
+}

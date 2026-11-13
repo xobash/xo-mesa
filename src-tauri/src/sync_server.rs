@@ -1,13 +1,12 @@
 use super::*;
 
 async fn accepted_connection<T>(
-    accepted: Result<std::io::Result<T>, tokio::time::error::Elapsed>,
+    accepted: std::io::Result<T>,
     warned: &mut bool,
     warn: impl FnOnce(&std::io::Error),
 ) -> Option<T> {
     match accepted {
-        Err(_) => None,
-        Ok(Err(error)) => {
+        Err(error) => {
             if !*warned {
                 warn(&error);
                 *warned = true;
@@ -15,7 +14,19 @@ async fn accepted_connection<T>(
             tokio::time::sleep(Duration::from_millis(50)).await;
             None
         }
-        Ok(Ok(connection)) => Some(connection),
+        Ok(connection) => Some(connection),
+    }
+}
+
+/// Wait for the next peer without a poll timer. `None` means a stop request
+/// woke the listener; the caller rechecks its running flag.
+async fn next_connection(
+    listener: &TcpListener,
+    stop: &tokio::sync::Notify,
+) -> Option<std::io::Result<(tokio::net::TcpStream, SocketAddr)>> {
+    tokio::select! {
+        _ = stop.notified() => None,
+        accepted = listener.accept() => Some(accepted),
     }
 }
 
@@ -30,7 +41,7 @@ mod accept_tests {
         let start = tokio::time::Instant::now();
         for _ in 0..3 {
             let result = accepted_connection::<()>(
-                Ok(Err(std::io::Error::other("forced accept failure"))),
+                Err(std::io::Error::other("forced accept failure")),
                 &mut warned,
                 |_| warnings += 1,
             )
@@ -40,9 +51,29 @@ mod accept_tests {
         assert!(start.elapsed() >= Duration::from_millis(150));
         assert_eq!(warnings, 1);
         assert_eq!(
-            accepted_connection(Ok(Ok(7)), &mut warned, |_| panic!("success warned")).await,
+            accepted_connection(Ok(7), &mut warned, |_| panic!("success warned")).await,
             Some(7)
         );
+    }
+
+    /// The idle listener has no poll timer, so a stop request must wake it,
+    /// including one sent before the listener started to wait.
+    #[tokio::test]
+    async fn stop_wakes_an_idle_listener_and_a_peer_still_connects() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stop = tokio::sync::Notify::new();
+
+        let client = tokio::net::TcpStream::connect(addr);
+        let (accepted, client) = tokio::join!(next_connection(&listener, &stop), client);
+        assert!(accepted.is_some_and(|connection| connection.is_ok()));
+        drop(client);
+
+        stop.notify_one();
+        let woke = tokio::time::timeout(Duration::from_secs(5), next_connection(&listener, &stop))
+            .await
+            .expect("a stop request did not wake the listener");
+        assert!(woke.is_none());
     }
 }
 
@@ -154,7 +185,10 @@ pub(super) fn verify_server_proof(
 
 pub(super) fn parse_identity_request(query: &str) -> Option<([u8; 33], [u8; 32])> {
     let (message, nonce) = query.strip_prefix("pake=")?.split_once("&nonce=")?;
-    Some((parse_hex::<33>(message)?, parse_hex::<32>(nonce)?))
+    Some((
+        crate::hex::decode_exact::<33>(message)?,
+        crate::hex::decode_exact::<32>(nonce)?,
+    ))
 }
 pub(super) fn make_identity_proof(
     key: &str,
@@ -172,29 +206,6 @@ pub(super) fn make_identity_proof(
         message: hex_bytes(&reply),
         proof: hex_bytes(server_proof(&hex_bytes(&session), challenge, fingerprint).as_ref()),
     })
-}
-
-/// Decodes exactly `2 * N` ASCII hex digits. Works on bytes so multi-byte text
-/// from a peer or LAN client can never split a character.
-pub(super) fn parse_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
-    let bytes = value.as_bytes();
-    if bytes.len() != N * 2 {
-        return None;
-    }
-    let mut result = [0u8; N];
-    for (byte, pair) in result.iter_mut().zip(bytes.chunks_exact(2)) {
-        *byte = (hex_nibble(pair[0])? << 4) | hex_nibble(pair[1])?;
-    }
-    Some(result)
-}
-
-fn hex_nibble(digit: u8) -> Option<u8> {
-    match digit {
-        b'0'..=b'9' => Some(digit - b'0'),
-        b'a'..=b'f' => Some(digit - b'a' + 10),
-        b'A'..=b'F' => Some(digit - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1203,10 +1214,7 @@ pub fn sync_start(
     }
     if let Some(previous) = guard.take() {
         SERVER_RUNNING.store(false, Ordering::Release);
-        previous.running.store(false, Ordering::Relaxed);
-        for handle in previous.handles {
-            let _ = handle.join();
-        }
+        previous.shut_down();
     }
     let id = get_identity(&app)?;
     let tls_config = sync_server_config(&id)?;
@@ -1224,6 +1232,8 @@ pub fn sync_start(
     let served_token = Arc::new(token.clone());
     let app_for_thread = app.clone();
     let running_for_thread = running.clone();
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let stop_for_thread = stop.clone();
     let handle = std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -1259,8 +1269,9 @@ pub fn sync_start(
             let peer_slots = Arc::new(PeerSlots::default());
             let mut accept_warned = false;
             while running_for_thread.load(Ordering::Relaxed) {
-                let accepted =
-                    tokio::time::timeout(Duration::from_millis(250), listener.accept()).await;
+                let Some(accepted) = next_connection(&listener, &stop_for_thread).await else {
+                    continue;
+                };
                 let Some((stream, peer)) =
                     accepted_connection(accepted, &mut accept_warned, |error| {
                         emit_log(
@@ -1327,6 +1338,7 @@ pub fn sync_start(
     });
     *guard = Some(ServerState {
         running,
+        stop,
         handles: vec![handle],
         port,
         token,
@@ -1355,10 +1367,7 @@ pub fn sync_stop() -> Result<(), String> {
     let mut guard = state().lock().map_err(|e| e.to_string())?;
     if let Some(st) = guard.take() {
         SERVER_RUNNING.store(false, Ordering::Release);
-        st.running.store(false, Ordering::Relaxed);
-        for h in st.handles {
-            let _ = h.join();
-        }
+        st.shut_down();
     }
     Ok(())
 }
@@ -1379,26 +1388,26 @@ pub fn sync_local_addr() -> Result<String, String> {
 
 #[cfg(test)]
 mod parser_tests {
-    use super::{parse_hex, parse_identity_request};
+    use super::parse_identity_request;
 
     #[test]
     fn hex_and_identity_parsers_reject_non_ascii_without_panicking() {
         let zeros = "0".repeat(64);
-        assert_eq!(parse_hex::<32>(&zeros), Some([0u8; 32]));
-        assert_eq!(parse_hex::<2>("00FF"), Some([0, 255]));
-        assert_eq!(parse_hex::<2>("00+f"), None);
+        assert_eq!(crate::hex::decode_exact::<32>(&zeros), Some([0u8; 32]));
+        assert_eq!(crate::hex::decode_exact::<2>("00FF"), Some([0, 255]));
+        assert_eq!(crate::hex::decode_exact::<2>("00+f"), None);
         for at in 0..66 {
             // One 3-byte character at every byte offset, total length 66 and 64.
             let mut chars: Vec<char> = "0".repeat(64).chars().collect();
             chars.insert(at.min(64), '€');
             let text: String = chars.iter().collect();
-            assert_eq!(parse_hex::<33>(&text), None);
-            assert_eq!(parse_hex::<32>(&text), None);
+            assert_eq!(crate::hex::decode_exact::<33>(&text), None);
+            assert_eq!(crate::hex::decode_exact::<32>(&text), None);
             let query = format!("pake={text}&nonce={zeros}");
             assert_eq!(parse_identity_request(&query), None);
         }
         for odd in ["", "0", "€", "0€", "€0", "ab€"] {
-            assert_eq!(parse_hex::<1>(odd), None);
+            assert_eq!(crate::hex::decode_exact::<1>(odd), None);
         }
         let valid = format!("pake={}&nonce={zeros}", "0".repeat(66));
         assert!(parse_identity_request(&valid).is_some());
@@ -1428,8 +1437,8 @@ mod parser_tests {
             let text: String = (0..length)
                 .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
                 .collect();
-            let _ = parse_hex::<33>(&text);
-            let _ = parse_hex::<32>(&text);
+            let _ = crate::hex::decode_exact::<33>(&text);
+            let _ = crate::hex::decode_exact::<32>(&text);
             let _ = parse_identity_request(&text);
             let _ = parse_identity_request(&format!("pake={text}&nonce={text}"));
             let _ = url_decode(&text);

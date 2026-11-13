@@ -112,3 +112,58 @@ describe("reopening an indexed vault", () => {
     }
   });
 });
+
+describe("raw-byte digests", () => {
+  const files: VaultFile[] = ["bom.md", "latin.md"].map((relPath) => ({
+    path: `/v/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true,
+  }));
+  // Decoding strips the BOM and replaces the invalid byte, so the text cannot
+  // reproduce the native raw-byte fingerprint.
+  const raw: Record<string, Uint8Array<ArrayBuffer>> = {
+    "bom.md": new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69]),
+    "latin.md": new Uint8Array([0x61, 0xe9, 0x62]),
+  };
+  const hex = async (bytes: Uint8Array<ArrayBuffer>) =>
+    Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+
+  it("reuses BOM and non-UTF-8 documents on reopen without rewriting the snapshot", async () => {
+    let stored: Parameters<VaultIndexStorage["save"]>[0] | null = null;
+    const storage = {
+      load: async () => stored && structuredClone(stored),
+      save: vi.fn(async (snapshot: Parameters<VaultIndexStorage["save"]>[0]) => { stored = structuredClone(snapshot); }),
+    };
+    const read = vi.fn(async (batch: VaultFile[]) => Promise.all(batch.map(async (file) => ({
+      kind: "content" as const, text: new TextDecoder().decode(raw[file.relPath]), sha256: await hex(raw[file.relPath]),
+    }))));
+    const open = () => loadIndexedNotes({
+      root: "/v", files, read, stopped: () => false, storage, onCached: () => {},
+      fingerprints: (rels) => Promise.all(rels.map((rel) => hex(raw[rel]))),
+    });
+    expect(await open()).toMatchObject({ read: 2 });
+    await vi.waitFor(() => expect(storage.save).toHaveBeenCalledOnce());
+    const warm = await open();
+    expect(warm).toMatchObject({ read: 0, reused: 2 });
+    expect(read).toHaveBeenCalledOnce();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(storage.save).toHaveBeenCalledOnce();
+  });
+});
+
+describe("first open without a stored index", () => {
+  it("keeps no per-document text when no stored index was published", async () => {
+    const files: VaultFile[] = ["A.md", "B.md"].map((relPath) => ({
+      path: `/v/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true,
+    }));
+    const onCached = vi.fn();
+    const result = await loadIndexedNotes({
+      root: "/v", files, stopped: () => false, onCached,
+      storage: { load: async () => null, save: async () => {} },
+      read: async (batch) => batch.map((file) => ({ kind: "content" as const, text: `body of ${file.relPath}` })),
+      fingerprints: async (rels) => rels.map(() => null),
+    });
+    expect(onCached).not.toHaveBeenCalled();
+    expect(result.read).toBe(2);
+    expect(result.cache["A.md"]).toBe("body of A.md");
+    expect(result.changed.size).toBe(0);
+  });
+});

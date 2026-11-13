@@ -11,7 +11,7 @@ import {
   type Simulation,
 } from "d3-force";
 import { GraphPhysicsSession, GRAPH_SETTLED_ALPHA, graphPhysicsTransferables, snapshotGraphPhysics } from "./graphPhysics";
-import { phaseFromId, resolveOverlaps } from "../components/graphGeometry";
+import { phaseFromId, resolveOverlaps } from "./graphGeometry";
 
 type Node = { id: string; degree: number; x?: number; y?: number; vx?: number; vy?: number; fx?: number | null; fy?: number | null };
 type Link = { source: string | Node; target: string | Node };

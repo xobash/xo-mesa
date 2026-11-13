@@ -156,7 +156,7 @@ function* markdownTargets(source: string, image: boolean): Generator<string> {
         yield source.slice(targetStart + 1, gt);
         continue;
       }
-      // Not a valid `<destination>`: read it as a bare destination, as before.
+      // Not a valid `<destination>`: read it as a bare destination.
     }
     // Target starts only move forward. Reuse the next terminator when many
     // malformed labels point into the same unterminated target run.

@@ -1,7 +1,7 @@
 import { vaultStorageId, privateImagePath, restoreImagePath, VAULT_INDEX_STORAGE_VERSION } from "./vaultStorage";
 import type { NoteMeta, VaultFile } from '../types';
 import { createImageResolver, noteMetaFor } from './graph';
-import { isTextualVaultFile } from './vault';
+import { isTextualVaultFile, sha256Hex } from './vault';
 import type { TextReadOutcome } from './vault';
 import { indexedContentCache, type IndexedDocument } from './documentWorkingSet';
 import { runCancellableBackgroundWork } from "./backgroundWorkGovernor";
@@ -129,17 +129,16 @@ function valid(entry: RecordEntry): boolean {
     Array.isArray(entry.document.tasks) &&
     !!entry.note && typeof entry.note.title === 'string' && [entry.note.rawLinks, entry.note.rawReferences, entry.note.tags, entry.note.aliases].every(a => Array.isArray(a) && a.every(x => typeof x === 'string'));
 }
-export async function fingerprintText(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+/** Digest of re-encoded text, for reads without raw bytes. It equals the
+ *  native raw-byte fingerprint only for BOM-free valid UTF-8. */
+export function fingerprintText(text: string): Promise<string> {
+  return sha256Hex(new TextEncoder().encode(text));
 }
 async function integrity(entry: Omit<RecordEntry, 'integrity'>): Promise<string> {
   const metadata = new TextEncoder().encode(JSON.stringify([entry.digest, entry.document.chars, entry.document.encoding, entry.note, entry.imageTarget, entry.document.tasks]));
   const bytes = new Uint8Array(entry.document.bytes.length + entry.document.bloom.length + metadata.length);
   bytes.set(entry.document.bytes); bytes.set(entry.document.bloom, entry.document.bytes.length); bytes.set(metadata, entry.document.bytes.length + entry.document.bloom.length);
-  const hash = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(bytes);
 }
 /** Bound read/worker batches by bytes as well as document count. */
 function indexReadBatches(files: readonly VaultFile[]): VaultFile[][] {
@@ -163,7 +162,8 @@ export async function loadIndexedNotes(options: {
   /**
    * Receives the stored snapshot before verification, so a reopened vault can
    * show its last index at once. `missing` counts text files the snapshot lacks.
-   * When given, the result's `changed` holds the text of every document read.
+   * Once it has run, the result's `changed` holds the text of every document
+   * read; otherwise `changed` stays empty, so a first open keeps no corpus text.
    */
   onCached?: (cached: { notes: Record<string, NoteMeta>; cache: Record<string, string>; missing: number }) => void;
   storage?: VaultIndexStorage;
@@ -181,6 +181,7 @@ export async function loadIndexedNotes(options: {
   const resolveImage = createImageResolver(files);
   const noteFor = (file: VaultFile, entry: RecordEntry): NoteMeta =>
     ({ ...entry.note, relPath: file.relPath, title: file.name, firstImagePath: entry.imageTarget ? resolveImage(entry.imageTarget) : undefined });
+  let published = false;
   if (options.onCached && prior.size && !stopped()) {
     const notes: Record<string, NoteMeta> = {};
     const documents: [string, IndexedDocument][] = [];
@@ -192,6 +193,7 @@ export async function loadIndexedNotes(options: {
       documents.push([file.relPath, entry.document]);
     }
     options.onCached({ notes, cache: indexedContentCache(documents), missing });
+    published = true;
   }
   const changed = new Map<string, string>();
   let completed = 0;
@@ -223,7 +225,7 @@ export async function loadIndexedNotes(options: {
     if (stopped()) break;
     const successful = batch.flatMap((file, i) => {
       const result = texts[i];
-      if (result?.kind === "content") return [{ file, text: result.text }];
+      if (result?.kind === "content") return [{ file, text: result.text, sha256: result.sha256 }];
       if (result?.kind === "skipped") skipped.push(file.relPath);
       else if (result?.kind === "offline") offline.push(file.relPath);
       else failed.push(file.relPath);
@@ -233,14 +235,20 @@ export async function loadIndexedNotes(options: {
     const metadata = successful.map(({ file, text }) => noteMetaFor(file, text, resolveImage));
     const documents = await runCancellableBackgroundWork("index", () => codec.encode(successful.map(({ text }) => text), successful.map(({ file }) => !!file.isMarkdown)), stopped);
     if (stopped()) break;
-    for (let i = 0; i < successful.length; i++) {
-      const { file, text } = successful[i];
-      let sha = '';
-      try { sha = await fingerprintText(text); } catch { /* not persisted/reused */ }
+    // The stored digest must equal the reopen fingerprint: prefer the raw-byte
+    // digest from the read, which BOM or non-UTF-8 text cannot reproduce.
+    const built = await Promise.all(successful.map(async ({ text, sha256 }, i) => {
+      let sha = sha256 ?? '';
+      if (!sha) try { sha = await fingerprintText(text); } catch { /* not persisted/reused */ }
       const entry = { digest: sha, document: documents[i], note: metadata[i].note, integrity: '', imageTarget: metadata[i].firstImage ?? undefined };
       try { entry.integrity = await integrity(entry); } catch { /* cache unavailable */ }
-      entries.set(file.relPath, entry); reads++;
-      if (options.onCached) changed.set(file.relPath, text);
+      return entry;
+    }));
+    for (let i = 0; i < successful.length; i++) {
+      const { file, text } = successful[i];
+      entries.set(file.relPath, built[i]); reads++;
+      // Only a published stored index needs re-read text for its patch.
+      if (published) changed.set(file.relPath, text);
     }
     }
     // Yield between corpus batches, including all-cache-hit batches.

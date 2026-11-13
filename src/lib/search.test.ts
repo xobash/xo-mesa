@@ -1,11 +1,20 @@
 import { describe, it, expect } from "vitest";
 import {
+  createSearchScan,
   parseSearchQuery,
-  searchVault,
   SEARCH_RESULT_LIMIT,
   type SearchFile,
   type SearchPass,
 } from "./search";
+
+/** A search pass run to completion in unbounded slices. */
+function fullSearch(files: readonly SearchFile[], cache: Record<string, string>, query: string, previous?: SearchPass | null): SearchPass {
+  const scan = createSearchScan(files, cache, query, previous);
+  for (let slices = 0; !scan.advance(Infinity); slices++) {
+    if (slices > files.length) throw new Error("search pass did not finish");
+  }
+  return scan.result();
+}
 
 describe("parseSearchQuery", () => {
   it("extracts ext: and type: filters", () => {
@@ -105,9 +114,9 @@ const CACHE: Record<string, string> = {
 };
 
 /** A full (non-incremental) pass — the reference every narrowed pass must equal. */
-const full = (q: string) => searchVault(FILES, CACHE, q);
+const full = (q: string) => fullSearch(FILES, CACHE, q);
 
-describe("searchVault matching", () => {
+describe("search pass matching", () => {
   it("matches case-insensitively regardless of query casing", () => {
     // Regression: lowering only the note text made every capitalised query
     // return nothing, even against a note literally containing the word.
@@ -155,7 +164,7 @@ describe("searchVault matching", () => {
     const cache = {
       "links.md": "See **[[Projects/Q3.md|Q3 plan]]** and <strong>budget</strong> [details](https://example.com).",
     };
-    const hit = searchVault(files, cache, "budget").hits[0];
+    const hit = fullSearch(files, cache, "budget").hits[0];
     expect(hit.snippet).toContain("Q3 plan");
     expect(hit.snippet).toContain("budget");
     expect(hit.snippet).toContain("details");
@@ -167,23 +176,23 @@ describe("searchVault matching", () => {
   it("keeps exact U+0130 behavior without forcing longer ASCII terms to fallback", () => {
     const dotted = [file("dotted.md", "dotted")];
     const cache = { "dotted.md": "İstanbul then ordinary INSIDE" };
-    const word = searchVault(dotted, cache, "inside").hits[0];
+    const word = fullSearch(dotted, cache, "inside").hits[0];
     expect(word.count).toBe(1);
     expect(word.snippet).toContain("INSIDE");
     // A one-character term is only searchable with a filter. It must still
     // find the `i` produced by lowercasing U+0130. One-character searches keep
     // their established unranked count of zero.
-    const single = searchVault(dotted, cache, "ext:md i").hits[0];
+    const single = fullSearch(dotted, cache, "ext:md i").hits[0];
     expect(single.rel).toBe("dotted.md");
     expect(single.count).toBe(0);
   });
 });
 
-describe("searchVault incremental narrowing", () => {
+describe("search pass incremental narrowing", () => {
   /** Feed a typing sequence through the incremental path. */
   function type(queries: string[]): SearchPass {
     let pass: SearchPass | null = null;
-    for (const q of queries) pass = searchVault(FILES, CACHE, q, pass);
+    for (const q of queries) pass = fullSearch(FILES, CACHE, q, pass);
     return pass as SearchPass;
   }
 
@@ -198,16 +207,16 @@ describe("searchVault incremental narrowing", () => {
   });
 
   it("does not narrow across a changed ext filter", () => {
-    let pass = searchVault(FILES, CACHE, "plan .pdf");
+    let pass = fullSearch(FILES, CACHE, "plan .pdf");
     // Same term, filter dropped: the md notes must come back into scope.
-    pass = searchVault(FILES, CACHE, "plan", pass);
+    pass = fullSearch(FILES, CACHE, "plan", pass);
     expect(pass.hits.map((h) => h.rel)).toEqual(full("plan").hits.map((h) => h.rel));
     expect(pass.hits.map((h) => h.rel)).toContain("notes/q3.md");
   });
 
   it("does not narrow from a pass that never scanned", () => {
-    const short = searchVault(FILES, CACHE, "b");
-    const next = searchVault(FILES, CACHE, "bu", short);
+    const short = fullSearch(FILES, CACHE, "b");
+    const next = fullSearch(FILES, CACHE, "bu", short);
     expect(next.hits).toEqual(full("bu").hits);
   });
 
@@ -221,13 +230,13 @@ describe("searchVault incremental narrowing", () => {
       many.push(file(rel, `n${String(i).padStart(3, "0")}`));
       cache[rel] = i === n - 1 ? "aab needle" : "aa filler";
     }
-    const wide = searchVault(many, cache, "aa");
+    const wide = fullSearch(many, cache, "aa");
     expect(wide.hits).toHaveLength(SEARCH_RESULT_LIMIT);
     expect(wide.candidates).toHaveLength(n);
 
-    const narrowed = searchVault(many, cache, "aab", wide);
+    const narrowed = fullSearch(many, cache, "aab", wide);
     expect(narrowed.hits.map((h) => h.rel)).toEqual([`n${String(n - 1).padStart(3, "0")}.md`]);
-    expect(narrowed.hits).toEqual(searchVault(many, cache, "aab").hits);
+    expect(narrowed.hits).toEqual(fullSearch(many, cache, "aab").hits);
   });
 
   it("narrowing only reads the surviving notes", () => {
@@ -238,9 +247,9 @@ describe("searchVault incremental narrowing", () => {
         return t[k];
       },
     });
-    const wide = searchVault(FILES, probe, "bud");
+    const wide = fullSearch(FILES, probe, "bud");
     reads.length = 0;
-    searchVault(FILES, probe, "budge", wide);
+    fullSearch(FILES, probe, "budge", wide);
     expect(reads).toEqual(["Budget.md"]);
   });
 });

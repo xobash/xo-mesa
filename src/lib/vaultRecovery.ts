@@ -41,7 +41,7 @@ export async function recoverWriteArtifacts(
   try {
     const found: FoundArtifact[] = [];
     if (discovered) {
-      found.push(...discovered);
+      for (const artifact of discovered) found.push(artifact);
     } else {
       await collectFilesMatching(root, isMesaWriteArtifactName, found, stopped);
     }
@@ -127,8 +127,8 @@ async function collectFilesMatching(
         })
       );
       for (const found of batch) {
-        next.push(...found.directories);
-        out.push(...found.files);
+        for (const directory of found.directories) next.push(directory);
+        for (const file of found.files) out.push(file);
       }
     }
     level = next;

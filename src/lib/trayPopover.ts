@@ -63,33 +63,69 @@ export function searchFiles(files: readonly VaultFile[], query: string, limit = 
     .map((r) => popoverFile(r.f));
 }
 
-/** The most-connected part of the vault graph, always including the open note. */
-export function miniGraph(notes: Record<string, NoteMeta>, files: VaultFile[], active: string | null, pending: boolean): MiniGraph {
-  const graph = buildGraph(notes, files);
-  const ranked = [...graph.nodes].sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id));
-  const kept = ranked.slice(0, MINI_GRAPH_NODES);
-  const activeNode = active ? graph.nodes.find((n) => n.id === active) : undefined;
-  if (activeNode && !kept.includes(activeNode)) kept[kept.length - 1] = activeNode;
-  // Unlinked files would float far from the clusters and shrink the fit, so
-  // only files linked inside the kept set are drawn (plus the open note).
-  const keptIds = new Set(kept.map((n) => n.id));
-  const pairs = graph.links
+type Graph = ReturnType<typeof buildGraph>;
+type GraphNode = Graph["nodes"][number];
+interface RankedMiniGraph {
+  notes: Record<string, NoteMeta>;
+  files: VaultFile[];
+  total: number;
+  links: Graph["links"];
+  /** Top MINI_GRAPH_NODES by degree, then id. */
+  kept: GraphNode[];
+  byId: Map<string, GraphNode>;
+  /** Links inside `kept`, and their endpoints. */
+  pairs: (readonly [string, string])[];
+  linked: Set<string>;
+}
+
+function linkPairs(links: Graph["links"], keptIds: Set<string>): (readonly [string, string])[] {
+  return links
     .map((l) => [String(l.source), String(l.target)] as const)
     .filter(([s, t]) => s !== t && keptIds.has(s) && keptIds.has(t));
-  const linked = new Set(pairs.flat());
-  const shown = kept.filter((n) => linked.has(n.id) || n.id === active);
-  const index = new Map(shown.map((n, i) => [n.id, i]));
-  const links: [number, number][] = [];
-  for (const [s, t] of pairs) {
-    links.push([index.get(s)!, index.get(t)!]);
-    if (links.length >= MINI_GRAPH_LINKS) break;
-  }
-  return {
-    nodes: shown.map((n) => ({ id: n.id, title: n.title, degree: n.degree })),
-    links,
-    active: active ? index.get(active) ?? -1 : -1,
-    total: graph.nodes.length,
-    pending,
+}
+
+/**
+ * The most-connected part of the vault graph, always including the open note.
+ * Single-entry cache: the graph build and ranking rerun only when `notes` or
+ * `files` change identity; a new open note reuses them.
+ */
+export function createMiniGraphBuilder() {
+  let cache: RankedMiniGraph | null = null;
+  return (notes: Record<string, NoteMeta>, files: VaultFile[], active: string | null, pending: boolean): MiniGraph => {
+    if (!cache || cache.notes !== notes || cache.files !== files) {
+      const graph = buildGraph(notes, files);
+      const ranked = [...graph.nodes].sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id));
+      const kept = ranked.slice(0, MINI_GRAPH_NODES);
+      const pairs = linkPairs(graph.links, new Set(kept.map((n) => n.id)));
+      const byId = new Map<string, GraphNode>();
+      for (const n of graph.nodes) if (!byId.has(n.id)) byId.set(n.id, n);
+      cache = { notes, files, total: graph.nodes.length, links: graph.links, kept, byId, pairs, linked: new Set(pairs.flat()) };
+    }
+    let kept = cache.kept;
+    let { pairs, linked } = cache;
+    const activeNode = active ? cache.byId.get(active) : undefined;
+    if (activeNode && !kept.includes(activeNode)) {
+      kept = [...kept];
+      kept[kept.length - 1] = activeNode;
+      // Unlinked files would float far from the clusters and shrink the fit, so
+      // only files linked inside the kept set are drawn (plus the open note).
+      pairs = linkPairs(cache.links, new Set(kept.map((n) => n.id)));
+      linked = new Set(pairs.flat());
+    }
+    const shown = kept.filter((n) => linked.has(n.id) || n.id === active);
+    const index = new Map(shown.map((n, i) => [n.id, i]));
+    const links: [number, number][] = [];
+    for (const [s, t] of pairs) {
+      links.push([index.get(s)!, index.get(t)!]);
+      if (links.length >= MINI_GRAPH_LINKS) break;
+    }
+    return {
+      nodes: shown.map((n) => ({ id: n.id, title: n.title, degree: n.degree })),
+      links,
+      active: active ? index.get(active) ?? -1 : -1,
+      total: cache.total,
+      pending,
+    };
   };
 }
 

@@ -1,4 +1,5 @@
 import { proseText } from "./markdownCode";
+import { escapeRegExp } from "./regex";
 import type { NoteMeta } from "../types";
 
 /** One plain-text occurrence of a note's title or alias in another note. */
@@ -49,14 +50,13 @@ export function mentionableText(source: string): string {
   return text;
 }
 
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** Find unlinked, whole-word, case-insensitive mentions of `names` in prose. */
-export function findUnlinkedMentions(source: string, names: readonly string[], limit = 50): UnlinkedMention[] {
+/** Unlinked, whole-word, case-insensitive mentions of `names` in prose.
+ * `lowerNames[i]` is `names[i].toLocaleLowerCase()`, computed once per scan. */
+function findMentions(source: string, names: readonly string[], lowerNames: readonly string[], limit = 50): UnlinkedMention[] {
   if (!names.length || !source) return [];
   const lower = source.toLocaleLowerCase();
   // Cheap reject before the full scan: most notes mention none of the names.
-  if (!names.some((name) => lower.includes(name.toLocaleLowerCase()))) return [];
+  if (!lowerNames.some((name) => lower.includes(name))) return [];
   const prose = mentionableText(source);
   const found: UnlinkedMention[] = [];
   const taken: Array<[number, number]> = [];
@@ -124,6 +124,7 @@ export function createMentionScan(
 ) {
   let index = 0, unread = 0;
   const results: MentionScanResult[] = [];
+  const lowerNames = names.map((name) => name.toLocaleLowerCase());
   return {
     /** Scan for up to `budgetMs` (at least one note). True when complete. */
     advance(budgetMs: number): boolean {
@@ -133,7 +134,7 @@ export function createMentionScan(
         const relPath = rels[index++];
         const text = read(relPath);
         if (text === undefined) { unread++; continue; }
-        const mentions = findUnlinkedMentions(text, names);
+        const mentions = findMentions(text, names, lowerNames);
         if (mentions.length) results.push({ relPath, mentions });
       } while (now() - started < budgetMs);
       return index >= rels.length;

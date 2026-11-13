@@ -166,10 +166,6 @@ impl ContentHasher {
         format!("{:x}", self.0.clone().finalize())
     }
 }
-#[cfg(test)]
-pub fn content_hash_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
 
 /// Hash a file by streaming 64 KiB chunks — never loads the file into memory.
 /// Returns (size, hash).
@@ -243,12 +239,17 @@ pub fn ignored_name(name: &str) -> bool {
     vault_names::is_hidden_name(name) || platform_fs::is_windows_shell_artifact(name)
 }
 
+/// Longest relative path a peer may name, in UTF-8 bytes.
+pub const MAX_PEER_REL_BYTES: usize = 4096;
+
 /// Peer-facing sync path policy: everything `safe_join` accepts, minus any
 /// segment the vault walk ignores. Peers may never read or change `.git/`,
 /// `.obsidian/`, `.mesa-trash/`, the journal or `node_modules`; Mesa's own
 /// recovery paths use `safe_join` directly and never come from a peer.
 pub fn is_peer_rel(rel: &str) -> bool {
-    safe_join(Path::new("."), rel).is_some()
+    rel.len() <= MAX_PEER_REL_BYTES
+        && !vault_names::rel_too_deep(rel)
+        && safe_join(Path::new("."), rel).is_some()
         && !rel
             .split('/')
             .any(|seg| ignored_name(seg) || peer_reserved_name(seg))
@@ -278,6 +279,8 @@ pub fn peer_reserved_name(seg: &str) -> bool {
     seg.eq_ignore_ascii_case("node_modules") || short_name_alias(seg)
 }
 
+const TOO_DEEP_ERROR: &str =
+    "folder nesting is deeper than sync supports; move this file or folder closer to the vault root";
 const PEER_RESERVED_NAME_ERROR: &str =
     "name is reserved for sync (Windows short name or node_modules); rename this file or folder before syncing";
 
@@ -428,6 +431,10 @@ fn walk(
             errors.push((rel, PEER_RESERVED_NAME_ERROR.to_string()));
             continue;
         }
+        if vault_names::rel_too_deep(&rel) {
+            errors.push((rel, TOO_DEEP_ERROR.to_string()));
+            continue;
+        }
         if safe_join(root, &rel).is_none() {
             errors.push((
                 rel,
@@ -511,6 +518,10 @@ fn walk_rooted(
         };
         if peer_reserved_name(&name) {
             errors.push((rel, PEER_RESERVED_NAME_ERROR.to_string()));
+            continue;
+        }
+        if vault_names::rel_too_deep(&rel) {
+            errors.push((rel, TOO_DEEP_ERROR.to_string()));
             continue;
         }
         if safe_join(root, &rel).is_none() {

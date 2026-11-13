@@ -103,6 +103,8 @@ mod native {
         webview11.add_ContextMenuRequested(
             &ContextMenuRequestedEventHandler::create(Box::new(|_, args| {
                 let Some(args) = args else { return Ok(()) };
+                // SAFETY: WebView2 raises this event on the UI thread and
+                // `args` stays live for the handler call.
                 filter(&args.MenuItems()?)?;
                 // An empty menu would open as a blank box.
                 let mut remaining = 0u32;
@@ -116,6 +118,9 @@ mod native {
         )
     }
 
+    /// # Safety
+    /// Call on the webview's UI thread with a collection from a live
+    /// `ContextMenuRequested` event.
     unsafe fn filter(items: &ICoreWebView2ContextMenuItemCollection) -> windows_core::Result<()> {
         let mut count = 0u32;
         items.Count(&mut count)?;

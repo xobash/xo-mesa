@@ -2,7 +2,6 @@ import { initializeVaultStorage } from "./vaultStorage";
 import { readBoundedText } from "./boundedText";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  readDir,
   readTextFile,
   readFile,
   writeFile as pluginWriteFile,
@@ -23,8 +22,8 @@ import { isMesaWriteArtifactName, type FoundArtifact } from "./writeRecovery";
 export type { FoundArtifact };
 import { forEachConcurrent } from "./concurrency";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "./textCachePlan";
-import { linkKey } from "./fsnames";
-import { baseName, extOf, joinPath, parentDir, relBase, stripExt, toRel, toVaultFile } from "./vaultPaths";
+import { bytesToHex } from "./hex";
+import { baseName, extOf, joinPath, parentDir, stripExt, toVaultFile } from "./vaultPaths";
 import { DEMO, DEMO_ROOT, SPARK_SVG, demoFiles, demoRead, demoWrite } from "./vaultDemo";
 export { baseName, extOf, parentDir, stripExt, toVaultFile } from "./vaultPaths";
 export { DEMO_ROOT } from "./vaultDemo";
@@ -34,6 +33,20 @@ export {
   listRecoveryEntries, purgeRecoveryEntry, recoverWriteArtifacts, removeFile, removeVaultEntry, restoreRecoveryEntry,
   type RecoveryEntry, type WriteRecoveryResult,
 } from "./vaultRecovery";
+export {
+  fileKind, flushableNoteText, isEditableTextExt, isImageExt, isTextExt, isTextualVaultFile, needsCachedTextRefresh,
+  resolveTextVaultLink, type FileKind,
+} from "./vaultFileKinds";
+export { canonicalRoot, isLikelyRemoteVaultPath, normalizeVaultRelPath, stripVerbatimPrefix } from "./vaultPathNormalize";
+export {
+  hasVaultMetadata, isIndexableVaultRelPath, isWindowsShellName, loadVaultMetadata, MAX_VAULT_REL_SEGMENTS, SKIPPED_DIRS,
+  WALK_BATCH,
+} from "./vaultWalk";
+export { decodePeekBytes, decodeTextChunkOutcomes, type TextReadOutcome } from "./vaultTextFrame";
+import { isTextualVaultFile } from "./vaultFileKinds";
+import { canonicalRoot, isLikelyRemoteVaultPath } from "./vaultPathNormalize";
+import { loadVaultMetadata, walk } from "./vaultWalk";
+import { decodePeekBytes, decodeTextChunkOutcomes, type TextReadOutcome } from "./vaultTextFrame";
 
 /** Are we running inside the Tauri shell (vs. a plain browser preview)? */
 export const IN_TAURI =
@@ -65,6 +78,13 @@ export const VAULT_FS: VerifiedWriteFs = {
   atomicWrite: IN_TAURI ? nativeVaultWriteAtomic : undefined,
 };
 
+/** Lowercase hex SHA-256 of exactly these bytes. WebCrypto copies the view's
+ *  bytes when called, so a caller may release or reuse the buffer afterwards. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const data = bytes.buffer instanceof ArrayBuffer ? (bytes as Uint8Array<ArrayBuffer>) : bytes.slice();
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", data)));
+}
+
 /** Hash an expected disk baseline without sending a second large file over IPC. */
 export async function nativeVaultWriteAtomic(
   path: string,
@@ -78,14 +98,12 @@ export async function nativeVaultWriteAtomic(
     ? { kind: "missing" }
     : {
         kind: "hash",
-        sha256: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", expectedCurrentBytes.slice().buffer)))
-          .map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+        sha256: await sha256Hex(expectedCurrentBytes),
         size: expectedCurrentBytes.length,
       };
   // Bytes are the raw IPC body; a nested Uint8Array would be sent as a JSON
   // number array several times the file's size.
-  const pathHex = Array.from(new TextEncoder().encode(path))
-    .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const pathHex = bytesToHex(new TextEncoder().encode(path));
   await invoke("vault_write_atomic", data, {
     headers: { "x-mesa-path": pathHex, "x-mesa-expected": JSON.stringify(expected) },
   });
@@ -105,208 +123,6 @@ export async function authorizeWriteArtifacts(paths: string[]): Promise<void> {
   await invoke("vault_authorize_artifacts", { paths });
 }
 
-/** Text-renderable files we can open in the editor/preview/code viewer. */
-export function isTextExt(ext: string): boolean {
-  return /^(md|markdown|txt|text|csv|tsv|json|jsonc|ya?ml|html?|xml|svg|css|scss|less|js|jsx|ts|tsx|mjs|cjs|log|toml|ini|conf|cfg|properties|env|sh|bash|zsh|bat|cmd|ps1|psm1|py|rb|go|rs|c|h|hpp|cc|cpp|java|kt|php|sql)$/i.test(
-    ext
-  );
-}
-
-/** Textual files that open in the editable note editor (vs. the read-only code
- *  viewer). Markdown and plain text are editable; code/data files are viewed. */
-export function isEditableTextExt(ext: string): boolean {
-  return /^(md|markdown|txt|text)$/i.test(ext);
-}
-/** Shared text-pipeline eligibility predicate. Binary editing uses byte-oriented persistence. */
-export function isTextualVaultFile(file: {
-  ext: string;
-  isMarkdown?: boolean;
-}): boolean {
-  return !!file.isMarkdown || isTextExt(file.ext) || /^rtf$/i.test(file.ext);
-}
-
-/** Resolve a vault link to a real text file without making a new Markdown note.
- * Exact relative paths win. A bare name then prefers Markdown and falls back
- * to another editable text file, such as `.txt`. */
-export function resolveTextVaultLink(
-  files: readonly VaultFile[],
-  target: string
-): VaultFile | undefined {
-  let normalized = target.split("|")[0]?.split("#")[0]?.trim().replace(/\\/g, "/") ?? "";
-  try {
-    normalized = decodeURIComponent(normalized);
-  } catch {
-    // Keep a malformed percent escape literal. It can still be a real name.
-  }
-  if (!normalized) return undefined;
-  const lower = linkKey(normalized);
-  const exact = files.find(
-    (file) => isTextualVaultFile(file) && linkKey(file.relPath) === lower
-  );
-  if (exact) return exact;
-  const base = relBase(lower);
-  const matches = files.filter(
-    (file) => isTextualVaultFile(file) && linkKey(file.name) === base
-  );
-  return matches.find((file) => file.isMarkdown) ?? matches[0];
-}
-
-/** Return cached text only for eligible text files; null means skip.
- * An absent cache entry is not an empty document, while a cached empty string is valid content. */
-export function flushableNoteText(
-  file: { ext: string; isMarkdown?: boolean },
-  cachedContent: string | undefined
-): string | null {
-  if (cachedContent === undefined) return null;
-  if (!isTextualVaultFile(file)) return null;
-  return cachedContent;
-}
-
-/** Refresh text only for existing cache entries after an external modification. */
-export function needsCachedTextRefresh(
-  file: { ext: string; isMarkdown?: boolean },
-  cachedContent: string | undefined
-): boolean {
-  if (cachedContent === undefined) return false;
-  return isTextualVaultFile(file);
-}
-
-/** Image files we can display in a viewer. */
-export function isImageExt(ext: string): boolean {
-  return /^(png|jpe?g|gif|webp|bmp|avif|ico)$/i.test(ext);
-}
-/** How a file should be rendered in the main pane. */
-export type FileKind =
-  | "text"
-  | "image"
-  | "video"
-  | "pdf"
-  | "rtf"
-  | "html"
-  | "other";
-export function fileKind(ext: string): FileKind {
-  // html before the generic text check so it renders, not shows source
-  if (ext === "html" || ext === "htm") return "html";
-  if (ext === "md" || ext === "markdown" || isTextExt(ext)) return "text";
-  if (isImageExt(ext) || ext === "svg") return "image";
-  if (/^(mp4|webm|ogg|ogv|mov|m4v)$/i.test(ext)) return "video";
-  if (ext === "pdf") return "pdf";
-  if (ext === "rtf") return "rtf";
-  return "other";
-}
-
-// --- path helpers (forward-slash normalized) ------------------------------
-
-/** Windows reserved names and characters that only a verbatim path can reach. */
-const VERBATIM_ONLY_SEGMENT_RE = /^(?:con|prn|aux|nul|conin\$|conout\$|clock\$|com[1-9¹²³]|lpt[1-9¹²³]) *(?:\..*)?$|[<>:"|?*]|[. ]$/i;
-
-/**
- * Drop a Windows verbatim prefix (`\\?\C:\…`, `\\?\UNC\srv\share\…`, either
- * slash) when the rest is an ordinary drive or UNC path. Native code applies
- * the same rule (`strip_verbatim_prefix` in `vaultscope.rs`). Other paths,
- * including every Unix path, are returned unchanged.
- */
-export function stripVerbatimPrefix(p: string): string {
-  const match = /^[\\/]{2}\?[\\/](?:([a-zA-Z]:)(?=[\\/]|$)|unc[\\/])/i.exec(p);
-  if (!match) return p;
-  // A drive match stops before its separator; a bare `\\?\C:` stays as is.
-  if (match[1] && p.length === match[0].length) return p;
-  const rest = p.slice(match[0].length + (match[1] ? 1 : 0)).split(/[\\/]/);
-  if (rest.length && rest[rest.length - 1] === "") rest.pop();
-  const required = match[1] ? 0 : 2;
-  const ok =
-    rest.length >= required &&
-    rest.every((part) => part !== "" && part !== "." && part !== ".." && !VERBATIM_ONLY_SEGMENT_RE.test(part) && ![...part].some((ch) => ch.charCodeAt(0) < 0x20));
-  if (!ok) return p;
-  const sep = p[0];
-  return match[1] ? p.slice(4) : `${sep}${sep}${p.slice(match[0].length)}`;
-}
-
-/** Canonical vault-root spelling for storage/comparison: forward slashes and normalized trailing separators. */
-export function canonicalRoot(p: string): string {
-  const trimmed = stripVerbatimPrefix(p.trim()).replace(/\\/g, "/");
-  let slashed = trimmed.replace(/\/+$/, "");
-  // A bare filesystem or drive root keeps its separator: `/` and `D:/`, never
-  // "" or the drive-relative `D:`.
-  if (!slashed && trimmed.startsWith("/")) slashed = "/";
-  else if (/^[a-zA-Z]:$/.test(slashed)) slashed += "/";
-  // Windows drive letters are case-insensitive; different entry points hand
-  // back `c:/…` vs `C:/…` for the same folder. One canonical spelling keeps
-  // the recents list and lastVault from storing duplicates.
-  return slashed.replace(/^([a-z]):/, (_, d: string) => `${d.toUpperCase()}:`);
-}
-
-/**
- * Normalize an external path into a vault-relative path Mesa can match.
- *
- * Handles direct relative paths, `./` prefixes, `file://` URLs, and absolute
- * paths that end with one of the currently known vault-relative paths.
- * Returns `""` when the path cannot be mapped safely.
- */
-export function normalizeVaultRelPath(
-  rawPath: string,
-  vaultRoot: string | null,
-  knownRelPaths: string[] = []
-): string {
-  let raw = stripVerbatimPrefix(rawPath.trim()).replace(/\\/g, "/");
-  if (!raw) return "";
-  if (raw.startsWith("file://")) {
-    try {
-      const url = new URL(raw);
-      const pathname = decodeURIComponent(url.pathname).replace(/\\/g, "/");
-      // `file://server/share/x` (Windows UNC) keeps its host; a plain
-      // `file:///…` does not.
-      raw = url.hostname ? `//${url.hostname}${pathname}` : pathname;
-    } catch {
-      raw = raw.slice("file://".length).replace(/\\/g, "/");
-    }
-  }
-  // Windows drive-letter file URLs decode to `/C:/…` — strip the URL slash so
-  // the absolute path matches the vault root's `C:/…` spelling.
-  raw = raw.replace(/^\/([a-zA-Z]:\/)/, "$1");
-  const givenRoot = vaultRoot?.trim() ?? "";
-  // `/` and `D:/` reduce to the prefixes "" and `D:`; the separator check below
-  // still requires a segment boundary.
-  const root = stripVerbatimPrefix(givenRoot).replace(/\\/g, "/").replace(/\/+$/, "");
-  // Vault filesystems are case-insensitive on Windows and (by default) macOS,
-  // and tools report the same file under different casings (`c:\…` vs `C:/…`).
-  // Match prefixes case-insensitively but keep the reported casing in the rel.
-  if (
-    givenRoot &&
-    raw.toLowerCase().startsWith(root.toLowerCase()) &&
-    (raw.length === root.length || raw[root.length] === "/")
-  ) {
-    return raw.slice(root.length).replace(/^\/+/, "");
-  }
-  const rel = raw.replace(/^\.\/+/, "").replace(/^\/+/, "");
-  if (!raw.startsWith("/") && !/^[a-zA-Z]:\//.test(raw)) return rel;
-  if (!knownRelPaths.length) return "";
-  // The first listed path that is a `/`-bounded suffix of the raw path.
-  const index = suffixIndexFor(knownRelPaths);
-  const rawLower = raw.toLowerCase();
-  let best: { order: number; rel: string } | undefined;
-  for (let i = rawLower.indexOf("/"); i >= 0; i = rawLower.indexOf("/", i + 1)) {
-    const hit = index.get(rawLower.slice(i + 1));
-    if (hit && (!best || hit.order < best.order)) best = hit;
-  }
-  return best?.rel ?? "";
-}
-
-/** Lowercased path → its first position in a known-path list, cached per list
- *  identity so a watcher batch does not rescan the whole catalogue per path. */
-const suffixIndexes = new WeakMap<readonly string[], Map<string, { order: number; rel: string }>>();
-function suffixIndexFor(knownRelPaths: readonly string[]): Map<string, { order: number; rel: string }> {
-  let index = suffixIndexes.get(knownRelPaths);
-  if (index) return index;
-  index = new Map();
-  knownRelPaths.forEach((candidate, order) => {
-    const rel = candidate.replace(/\\/g, "/").replace(/^\/+/, "");
-    const key = rel.toLowerCase();
-    if (rel && !index!.has(key)) index!.set(key, { order, rel });
-  });
-  suffixIndexes.set(knownRelPaths, index);
-  return index;
-}
 export function isDemo(pathOrRoot: string): boolean {
   return !IN_TAURI || pathOrRoot.startsWith(DEMO_ROOT);
 }
@@ -347,28 +163,6 @@ export async function assertVaultRootAvailable(root: string): Promise<void> {
   // definite non-directory result is grounds to reject the selected root.
   if (info.isDirectory === false) {
     throw new Error("The selected vault path is not a folder.");
-  }
-}
-
-/** Fill size/mtime/createdAt in place using bounded per-file stat requests.
- * Viewers subscribe to primitive metadata; graph timelapse uses creation time. */
-export async function loadVaultMetadata(
-  files: readonly VaultFile[],
-  stopped?: () => boolean
-): Promise<void> {
-  try {
-    await forEachConcurrent(files, 32, async (f) => {
-      try {
-        const s = await stat(f.path);
-        f.size = s.size;
-        f.mtime = s.mtime ? new Date(s.mtime).getTime() : undefined;
-        f.createdAt = s.birthtime ? new Date(s.birthtime).getTime() : undefined;
-      } catch {
-        /* leave undefined */
-      }
-    }, stopped);
-  } catch {
-    /* stat unavailable — sorting by name/links still works */
   }
 }
 
@@ -460,84 +254,6 @@ export async function scanVault(
   return out;
 }
 
-/** Whether a listing already carries the `size`/`mtime` a stat pass would add. */
-export function hasVaultMetadata(files: readonly VaultFile[]): boolean {
-  return files.length > 0 && files.every((f) => f.size !== undefined);
-}
-
-/** Directory names `walk` never descends into. */
-export const SKIPPED_DIRS = new Set(["node_modules", ".git"]);
-
-/** Names Windows Explorer and the volume create for themselves. Every walk, the
- * index and sync skip them on every platform, ASCII case-insensitively. Keep in
- * parity with `is_windows_shell_artifact` in `src-tauri/src/platform_fs.rs`. */
-const WINDOWS_SHELL_NAMES = new Set(["desktop.ini", "thumbs.db", "$recycle.bin", "system volume information"]);
-
-export function isWindowsShellName(name: string): boolean {
-  return WINDOWS_SHELL_NAMES.has(name.replace(/[A-Z]/g, (c) => c.toLowerCase()));
-}
-
-/** Shared scan/watch path filter. Exclude dot-prefixed path segments,
- * dependency directories and Windows shell files before registration or
- * fallback rescanning. */
-export function isIndexableVaultRelPath(rel: string): boolean {
-  if (!rel) return false;
-  for (const seg of rel.split("/")) {
-    if (!seg || seg.startsWith(".") || SKIPPED_DIRS.has(seg) || isWindowsShellName(seg)) return false;
-  }
-  return true;
-}
-
-/** List sibling directories in bounded level batches; final sorting makes traversal order irrelevant. */
-export const WALK_BATCH = 16;
-
-async function walk(
-  dir: string,
-  root: string,
-  out: VaultFile[],
-  stopped?: () => boolean
-): Promise<void> {
-  let level = [dir];
-  while (level.length && !stopped?.()) {
-    const next: string[] = [];
-    for (let i = 0; i < level.length && !stopped?.(); i += WALK_BATCH) {
-      await Promise.all(
-        level.slice(i, i + WALK_BATCH).map(async (current) => {
-          if (stopped?.()) return;
-          let entries;
-          try {
-            entries = await readDir(current);
-          } catch (error) {
-            // Losing a child folder mid-scan should not hide the rest of a
-            // vault. Losing the ROOT is different: returning [] here makes an
-            // offline network drive look exactly like a valid empty vault.
-            if (current === root) throw error;
-            return;
-          }
-          for (const e of entries) {
-            if (!e.name || e.name.startsWith(".") || isWindowsShellName(e.name)) continue;
-            const full = joinPath(current, e.name);
-            if (e.isDirectory) {
-              if (SKIPPED_DIRS.has(e.name)) continue;
-              next.push(full);
-            } else if (e.isFile) {
-              const ext = extOf(e.name);
-              out.push({
-                path: full,
-                relPath: toRel(root, full),
-                name: stripExt(e.name),
-                ext,
-                isMarkdown: ext === "md" || ext === "markdown",
-              });
-            }
-          }
-        })
-      );
-    }
-    level = next;
-  }
-}
-
 export interface ReadNoteResult {
   ok: boolean;
   text: string;
@@ -582,80 +298,9 @@ export async function readNote(file: VaultFile): Promise<string> {
   return (await readNoteResult(file)).text;
 }
 
-/** Use lower read concurrency for UNC and mounted-volume path hints without probing storage. */
-export function isLikelyRemoteVaultPath(root: string): boolean {
-  const normalized = root.replace(/\\/g, "/");
-  return normalized.startsWith("//") || normalized.startsWith("/Volumes/");
-}
-
-/** Failure marker in the `vault_read_text` frame — see `vaultread.rs`. */
-const TEXT_READ_FAILED = 0xffffffff;
-const TEXT_READ_SKIPPED = 0xfffffffe;
-/** Online-only cloud file (OneDrive Files On-Demand): background reads leave it
- *  in the cloud; opening the note downloads it through the ordinary read. */
-const TEXT_READ_OFFLINE = 0xfffffffd;
-export type TextReadOutcome =
-  | { kind: "content"; text: string }
-  | { kind: "skipped" }
-  | { kind: "offline" }
-  | { kind: "failed" };
-
 /** In-flight per-file reads when the native bulk command is unavailable. Only
  *  the fallback needs a bound; the native path's parallelism is chosen in Rust. */
 const FALLBACK_READ_CONCURRENCY = 16;
-
-/** Decode ordered little-endian count/length frames; reserved lengths distinguish skips and failures.
- * Use nonfatal UTF-8 decoding consistently with plugin reads and retain outcome distinctions. */
-export function decodeTextChunkOutcomes(
-  /** Whatever `invoke` handed back. The custom-protocol IPC yields an
-   *  `ArrayBuffer`, but Tauri silently falls back to `postMessage` if that
-   *  protocol is ever blocked, and there a byte array arrives as a plain array
-   *  of numbers. `plugin-fs`'s own readers handle both; so must this one, or a
-   *  fallback shell would decode garbage instead of degrading. */
-  body: ArrayBuffer | Uint8Array | number[]
-): TextReadOutcome[] {
-  const bytes =
-    body instanceof ArrayBuffer
-      ? new Uint8Array(body)
-      : body instanceof Uint8Array
-        ? body
-        : Uint8Array.from(body);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const decoder = new TextDecoder();
-  // Every read is bounds-checked rather than trusted. `subarray` CLAMPS out of
-  // range instead of throwing, so a frame that was truncated in transit would
-  // otherwise decode as quietly-shortened note text and be cached as the real
-  // file. Throwing sends the batch down the per-file fallback instead.
-  const need = (at: number, n: number) => {
-    if (at + n > bytes.byteLength) throw new Error("truncated vault_read_text frame");
-  };
-  need(0, 4);
-  const count = view.getUint32(0, true);
-  const out: TextReadOutcome[] = [];
-  let at = 4;
-  for (let i = 0; i < count; i++) {
-    need(at, 4);
-    const len = view.getUint32(at, true);
-    at += 4;
-    if (len === TEXT_READ_FAILED) {
-      out.push({ kind: "failed" });
-      continue;
-    }
-    if (len === TEXT_READ_SKIPPED) {
-      out.push({ kind: "skipped" });
-      continue;
-    }
-    if (len === TEXT_READ_OFFLINE) {
-      out.push({ kind: "offline" });
-      continue;
-    }
-    need(at, len);
-    out.push({ kind: "content", text: decoder.decode(bytes.subarray(at, at + len)) });
-    at += len;
-  }
-  if (at !== bytes.byteLength) throw new Error("trailing vault_read_text bytes");
-  return out;
-}
 
 /**
  * One-IPC bulk read via `vaultread.rs`, or null when unavailable — an older
@@ -679,10 +324,17 @@ async function readVaultTextNative(
       "vault_read_text",
       args
     );
-    const texts = decodeTextChunkOutcomes(body);
+    // A failed digest only costs the index its reuse check, never the read.
+    const digests = new Map<number, Promise<string | undefined>>();
+    const texts = decodeTextChunkOutcomes(body, (index, raw) => digests.set(index, sha256Hex(raw).catch(() => undefined)));
     // A short frame would silently shift every file's text onto the wrong path.
     // Refusing it costs one fallback batch; trusting it corrupts the cache.
     if (texts.length !== rels.length) return null;
+    await Promise.all([...digests].map(async ([index, digest]) => {
+      const outcome = texts[index];
+      const sha256 = await digest;
+      if (outcome.kind === "content" && sha256) outcome.sha256 = sha256;
+    }));
     return texts;
   } catch {
     return null;
@@ -725,13 +377,6 @@ export async function readVaultTextOutcomes(
     out[i] = await readSearchTextFallback(file);
   });
   return out;
-}
-
-/** Decode a byte-capped peek to text, dropping any trailing partial UTF-8
- *  sequence (a cut multi-byte char decodes to U+FFFD at the very end). */
-export function decodePeekBytes(bytes: Uint8Array): string {
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-  return text.replace(/�+$/, "");
 }
 
 /** Bound hover reads when streaming is available; compatibility may read the whole file.

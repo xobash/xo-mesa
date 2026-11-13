@@ -402,6 +402,17 @@ describe("recoverWriteArtifacts traversal", () => {
     expect(files.has(moduleArtifact)).toBe(true);
   });
 
+  it("walks a folder with 150,000 entries and still recovers", async () => {
+    const now = Date.now();
+    const list = directories.get(ROOT)!;
+    for (let i = 0; i < 150_000; i++) list.push({ name: `d${i}`, isFile: false, isDirectory: true });
+    // Listed artifacts without bytes: discovery collects them, stat finds them gone.
+    for (let i = 0; i < 150_000; i++) list.push({ name: artifactName(`n${i}.md`, "save", `g${i}`), isFile: true, isDirectory: false });
+    const stale = addFile(ROOT, artifactName("note.md", "save", "big"), { mtime: now - STALE_MS });
+    const result = await recoverWriteArtifacts(ROOT);
+    expect(result).toEqual({ restored: [], removed: [stale] });
+  }, 60000);
+
   it("bounds artifact stat requests for a large discovered list", async () => {
     const now = Date.now();
     for (let i = 0; i < 200; i++) addFile(ROOT, artifactName(`n${i}.md`, "save", `s${i}`), { mtime: now - STALE_MS });
@@ -699,6 +710,15 @@ describe("recoverWriteArtifacts with a pre-discovered artifact list", () => {
     expect(readDirCalls).toBe(1);
     expect(result).toEqual({ restored: [], removed: [stale] });
   });
+
+  it("accepts a 150,000-entry discovered list", async () => {
+    const now = Date.now();
+    const stale = addFile(ROOT, artifactName("stale.md", "save", "s3"), { mtime: now - STALE_MS });
+    const discovered = Array.from({ length: 150_000 }, (_, i) => ({ dir: ROOT, name: `missing${i}.md` }));
+    discovered.push({ dir: ROOT, name: artifactName("stale.md", "save", "s3") });
+    const result = await recoverWriteArtifacts(ROOT, undefined, discovered);
+    expect(result).toEqual({ restored: [], removed: [stale] });
+  }, 60000);
 
   it("does nothing when the scan found no artifacts — the normal open", async () => {
     addFile(ROOT, "note.md", { mtime: Date.now() - STALE_MS });

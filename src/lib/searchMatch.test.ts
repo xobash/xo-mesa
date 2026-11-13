@@ -21,7 +21,7 @@ function legacy(raw: string, termLower: string): { first: number; count: number 
   return { first, count: (text.match(re) || []).length };
 }
 
-/** Fast path, with the same fallback rule `searchVault` applies. */
+/** Fast path, with the same fallback rule `createSearchScan` applies. */
 function fast(raw: string, termLower: string): { first: number; count: number } {
   const re = buildRawMatcher(termLower);
   if (!re || !canScanRaw(raw)) return legacy(raw, termLower);

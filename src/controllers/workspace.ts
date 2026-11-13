@@ -22,9 +22,8 @@ import { MESA_WINDOW_CHROME } from "../lib/windowChrome";
 import { createWorkspaceActions } from "../lib/workspaceActions";
 import { focusDocPane, openInRegion, openToSide, reconcileDocSplit, type DocSplitStep } from "../lib/docSplit";
 
-import type { StoreApi } from "zustand";
+import type { VaultPort } from "./vaultExternalFiles";
 import type { AppState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 /** Secondary windows may create only native-validated peer document surfaces. */
 export async function createSurfaceWindow(
   WindowClass: typeof import("@tauri-apps/api/webviewWindow").WebviewWindow,
@@ -59,7 +58,7 @@ async function reclaimMainPiResizeOwnership(): Promise<void> {
   }
 }
 
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   commitSettings: (settings: Settings) => void;
 }
 export function createWorkspaceController({ get, set, commitSettings }: Dependencies) {

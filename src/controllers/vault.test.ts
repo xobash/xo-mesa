@@ -4,7 +4,8 @@ import { createStore } from 'zustand';
 import { useAppStore, type AppState } from '../store';
 import { TextSaveCoordinator } from '../lib/textSaveCoordinator';
 import type { VaultFile } from '../types';
-import { createVaultController, mergeWatchEvents } from './vault';
+import { createVaultController } from './vault';
+import { mergeWatchEvents } from './vaultWatcher';
 const io = vi.hoisted(() => ({ watch: vi.fn(), valid: vi.fn(async () => true), read: vi.fn(), scan: vi.fn(async () => []), exists: vi.fn(async (_path: string) => true) }));
 vi.mock('../lib/vault', async original => ({ ...await original<object>(), authorizeVaultRoot: async () => { }, assertVaultRootAvailable: async () => { }, scanVault: io.scan, recoverWriteArtifacts: async () => ({ restored: [], removed: [] }), watchVault: io.watch, readNoteResult: io.read, isValidUtf8Text: io.valid, readNote: async () => (await io.read()).text }));
 vi.mock('../lib/vaultIndex', async original => ({ ...await original<object>(), loadIndexedNotes: async () => ({ notes: {}, cache: {}, read: 0, reused: 0, skipped: [], failed: [] }) }));
@@ -304,5 +305,14 @@ it('refreshes reference metadata from an external edit so a later rename can rep
   f.change([{ kind: 'modify', paths: ['/v/a.md'] }]);
   await vi.waitFor(() => expect(f.state.getState().contentCache['a.md']).toContain('pic.png'));
   expect(f.state.getState().notes['a.md'].rawReferences).toEqual(expect.arrayContaining(['pic.png']));
+  f.controller.dispose();
+});
+it('gives externally created notes reference metadata so a rename does not inspect them', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  f.state.setState({ files: [], fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });
+  io.read.mockReset().mockResolvedValue({ ok: true, text: 'no links here' });
+  f.change([{ kind: 'create', paths: ['/v/new.md'] }]);
+  await vi.waitFor(() => expect(f.state.getState().notes['new.md']).toBeDefined());
+  expect(f.state.getState().notes['new.md'].rawReferences).toEqual([]);
   f.controller.dispose();
 });

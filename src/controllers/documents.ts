@@ -3,10 +3,8 @@ import {
   changedLineStats,
   changedSnippet
 } from "../lib/activity";
-import { forkContentCache, markCacheTaskStable } from "../lib/documentWorkingSet";
-import { buildNotes, resolveTarget } from "../lib/graph";
-import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
-import { isMarkdownPath } from "../lib/markdownCode";
+import { forkContentCache, isIndexedCache, markCacheTaskStable } from "../lib/documentWorkingSet";
+import { buildNotes, resolveTarget, singleNoteMeta } from "../lib/graph";
 import {
   openViewInWorkspace,
   placeInCenter
@@ -36,11 +34,10 @@ import {
   TextSaveCoordinator
 } from "../lib/textSaveCoordinator";
 
-import type { StoreApi } from "zustand";
+import type { VaultPort } from "./vaultExternalFiles";
 import type { AppState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   getGeneration: () => number; textSaves: TextSaveCoordinator<VaultFile>; commitSettings: (settings: Settings) => void; reportingFailure: (label: string, run: () => Promise<void>) => Promise<void>;
 }
 export function createDocumentController({ get, set, getGeneration, textSaves, commitSettings, reportingFailure }: Dependencies) {
@@ -72,14 +69,7 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
     bumpActivityAmount(file.relPath, 1.3, "create");
     const notes = {
       ...get().notes,
-      [file.relPath]: {
-        relPath: file.relPath,
-        title: file.name,
-        rawLinks: extractLinks(content, isMarkdownPath(file.relPath)),
-        tags: extractTags(content, isMarkdownPath(file.relPath)),
-        aliases: extractAliases(content),
-        firstImagePath: undefined,
-      },
+      [file.relPath]: singleNoteMeta(file, content),
     };
     set({
       files: [...get().files, file].sort((a, b) =>
@@ -304,23 +294,27 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
           ) {
             touchLazyContent(relPath);
             const state = get();
-            const pinned = new Set<string>();
-            for (const candidate of state.files) {
-              if (
-                candidate.relPath === state.activePath ||
-                textSaves.isDirty(candidate.path)
-              ) {
-                pinned.add(candidate.relPath);
-              }
-            }
             const cache = forkContentCache(state.contentCache, { [relPath]: text });
-            const bounded = retainLazyTextCache(
-              cache,
-              state.files,
-              isTextualVaultFile,
-              lazyContentRecency,
-              pinned
-            );
+            // An indexed cache evicts nothing here, so it needs no pinned set.
+            let bounded = cache;
+            if (!isIndexedCache(cache)) {
+              const pinned = new Set<string>();
+              for (const candidate of state.files) {
+                if (
+                  candidate.relPath === state.activePath ||
+                  textSaves.isDirty(candidate.path)
+                ) {
+                  pinned.add(candidate.relPath);
+                }
+              }
+              bounded = retainLazyTextCache(
+                cache,
+                state.files,
+                isTextualVaultFile,
+                lazyContentRecency,
+                pinned
+              );
+            }
             const note = state.notes[relPath] ?? buildNotes(state.files, new Map([[relPath, text]]), new Set([relPath]))[relPath];
             const reason = state.unreadableTextReasons[relPath];
             const unreadableTextReasons = reason ? { ...state.unreadableTextReasons } : state.unreadableTextReasons;

@@ -1,6 +1,8 @@
 /** Raw ASCII matching preserves lowercase-search semantics with Kelvin-sign and dotted-I handling.
  * Non-ASCII terms use the lowercase path; snippet offsets always refer to raw text. */
 
+import { escapeRegExp } from "./regex";
+
 /** The one code point whose lowercase is longer than itself. Text containing
  *  it cannot use the fast path, because raw and lowered indices diverge. */
 export const LENGTH_CHANGING_CHAR = "İ";
@@ -8,18 +10,12 @@ export const LENGTH_CHANGING_CHAR = "İ";
 /** The one non-ASCII code point that lowercases into ASCII (`"k"`). */
 const KELVIN_SIGN = "K";
 
-const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/g;
-
-function escapeLiteral(ch: string): string {
-  return ch.replace(REGEX_SPECIAL, "\\$&");
-}
-
 /**
  * A global regex matching `termLower` case-insensitively against RAW text, or
  * `null` when the term is not plain ASCII and the caller must use the exact
  * `toLowerCase()` path.
  *
- * `termLower` must already be lowercased (what `searchVault` produces).
+ * `termLower` must already be lowercased (what `createSearchScan` produces).
  */
 export function buildRawMatcher(termLower: string): RegExp | null {
   if (!termLower) return null;
@@ -36,7 +32,7 @@ export function buildRawMatcher(termLower: string): RegExp | null {
       pattern +=
         ch === "k" ? `[kK${KELVIN_SIGN}]` : `[${ch}${upper}]`;
     } else {
-      pattern += escapeLiteral(ch);
+      pattern += escapeRegExp(ch);
     }
   }
   return new RegExp(pattern, "g");

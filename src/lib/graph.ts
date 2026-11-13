@@ -48,7 +48,7 @@ export function buildNotes(
 /** One document's `buildNotes` metadata plus its raw first-image target.
  *  Batch callers share one whole-vault `resolveImage` across batches. */
 export function noteMetaFor(
-  f: VaultFile,
+  f: Pick<VaultFile, "relPath" | "name" | "isMarkdown">,
   src: string,
   resolveImage: (target: string) => string | undefined
 ): { note: NoteMeta; firstImage: string | null } {
@@ -68,6 +68,13 @@ export function noteMetaFor(
   };
 }
 
+/** Metadata for one note added outside a full rebuild. Every entry carries
+ *  `rawReferences` so rename inspects only real link candidates; the graph
+ *  thumbnail resolves on the next rebuild. */
+export function singleNoteMeta(f: Pick<VaultFile, "relPath" | "name">, src: string): NoteMeta {
+  return noteMetaFor({ ...f, isMarkdown: isMarkdownPath(f.relPath) }, src, () => undefined).note;
+}
+
 function sameStrings(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -75,7 +82,8 @@ function sameStrings(a: string[], b: string[]): boolean {
 }
 
 /** Refresh link/tag/alias metadata, returning null when it is unchanged.
- * Preserves notes-object identity for topology caches. Thumbnails update on rescan. */
+ * Preserves notes-object identity for topology caches. Thumbnails update on rescan.
+ * An entry without `rawReferences` always refreshes so it gains the field. */
 export function refreshedNoteMeta(cur: NoteMeta, src: string): NoteMeta | null {
   const markdown = isMarkdownPath(cur.relPath);
   const { links: rawLinks, references: rawReferences } = extractLinksAndFirstImage(src, markdown);
@@ -83,7 +91,8 @@ export function refreshedNoteMeta(cur: NoteMeta, src: string): NoteMeta | null {
   const aliases = extractAliases(src);
   if (
     sameStrings(cur.rawLinks, rawLinks) &&
-    sameStrings(cur.rawReferences ?? [], rawReferences) &&
+    cur.rawReferences !== undefined &&
+    sameStrings(cur.rawReferences, rawReferences) &&
     sameStrings(cur.tags, tags) &&
     sameStrings(cur.aliases, aliases)
   )

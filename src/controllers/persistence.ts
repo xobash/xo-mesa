@@ -30,12 +30,10 @@ import {
   type TextSaveHold,
 } from "../lib/textSaveCoordinator";
 
-import type { StoreApi } from "zustand";
+import { CALENDAR_FILE, type VaultPort } from "./vaultExternalFiles";
 import type { AppState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
-const CALENDAR_FILE = "calendar.json";
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   refreshMissingExternalFiles: (root: string, isCurrent?: () => boolean) => Promise<void>;
   getGeneration: () => number;
 }

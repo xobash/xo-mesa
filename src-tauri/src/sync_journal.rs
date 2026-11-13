@@ -40,7 +40,7 @@ pub enum JournalOperationKind {
     Restore,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncJournal {
     pub version: u32,
     pub device: String,
@@ -139,6 +139,23 @@ pub(crate) fn journal_guard() -> std::io::Result<MutexGuard<'static, ()>> {
 }
 
 pub(super) fn load_journal_unlocked(root: &Path) -> std::io::Result<SyncJournal> {
+    load_journal_with_state(root).map(|(journal, _)| journal)
+}
+
+/// Load for a read-modify-save step. The second value is the journal as the
+/// file holds it, or `None` when the file is missing or the load repaired it,
+/// so `save_journal_if_changed` can skip a save that would change nothing.
+pub(super) fn load_journal_for_update(
+    root: &Path,
+) -> std::io::Result<(SyncJournal, Option<SyncJournal>)> {
+    let (journal, stored) = load_journal_with_state(root)?;
+    let on_disk = stored.then(|| journal.clone());
+    Ok((journal, on_disk))
+}
+
+/// The flag is true only when the returned value is exactly what the file
+/// holds.
+fn load_journal_with_state(root: &Path) -> std::io::Result<(SyncJournal, bool)> {
     #[cfg(windows)]
     let _root_guard = WindowsParentGuard::acquire(&root.join(JOURNAL_FILE), false)?;
     let path = journal_path(root);
@@ -149,7 +166,7 @@ pub(super) fn load_journal_unlocked(root: &Path) -> std::io::Result<SyncJournal>
             body
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SyncJournal::empty(journal_device()?));
+            return Ok((SyncJournal::empty(journal_device()?), false));
         }
         Err(error) => return Err(error),
     };
@@ -160,15 +177,18 @@ pub(super) fn load_journal_unlocked(root: &Path) -> std::io::Result<SyncJournal>
         )
     })?;
     let dropped = drop_unexchangeable_records(&mut journal);
+    let mut stored = true;
     if journal.version == 1 {
         migrate_legacy_journal(root, &mut journal)?;
         save_journal_unlocked(root, &journal)?;
+        stored = false;
     } else if dropped {
         validate_journal(&journal, "Mesa sync journal")?;
         save_journal_unlocked(root, &journal)?;
+        stored = false;
     }
     validate_journal(&journal, "Mesa sync journal")?;
-    Ok(journal)
+    Ok((journal, stored))
 }
 
 /// Older walks could record names peers refuse (`draft~1.md`,
@@ -395,7 +415,7 @@ fn store_peer_baseline(
     require_binding: bool,
 ) -> std::io::Result<()> {
     let _guard = journal_guard()?;
-    let mut journal = load_journal_unlocked(root)?;
+    let (mut journal, on_disk) = load_journal_for_update(root)?;
     if require_binding
         && (!journal.peer_bindings.contains_key(fingerprint)
             || journal
@@ -411,7 +431,7 @@ fn store_peer_baseline(
         return Err(invalid_data("too many peer sync bases"));
     }
     journal.peer_bases.insert(fingerprint.to_string(), common);
-    save_journal_unlocked(root, &journal)?;
+    save_journal_if_changed(root, &journal, on_disk.as_ref())?;
     Ok(())
 }
 
@@ -440,7 +460,7 @@ pub fn bind_journal_peer(
     reactivate: bool,
 ) -> std::io::Result<()> {
     let _guard = journal_guard()?;
-    let mut journal = load_journal_unlocked(root)?;
+    let (mut journal, on_disk) = load_journal_for_update(root)?;
     push_unique(
         journal
             .peer_bindings
@@ -463,7 +483,7 @@ pub fn bind_journal_peer(
         journal.retired_peers.retain(|peer| peer != device);
         note_peer_seen(&mut journal, device);
     }
-    save_journal_unlocked(root, &journal)?;
+    save_journal_if_changed(root, &journal, on_disk.as_ref())?;
     Ok(())
 }
 
@@ -701,10 +721,24 @@ pub(super) fn save_journal_unlocked(
     root: &Path,
     journal: &SyncJournal,
 ) -> std::io::Result<SyncJournal> {
-    #[cfg(windows)]
-    let _root_guard = WindowsParentGuard::acquire(&root.join(JOURNAL_FILE), false)?;
+    save_journal_if_changed(root, journal, None)
+}
+
+/// Save the compacted journal unless it equals `on_disk` (from
+/// `load_journal_for_update`). A sync run with no changes then rewrites and
+/// flushes nothing. Returns the compacted journal in both cases.
+pub(super) fn save_journal_if_changed(
+    root: &Path,
+    journal: &SyncJournal,
+    on_disk: Option<&SyncJournal>,
+) -> std::io::Result<SyncJournal> {
     let mut saved = journal.clone();
     compact_journal(&mut saved);
+    if on_disk == Some(&saved) {
+        return Ok(saved);
+    }
+    #[cfg(windows)]
+    let _root_guard = WindowsParentGuard::acquire(&root.join(JOURNAL_FILE), false)?;
     let path = journal_path(root);
     let tmp = root.join(format!(".mesa-sync-journal-{:x}.tmp", now_ms()));
     let bytes = serde_json::to_vec(&saved)
@@ -817,7 +851,7 @@ pub(super) fn append_operation(
 /// guessed away.
 pub fn reconcile_journal(root: &Path, manifest: &[ManifestEntry]) -> std::io::Result<SyncJournal> {
     let _guard = journal_guard()?;
-    let mut journal = load_journal_unlocked(root)?;
+    let (mut journal, on_disk) = load_journal_for_update(root)?;
     let current: HashMap<&str, &ManifestEntry> = manifest
         .iter()
         .map(|entry| (entry.rel.as_str(), entry))
@@ -906,7 +940,7 @@ pub fn reconcile_journal(root: &Path, manifest: &[ManifestEntry]) -> std::io::Re
             hash: entry.hash.clone(),
         })
         .collect();
-    save_journal_unlocked(root, &journal)
+    save_journal_if_changed(root, &journal, on_disk.as_ref())
 }
 
 /// Reconciliation is destructive intent generation.  A scan that could not
@@ -947,7 +981,7 @@ pub fn apply_incoming_journal(
     incoming: &SyncJournal,
 ) -> std::io::Result<(SyncJournal, Vec<JournalOperationOutcome>)> {
     let _guard = journal_guard()?;
-    let mut local = load_journal_unlocked(root)?;
+    let (mut local, on_disk) = load_journal_for_update(root)?;
     merge_remote_into(&mut local, incoming)?;
     let applied: HashSet<&str> = local.applied.iter().map(String::as_str).collect();
     let mut pending: Vec<_> = incoming
@@ -978,7 +1012,7 @@ pub fn apply_incoming_journal(
         outcomes.push(JournalOperationOutcome { operation, result });
     }
     extend_unique(&mut local.applied, acknowledged);
-    let saved = save_journal_unlocked(root, &local)?;
+    let saved = save_journal_if_changed(root, &local, on_disk.as_ref())?;
     Ok((saved, outcomes))
 }
 

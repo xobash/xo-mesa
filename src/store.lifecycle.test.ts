@@ -124,3 +124,20 @@ it('preserves edits and new catalog entries while imported Markdown is being rea
   expect(useAppStore.getState().contentCache).toMatchObject({ 'Existing.md': 'new edit', 'Added.md': 'new note', 'Imported.md': 'imported text' });
   expect(useAppStore.getState().files.map(file => file.relPath)).toEqual(['Added.md', 'Existing.md', 'Imported.md']);
 });
+
+it('imports Markdown without re-reading cached files and reads the rest concurrently', async () => {
+  const md = (relPath: string) => ({ relPath, path: `/v/${relPath}`, name: relPath.replace(/\.md$/, ''), ext: 'md', isMarkdown: true });
+  const created = ['Cached.md', 'A.md', 'B.md', 'C.md'].map(md);
+  useAppStore.setState({ vaultPath: '/v', files: [], notes: {}, contentCache: { 'Cached.md': 'cached [[A]]' }, openTabs: [], activePath: null });
+  io.import.mockResolvedValue({ created, failures: [], cancelled: false });
+  const held = deferred();
+  io.readText.mockImplementation(async (file: { relPath: string }) => { await held.promise; return `text of ${file.relPath}`; });
+  const importing = useAppStore.getState().importDropped(['/in/Cached.md', '/in/A.md', '/in/B.md', '/in/C.md']);
+  await vi.waitFor(() => expect(io.readText).toHaveBeenCalledTimes(3));
+  held.resolve();
+  await importing;
+  expect(io.readText.mock.calls.map(([file]) => (file as { relPath: string }).relPath).sort()).toEqual(['A.md', 'B.md', 'C.md']);
+  expect(useAppStore.getState().contentCache['Cached.md']).toBe('cached [[A]]');
+  expect(useAppStore.getState().contentCache['B.md']).toBe('text of B.md');
+  expect(useAppStore.getState().notes['Cached.md']).toMatchObject({ rawLinks: ['A'], rawReferences: ['A'] });
+});

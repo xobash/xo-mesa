@@ -5,6 +5,7 @@ import {
   decodePeekBytes,
   flushableNoteText,
   isIndexableVaultRelPath,
+  MAX_VAULT_REL_SEGMENTS,
   isTextualVaultFile,
   needsCachedTextRefresh,
   normalizeVaultRelPath,
@@ -16,6 +17,7 @@ import {
   writeNote,
 } from "./vault";
 import type { VaultFile } from "../types";
+import nativeNames from "../../src-tauri/src/vault_names.rs?raw";
 
 function demoFile(rel: string, ext: string, isMarkdown = false): VaultFile {
   return {
@@ -327,6 +329,15 @@ describe("isIndexableVaultRelPath", () => {
     expect(isIndexableVaultRelPath(".git/objects/ab/1234")).toBe(false);
     expect(isIndexableVaultRelPath(".obsidian/workspace.json")).toBe(false);
     expect(isIndexableVaultRelPath("Notes/.hidden/file.md")).toBe(false);
+  });
+
+  it("rejects paths nested deeper than the native depth cap", () => {
+    // The native scan, watcher and sync walks stop at this depth; a deeper
+    // path from a watch event must not become a file the scan never lists.
+    const atCap = Array(MAX_VAULT_REL_SEGMENTS - 1).fill("d").join("/");
+    expect(isIndexableVaultRelPath(`${atCap}/note.md`)).toBe(true);
+    expect(isIndexableVaultRelPath(`${atCap}/e/note.md`)).toBe(false);
+    expect(nativeNames).toContain(`pub const MAX_REL_SEGMENTS: usize = ${MAX_VAULT_REL_SEGMENTS};`);
   });
 
   it("rejects Mesa's own in-flight write artifacts", () => {

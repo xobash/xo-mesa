@@ -8,13 +8,8 @@ import { stat, readTextFile } from "@tauri-apps/plugin-fs";
 import type { VaultFile } from "../types";
 import { useAppStore } from "../store";
 import { IN_TAURI, urlForPath } from "../lib/vault";
+import { readSavedStylesheet } from "../lib/vaultStylesheet";
 import { MAX_SAVED_HTML_ASSET_CHARS, hydrateSavedHtml, savedFromUrl, savedHtmlFrameDocument } from "../lib/html";
-
-async function readSavedStylesheet(path: string): Promise<string> {
-  if (!IN_TAURI) return readTextFile(path);
-  const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes: MAX_SAVED_HTML_ASSET_CHARS, requireComplete: true });
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
 
 /** Windowed source: only visible fixed-width rows are laid out, so multi-megabyte or single-line files stay responsive.
  * Copy maps the selection back to source offsets, so wrapped rows add no newlines and select-all copies unmounted rows. */
@@ -140,7 +135,7 @@ export function HtmlView({ rel, file: providedFile }: { rel: string; file?: Vaul
     let alive = true;
     let token: string | undefined;
     const render = async () => {
-      let html = await hydrateSavedHtml(text, file.path, urlForPath, readSavedStylesheet, { vaultRoot: root ?? undefined, scripts: false,
+      let html = await hydrateSavedHtml(text, file.path, urlForPath, (path) => readSavedStylesheet(path, MAX_SAVED_HTML_ASSET_CHARS), { vaultRoot: root ?? undefined, scripts: false,
         fonts: { readBytes: async path => new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes: 2 * 1024 * 1024, requireComplete: true })) } });
       if (!alive) return;
       if (active && IN_TAURI) {

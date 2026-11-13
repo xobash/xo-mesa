@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAppStore } from "../store";
 import { claimKeyboardShortcut, isWindowTransferShortcut } from "../lib/shortcuts";
+import { PI_MIN_WIDTH } from "../lib/agent";
 import { keyboardWinPatch } from "../lib/overlayWins";
 import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
 
@@ -103,7 +104,7 @@ export function PiFloatingWindow({
       } else if (ds.mode === "resize") {
         const vw = window.innerWidth;
         const vh = window.innerHeight;
-        const nw = Math.max(420, Math.min(vw - ds.origX, ds.origW + dx));
+        const nw = Math.max(PI_MIN_WIDTH, Math.min(vw - ds.origX, ds.origW + dx));
         const nh = Math.max(320, Math.min(vh - ds.origY, ds.origH + dy));
         setWin((w) => ({ ...w, w: nw, h: nh }));
       }
@@ -196,7 +197,7 @@ export function PiFloatingWindow({
       event.key,
       event.shiftKey,
       { width: window.innerWidth, height: window.innerHeight },
-      { width: 420, height: 320 }
+      { width: PI_MIN_WIDTH, height: 320 }
     );
     if (!next) return;
     claimKeyboardShortcut(event.nativeEvent);

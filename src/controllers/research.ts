@@ -56,11 +56,10 @@ const loadDeepResearch = () => import("../lib/deepResearch");
 const currentPiSessionId = () => getPiSessionSnapshot().sessionId;
 const loadDeepResearchRun = () => import("../lib/deepResearchRun");
 
-import type { StoreApi } from "zustand";
+import type { VaultPort } from "./vaultExternalFiles";
 import type { AppState, DeepResearchRunState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   getGeneration: () => number;
   registerExternalFile: (path: string, isCurrent?: () => boolean) => Promise<void>;
   refreshMissingExternalFiles: (root: string, isCurrent?: () => boolean) => Promise<void>;
@@ -68,7 +67,6 @@ interface Dependencies extends Port {
 }
 export function createResearchController({ get, set, getGeneration, registerExternalFile, refreshMissingExternalFiles, textSaves }: Dependencies) {
   // --- Deep Research run bookkeeping (controller-owned, not React state). -------
-  let drSeq = 0;
   let listenerGeneration = 0;
   let drUnlisten: (() => void) | null = null;
   let drNavUnlistens: (() => void)[] = [];
@@ -653,7 +651,6 @@ export function createResearchController({ get, set, getGeneration, registerExte
             changeSet: null,
             error: null,
             appliedRelPaths: [],
-            seq: drSeq,
           },
         });
       }
@@ -695,7 +692,6 @@ export function createResearchController({ get, set, getGeneration, registerExte
       const runGeneration = getGeneration();
       const launchIsCurrent = () => researchRunIsCurrent(runId, root, runGeneration)
         && ["planning", "researching", "synthesizing"].includes(get().deepResearch?.phase ?? "");
-      drSeq += 1;
       drFinishRejectionCount = 0;
       drRepairPromptedAttempt = 0;
       set({
@@ -722,7 +718,6 @@ export function createResearchController({ get, set, getGeneration, registerExte
           changeSet: null,
           error: null,
           appliedRelPaths: [],
-          seq: drSeq,
         },
       });
       const contextHandle = backgroundWork.enqueue("research", async () => {

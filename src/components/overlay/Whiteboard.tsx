@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { confirmAction } from "../../lib/confirmAction";
 import { canvasBackingScale, currentDevicePixelRatio, onDevicePixelRatioChange } from "../../lib/devicePixelRatio";
 import { parseBoardDocument, type BoardDocument } from "../../lib/overlayDraft";
@@ -24,9 +24,10 @@ function WhiteboardDocument() {
   const paintGeneration = useRef(0);
   const pixelScale = useRef(1);
   const [color, setColor] = useState("#e0a948");
-  let board: BoardDocument = { version: 1, strokes: [] };
-  let parseError = "";
-  try { board = parseBoardDocument(draft.content); } catch (error) { parseError = String(error); }
+  const { board, parseError } = useMemo((): { board: BoardDocument; parseError: string } => {
+    try { return { board: parseBoardDocument(draft.content), parseError: "" }; }
+    catch (error) { return { board: { version: 1, strokes: [] }, parseError: String(error) }; }
+  }, [draft.content]);
   const boardRef = useRef(board);
   boardRef.current = board;
   const paint = () => {

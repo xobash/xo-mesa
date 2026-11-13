@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSearchScan, searchVault, type SearchFile } from "./search";
+import { createSearchScan, type SearchFile, type SearchPass } from "./search";
 import { canScanRaw, LENGTH_CHANGING_CHAR } from "./searchMatch";
+
+/** A search pass run to completion in unbounded slices. */
+function fullSearch(files: readonly SearchFile[], cache: Record<string, string>, query: string, previous?: SearchPass | null): SearchPass {
+  const scan = createSearchScan(files, cache, query, previous);
+  for (let slices = 0; !scan.advance(Infinity); slices++) {
+    if (slices > files.length) throw new Error("search pass did not finish");
+  }
+  return scan.result();
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -34,7 +43,7 @@ describe("stateless search eligibility", () => {
     const backing = "A".repeat(4 * 1024 * 1024) + "İ";
     const sources = [backing, backing.slice(-128)];
     for (const source of sources) {
-      const hits = searchVault([file("large.txt")], { "large.txt": source }, "ext:txt i").hits;
+      const hits = fullSearch([file("large.txt")], { "large.txt": source }, "ext:txt i").hits;
       expect(hits).toHaveLength(1);
       expect(hits[0].rel).toBe("large.txt");
       expect(hits[0].snippet).toContain("İ");
@@ -50,16 +59,16 @@ describe("search results across corpus changes", () => {
       "kept.txt": "plain uppercase I and K",
       "other.md": "İ and café",
     };
-    const expected = searchVault(files, original, "ext:txt i");
+    const expected = fullSearch(files, original, "ext:txt i");
     expect(expected.hits.map((h) => h.rel)).toEqual(["kept.txt", "removed.txt"]);
-    expect(searchVault(files, original, "ext:txt i")).toEqual(expected);
+    expect(fullSearch(files, original, "ext:txt i")).toEqual(expected);
 
     const currentFiles = files.slice(1);
     const current = { "kept.txt": "no match", "other.md": original["other.md"] };
-    expect(searchVault(currentFiles, current, "ext:txt i").hits).toEqual([]);
-    expect(searchVault(currentFiles, current, "ext:md i").hits.map((h) => h.rel))
+    expect(fullSearch(currentFiles, current, "ext:txt i").hits).toEqual([]);
+    expect(fullSearch(currentFiles, current, "ext:md i").hits.map((h) => h.rel))
       .toEqual(["other.md"]);
-    expect(searchVault(currentFiles, current, "café").hits.map((h) => h.rel))
+    expect(fullSearch(currentFiles, current, "café").hits.map((h) => h.rel))
       .toEqual(["other.md"]);
   });
 
@@ -67,7 +76,7 @@ describe("search results across corpus changes", () => {
     const files = [file("same.txt")];
     const oldCache = { "same.txt": "İ" + "a".repeat(200_000) };
     const newCache = { "same.txt": "no match" };
-    const expectedOld = searchVault(files, oldCache, "ext:txt i");
+    const expectedOld = fullSearch(files, oldCache, "ext:txt i");
     const oldScan = createSearchScan(files, oldCache, "ext:txt i");
     expect(oldScan.advance(0)).toBe(false);
     // A canceled caller abandons this scan after its initial work unit.
@@ -78,6 +87,6 @@ describe("search results across corpus changes", () => {
     while (!oldScan.advance(0)) { /* interleaved older caller */ }
     expect(newScan.result().hits).toEqual([]);
     expect(oldScan.result()).toEqual(expectedOld);
-    expect(searchVault(files, newCache, "ext:txt i").hits).toEqual([]);
+    expect(fullSearch(files, newCache, "ext:txt i").hits).toEqual([]);
   });
 });

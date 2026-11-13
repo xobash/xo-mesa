@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { readStylesheet } from '../styles/source';
 import { expect, it } from 'vitest';
 
@@ -26,4 +27,16 @@ it('gives every monospace stack a Windows font before the generic family', () =>
   const stacks = [...css.matchAll(/font(?:-family)?\s*:[^;{}]*\bmonospace\b[^;{}]*/g)].map((match) => match[0]);
   expect(stacks.length).toBeGreaterThan(0);
   for (const stack of stacks) expect(stack, stack).toMatch(/Consolas|var\(--mono\)/);
+});
+
+it('defines every custom property that a stylesheet reads without a fallback', () => {
+  // An undefined var() without a fallback invalidates the whole declaration at computed time.
+  const trayCss = readFileSync(new URL('../tray/tray.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const undefinedReads = (sheet: string) => {
+    const defined = new Set([...sheet.matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]));
+    const read = [...sheet.matchAll(/var\(\s*(--[\w-]+)\s*\)/g)].map((match) => match[1]);
+    return [...new Set(read.filter((name) => !defined.has(name)))].sort();
+  };
+  expect(undefinedReads(css)).toEqual([]);
+  expect(undefinedReads(trayCss)).toEqual([]);
 });

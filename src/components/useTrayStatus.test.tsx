@@ -12,12 +12,22 @@ const io = vi.hoisted(() => ({
   state: {} as Record<string, unknown>,
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: io.invoke }));
+vi.mock('../lib/graph', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/graph')>();
+  return { ...actual, buildGraph: vi.fn(actual.buildGraph) };
+});
+vi.mock('../lib/fuzzy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/fuzzy')>();
+  return { ...actual, fuzzy: vi.fn(actual.fuzzy) };
+});
 vi.mock('@tauri-apps/api/event', () => ({ listen: io.listen, emitTo: io.emitTo }));
 vi.mock('../store', () => ({
   getStore: () => io.state,
   useAppStore: { subscribe: (fn: () => void) => { io.subscribers.add(fn); return () => io.subscribers.delete(fn); } },
 }));
 import { useTrayStatus } from './useTrayStatus';
+import { buildGraph } from '../lib/graph';
+import { fuzzy } from '../lib/fuzzy';
 
 type Action = { payload: { action: string; rel?: string; id?: string; query?: string } };
 let action: ((event: Action) => void) | null = null;
@@ -132,6 +142,31 @@ it('answers popover requests with recents, vaults, search results and a mini gra
   expect(state.graph.nodes).toHaveLength(2);
   expect(state.graph.links).toHaveLength(1);
   expect(state.graph.nodes[state.graph.active].id).toBe('Projects/Alpha.md');
+});
+
+it('reuses the mini graph and search results when only the open note changes', async () => {
+  io.state = {
+    ...io.state,
+    files: [file('Projects/Alpha.md'), file('Beta.md')],
+    notes: {
+      'Projects/Alpha.md': { relPath: 'Projects/Alpha.md', title: 'Alpha', rawLinks: ['Beta'], tags: [], aliases: [] },
+      'Beta.md': { relPath: 'Beta.md', title: 'Beta', rawLinks: [], tags: [], aliases: [] },
+    },
+  };
+  await render(true);
+  await act(async () => { await Promise.resolve(); });
+  vi.mocked(buildGraph).mockClear();
+  change({ activePath: 'Beta.md' });
+  popover!({ payload: { query: 'alp' } });
+  const fuzzyCalls = vi.mocked(fuzzy).mock.calls.length;
+  change({ activePath: 'Projects/Alpha.md' });
+  popover!({ payload: { query: 'alp' } });
+  expect(buildGraph).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(fuzzy).mock.calls.length).toBe(fuzzyCalls);
+  const [first, second] = io.emitTo.mock.calls.map((call) => call[2]);
+  expect(second.graph.nodes).toEqual(first.graph.nodes);
+  expect(second.graph.nodes[second.graph.active].id).toBe('Projects/Alpha.md');
+  expect(second.results).toEqual(first.results);
 });
 
 it('routes popover actions to the store and ignores stale targets', async () => {

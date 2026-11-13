@@ -1,6 +1,7 @@
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFObject, PDFRawStream, PDFRef, PDFStream } from 'pdf-lib';
 import { Font, Encodings, type IFontNames } from '@pdf-lib/standard-fonts';
 import { unzlibSync, strFromU8, strToU8 } from 'fflate';
+import { bytesToHex } from './hex';
 
 export interface GlyphRemovalTarget { page: number; x: number; y: number; width: number; height: number; text?: string }
 export class PdfEditUnsupported extends Error {
@@ -148,7 +149,7 @@ function decodeStream(stream: PDFRawStream): string {
   let bytes=stream.getContents(); try { for(let i=0;i<filters.length;i++) bytes=unzlibSync(bytes); } catch { throw new PdfEditUnsupported('The PDF content stream could not be decoded.'); }
   return strFromU8(bytes,true);
 }
-const hex = (bytes: number[]) => `<${bytes.map(b=>b.toString(16).padStart(2,'0')).join('')}>`;
+const hex = (bytes: number[]) => `<${bytesToHex(bytes)}>`;
 const numeric = (value:number) => { if(!Number.isFinite(value)) throw new PdfEditUnsupported('The PDF text transform is invalid.'); return String(Math.round(value*1e8)/1e8); };
 
 /** Remove selected glyphs while retaining subsequent text displacement and all non-text operators. */
@@ -282,13 +283,16 @@ export function removeGlyphsInBox(doc: PDFDocument,target: GlyphRemovalTarget): 
 /** Drop unreachable source streams after pending fonts/content have been embedded. Other pages and attachments stay reachable. */
 export function discardUnreachablePdfObjects(doc: PDFDocument): void {
   const refs=new Set<PDFRef>(),seen=new Set<PDFObject>();
-  const visit=(object:PDFObject|undefined):void=>{
-    if(!object||seen.has(object))return;seen.add(object);
-    if(object instanceof PDFRef){refs.add(object);visit(doc.context.lookup(object));}
-    else if(object instanceof PDFDict)for(const child of object.values())visit(child);
-    else if(object instanceof PDFArray)for(let i=0;i<object.size();i++)visit(object.get(i));
-    else if(object instanceof PDFStream)visit(object.dict);
-  };
-  visit(doc.context.trailerInfo.Root);visit(doc.context.trailerInfo.Info);visit(doc.context.trailerInfo.Encrypt);visit(doc.context.trailerInfo.ID);
+  // Explicit stack: object chains such as outline /Next links are deeper than the call stack.
+  // Order is irrelevant; this only marks reachability. `seen` bounds the loop to the object count.
+  const stack:(PDFObject|undefined)[]=[doc.context.trailerInfo.Root,doc.context.trailerInfo.Info,doc.context.trailerInfo.Encrypt,doc.context.trailerInfo.ID];
+  while(stack.length){
+    const object=stack.pop();
+    if(!object||seen.has(object))continue;seen.add(object);
+    if(object instanceof PDFRef){refs.add(object);stack.push(doc.context.lookup(object));}
+    else if(object instanceof PDFDict)for(const child of object.values())stack.push(child);
+    else if(object instanceof PDFArray)for(let i=0;i<object.size();i++)stack.push(object.get(i));
+    else if(object instanceof PDFStream)stack.push(object.dict);
+  }
   for(const [ref] of doc.context.enumerateIndirectObjects())if(!refs.has(ref))doc.context.delete(ref);
 }

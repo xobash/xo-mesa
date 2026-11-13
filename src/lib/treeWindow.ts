@@ -1,6 +1,8 @@
 /** Sidebar row-window arithmetic for uniform-height rows.
  * Keep the focused row and its Tab neighbours mounted outside the visible slice. */
 
+import { clamp } from "./clamp";
+
 export interface RowRange {
   /** First row index in the range (inclusive). */
   start: number;
@@ -14,9 +16,6 @@ const ROW_OVERSCAN = 8;
 
 /** Height of one tree row in CSS pixels, used until a real row is measured. */
 export const DEFAULT_ROW_HEIGHT = 23;
-
-const clamp = (n: number, lo: number, hi: number) =>
-  n < lo ? lo : n > hi ? hi : n;
 
 /**
  * The range of rows covering the viewport.

@@ -66,6 +66,14 @@ for (const href of html.matchAll(/rel="modulepreload"[^>]+href="([^"]+)"/g)) {
   }
 }
 
+// The webview floor reads woff2; legacy font formats are dead weight.
+const katexFonts = assetNames.filter((name) => name.startsWith("KaTeX_"));
+const legacyFonts = katexFonts.filter((name) => !name.endsWith(".woff2"));
+if (legacyFonts.length) {
+  throw new Error(`legacy KaTeX font formats shipped: ${legacyFonts.slice(0, 3).join(", ")}`);
+}
+if (!katexFonts.length) throw new Error("KaTeX woff2 fonts are missing from the production bundle");
+
 process.stdout.write(
   `Production bundle boundaries passed (${visited.size} initial module${visited.size === 1 ? "" : "s"}; ${expectedLazyPrefixes.length} lazy surfaces).\n`,
 );

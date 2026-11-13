@@ -11,6 +11,7 @@ import { createWorkspaceController } from "./controllers/workspace";
 import { NO_DOC_SPLIT } from "./lib/docSplit";
 import { bumpActivityAmount, type ActivityOp } from "./lib/activity";
 import { confirmAction } from "./lib/confirmAction";
+import { setStatusSink } from "./lib/statusReport";
 import { normalizeSyncPort } from "./lib/pairing";
 import { normalizeAutoSyncMinutes } from "./lib/syncAutoSchedule";
 import { loadSettings } from "./lib/settings";
@@ -432,6 +433,8 @@ export const useAppStore = create<AppState>((set, get) => {
     },
   };
 });
+
+setStatusSink((status) => useAppStore.setState({ status }));
 
 /** Convenience for non-react callers. */
 export function getStore() {

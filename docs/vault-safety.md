@@ -486,7 +486,7 @@ Native ordinary saves serialize per canonical target, so a large binary save doe
 not hold a global exclusive lock against an unrelated note. Rename, deletion,
 recovery and reviewed multi-file applies retain exclusive admission against all
 ordinary saves. Existing hash checks, displaced-byte rescue and read-back remain
-unchanged. `vaultwrite.rs` tests cover same-target serialization, independent
+unchanged. `vaultwrite_tests.rs` covers same-target serialization, independent
 save overlap, and exclusion by the destructive-operation gate. Tauri's borrowed
 request body still requires an owned worker copy; this change does not claim a
 reduction in large-save memory or disk work.

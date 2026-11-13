@@ -20,39 +20,14 @@ import {
 } from "../lib/activity";
 import { urlForPath } from "../lib/vault";
 
-const ACTIVE_FRAME_MS = 1000 / 60;
-const IDLE_FRAME_MS = 1000 / 30;
-const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-// Graphs this large tick slower than a frame, so their drag physics runs in a
-// worker and the canvas keeps drawing at display rate.
-const WORKER_DRAG_MIN_NODES = 500;
-// Settling after release runs two ticks per frame below this node count.
-const DOUBLE_TICK_BELOW = 650;
-// Heavy graphs also settle (after open, data changes and retunes) in the
-// physics worker: one main-thread tick costs ~100 ms at 10,000 nodes.
-const WORKER_SETTLE_MIN_NODES = 2000;
-// At most this many decoded node thumbnails stay cached.
-const THUMB_CACHE_MAX = 192;
-
-/** Uniform neighbour velocity cap during a drag — no hub boost. */
-function dragVelocityCap(nodeCount: number): number {
-  return nodeCount > 700 ? 4 : nodeCount > 350 ? 5 : 6;
-}
-
-function ambientFrameMs(nodeCount: number, moving: boolean, active: boolean): number {
-  if (moving || active) return ACTIVE_FRAME_MS;
-  if (nodeCount > 4000) return 1000 / 20;
-  return IDLE_FRAME_MS;
-}
-
-import { GraphHitIndex, clamp, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { GraphHitIndex, clamp, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "../lib/graphGeometry";
 import { readGraphColors, type GraphColors } from "./graphColors";
 import { OVERLAP_GAP, drawGraph, type GraphBounds, type GraphDrawRefs, type GraphLinkEndpoints, type Transform } from "./graphDraw";
 import { GraphActivityCards, updateActivityCards, updateGraphHover, type ActivityCard, type GraphCardRefs, type GraphHoverCard } from "./GraphActivityCards";
 import { useGraphPointer, type DragPerf, type DragState } from "./useGraphPointer";
 import { GearIcon, GraphRangeRow, GraphSettingRow, GraphSettingSection, TimelapseIcon } from "./GraphSettingsControls";
 import { createGraphSimulation, graphPhysicsTransferables, graphSimulationTier, snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
-export { resolveOverlaps } from "./graphGeometry";
+import { DOUBLE_TICK_BELOW, GOLDEN_ANGLE, THUMB_CACHE_MAX, WORKER_DRAG_MIN_NODES, WORKER_SETTLE_MIN_NODES, ambientFrameMs, dragVelocityCap } from "./graphViewTuning";
 
 export function GraphView() {
   const notes = useAppStore((s) => s.notes);

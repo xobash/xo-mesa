@@ -14,15 +14,10 @@ pub(super) fn identity_cache() -> &'static Mutex<Option<Arc<Identity>>> {
     S.get_or_init(|| Mutex::new(None))
 }
 
-/// Lowercase hex SHA-256 of arbitrary bytes.
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    crate::hex::encode(&Sha256::digest(bytes))
-}
-
 /// Fingerprint (SHA-256 of the DER) of the first certificate in a PEM blob.
 pub(super) fn fingerprint_from_cert_pem(cert_pem: &str) -> Result<String, String> {
     let block = pem::parse(cert_pem).map_err(|e| e.to_string())?;
-    Ok(sha256_hex(block.contents()))
+    Ok(crate::hex::sha256_hex(block.contents()))
 }
 
 /// One access-control entry, reduced to what the private-storage rule checks.

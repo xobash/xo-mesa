@@ -923,7 +923,7 @@
   justify-content: center;
   gap: 12px;
   background: var(--bg);
-  color: var(--text-muted);
+  color: var(--text-dim);
 }
 
 .doc-load-state {
@@ -933,7 +933,7 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: var(--text-muted);
+  color: var(--text-dim);
 }
 
 .graph-index-status {
@@ -943,7 +943,7 @@
   padding: 4px 8px;
   border-radius: 6px;
   background: var(--bg-2);
-  color: var(--text-muted);
+  color: var(--text-dim);
   pointer-events: none;
 }
 

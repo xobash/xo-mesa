@@ -135,6 +135,7 @@ export function normalizePeer(peer: string, preferHttps = true): string {
   return p.replace(/\/+$/, "");
 }
 
+/** Peer vault summary; also the shape returned by the native `sync_fetch_manifest` command. */
 export interface RemoteVaultInfo {
   files: number;
   bytes: number;
@@ -142,20 +143,10 @@ export interface RemoteVaultInfo {
   fingerprint: string;
 }
 
-/** Shape returned by the native `sync_fetch_manifest` command. */
-interface RemoteManifest {
-  fingerprint: string;
-  files: { size: number }[];
-}
-
 /** Probe peer reachability and key authentication, returning its vault summary and observed certificate fingerprint. */
 export async function fetchRemoteVaultInfo(peer: string, token: string, pin?: string | null): Promise<RemoteVaultInfo> {
   token = await nativeCredential(token);
   const base = normalizePeer(peer, true);
-  const manifest = await invoke<RemoteManifest>("sync_fetch_manifest", { base, token, pin: pin ?? null });
-  return {
-    files: manifest.files.length,
-    bytes: manifest.files.reduce((sum, file) => sum + (file.size || 0), 0),
-    fingerprint: manifest.fingerprint,
-  };
+  const manifest = await invoke<RemoteVaultInfo>("sync_fetch_manifest", { base, token, pin: pin ?? null });
+  return { files: manifest.files, bytes: manifest.bytes, fingerprint: manifest.fingerprint };
 }

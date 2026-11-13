@@ -1,4 +1,5 @@
-import { replaceCssUrls, unwrapScriptFallbacks } from "./html";
+import { unwrapScriptFallbacks } from "./html";
+import { replaceCssUrls } from "./htmlCssUrls";
 import { rewriteSrcset } from "./remoteImages";
 import DOMPurify from "dompurify";
 

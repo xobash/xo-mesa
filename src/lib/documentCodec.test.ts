@@ -13,4 +13,11 @@ describe("document codec", () => {
     const doc = encodeDocument("- [x] done\n- [ ] next");
     expect(doc.tasks.map((task) => task.text)).toEqual(["done", "next"]);
   });
+
+  it("stores task records that survive storage and worker cloning unchanged", () => {
+    const doc = encodeDocument("- [ ] call @agent 📅 2026-07-01\n- [x] done", true);
+    expect(structuredClone(doc.tasks)).toEqual(doc.tasks);
+    expect(JSON.parse(JSON.stringify(doc.tasks))).toEqual(doc.tasks);
+    expect(doc.tasks[0]).toMatchObject({ line: 0, checked: false, due: "2026-07-01" });
+  });
 });

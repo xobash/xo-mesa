@@ -1,6 +1,7 @@
 // Prepend the Rust user bin directory and launch the project-local Tauri CLI.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { connect } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,13 +70,85 @@ if (!existsSync(tauriCli)) {
   process.exit(1);
 }
 
-const child = spawn(process.execPath, [tauriCli, ...tauriArgs], {
-  stdio: "inherit",
-  env,
-  shell: false,
-});
-child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 1)));
-child.on("error", (err) => {
-  console.error("Failed to launch Tauri:", err.message);
+// The Tauri CLI checks the dev URL once, right after it starts
+// `beforeDevCommand`, then sleeps two seconds before it checks again. Start
+// the dev server here and hand over only when its port accepts, so that first
+// check succeeds. A caller's own --config keeps the CLI's own start.
+const DEV_SERVER_POLL_MS = 25;
+const DEV_SERVER_MAX_POLLS = 1200;
+const viteCli = join(projectRoot, "node_modules", "vite", "bin", "vite.js");
+
+function devServerAddress() {
+  try {
+    const config = JSON.parse(readFileSync(join(projectRoot, "src-tauri", "tauri.conf.json"), "utf8"));
+    const url = new URL(config.build.devUrl);
+    const port = Number(url.port);
+    return Number.isInteger(port) && port > 0 ? { host: url.hostname, port } : null;
+  } catch {
+    return null;
+  }
+}
+
+function accepts({ host, port }) {
+  return new Promise((done) => {
+    const socket = connect({ host, port });
+    socket.once("connect", () => { socket.destroy(); done(true); });
+    socket.once("error", () => { socket.destroy(); done(false); });
+  });
+}
+
+/** Resolves true when the server accepts, false when it exited or never did. */
+async function waitForDevServer(address, server) {
+  for (let poll = 0; poll < DEV_SERVER_MAX_POLLS; poll += 1) {
+    if (server.exitCode !== null || server.signalCode !== null) return false;
+    if (await accepts(address)) return true;
+    await new Promise((wake) => setTimeout(wake, DEV_SERVER_POLL_MS));
+  }
+  return false;
+}
+
+function runTauri(args, devServer) {
+  const child = spawn(process.execPath, [tauriCli, ...args], { stdio: "inherit", env, shell: false });
+  const stopDevServer = () => {
+    if (devServer && devServer.exitCode === null) devServer.kill();
+  };
+  child.on("exit", (code, signal) => {
+    stopDevServer();
+    process.exit(signal ? 1 : (code ?? 1));
+  });
+  child.on("error", (err) => {
+    stopDevServer();
+    console.error("Failed to launch Tauri:", err.message);
+    process.exit(1);
+  });
+  if (!devServer) return;
+  // The app cannot run without its dev server.
+  devServer.on("exit", () => {
+    console.error("The Mesa dev server stopped; closing Mesa.");
+    child.kill();
+  });
+  // A signal sent to the launcher alone must not leave the dev server behind:
+  // pass it to Tauri, whose exit stops the server.
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(signal, () => child.kill(signal));
+  }
+}
+
+const address = sub === "dev" ? devServerAddress() : null;
+const ownsConfig = extra.some((arg) => arg === "--config" || arg === "-c" || arg.startsWith("--config="));
+if (!address || ownsConfig || !existsSync(viteCli)) {
+  runTauri(tauriArgs, null);
+} else if (await accepts(address)) {
+  console.error(`Mesa's dev port ${address.port} is already in use. Close the other dev server, then retry.`);
   process.exit(1);
-});
+} else {
+  const devServer = spawn(process.execPath, [viteCli], { cwd: projectRoot, stdio: "inherit", env, shell: false });
+  devServer.on("error", (err) => console.error("Failed to start the Mesa dev server:", err.message));
+  if (await waitForDevServer(address, devServer)) {
+    runTauri(["dev", "--config", JSON.stringify({ build: { beforeDevCommand: null } }), ...extra], devServer);
+  } else {
+    if (devServer.exitCode === null) devServer.kill();
+    console.error(`The Mesa dev server did not start on port ${address.port}.`);
+    process.exit(1);
+  }
+}

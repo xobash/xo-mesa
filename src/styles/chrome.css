@@ -470,11 +470,11 @@
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  border: 1px solid var(--line);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface-2);
+  background: var(--bg-2);
   color: var(--text);
-  font: 11px/1.45 var(--font-mono);
+  font: 11px/1.45 var(--mono);
 }
 .recovery-row span {
   min-width: 0;
@@ -555,7 +555,7 @@
   justify-content: space-between;
   gap: 12px;
   padding: 7px 0;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 .diag-mark time {

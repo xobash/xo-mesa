@@ -1,6 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { NoteMeta, VaultFile } from "../types";
-import { MINI_GRAPH_NODES, miniGraph, popoverVaults, rememberRecent, searchFiles } from "./trayPopover";
+import * as graphModule from "./graph";
+import { MINI_GRAPH_NODES, createMiniGraphBuilder, popoverVaults, rememberRecent, searchFiles } from "./trayPopover";
+
+vi.mock("./graph", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./graph")>();
+  return { ...actual, buildGraph: vi.fn(actual.buildGraph) };
+});
 
 const file = (relPath: string): VaultFile => ({
   relPath, path: `/vault/${relPath}`, name: relPath.replace(/^.*\//, "").replace(/\.md$/, ""), ext: "md", isMarkdown: true,
@@ -25,7 +31,7 @@ describe("menu bar popover state", () => {
       files.push(file(rel));
     }
     const lonely = `n${MINI_GRAPH_NODES + 49}.md`;
-    const graph = miniGraph(notes, files, lonely, false);
+    const graph = createMiniGraphBuilder()(notes, files, lonely, false);
     expect(graph.total).toBe(MINI_GRAPH_NODES + 51);
     // The hub, its 40 linked notes and the open note; unlinked files are left out.
     expect(graph.nodes).toHaveLength(42);
@@ -42,10 +48,30 @@ describe("menu bar popover state", () => {
       notes[`n${i}.md`] = note(`n${i}.md`, ["Hub"]);
       files.push(file(`n${i}.md`));
     }
-    const graph = miniGraph(notes, files, null, false);
+    const graph = createMiniGraphBuilder()(notes, files, null, false);
     expect(graph.nodes).toHaveLength(MINI_GRAPH_NODES);
     expect(graph.links).toHaveLength(MINI_GRAPH_NODES - 1);
     expect(graph.active).toBe(-1);
+  });
+
+  it("rebuilds and reranks the mini graph only when notes or files change", () => {
+    const notes: Record<string, NoteMeta> = { "Hub.md": note("Hub.md") };
+    const files = [file("Hub.md")];
+    for (let i = 0; i < MINI_GRAPH_NODES + 20; i++) {
+      notes[`n${i}.md`] = note(`n${i}.md`, i < MINI_GRAPH_NODES + 10 ? ["Hub", `n${i + 1}`] : []);
+      files.push(file(`n${i}.md`));
+    }
+    const build = vi.mocked(graphModule.buildGraph);
+    const cached = createMiniGraphBuilder();
+    build.mockClear();
+    const actives = [null, "Hub.md", "n5.md", `n${MINI_GRAPH_NODES + 5}.md`, `n${MINI_GRAPH_NODES + 15}.md`, "missing.md"];
+    const results = actives.map((active) => cached(notes, files, active, true));
+    expect(build).toHaveBeenCalledTimes(1);
+    // Same nodes, order and links as an uncached build for every open note.
+    actives.forEach((active, i) => expect(results[i]).toEqual(createMiniGraphBuilder()(notes, files, active, true)));
+    build.mockClear();
+    cached({ ...notes }, files, null, false);
+    expect(build).toHaveBeenCalledTimes(1);
   });
 
   it("orders recents newest first and drops missing files", () => {

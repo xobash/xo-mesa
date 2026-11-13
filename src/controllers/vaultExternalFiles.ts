@@ -5,8 +5,7 @@ import type { ActivityOp } from "../lib/activity";
 import { forEachConcurrent } from "../lib/concurrency";
 import { forkContentCache } from "../lib/documentWorkingSet";
 import { relPathsOf } from "../lib/fileIndex";
-import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
-import { isMarkdownPath } from "../lib/markdownCode";
+import { singleNoteMeta } from "../lib/graph";
 import { STARTUP_TEXT_READ_CONCURRENCY } from "../lib/startupTextCache";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
 import {
@@ -41,7 +40,7 @@ export function createExternalFiles({ get, set }: VaultPort) {
     // One definition of what belongs in a vault, shared with scanVault's walk.
     if (!isIndexableVaultRelPath(rel)) return;
     const file = toVaultFile(root, rel);
-    const { path, name } = file;
+    const { path } = file;
     if (isTextualVaultFile(file)) {
       // A failed read may be a create announced before its write; the file
       // stays catalogue-only until a watcher change or an open reads it.
@@ -55,14 +54,7 @@ export function createExternalFiles({ get, set }: VaultPort) {
         ),
         notes: {
           ...get().notes,
-          [rel]: {
-            relPath: rel,
-            title: name,
-            rawLinks: extractLinks(content, isMarkdownPath(rel)),
-            tags: extractTags(content, isMarkdownPath(rel)),
-            aliases: extractAliases(content),
-            firstImagePath: undefined,
-          },
+          [rel]: singleNoteMeta(file, content),
         },
         ...(read.ok
           ? { contentCache: forkContentCache(get().contentCache, { [rel]: content }) }
@@ -141,14 +133,7 @@ export function createExternalFiles({ get, set }: VaultPort) {
         const text = read.ok ? read.text : "";
         if (read.ok) nextCache[f.relPath] = text;
         else unreadable[f.relPath] = read.tooLarge ? "skipped" : "failed";
-        nextNotes[f.relPath] = {
-          relPath: f.relPath,
-          title: f.name,
-          rawLinks: extractLinks(text, isMarkdownPath(f.relPath)),
-          tags: extractTags(text, isMarkdownPath(f.relPath)),
-          aliases: extractAliases(text),
-          firstImagePath: undefined,
-        };
+        nextNotes[f.relPath] = singleNoteMeta(f, text);
       },
       () => !isCurrent()
     );
@@ -291,7 +276,7 @@ export function createExternalFiles({ get, set }: VaultPort) {
 
   return {
     registerExternalFile, resolveActivityPath, refreshMissingExternalFiles, rescanAsEvents,
-    scheduleExternalRefresh, readWatchedText, vanishedFromDisk, unreadableUpdate, removeExternalFiles,
+    scheduleExternalRefresh, readWatchedText, vanishedFromDisk, removeExternalFiles,
     cancelScheduledRefresh() { clearTimeout(externalRefreshTimer); },
   };
 }

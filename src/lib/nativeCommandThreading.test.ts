@@ -5,6 +5,7 @@ import syncServer from "../../src-tauri/src/sync_server.rs?raw";
 import syncIdentity from "../../src-tauri/src/sync_identity.rs?raw";
 import vaultscope from "../../src-tauri/src/vaultscope.rs?raw";
 import vaultwatch from "../../src-tauri/src/vaultwatch.rs?raw";
+import terminal from "../../src-tauri/src/terminal.rs?raw";
 
 // Both native command forms dispatch blocking work away from the webview thread.
 const OFF_MAIN_THREAD: Record<string, { source: string; commands: string[] }> = {
@@ -13,6 +14,7 @@ const OFF_MAIN_THREAD: Record<string, { source: string; commands: string[] }> = 
   "sync_identity.rs": { source: syncIdentity, commands: ["sync_identity"] },
   "vaultscope.rs": { source: vaultscope, commands: ["vault_flush_file", "vault_authorize", "vault_authorize_artifacts"] },
   "vaultwatch.rs": { source: vaultwatch, commands: ["vault_watch", "vault_unwatch"] },
+  "terminal.rs": { source: terminal, commands: ["terminal_snapshot"] },
 };
 
 function commandBody(source: string, name: string): { attribute: string; signature: string; body: string } {

@@ -206,6 +206,24 @@ describe("readVaultTextOutcomes", () => {
     ]);
   });
 
+  it("reports the raw-byte digest that the native fingerprint reproduces", async () => {
+    // A BOM is stripped and an invalid byte becomes U+FFFD in the text, so a
+    // digest of the decoded text would never match the file's bytes.
+    const bodies = [new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69]), new Uint8Array([0x61, 0xff, 0x62])];
+    const buf = new Uint8Array(4 + bodies.reduce((n, b) => n + 4 + b.length, 0));
+    const view = new DataView(buf.buffer);
+    view.setUint32(0, bodies.length, true);
+    let at = 4;
+    for (const body of bodies) { view.setUint32(at, body.length, true); buf.set(body, at + 4); at += 4 + body.length; }
+    nativeBehaviour = () => buf.buffer;
+    const hex = async (bytes: Uint8Array<ArrayBuffer>) =>
+      Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+    expect(await readVaultTextOutcomes(ROOT, files("bom.md", "latin.md"))).toEqual([
+      { kind: "content", text: "hi", sha256: await hex(bodies[0]) },
+      { kind: "content", text: "a\ufffdb", sha256: await hex(bodies[1]) },
+    ]);
+  });
+
   it("an empty batch costs no round-trip at all", async () => {
     nativeBehaviour = () => frame([]);
     expect(await readVaultText(ROOT, files())).toEqual([]);

@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDocument } from './documentCodec';
 import { indexedContentCache, forkContentCache, workingSetStats, documentRevision, documentMayMatch } from './documentWorkingSet';
-import { searchVault } from './search';
+import { createSearchScan, type SearchFile, type SearchPass } from './search';
 import { collectVaultTasks, resetVaultTaskMemo } from './tasks';
+
+/** A search pass run to completion in unbounded slices. */
+function fullSearch(files: readonly SearchFile[], cache: Record<string, string>, query: string, previous?: SearchPass | null): SearchPass {
+  const scan = createSearchScan(files, cache, query, previous);
+  for (let slices = 0; !scan.advance(Infinity); slices++) {
+    if (slices > files.length) throw new Error("search pass did not finish");
+  }
+  return scan.result();
+}
 
 describe('indexed document working set', () => {
   it('evicts decoded documents without losing content, including empty and unfinished Unicode', () => {
@@ -27,7 +36,7 @@ describe('indexed document working set', () => {
     const files = Object.keys(texts).map(relPath => ({ relPath, name: relPath, ext: relPath.split('.').slice(-1)[0] }));
     const cache = indexedContentCache(Object.entries(texts).map(([k, v]) => [k, encodeDocument(v)]), 10);
     for (const query of ['hello', '"hello world"', 'ext:txt hello', '雪山', 'i', 'ext:md i', 'absent', 'type:md', 'one']) {
-      expect(searchVault(files, cache, query)).toEqual(searchVault(files, texts, query));
+      expect(fullSearch(files, cache, query)).toEqual(fullSearch(files, texts, query));
     }
     expect(documentMayMatch(cache, 'one.md', 'zebra')).toBe(false);
   });

@@ -51,6 +51,7 @@ export function encodeDocument(text: string, markdown = true): IndexedDocument {
     encoding,
     chars: text.length,
     bloom,
-    tasks: JSON.parse(JSON.stringify(parseTasks("", "", text, markdown))) as TaskItem[],
+    // Fresh plain objects with primitive fields: safe to store and post as is.
+    tasks: parseTasks("", "", text, markdown),
   };
 }

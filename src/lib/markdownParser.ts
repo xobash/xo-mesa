@@ -78,6 +78,13 @@ md.renderer.rules.wiki_embed = (tokens: Token[], idx: number): string => {
 // closing `$` is not preceded by whitespace or followed by a digit, so prices
 // such as "$5 and $10" stay text. The parser emits escaped TeX only;
 // markdownEnhance.ts typesets it with KaTeX after sanitization.
+// Per inline state, keyed by posMax and delimiter: the smallest content start
+// proven to have no valid closer before posMax. A later opener searches a
+// suffix of that range, and closer validity there does not depend on the opener
+// (the backslash run before a closer cannot cross the opener's `$`; `close >
+// open` only gets stricter), so the proof covers it. This keeps a paragraph of
+// unclosed currency dollars linear.
+const unclosedMath = new WeakMap<StateInline, Map<number, number>>();
 function mathInline(state: StateInline, silent: boolean): boolean {
   const src = state.src, start = state.pos;
   if (src.charCodeAt(start) !== 0x24 /* $ */) return false;
@@ -85,10 +92,18 @@ function mathInline(state: StateInline, silent: boolean): boolean {
   const open = start + (display ? 2 : 1);
   if (open >= state.posMax) return false;
   if (!display && /\s/.test(src[open])) return false;
+  const key = state.posMax * 2 + (display ? 1 : 0);
+  let unclosed = unclosedMath.get(state);
+  const proven = unclosed?.get(key);
+  if (proven !== undefined && proven <= open) return false;
   let close = open;
   for (;;) {
     close = src.indexOf(display ? "$$" : "$", close);
-    if (close < 0 || close >= state.posMax) return false;
+    if (close < 0 || close >= state.posMax) {
+      if (!unclosed) unclosedMath.set(state, unclosed = new Map());
+      if (proven === undefined || open < proven) unclosed.set(key, open);
+      return false;
+    }
     let slashes = 0;
     for (let at = close - 1; at >= open && src.charCodeAt(at) === 0x5c; at--) slashes++;
     if (slashes % 2 === 0 && close > open &&
@@ -278,7 +293,7 @@ export function parseMarkdownBlocks(source: string): MarkdownBlock[] {
   });
   if (!valid || htmlStack.length || start < tokens.length)
     blocks.push({ html: md.renderer.render(tokens, md.options, env) });
-  else blocks.push(...output);
+  else for (const block of output) blocks.push(block);
   return blocks;
 }
 

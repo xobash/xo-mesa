@@ -1,4 +1,5 @@
 import { documentMayMatch } from "./documentWorkingSet";
+import { escapeRegExp } from "./regex";
 import {
   buildRawMatcher,
   canScanRaw,
@@ -74,7 +75,6 @@ export interface SearchPass {
 
 export const SEARCH_RESULT_LIMIT = 100;
 
-const REGEX_SPECIAL = /[.*+?^${}()|[\]\\]/g;
 const HTML_ENTITY: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -116,21 +116,6 @@ function safeEntity(code: number): string {
   }
 }
 
-/** Case-insensitive substring search with optional prefix narrowing over uncapped candidates.
- * Discard previous results when files or content identity changes. */
-export function searchVault(
-  files: readonly SearchFile[],
-  cache: Record<string, string>,
-  query: string,
-  previous?: SearchPass | null
-): SearchPass {
-  const scan = createSearchScan(files, cache, query, previous);
-  while (!scan.advance(Infinity)) {
-    /* one unbounded slice */
-  }
-  return scan.result();
-}
-
 /** Resumable search pass. Callers yield between slices and publish only the
  * completed result, since ranking is applied after scanning. */
 export interface SearchScan {
@@ -149,6 +134,8 @@ export interface SearchScan {
  * Large-file matching also yields within a file. */
 const SCAN_CHECK_INTERVAL = 1;
 
+/** Case-insensitive substring search with optional prefix narrowing over uncapped candidates.
+ * Discard previous results when files or content identity changes. */
 export function createSearchScan(
   files: readonly SearchFile[],
   cache: Record<string, string>,
@@ -177,11 +164,11 @@ export function createSearchScan(
   // `ext:` filter) stays unranked, exactly as before.
   const counter =
     term.length >= 2
-      ? new RegExp(term.replace(REGEX_SPECIAL, "\\$&"), "g")
+      ? new RegExp(escapeRegExp(term), "g")
       : null;
   // One reusable matcher for the whole pass. It runs against RAW text, so no
-  // per-file lowercased copy is allocated — the cost that made searching a
-  // vault whose text is fully cached unaffordable. `null` (non-ASCII term) and
+  // per-file lowercased copy is allocated; that copy is unaffordable when a
+  // vault's text is fully cached. `null` (non-ASCII term) and
   // a one-character `i` query against text containing U+0130 fall back to the
   // exact lowercase path; see `searchMatch.ts` for why the paths are equivalent.
   const rawMatcher = term ? buildRawMatcher(term) : null;
@@ -275,7 +262,7 @@ export function createSearchScan(
         return;
       } else {
         const text = raw.toLowerCase();
-        const exactMatcher = new RegExp(term.replace(REGEX_SPECIAL, "\\$&"), "g");
+        const exactMatcher = new RegExp(escapeRegExp(term), "g");
         active = {
           file: f,
           raw,

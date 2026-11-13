@@ -1,6 +1,8 @@
 /** Stored geometry is user intent; viewport clamping is a render-time projection only.
  * Persist changes only for explicit layout actions. */
 
+import { clamp } from "./clamp";
+
 export interface OverlayWinRec {
   open: boolean;
   x: number;
@@ -25,8 +27,6 @@ const OVERLAY_TOP = 56;
 export const OVERLAY_BOTTOM = 96;
 const MIN_W = 280;
 const MIN_H = 220;
-
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
 /** Keyboard geometry for a focused floating-window title bar. Arrow keys move
  * the window; Shift+Arrow resizes it. The returned patch is explicit user

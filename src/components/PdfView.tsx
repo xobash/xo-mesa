@@ -23,34 +23,7 @@ import type { VaultFile } from "../types";
 import type { PdfTextRun } from "./usePdfEditor";
 import { markPdfPerf } from "./pdfPerf";
 import { createFramePublisher } from "../lib/framePublisher";
-
-type Tool = "select" | "edit" | "text" | "highlight" | "ink";
-
-/** Delay before showing the native read-only fallback while page 1 is loading. */
-const NATIVE_WARM_START_DELAY_MS = 120;
-
-const COLORS: { label: string; rgb: RGB }[] = [
-  { label: "Black", rgb: { r: 0, g: 0, b: 0 } },
-  { label: "Red", rgb: { r: 0.85, g: 0.12, b: 0.12 } },
-  { label: "Blue", rgb: { r: 0.1, g: 0.45, b: 0.95 } },
-  { label: "Yellow", rgb: { r: 1, g: 0.85, b: 0.15 } },
-];
-
-interface PendingText {
-  page: number;
-  // page-local PDF coords (bottom-left origin)
-  pdfX: number;
-  pdfY: number;
-  // screen position for the input overlay
-  left: number;
-  top: number;
-}
-
-interface PendingReplace {
-  run: PdfTextRun;
-  left: number;
-  top: number;
-}
+import { type Tool, NATIVE_WARM_START_DELAY_MS, COLORS, type PendingText, type PendingReplace } from "./pdfViewParts";
 
 export function PdfView({
   rel,

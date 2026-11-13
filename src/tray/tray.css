@@ -15,8 +15,6 @@
   --tp-on-accent: rgb(255, 255, 255);
   --tp-knob: rgb(255, 255, 255);
   --tp-switch-off: rgba(0, 0, 0, 0.14);
-  --tp-graph-node: rgba(0, 0, 0, 0.45);
-  --tp-graph-link: rgba(0, 0, 0, 0.12);
   --tp-edge: rgba(0, 0, 0, 0.12);
   --tp-knob-shadow: rgba(0, 0, 0, 0.3);
 }
@@ -31,8 +29,6 @@
     --tp-field: rgba(255, 255, 255, 0.07);
     --tp-card: rgba(255, 255, 255, 0.05);
     --tp-switch-off: rgba(255, 255, 255, 0.16);
-    --tp-graph-node: rgba(255, 255, 255, 0.55);
-    --tp-graph-link: rgba(255, 255, 255, 0.13);
     --tp-edge: rgba(255, 255, 255, 0.16);
   }
 }

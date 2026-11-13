@@ -7,7 +7,7 @@ import { localISO } from "../lib/daily";
 import { buildTraySnapshot } from "../lib/trayStatus";
 import { syncAttention } from "../lib/syncAttention";
 import { readGraphColors } from "./graphColors";
-import { miniGraph, popoverFile, popoverVaults, rememberRecent, searchFiles, type MiniGraph, type TrayPopoverState } from "../lib/trayPopover";
+import { createMiniGraphBuilder, popoverFile, popoverVaults, rememberRecent, searchFiles, type MiniGraph, type TrayPopoverState } from "../lib/trayPopover";
 
 const TRAY_ACTION_EVENT = "mesa://tray-action";
 const POPOVER_REQUEST_EVENT = "mesa://tray-popover-request";
@@ -60,6 +60,9 @@ export function useTrayStatus(enabled: boolean): void {
     let lastVault: string | null = null;
     let graphKey: unknown[] = [];
     let graph: MiniGraph | null = null;
+    const miniGraph = createMiniGraphBuilder();
+    let searchKey: [unknown, string] | null = null;
+    let searchResults: TrayPopoverState["results"] = [];
     const exists = (rel: string) => !!getStore().fileFor(rel);
     const trackRecent = () => {
       const s = getStore();
@@ -82,6 +85,13 @@ export function useTrayStatus(enabled: boolean): void {
       trackRecent();
       if (!timer) timer = setTimeout(push, TRAY_UPDATE_MS);
     };
+    const results = (files: ReturnType<typeof getStore>["files"], query: string) => {
+      if (!searchKey || searchKey[0] !== files || searchKey[1] !== query) {
+        searchKey = [files, query];
+        searchResults = searchFiles(files, query);
+      }
+      return searchResults;
+    };
     const popoverState = (query: string): TrayPopoverState => {
       trackRecent();
       const s = getStore();
@@ -103,7 +113,7 @@ export function useTrayStatus(enabled: boolean): void {
         recents: open ? recents.flatMap((rel) => { const f = s.fileFor(rel); return f ? [popoverFile(f)] : []; }) : [],
         vaults: popoverVaults(s.recentVaults, s.currentRecentVaultId),
         query,
-        results: open ? searchFiles(s.files, query) : [],
+        results: open ? results(s.files, query) : [],
         graph,
         palette: (({ node, nodeActive, nodeIsolated, link, flickerRgb, bloomAlpha }) =>
           ({ node, nodeActive, nodeIsolated, link, glowRgb: flickerRgb, bloomAlpha }))(readGraphColors()),

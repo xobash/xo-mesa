@@ -7,9 +7,22 @@ interface RunSnapshot {
   context: DeepResearchContext | null; activity: ResearchActivity[];
 }
 
-const selfReported = (a: ResearchActivity[]) => a.filter((x) => !x.observed && x.kind !== "status");
-const observed = (a: ResearchActivity[]) => a.filter((x) => x.observed);
-const minutes = (ms: number) => ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${(ms / 60_000).toFixed(1)}m`;
+/** Model self-reports: progress-tool calls (anything Mesa didn't observe
+ *  itself, excluding Mesa's own seeded status lines). */
+export function selfReported(activity: ResearchActivity[]): ResearchActivity[] {
+  return activity.filter((a) => !a.observed && a.kind !== "status");
+}
+
+/** Activity Mesa observed itself. */
+export function observed(activity: ResearchActivity[]): ResearchActivity[] {
+  return activity.filter((a) => a.observed);
+}
+
+/** Elapsed time as whole seconds (at least 1s) under a minute, else minutes to one decimal. */
+export function minutes(ms: number): string {
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  return `${(ms / 60_000).toFixed(1)}m`;
+}
 
 export function explainResearchTimeout(input: { run: RunSnapshot; piSessionLive: boolean; now?: number }): string {
   const { run, piSessionLive } = input;

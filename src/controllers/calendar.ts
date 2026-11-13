@@ -11,13 +11,11 @@ import { taskLineHasText, updateTaskLine } from "../lib/tasks";
 import { createNote } from "../lib/vault";
 import type { VaultFile } from "../types";
 
-import type { StoreApi } from "zustand";
+import { CALENDAR_FILE, type VaultPort } from "./vaultExternalFiles";
 import type { AppState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
-const CALENDAR_FILE = "calendar.json";
 
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   getGeneration: () => number;
   reportingFailure: (label: string, run: () => Promise<void>) => Promise<void>;
   saveTextMutation: (file: VaultFile, content: string, expectedContent: string) => Promise<void>;

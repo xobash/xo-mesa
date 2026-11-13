@@ -15,6 +15,8 @@ export type TextualPredicate = (file: {
  * that startup contract.
  */
 export const MAX_TEXT_CACHE_FILE_BYTES = 8 * 1024 * 1024;
+/** The cap as status text shows it, in whole MiB. */
+export const MAX_TEXT_CACHE_FILE_LABEL = `${MAX_TEXT_CACHE_FILE_BYTES / (1024 * 1024)} MiB`;
 
 /** Character budget for the lazy, non-markdown cache. Markdown remains pinned
  * because the note graph and the active editor own that content. */

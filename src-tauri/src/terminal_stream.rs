@@ -188,13 +188,13 @@ impl TerminalHistory {
     }
 
     pub(super) fn snapshot(&self) -> String {
-        self.entries
-            .iter()
-            .filter_map(|entry| match entry {
-                TerminalHistoryEntry::Output(data) => Some(data.as_str()),
-                TerminalHistoryEntry::Resize { .. } => None,
-            })
-            .collect()
+        let mut text = String::with_capacity(self.bytes);
+        for entry in &self.entries {
+            if let TerminalHistoryEntry::Output(data) = entry {
+                text.push_str(data);
+            }
+        }
+        text
     }
 
     pub(super) fn replay(&self) -> Vec<TerminalReplayEvent> {
@@ -299,7 +299,7 @@ pub(super) fn spawn_reader<R>(mut reader: R, stream: Arc<TerminalStream>)
 where
     R: Read + Send + 'static,
 {
-    let _ = thread::Builder::new()
+    let spawned = thread::Builder::new()
         .name("mesa-terminal-reader".to_string())
         .spawn(move || {
             let mut buf = [0u8; 4096];
@@ -313,6 +313,9 @@ where
             }
             stream.close(&decoder.flush());
         });
+    if let Err(error) = spawned {
+        eprintln!("Mesa could not start the Pi reader thread: {error}");
+    }
 }
 
 /// Wait for due output. Return an empty batch once after reader closure and complete drain.

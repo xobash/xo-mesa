@@ -8,6 +8,26 @@ describe("background work governor", () => {
   afterEach(() => {
     vi.useRealTimers();
     backgroundWork.resetForTests();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps one pending pump timer across bursts of interaction and resumes at the same time", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    vi.setSystemTime(10_000);
+    let ran = false;
+    backgroundWork.noteInteraction("drag");
+    void backgroundWork.run("index", async () => { ran = true; }).catch(() => undefined);
+    for (let i = 1; i < 100; i++) {
+      vi.advanceTimersByTime(5);
+      backgroundWork.noteInteraction("drag");
+    }
+    expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
+    // Last interaction at +495 ms: drag quiet is 140 ms, the pump runs 1 ms after.
+    await vi.advanceTimersByTimeAsync(10_636 - Date.now() - 1);
+    expect(ran).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ran).toBe(true);
   });
 
   it("queues nonessential work while interaction is active", () => {

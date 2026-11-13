@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { createMentionScan, findUnlinkedMentions, linkMention, linkTextFor, mentionNames } from "./unlinkedMentions";
+import { createMentionScan, linkMention, linkTextFor, mentionNames, type UnlinkedMention } from "./unlinkedMentions";
 
-const texts = (source: string, names: string[]) => findUnlinkedMentions(source, names).map((m) => m.text);
+/** Mentions in one note, found by the live resumable scan. */
+function mentionsIn(source: string, names: string[]): UnlinkedMention[] {
+  const scan = createMentionScan(["note.md"], () => source, names, () => 0);
+  for (let slices = 0; !scan.advance(Infinity); slices++) {
+    if (slices > 1) throw new Error("mention scan did not finish");
+  }
+  return scan.results()[0]?.mentions ?? [];
+}
+
+const texts = (source: string, names: string[]) => mentionsIn(source, names).map((m) => m.text);
 
 describe("mentionNames", () => {
   it("uses the title and aliases, longest first, without duplicates or single characters", () => {
@@ -10,7 +19,7 @@ describe("mentionNames", () => {
   });
 });
 
-describe("findUnlinkedMentions", () => {
+describe("unlinked mention matching", () => {
   it("matches whole words case-insensitively", () => {
     expect(texts("Alpha, alpha and ALPHA. Alphabet and pre-alpha.", ["Alpha"])).toEqual(["Alpha", "alpha", "ALPHA", "alpha"]);
     expect(texts("Café menu and cafés", ["Café"])).toEqual(["Café"]);
@@ -26,7 +35,7 @@ describe("findUnlinkedMentions", () => {
       "[Alpha]: https://example.com",
       "Plain Alpha here.",
     ].join("\n");
-    const found = findUnlinkedMentions(source, ["Alpha"]);
+    const found = mentionsIn(source, ["Alpha"]);
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ text: "Alpha", before: "Plain ", after: " here." });
     expect(source.slice(found[0].start, found[0].end)).toBe("Alpha");
@@ -41,7 +50,7 @@ describe("findUnlinkedMentions", () => {
   });
 
   it("bounds the result count", () => {
-    expect(findUnlinkedMentions("x ".repeat(10).replace(/x/g, "Al"), ["Al"], 3)).toHaveLength(3);
+    expect(mentionsIn("Al ".repeat(60), ["Al"])).toHaveLength(50);
   });
 });
 
@@ -52,7 +61,7 @@ describe("mention masking cost", () => {
   it("masks unclosed links, footnotes and tags on one line in linear time", () => {
     const work = (text: string, reps: number) => {
       const start = performance.now();
-      for (let i = 0; i < reps; i++) findUnlinkedMentions(`${text} Alpha`, ["Alpha"]);
+      for (let i = 0; i < reps; i++) mentionsIn(`${text} Alpha`, ["Alpha"]);
       return performance.now() - start;
     };
     for (const unit of ["[](", "[^", "<", "[[", "[]["]) {
@@ -83,7 +92,7 @@ describe("linkMention", () => {
 describe("mentions inside markup", () => {
   it("skips tags and footnote references", () => {
     expect(texts("See #project and [^project] about project.", ["project"])).toEqual(["project"]);
-    expect(findUnlinkedMentions("See #project and [^project] about project.", ["project"])[0].start).toBe(34);
+    expect(mentionsIn("See #project and [^project] about project.", ["project"])[0].start).toBe(34);
   });
   it("refuses an aliased link in a table row but allows an exact one", () => {
     expect(() => linkMention("| alpha | 1 |", { start: 2, end: 7, text: "alpha" }, "Alpha")).toThrow(/table row/);
@@ -113,5 +122,22 @@ describe("createMentionScan", () => {
     while (!scan.advance(4)) { /* next slice */ }
     expect(scan.results().map((r) => r.relPath)).toEqual(["a.md", "d.md"]);
     expect(scan.unread()).toBe(1);
+  });
+
+  it("finds mixed-case and non-ASCII names", () => {
+    const names = ["ÉCOLE Normale", "Straße", "NYC"];
+    const text: Record<string, string> = {
+      "a.md": "the école normale and STRASSE", "b.md": "Die straße in nyc", "c.md": "[[NYC]] only", "d.md": "none",
+    };
+    const scan = createMentionScan(Object.keys(text), (rel) => text[rel], names, () => 0);
+    while (!scan.advance(1)) { /* next slice */ }
+    expect(scan.results()).toEqual([
+      { relPath: "a.md", mentions: [{ start: 4, end: 17, text: "école normale", before: "the ", after: " and STRASSE" }] },
+      { relPath: "b.md", mentions: [
+        { start: 4, end: 10, text: "straße", before: "Die ", after: " in nyc" },
+        { start: 14, end: 17, text: "nyc", before: "Die straße in ", after: "" },
+      ] },
+    ]);
+    expect(scan.results().map((r) => r.relPath)).toEqual(["a.md", "b.md"]);
   });
 });

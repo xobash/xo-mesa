@@ -185,7 +185,7 @@ export function SearchSurface({
   }, [initialQuery]);
 
   // Reuse the last pass to narrow the next keystroke instead of rescanning the
-  // whole vault (see `searchVault`). Dropped whenever the file list or content
+  // whole vault (see `createSearchScan`). Dropped whenever the file list or content
   // cache changes identity, since an edited note may newly match a term that
   // already excluded it.
   const passRef = useRef<SearchPass | null>(null);

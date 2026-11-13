@@ -231,7 +231,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-btn);
   background: var(--bg-1);
-  color: var(--text-muted);
+  color: var(--text-dim);
   cursor: pointer;
 }
 .search-filter:hover {

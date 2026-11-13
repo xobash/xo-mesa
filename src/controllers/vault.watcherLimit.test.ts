@@ -5,7 +5,14 @@ import { useAppStore, type AppState } from '../store';
 import { TextSaveCoordinator } from '../lib/textSaveCoordinator';
 import type { VaultFile } from '../types';
 import { createVaultController } from './vault';
-const io = vi.hoisted(() => ({ watch: vi.fn(), read: vi.fn(), bytes: vi.fn(), fullRead: vi.fn(), scan: [] as VaultFile[] }));
+const io = vi.hoisted(() => ({ watch: vi.fn(), read: vi.fn(), bytes: vi.fn(), fullRead: vi.fn(), scan: [] as VaultFile[], batches: null as null | ((batch: unknown[]) => Promise<void>) }));
+vi.mock('./vaultWatcher', async original => {
+  const real = await original<typeof import('./vaultWatcher')>();
+  return { ...real, createWatchBatchHandler: (deps: Parameters<typeof real.createWatchBatchHandler>[0]) => {
+    const handle = real.createWatchBatchHandler(deps);
+    return (...args: Parameters<typeof handle>) => io.batches ? io.batches(args[0]) : handle(...args);
+  } };
+});
 vi.mock('@tauri-apps/api/core', async original => ({ ...await original<object>(), invoke: async (command: string, args: { maxBytes?: number }) => command === 'vault_read_bytes' ? io.bytes(args) : undefined }));
 vi.mock('@tauri-apps/plugin-fs', async original => ({ ...await original<object>(), stat: async () => ({ size: 1, mtime: null }) }));
 vi.mock('../lib/vault', async original => ({ ...await original<object>(), IN_TAURI: true, authorizeVaultRoot: async () => {}, assertVaultRootAvailable: async () => {}, scanVault: async () => io.scan, readNote: io.fullRead, recoverWriteArtifacts: async () => ({ restored: [], removed: [] }), watchVault: io.watch, readNoteResult: io.fullRead, isValidUtf8Text: async () => true }));
@@ -67,5 +74,29 @@ it('rescans and registrations read new text through the 8 MiB cap and keep overs
   expect(s.unindexedTextFiles).toBe(2);
   expect(io.fullRead).not.toHaveBeenCalled();
   expect(io.bytes).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: 8 * 1024 * 1024 }));
+  controller.dispose();
+});
+
+it('delivers every queued watcher event when a busy batch is followed by very large bursts', async () => {
+  let onChange!: (events: { paths: string[]; kind: string }[]) => void;
+  io.watch.mockImplementation(async (_root: string, callback: typeof onChange) => { onChange = callback; return () => {}; });
+  let release!: () => void;
+  const delivered: number[] = [];
+  io.batches = async batch => { delivered.push(batch.length); if (delivered.length === 1) await new Promise<void>(resolve => { release = resolve; }); };
+  const state = createStore<AppState>(() => ({ ...useAppStore.getInitialState(), vaultPath: null, files: [], notes: {}, contentCache: {} }));
+  const controller = createVaultController({ get: state.getState, set: state.setState,
+    textSaves: new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: async () => {} }), resetDocuments: vi.fn(),
+    stopResearch: async () => {}, setupActivityBridge: async () => {}, ensureSyncEventBridge: async () => {},
+    stopListening: async () => false, startListening: async () => {} });
+  io.scan = [];
+  await controller.actions.openVault('/v');
+  const burst = (from: number) => Array.from({ length: 200_000 }, (_, i) => ({ kind: 'create', paths: [`/v/f${from + i}.md`] }));
+  onChange([{ kind: 'modify', paths: ['/v/first.md'] }]);
+  await vi.waitFor(() => expect(delivered).toEqual([1]));
+  onChange(burst(0));
+  onChange(burst(200_000));
+  release();
+  await vi.waitFor(() => expect(delivered).toEqual([1, 400_000]));
+  io.batches = null;
   controller.dispose();
 });

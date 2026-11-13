@@ -214,11 +214,7 @@ impl DiscoveryFilter {
     ) -> Option<DiscoveryPacket> {
         if !packet.mesa_discovery
             || packet.fingerprint == self.own_fingerprint
-            || packet.fingerprint.len() != 64
-            || !packet
-                .fingerprint
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || !crate::hex::is_lowercase_hex64(&packet.fingerprint)
             || packet.name.len() > 256
         {
             return None;

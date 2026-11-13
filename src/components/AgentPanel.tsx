@@ -85,7 +85,10 @@ export function AgentSurface({
   const vaultPath = vaultPathOverride ?? storeVaultPath;
   const activePath = useAppStore((s) => s.activePath);
   const openTabs = useAppStore((s) => s.openTabs);
-  const settings = useAppStore((s) => s.settings);
+  // Primitive and field selectors: research progress and unrelated settings
+  // commits must not re-render the Pi surface.
+  const centerView = useAppStore((s) => s.settings.centerView);
+  const rightStack = useAppStore((s) => s.settings.rightStack);
   const piBrowse = useAppStore((s) => s.piBrowse);
   const deepResearchSurface = useAppStore((s) => s.deepResearchSurface);
   const setDeepResearchSurface = useAppStore((s) => s.setDeepResearchSurface);
@@ -125,14 +128,15 @@ export function AgentSurface({
   // Research window.
   const researchOpen = deepResearchSurface === researchHostId;
   const [researchWingWidth, setResearchWingWidth] = useState(520);
-  const deepResearch = useAppStore((s) => s.deepResearch);
+  const researchRunId = useAppStore((s) => s.deepResearch?.runId);
+  const researchStarted = useAppStore((s) => (s.deepResearch?.startedAt ?? 0) > 0);
   const researchResizeRef = useRef<{ startX: number; startW: number; sign: 1 | -1 } | null>(null);
   const researchWingRef = useRef<HTMLDivElement | null>(null);
   const [researchDetachArmed, setResearchDetachArmed] = useState(false);
 
   useEffect(() => {
     browserAutoDismissedRef.current = false;
-  }, [deepResearch?.runId]);
+  }, [researchRunId]);
 
   useEffect(
     () => () => {
@@ -150,9 +154,10 @@ export function AgentSurface({
         vaultPath,
         activePath,
         openTabs,
-        settings,
+        // buildAgentContext reads only centerView and rightStack from settings.
+        settings: { ...useAppStore.getState().settings, centerView, rightStack },
       }),
-    [vaultName, vaultPath, activePath, openTabs, settings]
+    [vaultName, vaultPath, activePath, openTabs, centerView, rightStack]
   );
   const ctx = contextOverride ?? localCtx;
   const contextText = useMemo(() => contextPrompt(ctx), [ctx]);
@@ -530,14 +535,14 @@ export function AgentSurface({
           data-native-webview-occluder=""
           className={
             "dr-wing" +
-            ((deepResearch?.startedAt ?? 0) <= 0
+            (!researchStarted
               ? " initial"
               : browserSlideOut
                 ? " slide"
                 : " inline") +
             (researchDetachArmed ? " tear-off-armed" : "")
           }
-          style={(deepResearch?.startedAt ?? 0) <= 0
+          style={!researchStarted
             ? undefined
             : browserSlideOut
               ? { width: researchWingWidth, left: `calc(100% + ${browserOpen ? browserWidth : 0}px)` }

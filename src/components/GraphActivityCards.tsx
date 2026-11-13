@@ -1,7 +1,7 @@
 import type { GraphNode, GraphLink } from "../types";
 import { getStore } from "../store";
 import type { activeRecords, ActivityOp } from "../lib/activity";
-import { clamp, rectContains, rectLinePenalty } from "./graphGeometry";
+import { clamp, rectContains, rectLinePenalty } from "../lib/graphGeometry";
 import { isSyntheticNode } from "./graphColors";
 import type { Transform } from "./graphDraw";
 import { PreviewCard } from "./PreviewCard";

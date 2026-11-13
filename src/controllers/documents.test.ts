@@ -2,6 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { createStore } from 'zustand';
 import { useAppStore, type AppState } from '../store';
+import { indexedContentCache } from '../lib/documentWorkingSet';
 import { TextSaveCoordinator } from '../lib/textSaveCoordinator';
 import type { VaultFile } from '../types';
 import { createDocumentController } from './documents';
@@ -117,4 +118,18 @@ it.each(['../outside', 'a/../../b', '.hidden/x', 'bad:name', '#Heading'])('refus
   const { controller } = linkFixture();
   await controller.actions.openTarget(target);
   expect(io.create).not.toHaveBeenCalled();
+});
+
+it('does not scan every file for dirty saves when a lazy read lands in an indexed cache', async () => {
+  const files: VaultFile[] = Array.from({ length: 50 }, (_, i) => ({ path: `/vault/n${i}.txt`, relPath: `n${i}.txt`, name: `n${i}`, ext: 'txt', isMarkdown: false }));
+  io.read.mockReset().mockResolvedValue({ ok: true, text: 'lazy text' });
+  const state = createStore<AppState>(() => ({ ...useAppStore.getInitialState(), vaultPath: '/vault', files, notes: {},
+    contentCache: indexedContentCache([]), fileFor: rel => files.find(file => file.relPath === rel) }));
+  const textSaves = new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: vi.fn() });
+  const isDirty = vi.spyOn(textSaves, 'isDirty');
+  const controller = createDocumentController({ get: state.getState, set: state.setState, getGeneration: () => 1,
+    textSaves, commitSettings: vi.fn(), reportingFailure: async (_, run) => run() });
+  expect(await controller.actions.ensureContent('n3.txt')).toBe('lazy text');
+  expect(state.getState().contentCache['n3.txt']).toBe('lazy text');
+  expect(isDirty).not.toHaveBeenCalled();
 });

@@ -7,11 +7,10 @@ import type { SyncLogEntry } from "../lib/sync";
 import { IN_TAURI, authorizeVaultRoot, pickVault } from "../lib/vault";
 import type { Settings, SyncPeer } from "../types";
 
-import type { StoreApi } from "zustand";
+import type { VaultPort } from "./vaultExternalFiles";
 import type { AppState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   /** Settings read at boot; native sync secrets hydrate over these values. */
   bootSettings: Settings;
   getGeneration: () => number;

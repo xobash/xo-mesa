@@ -33,8 +33,12 @@ pub(crate) fn require_main(label: &str) -> Result<(), String> {
         Err("This operation belongs to the main workspace".into())
     }
 }
+/// The main window and its document and panel windows.
+fn is_document_surface(label: &str) -> bool {
+    label == "main" || label.starts_with("doc-") || label.starts_with("panel-")
+}
 pub(crate) fn require_document_surface(label: &str) -> Result<(), String> {
-    if label == "main" || label.starts_with("doc-") || label.starts_with("panel-") {
+    if is_document_surface(label) {
         Ok(())
     } else {
         Err("This operation belongs to a Mesa document surface".into())
@@ -141,9 +145,7 @@ fn valid_pdf_blob(url: &str) -> bool {
 }
 
 fn grant_pdf_blob(label: &str, url: String, allow: bool) -> Result<(), String> {
-    if !(label == "main" || label.starts_with("doc-") || label.starts_with("panel-"))
-        || !valid_pdf_blob(&url)
-    {
+    if !is_document_surface(label) || !valid_pdf_blob(&url) {
         return Err("Only Mesa document surfaces may register an app PDF preview".into());
     }
     let mut grants = pdf_blob_grants()

@@ -42,7 +42,6 @@ import {
 import type { AppState, UnreadableTextReason } from "../storeTypes";
 import { CALENDAR_FILE, createExternalFiles, type VaultPort } from "./vaultExternalFiles";
 import { createWatchBatchHandler, mergeWatchEvents } from "./vaultWatcher";
-export { mergeWatchEvents } from "./vaultWatcher";
 const SORT_MODES_NEEDING_METADATA = new Set<SortMode>(["modified", "size"]);
 interface Dependencies extends VaultPort {
   textSaves: TextSaveCoordinator<VaultFile>; resetDocuments: () => void; stopResearch: () => Promise<void>;
@@ -57,7 +56,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
   let unwatch: (() => void) | undefined;
   let watcherSetupGeneration = 0;
   const external = createExternalFiles({ get, set });
-  const { registerExternalFile, refreshMissingExternalFiles, scheduleExternalRefresh, resolveActivityPath } = external;
+  const { registerExternalFile, refreshMissingExternalFiles, resolveActivityPath } = external;
   const handleExternalChange = createWatchBatchHandler({
     get, set, textSaves, external, currentGeneration: () => vaultOpenGeneration,
   });
@@ -74,7 +73,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
     let tail: Promise<void> = Promise.resolve();
     let pending: VaultWatchEvent[] | null = null;
     const enqueue = (events: VaultWatchEvent[]) => {
-      if (pending) { pending.push(...events); return; }
+      // Append one by one: spreading a huge burst as call arguments overflows the stack.
+      if (pending) { for (const event of events) pending.push(event); return; }
       pending = [...events];
       tail = tail.then(async () => {
         const batch = mergeWatchEvents(pending!);
@@ -452,7 +452,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
 
   };
   return {
-    actions, get generation() { return vaultOpenGeneration; }, registerExternalFile, refreshMissingExternalFiles, scheduleExternalRefresh, resolveActivityPath,
+    actions, get generation() { return vaultOpenGeneration; }, registerExternalFile, refreshMissingExternalFiles, resolveActivityPath,
     dispose() { vaultOpenRequest++; vaultOpenGeneration++; watcherSetupGeneration++; external.cancelScheduledRefresh(); unwatch?.(); unwatch = undefined; }
   };
 }

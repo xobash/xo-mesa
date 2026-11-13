@@ -554,7 +554,7 @@ in-memory window. A shared-key holder still has access to the served vault.
 | Transport/resource limits | No redirects or system proxy on sync clients; bounded TLS admission, manifest/journal bodies, streams, transfer slots and byte budgets. |
 
 This specifies implementation behavior and review scope. It is not an independent
-cryptographic review. See the tests in `sync_runtime_tests.rs` and `sync_tests.rs` for proof,
+cryptographic review. See the tests in `sync_tests.rs` and `sync_fs_tests.rs` for proof,
 pinning, malformed-journal, ordering, conflict, retirement and transfer failures.
 
 ## Native review boundaries
@@ -565,14 +565,15 @@ pinning, malformed-journal, ordering, conflict, retirement and transfer failures
 manifest/hash/diff contracts, `sync_journal.rs` durable operation reconciliation,
 `sync_paths.rs` lexical policy, `sync_wire.rs` serialization and `sync_fs.rs`
 held-parent filesystem primitives. The same production functions are exercised
-by `sync_tests.rs` and `sync_runtime_tests.rs`.
+by `sync_tests.rs` and `sync_fs_tests.rs`.
 Keep cross-module invariants in this document and executable tests.
 
 ## Peer manifest admission
 
 The native client limits each manifest to 256 MiB of streamed bytes, whether
 or not Content-Length is present. It admits at most 1,000,000 files, at most
-4096 UTF-8 bytes per visible relative path, unique paths and exactly 64
+4096 UTF-8 bytes and 255 folder levels per visible relative path (the same
+limits apply to journal and transfer paths), unique paths and exactly 64
 lowercase hexadecimal hash characters. Invalid/partial manifests do not update
 a baseline. Declared-size and chunked-response tests exercise this limit.
 Received replacements share the private staging and Unix access-metadata

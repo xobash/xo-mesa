@@ -5,7 +5,7 @@ import fontkit from '@pdf-lib/fontkit';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { unzlibSync, strFromU8 } from 'fflate';
 import { replaceText } from './pdf';
-import { PdfEditUnsupported, removeGlyphsInBox } from './pdfContentEdit';
+import { PdfEditUnsupported, discardUnreachablePdfObjects, removeGlyphsInBox } from './pdfContentEdit';
 
 async function extract(bytes:Uint8Array) {
   const doc=await getDocument({data:bytes.slice()}).promise;
@@ -130,4 +130,14 @@ it.each(['BI /W 2 /H 1 /CS /G /BPC 8 ID x EI\n', 'BI /W 1 /H 1 /CS /G /BPC 8 /F 
   const input=await fixture(image+prefix+'(SECRET-123) Tj'+suffix),copy=input.slice();
   await expect(replaceText(input,target)).rejects.toThrow(PdfEditUnsupported);
   expect(input).toEqual(copy);
+});
+it('keeps a 10,000-item outline chain reachable without exhausting the call stack',async()=>{
+  const doc=await PDFDocument.create();doc.addPage([100,100]);
+  const chain=Array.from({length:10_000},()=>doc.context.register(doc.context.obj({Title:PDFString.of('b')})));
+  chain.forEach((ref,i)=>{if(i+1<chain.length)(doc.context.lookup(ref) as PDFDict).set(PDFName.of('Next'),chain[i+1]);});
+  doc.catalog.set(PDFName.of('Outlines'),doc.context.register(doc.context.obj({Type:'Outlines',First:chain[0]})));
+  const orphan=doc.context.register(doc.context.obj({Orphan:true}));
+  discardUnreachablePdfObjects(doc);
+  expect(chain.every(ref=>doc.context.lookup(ref)!==undefined)).toBe(true);
+  expect(doc.context.lookup(orphan)).toBeUndefined();
 });

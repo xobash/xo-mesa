@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   createSearchScan,
-  searchVault,
   type SearchFile,
   type SearchPass,
 } from "./search";
+
+/** A search pass run to completion in unbounded slices. */
+function fullSearch(files: readonly SearchFile[], cache: Record<string, string>, query: string, previous?: SearchPass | null): SearchPass {
+  const scan = createSearchScan(files, cache, query, previous);
+  for (let slices = 0; !scan.advance(Infinity); slices++) {
+    if (slices > files.length) throw new Error("search pass did not finish");
+  }
+  return scan.result();
+}
 
 // A sliced pass must produce EXACTLY the pass the synchronous one produces —
 // same hits, same order, same counts, same snippets, same candidate set. The
@@ -47,9 +55,9 @@ describe("createSearchScan", () => {
   const { files, cache } = corpus(900);
 
   it.each(["budget", "alpha", "be", "ext:txt budget", ".md", "zzzz"])(
-    "matches searchVault exactly for %j",
+    "matches the unbounded pass exactly for %j",
     (query) => {
-      const sync = searchVault(files, cache, query, null);
+      const sync = fullSearch(files, cache, query, null);
       const sliced = drain(files, cache, query, 0).pass;
       expect(sliced).toEqual(sync);
     }
@@ -76,8 +84,8 @@ describe("createSearchScan", () => {
   });
 
   it("narrows from a previous pass identically when sliced", () => {
-    const first = searchVault(files, cache, "al", null);
-    const sync = searchVault(files, cache, "alph", first);
+    const first = fullSearch(files, cache, "al", null);
+    const sync = fullSearch(files, cache, "alph", first);
     const sliced = drain(files, cache, "alph", 0, first).pass;
     expect(sliced).toEqual(sync);
     // …and really did narrow rather than rescan the whole vault.
@@ -88,13 +96,13 @@ describe("createSearchScan", () => {
     const scan = createSearchScan(files, cache, "a", null);
     expect(scan.remaining).toBe(0);
     expect(scan.advance(0)).toBe(true);
-    expect(scan.result()).toEqual(searchVault(files, cache, "a", null));
+    expect(scan.result()).toEqual(fullSearch(files, cache, "a", null));
   });
 
   it("result() finishes the pass if the caller stopped early", () => {
     const scan = createSearchScan(files, cache, "alpha", null);
     scan.advance(0); // one slice only
-    expect(scan.result()).toEqual(searchVault(files, cache, "alpha", null));
+    expect(scan.result()).toEqual(fullSearch(files, cache, "alpha", null));
   });
 
   it("is stable across repeated drains of separate scans", () => {
@@ -116,6 +124,6 @@ describe("createSearchScan", () => {
     // budget now exposes the intra-file 64 KiB work units without a flaky
     // wall-clock assertion in CI.
     expect(slices).toBeGreaterThan(50);
-    expect(scan.result()).toEqual(searchVault(files, cache, "password", null));
+    expect(scan.result()).toEqual(fullSearch(files, cache, "password", null));
   });
 });

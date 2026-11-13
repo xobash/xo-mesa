@@ -2,10 +2,20 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { FloatingWindow } from './Overlay';
+import { Overlay } from './Overlay';
+import { FloatingWindow } from './overlay/OverlayWindows';
+import { useAppStore } from '../store';
+import { urlForPath } from '../lib/vault';
 
+const bodies = vi.hoisted(() => ({ calendar: 0, whiteboard: 0 }));
 vi.mock('./AgentPanel', () => ({ AgentSurface: () => null }));
 vi.mock('./DeepResearchPanel', () => ({ DeepResearchPanel: () => null }));
+vi.mock('./overlay/OverlayCalendar', () => ({ OverlayCalendar: () => { bodies.calendar++; return null; } }));
+vi.mock('./overlay/Whiteboard', () => ({ Whiteboard: () => { bodies.whiteboard++; return null; } }));
+vi.mock('../lib/vault', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/vault')>();
+  return { ...actual, urlForPath: vi.fn(actual.urlForPath) };
+});
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -76,4 +86,29 @@ it('leaves header buttons and secondary pointer presses out of transfer gestures
   pointer(window, 'pointerup', { clientX: 0, clientY: 150 });
   expect(transfer).not.toHaveBeenCalled();
   act(() => button.click()); expect(close).toHaveBeenCalledOnce();
+});
+it('re-renders only the moved window frame, not any window body, while dragging', () => {
+  localStorage.setItem('mesa:overlayToured', '1');
+  const initial = useAppStore.getState();
+  const image = { relPath: 'a.png', path: '/vault/a.png', name: 'a', ext: 'png', isMarkdown: false };
+  const overlayHost = document.createElement('div'); document.body.append(overlayHost);
+  const overlayRoot = createRoot(overlayHost);
+  act(() => useAppStore.setState({ overlayOpen: true, files: [image] as never }));
+  act(() => overlayRoot.render(<Overlay />));
+  const dock = (label: string) => overlayHost.querySelector<HTMLButtonElement>(`button[aria-label="${label} window"]`)!;
+  act(() => dock('Whiteboard').click());
+  act(() => dock('Gallery').click());
+  expect(overlayHost.querySelector('img')).not.toBeNull();
+  const counts = () => [bodies.calendar, bodies.whiteboard, vi.mocked(urlForPath).mock.calls.length];
+  const before = counts();
+  const bar = [...overlayHost.querySelectorAll<HTMLElement>('.ov-win-bar')].find((b) => b.textContent?.startsWith('Calendar'))!;
+  const moved = bar.closest<HTMLElement>('.ov-win')!;
+  const startLeft = moved.style.left;
+  pointer(bar, 'pointerdown', { clientX: 200, clientY: 100 });
+  for (let i = 1; i <= 5; i++) pointer(window, 'pointermove', { clientX: 200 + i * 10, clientY: 110 });
+  pointer(window, 'pointerup', { clientX: 250, clientY: 110 });
+  expect(moved.style.left).not.toBe(startLeft);
+  expect(counts()).toEqual(before);
+  act(() => overlayRoot.unmount()); overlayHost.remove();
+  useAppStore.setState(initial, true); localStorage.clear();
 });

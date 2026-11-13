@@ -1,37 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAppStore, THEMES, UI_STYLES } from "../store";
+import { useAppStore, THEMES } from "../store";
 import {
   listRecoveryEntries,
   purgeRecoveryEntry,
   type RecoveryEntry,
 } from "../lib/vault";
 import { Modal } from "./Modal";
+import { InterfaceStyleChoice, SettingToggle } from "./SettingsControls";
 import { HotkeySettings } from "./HotkeySettings";
 
 const RECOVERY_PAGE_SIZE = 20;
 const REVISION_PAGE_SIZE = 10;
-
-function Toggle({
-  label,
-  on,
-  onChange,
-}: {
-  label: string;
-  on: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      className={"toggle" + (on ? " on" : "")}
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      onClick={() => onChange(!on)}
-    >
-      <span className="toggle-knob" />
-    </button>
-  );
-}
 
 export function SettingsModal() {
   const section = useAppStore(s => s.settingsSection);
@@ -250,19 +229,7 @@ export function SettingsModal() {
               Shape and density of the window. Works with every theme. Classic is the original look.
             </div>
           </div>
-          <div className="seg theme-seg" aria-label="Interface style">
-            {UI_STYLES.map((u) => (
-            <button
-              key={u.id}
-              className={"seg-btn" + (u.id === uiStyle ? " on" : "")}
-              title={u.blurb}
-              aria-pressed={u.id === uiStyle}
-              onClick={() => setUiStyle(u.id)}
-            >
-              {u.label}
-            </button>
-          ))}
-          </div>
+          <InterfaceStyleChoice value={uiStyle} onChange={setUiStyle} />
         </div>
 
         <div className="setting-row">
@@ -286,7 +253,7 @@ export function SettingsModal() {
               Show open files above the editor.
             </div>
           </div>
-          <Toggle
+          <SettingToggle
             label="File tabs"
             on={settings.enableTabs}
             onChange={(v) => setSetting("enableTabs", v)}
@@ -325,7 +292,7 @@ export function SettingsModal() {
               May improve graph motion. Applies when the graph next opens.
             </div>
           </div>
-          <Toggle
+          <SettingToggle
             label="Smooth graph motion"
             on={settings.hardwareAccel}
             onChange={(v) => setSetting("hardwareAccel", v)}
@@ -337,7 +304,7 @@ export function SettingsModal() {
             <div className="setting-name">Interface animations</div>
             <div className="setting-desc">Move and fade interface elements.</div>
           </div>
-          <Toggle
+          <SettingToggle
             label="Interface animations"
             on={settings.animations}
             onChange={(v) => setSetting("animations", v)}
@@ -351,7 +318,7 @@ export function SettingsModal() {
               Reveal the sidebar when the pointer reaches the left edge.
             </div>
           </div>
-          <Toggle
+          <SettingToggle
             label="Auto-hide sidebar"
             on={settings.sidebarAutoHide}
             onChange={(v) => {
@@ -362,7 +329,7 @@ export function SettingsModal() {
           />
         </div>
 
-        <div className="setting-row"><div className="setting-meta"><div className="setting-name">Hide generated files</div><div className="setting-desc">Hide archives and conflict copies in the sidebar. Search still finds them.</div></div><Toggle label="Hide generated files" on={settings.hideGeneratedFiles} onChange={value => setSetting("hideGeneratedFiles", value)} /></div>
+        <div className="setting-row"><div className="setting-meta"><div className="setting-name">Hide generated files</div><div className="setting-desc">Hide archives and conflict copies in the sidebar. Search still finds them.</div></div><SettingToggle label="Hide generated files" on={settings.hideGeneratedFiles} onChange={value => setSetting("hideGeneratedFiles", value)} /></div>
 
         <div className="setting-row">
           <div className="setting-meta">

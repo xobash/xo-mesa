@@ -20,6 +20,7 @@ const renamed = vi.hoisted(() => ({
   writeFail: null as string | null,
   onRename: null as null | (() => void),
   onMigrate: null as null | (() => void),
+  reads: [] as string[],
 }));
 
 vi.mock("./textRevisionHistory", async (importOriginal) => {
@@ -55,7 +56,15 @@ vi.mock("./vault", async (importOriginal) => {
         mtime: 0,
       } satisfies VaultFile;
     },
+    createNote: async (root: string, relPath: string) => ({
+      path: `${root}/${relPath}`,
+      relPath,
+      name: relPath.slice(relPath.lastIndexOf("/") + 1).replace(/\.md$/, ""),
+      ext: "md",
+      isMarkdown: true,
+    }) satisfies VaultFile,
     readNote: async (file: VaultFile) => {
+      renamed.reads.push(file.relPath);
       const state = useAppStore.getState();
       return state.contentCache[file.relPath] ?? "";
     },
@@ -92,6 +101,7 @@ beforeEach(() => {
   renamed.writeFail = null;
   renamed.onRename = null;
   renamed.onMigrate = null;
+  renamed.reads.length = 0;
   useAppStore.setState(initial, true);
   useAppStore.setState({
     vaultPath: "/vault",
@@ -297,6 +307,17 @@ describe("renameNote type preservation", () => {
     expect(performance.now() - started).toBeLessThan(500);
     expect(renamed.writes.map((write) => write.rel)).toEqual([target.relPath]);
     expect(renamed.writes[0].content).toBe("![[../docs/Contract v2.pdf]]");
+  });
+
+  it("does not inspect a note created this session that has no link to the renamed note", async () => {
+    await useAppStore.getState().openTarget("Fresh");
+    expect(useAppStore.getState().notes["Fresh.md"]?.rawReferences).toEqual([]);
+    // Text that is not cached must be read to inspect it; an unrelated note is never read.
+    const { ["Fresh.md"]: _fresh, ...cache } = useAppStore.getState().contentCache;
+    useAppStore.setState({ contentCache: cache });
+    await useAppStore.getState().renameNote("a.md", "Renamed");
+    expect(renamed.calls).toEqual([{ src: "a.md", dest: "Renamed.md" }]);
+    expect(renamed.reads).not.toContain("Fresh.md");
   });
 
   it("strips a typed duplicate extension instead of doubling it", async () => {

@@ -7,7 +7,8 @@ import type { GraphNode, GraphLink, VaultFile } from "../types";
 import { useAppStore } from "../store";
 import { buildNotes } from "../lib/graph";
 import { bumpActivityAmount } from "../lib/activity";
-import { GraphView, resolveOverlaps } from "./GraphView";
+import { GraphView } from "./GraphView";
+import { resolveOverlaps } from "../lib/graphGeometry";
 
 const captured = vi.hoisted(() => ({ sim: null as unknown, builds: 0 }));
 vi.mock("d3-force", async (original) => {

@@ -1,26 +1,5 @@
-import { useAppStore, THEMES, UI_STYLES } from "../../store";
-
-function OverlayToggle({
-  label,
-  on,
-  onChange,
-}: {
-  label: string;
-  on: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <button
-      className={"toggle" + (on ? " on" : "")}
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      onClick={() => onChange(!on)}
-    >
-      <span className="toggle-knob" />
-    </button>
-  );
-}
+import { useAppStore, THEMES } from "../../store";
+import { InterfaceStyleChoice, SettingToggle } from "../SettingsControls";
 
 export function OverlaySettings({ onReset }: { onReset: () => void }) {
   const theme = useAppStore((s) => s.theme);
@@ -51,19 +30,7 @@ export function OverlaySettings({ onReset }: { onReset: () => void }) {
       </section>
       <section className="ov-settings-section">
         <div className="setting-name">Interface</div>
-        <div className="seg theme-seg" aria-label="Interface style">
-          {UI_STYLES.map((u) => (
-          <button
-            key={u.id}
-            className={"seg-btn" + (u.id === uiStyle ? " on" : "")}
-            title={u.blurb}
-            aria-pressed={u.id === uiStyle}
-            onClick={() => setUiStyle(u.id)}
-          >
-            {u.label}
-          </button>
-          ))}
-        </div>
+        <InterfaceStyleChoice value={uiStyle} onChange={setUiStyle} />
       </section>
       <section className="ov-settings-section">
         <div className="ov-setting-line">
@@ -71,7 +38,7 @@ export function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-name">Tabs</div>
             <div className="setting-desc">Optional browser-style editor tabs.</div>
           </div>
-          <OverlayToggle
+          <SettingToggle
             label="Tabs"
             on={settings.enableTabs}
             onChange={(v) => setSetting("enableTabs", v)}
@@ -82,7 +49,7 @@ export function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-name">Auto-hide sidebar</div>
             <div className="setting-desc">Reveal the sidebar from the left edge.</div>
           </div>
-          <OverlayToggle
+          <SettingToggle
             label="Auto-hide sidebar"
             on={settings.sidebarAutoHide}
             onChange={(v) => {
@@ -96,7 +63,7 @@ export function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-name">Animations</div>
             <div className="setting-desc">Window motion, fades, and UI transitions.</div>
           </div>
-          <OverlayToggle
+          <SettingToggle
             label="Animations"
             on={settings.animations}
             onChange={(v) => setSetting("animations", v)}
@@ -107,7 +74,7 @@ export function OverlaySettings({ onReset }: { onReset: () => void }) {
             <div className="setting-name">Graph canvas smoothing</div>
             <div className="setting-desc">Ask the system canvas to favor smoother graph motion when available.</div>
           </div>
-          <OverlayToggle
+          <SettingToggle
             label="Graph canvas smoothing"
             on={settings.hardwareAccel}
             onChange={(v) => setSetting("hardwareAccel", v)}

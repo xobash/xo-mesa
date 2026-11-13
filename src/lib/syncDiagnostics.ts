@@ -1,6 +1,7 @@
 import type { SyncLogEntry, SyncPhase, SyncReport } from "./sync";
 import { formatFingerprint } from "./syncProtocol";
 import { formatBytes } from "./formatBytes";
+import { escapeRegExp } from "./regex";
 
 /** Export sync diagnostics with all strings passed through redactSecrets; exclude keys and absolute vault roots. */
 
@@ -71,7 +72,7 @@ function redactPaths(text: string, paths: DiagnosticsInput["paths"]): string {
     if (!path) continue;
     const normalized = path.replace(/[\\/]+$/, "");
     if (!normalized) continue;
-    const pattern = normalized.split(/[\\/]/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\\\/]");
+    const pattern = normalized.split(/[\\/]/).map(escapeRegExp).join("[\\\\/]");
     out = out.replace(new RegExp(pattern + "(?=[\\\\/]|$|[\\s\"'])", /^[a-z]:/i.test(path) || path.startsWith("\\") ? "gi" : "g"), label);
   }
   return out.replace(/\/(?:Users|home)\/[^/\\\s]+/g, "~")

@@ -1,4 +1,5 @@
 import { Modal } from "./components/Modal";
+import { PI_MIN_WIDTH } from "./lib/agent";
 import { confirmAction } from "./lib/confirmAction";
 import type { BlockedClose } from "./lib/closeGuard";
 import {
@@ -137,7 +138,7 @@ export default function App() {
   const sidebarAutoHide = useAppStore((s) => s.settings.sidebarAutoHide);
   const rightWidth = useAppStore((s) => s.settings.rightWidth);
   const rightStack = useAppStore((s) => s.settings.rightStack);
-  const usableRightWidth = rightStack.includes("agent") ? Math.max(420, rightWidth) : rightWidth;
+  const usableRightWidth = rightStack.includes("agent") ? Math.max(PI_MIN_WIDTH, rightWidth) : rightWidth;
   const dockSide = useAppStore((s) => s.settings.dockSide);
   const dragView = useAppStore((s) => s.dragView);
   const draggingFile = useAppStore((s) => s.draggingFile);
@@ -274,7 +275,7 @@ export default function App() {
         // Dock resize: the splitter sits on the dock's outer edge, so the drag
         // sign flips with the dock side (drag toward the dock widens it).
         const sign = dockSide === "left" ? 1 : -1;
-        const minRightWidth = rightStack.includes("agent") ? 420 : 260;
+        const minRightWidth = rightStack.includes("agent") ? PI_MIN_WIDTH : 260;
         const w = Math.max(minRightWidth, Math.min(760, startW + sign * dx));
         el.style.setProperty("--right-w", w + "px");
         el.dataset.dragR = String(w);

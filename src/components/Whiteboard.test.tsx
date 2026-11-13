@@ -3,6 +3,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Whiteboard } from "./overlay/Whiteboard";
+import { parseBoardDocument } from "../lib/overlayDraft";
+
+vi.mock("../lib/overlayDraft", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/overlayDraft")>();
+  return { ...actual, parseBoardDocument: vi.fn(actual.parseBoardDocument) };
+});
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,4 +73,13 @@ it("keeps the bitmap at CSS size at 100% scaling", () => {
   act(() => root.render(<Whiteboard />));
   const canvas = host.querySelector<HTMLCanvasElement>('canvas[aria-label="Whiteboard drawing"]')!;
   expect([canvas.width, canvas.height]).toEqual([400, 300]);
+});
+
+it("does not re-parse the board when a re-render leaves its content unchanged", () => {
+  act(() => root.render(<Whiteboard />));
+  const parse = vi.mocked(parseBoardDocument);
+  parse.mockClear();
+  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Pen #7259cc"]')!.click());
+  expect(host.querySelector('button[aria-label="Pen #7259cc"]')!.className).toContain("on");
+  expect(parse).not.toHaveBeenCalled();
 });

@@ -36,7 +36,6 @@ use hyper_util::rt::TokioIo;
 use rcgen::CertifiedKey;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use socket2::{Domain, Protocol, Socket, Type};
 use spake2::{Ed25519Group, Identity as PakeIdentity, Password, Spake2};
 use tauri::{Emitter, Manager};
@@ -156,11 +155,25 @@ const MAX_ACTIVITY_BYTES: usize = 1 << 20;
 
 struct ServerState {
     running: Arc<AtomicBool>,
+    /// Wakes the accept loop, which otherwise waits for a peer with no timer.
+    stop: Arc<tokio::sync::Notify>,
     handles: Vec<JoinHandle<()>>,
     port: u16,
     token: String,
     vault: PathBuf,
     bind_address: std::net::IpAddr,
+}
+
+impl ServerState {
+    /// Stop accepting and join the listener thread (bounded by the server
+    /// runtime shutdown timeout).
+    fn shut_down(self) {
+        self.running.store(false, Ordering::Relaxed);
+        self.stop.notify_one();
+        for handle in self.handles {
+            let _ = handle.join();
+        }
+    }
 }
 
 /// Mirrors whether `state()` holds a server, so status never waits for a
@@ -173,10 +186,7 @@ fn state() -> &'static Mutex<Option<ServerState>> {
 }
 
 pub(crate) fn require_sync_key(key: &str) -> Result<(), String> {
-    if key.len() == 64
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    if crate::hex::is_lowercase_hex64(key)
         && key
             .as_bytes()
             .as_chunks::<2>()
@@ -487,7 +497,7 @@ impl rustls::client::danger::ServerCertVerifier for PinnedServerCert {
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let fp = sha256_hex(end_entity.as_ref());
+        let fp = crate::hex::sha256_hex(end_entity.as_ref());
         if let Ok(mut slot) = self.observed.lock() {
             *slot = Some(fp.clone());
         }
@@ -591,8 +601,23 @@ struct ManifestBody {
 
 #[derive(Serialize)]
 pub struct ManifestResult {
-    fingerprint: String,
-    files: Vec<ManifestEntry>,
+    pub fingerprint: String,
+    /// File count and total size only: the probe shows two numbers, and the
+    /// full list would cross the bridge and be parsed on the UI thread.
+    pub files: usize,
+    pub bytes: u64,
+}
+
+impl ManifestResult {
+    fn summarize(fingerprint: String, files: &[ManifestEntry]) -> Self {
+        Self {
+            fingerprint,
+            files: files.len(),
+            bytes: files
+                .iter()
+                .fold(0u64, |sum, entry| sum.saturating_add(entry.size)),
+        }
+    }
 }
 
 fn take_fingerprint(observed: &Arc<Mutex<Option<String>>>) -> String {
@@ -665,9 +690,10 @@ async fn establish_sync_credential(
     }
     let identity: IdentityProof = serde_json::from_slice(&body)
         .map_err(|_| "Peer does not know this sync key".to_string())?;
-    let proof = parse_hex::<32>(&identity.proof)
+    let proof = crate::hex::decode_exact::<32>(&identity.proof)
         .ok_or_else(|| "Peer does not know this sync key".to_string())?;
-    let message = parse_hex::<33>(&identity.message).ok_or("invalid peer key exchange")?;
+    let message =
+        crate::hex::decode_exact::<33>(&identity.message).ok_or("invalid peer key exchange")?;
     let session = exchange
         .finish(&message)
         .map_err(|_| "invalid peer key exchange")?;
@@ -723,7 +749,7 @@ fn accept_remote_manifest(files: &mut Vec<ManifestEntry>) -> Result<(), String> 
 }
 
 const MAX_MANIFEST_FILES: usize = 1_000_000;
-const MAX_MANIFEST_REL_BYTES: usize = 4096;
+const MAX_MANIFEST_REL_BYTES: usize = sync_core::MAX_PEER_REL_BYTES;
 fn validate_remote_manifest(files: &[ManifestEntry]) -> Result<(), String> {
     if files.len() > MAX_MANIFEST_FILES {
         return Err("Peer manifest contains too many files".into());
@@ -732,11 +758,7 @@ fn validate_remote_manifest(files: &[ManifestEntry]) -> Result<(), String> {
     for file in files {
         if file.rel.len() > MAX_MANIFEST_REL_BYTES
             || !sync_core::is_peer_rel(&file.rel)
-            || file.hash.len() != 64
-            || !file
-                .hash
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !crate::hex::is_lowercase_hex64(&file.hash)
             || !paths.insert(&file.rel)
         {
             return Err("Peer manifest contains an invalid or duplicate file entry".into());
@@ -845,14 +867,14 @@ pub async fn sync_retire_peer(
     fingerprints: Vec<String>,
 ) -> Result<(), String> {
     let root = crate::vaultscope::require_approved(&app, &root)?;
-    tokio::task::spawn_blocking(move || sync_core::retire_journal_peers(&root, &fingerprints))
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())
+    run_blocking(move || {
+        sync_core::retire_journal_peers(&root, &fingerprints).map_err(|error| error.to_string())
+    })
+    .await
 }
 
 /// GET the remote manifest over pinned TLS. Returns the peer's cert fingerprint
-/// (so the caller can trust-on-first-use) plus the file list. Used by the
+/// (so the caller can trust-on-first-use) plus the vault's file count and size. Used by the
 /// "Open shared vault" probe; `sync_run` fetches its own manifest.
 #[tauri::command]
 pub async fn sync_fetch_manifest(
@@ -872,8 +894,7 @@ pub async fn sync_fetch_manifest(
             "Peer uses an unsupported sync protocol. Update Mesa before pairing.".to_string(),
         );
     }
-    let files = manifest.files;
-    Ok(ManifestResult { fingerprint, files })
+    Ok(ManifestResult::summarize(fingerprint, &manifest.files))
 }
 
 // === The sync engine ======================================================
@@ -1478,12 +1499,9 @@ async fn run_sync(
         fingerprint,
         own_fingerprint,
     } = peer;
-    let enforce = pin.clone().unwrap_or_else(|| fingerprint.clone());
-    let transfer_client = if pin.is_some() {
-        client // already pinned
-    } else {
-        build_pinned_client(Some(enforce), Arc::new(Mutex::new(None)))?
-    };
+    // `establish_sync_credential` returns a client pinned to the fingerprint
+    // it verified, with or without a saved pin.
+    let transfer_client = client;
     let plan = TransferPlan {
         root: &root,
         diff: &diff,
@@ -1664,12 +1682,11 @@ async fn scan_local_manifest(
     emit_progress(app, "scan", 0, 0, "");
     let scan_started = Instant::now();
     let scan_root = root.to_path_buf();
-    let (local, skipped) = tokio::task::spawn_blocking(move || {
+    let (local, skipped) = run_blocking(move || {
         let _scan_guard = manifest_lock().lock().map_err(|e| e.to_string())?;
         sync_core::build_manifest_cancellable(&scan_root, cancel_flag()).ok_or_else(cancelled_error)
     })
-    .await
-    .map_err(|e| e.to_string())??;
+    .await?;
     if cancelled() {
         return Ok(ControlFlow::Break(finish_cancelled(
             app,
@@ -1714,13 +1731,14 @@ async fn exchange_journals(
     // Record externally-made deletes/renames before applying the peer's intent.
     // The snapshot means a crash after an OS delete is reconstructed on the
     // next sync instead of silently resurrecting the file.
-    let local_journal = tokio::task::spawn_blocking({
+    let local_journal = run_blocking({
         let root = root.to_path_buf();
-        move || sync_core::reconcile_complete_journal(&root, &local, &[])
+        move || {
+            sync_core::reconcile_complete_journal(&root, &local, &[])
+                .map_err(|error| error.to_string())
+        }
     })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())?;
+    .await?;
     // Deliver local intent before calculating the ordinary file transfer plan.
     // The receiver applies a delete/rename and we then re-fetch its
     // manifest, so an initiator cannot pull the old path back in the same run.
@@ -1740,14 +1758,15 @@ async fn exchange_journals(
         return Err("Peer sync protocol changed during transfer".to_string());
     }
     let remote = refreshed.files;
-    let (_local_journal, outcomes) = tokio::task::spawn_blocking({
+    let (_local_journal, outcomes) = run_blocking({
         let root = root.to_path_buf();
         let remote_journal = remote_journal.clone();
-        move || sync_core::apply_incoming_journal(&root, &remote_journal)
+        move || {
+            sync_core::apply_incoming_journal(&root, &remote_journal)
+                .map_err(|error| error.to_string())
+        }
     })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())?;
+    .await?;
     for outcome in outcomes {
         let op = outcome.operation;
         match outcome.result {
@@ -1787,28 +1806,26 @@ async fn exchange_journals(
     // Remote operations changed the local filesystem. Rebuild from the
     // fresh bytes before the ordinary file diff.
     let scan_root = root.to_path_buf();
-    let (local, rescanned_skipped) = tokio::task::spawn_blocking(move || {
+    let (local, rescanned_skipped) = run_blocking(move || {
         let _scan_guard = manifest_lock().lock().map_err(|error| error.to_string())?;
         sync_core::build_manifest_cancellable(&scan_root, cancel_flag()).ok_or_else(cancelled_error)
     })
-    .await
-    .map_err(|error| error.to_string())??;
+    .await?;
     if !rescanned_skipped.is_empty() {
         emit_log(app, "warn", "local vault scan became incomplete after peer operations; ordinary transfer planning was stopped");
         return Err("Local vault scan is incomplete after peer operations. Fix the listed paths and retry; Mesa did not infer any deletes.".to_string());
     }
     let root_for_journal = root.to_path_buf();
     let local_for_journal = local.clone();
-    tokio::task::spawn_blocking(move || {
+    run_blocking(move || {
         sync_core::reconcile_complete_journal(
             &root_for_journal,
             &local_for_journal,
             &rescanned_skipped,
         )
+        .map_err(|error| error.to_string())
     })
-    .await
-    .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())?;
+    .await?;
     Ok((local, remote, failed))
 }
 
@@ -2011,18 +2028,17 @@ async fn run_transfers(
     // Admit only a small batch at a time. A semaphore limits active I/O but a
     // task-per-file queue still allocates one future and captures several
     // clones for every file in a large vault.
-    let mut queue = std::collections::VecDeque::from(jobs);
     let sem = Arc::new(tokio::sync::Semaphore::new(TRANSFER_CONCURRENCY));
-    while !queue.is_empty() {
-        let mut set = tokio::task::JoinSet::new();
-        for _ in 0..TRANSFER_QUEUE_LIMIT {
-            let Some(job) = queue.pop_front() else { break };
+    run_bounded(
+        std::collections::VecDeque::from(jobs),
+        TRANSFER_QUEUE_LIMIT,
+        |job| {
             let client = transfer_client.clone();
             let base = base.to_string();
             let token = token.to_string();
             let root = root.to_path_buf();
             let sem = sem.clone();
-            set.spawn(async move {
+            async move {
                 let permit = tokio::select! {
                     _ = wait_for_cancel() => return JobOutcome { op: job.op, rel: job.rel, bytes: 0, result: Err(cancelled_error()) },
                     permit = sem.acquire_owned() => match permit {
@@ -2036,14 +2052,14 @@ async fn run_transfers(
                 let result = run_job(client, base, token, root, job).await;
                 drop(permit);
                 result
-            });
-        }
-        while let Some(joined) = set.join_next().await {
+            }
+        },
+        |joined| {
             let outcome = match joined {
                 Ok(o) => o,
                 Err(e) => {
                     emit_log(app, "error", format!("transfer task panicked: {e}"));
-                    continue;
+                    return;
                 }
             };
             totals.done += 1;
@@ -2091,9 +2107,35 @@ async fn run_transfers(
                     });
                 }
             }
+        },
+    )
+    .await;
+    totals
+}
+
+/// Run `jobs` as tasks with at most `limit` admitted at a time, and admit the
+/// next job as soon as one ends. A slow job holds one slot, never a batch.
+async fn run_bounded<J, O, Fut>(
+    mut jobs: std::collections::VecDeque<J>,
+    limit: usize,
+    mut start: impl FnMut(J) -> Fut,
+    mut done: impl FnMut(Result<O, tokio::task::JoinError>),
+) where
+    O: Send + 'static,
+    Fut: std::future::Future<Output = O> + Send + 'static,
+{
+    assert!(limit > 0, "a zero limit would drop every job");
+    let mut set = tokio::task::JoinSet::new();
+    loop {
+        while set.len() < limit {
+            let Some(job) = jobs.pop_front() else { break };
+            set.spawn(start(job));
+        }
+        match set.join_next().await {
+            Some(joined) => done(joined),
+            None => break,
         }
     }
-    totals
 }
 
 /// The post-transfer local manifest; an incomplete scan is the inner error.
@@ -2150,5 +2192,5 @@ async fn record_sync_base(
 }
 
 #[cfg(test)]
-#[path = "sync_runtime_tests.rs"]
+#[path = "sync_tests.rs"]
 mod tests;

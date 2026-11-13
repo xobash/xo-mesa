@@ -5,8 +5,13 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const io = vi.hoisted(() => ({ state: {} as Record<string, unknown>, enter: vi.fn(), leave: vi.fn() }));
 vi.mock('../store', () => ({ useAppStore: (select: (s: Record<string, unknown>) => unknown) => select(io.state) }));
+vi.mock('../lib/hue', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/hue')>();
+  return { ...actual, hueFor: vi.fn(actual.hueFor) };
+});
 vi.mock('./previewTriggers', () => ({ previewEnter: io.enter, previewLeave: io.leave }));
 import { TagList } from './TagList';
+import { hueFor } from '../lib/hue';
 
 let host: HTMLDivElement; let root: ReturnType<typeof createRoot>;
 const render = () => act(async () => root.render(<TagList />));
@@ -42,4 +47,15 @@ it('collapses through the persisted setting and renders nothing without tags', a
   io.state.notes = { a: { tags: [] } };
   await render();
   expect(host.innerHTML).toBe('');
+});
+
+it('does not re-render chips when notes republish with the same tags', async () => {
+  await render();
+  vi.mocked(hueFor).mockClear();
+  io.state.notes = { a: { tags: ['beta', 'alpha'] }, b: { tags: ['beta'] }, c: { tags: ['gamma'] }, d: { tags: [] } };
+  await render();
+  expect(hueFor).not.toHaveBeenCalled();
+  io.state.notes = { a: { tags: ['beta'] }, b: { tags: ['beta'] }, c: { tags: ['gamma'] } };
+  await render();
+  expect([...host.querySelectorAll('.tag-chip')].map((c) => c.textContent)).toEqual(['#beta2', '#gamma1']);
 });

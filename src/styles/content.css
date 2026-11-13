@@ -323,7 +323,7 @@
   max-width: 100%;
   max-height: 240px;
   border-radius: calc(var(--radius) - 4px);
-  background: var(--surface-2);
+  background: var(--bg-2);
   visibility: hidden;
 }
 .preview-pdf-canvas.ready {

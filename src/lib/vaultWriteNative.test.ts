@@ -22,6 +22,16 @@ it("sends one candidate and a SHA-256 disk expectation to the native transaction
   });
 });
 
+it("hashes only the expected baseline's view, not its whole backing buffer", async () => {
+  invoke.mockClear();
+  const backing = new Uint8Array([9, 1, 2, 3, 9]);
+  await nativeVaultWriteAtomic("/vault/note.md", new Uint8Array([4]), backing.subarray(1, 4));
+  const [, , options] = invoke.mock.calls[0] as unknown as [string, Uint8Array, { headers: Record<string, string> }];
+  expect(JSON.parse(options.headers["x-mesa-expected"])).toEqual({
+    kind: "hash", sha256: "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81", size: 3,
+  });
+});
+
 it("uses a missing-target expectation for new files", async () => {
   invoke.mockClear();
   await nativeVaultWriteAtomic("/vault/new.md", new Uint8Array([9]), null);

@@ -8,12 +8,11 @@ import { forEachConcurrent } from "../lib/concurrency";
 import { parseEvents } from "../lib/daily";
 import { forkContentCache } from "../lib/documentWorkingSet";
 import { createKnownFolderCheck, relPathsOf } from "../lib/fileIndex";
-import { refreshedNoteMeta } from "../lib/graph";
-import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
-import { isMarkdownPath } from "../lib/markdownCode";
+import { refreshedNoteMeta, singleNoteMeta } from "../lib/graph";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { invalidatePdfThumb } from "../lib/pdfThumbInvalidation";
 import { STARTUP_TEXT_READ_CONCURRENCY } from "../lib/startupTextCache";
+import { MAX_TEXT_CACHE_FILE_LABEL } from "../lib/textCachePlan";
 import { recordTextRevisionsAsync, type RevisionInput } from "../lib/textRevisionHistory";
 import type { TextSaveCoordinator } from "../lib/textSaveCoordinator";
 import {
@@ -202,8 +201,7 @@ export function createWatchBatchHandler({ get, set, textSaves, external, current
             if (!isCurrent()) return;
             rel = normalizeVaultRelPath(p, rootRaw, knownRels());
             // Created after this batch's rescan: let the debounced refresh find
-            // it instead of scanning the whole vault again mid-loop. Previously
-            // such a path was simply dropped.
+            // it instead of scanning the whole vault again mid-loop. Never drop it.
             if (!rel) scheduleExternalRefresh(rootRaw, isCurrent);
           }
           if (!rel || seen.has(rel)) continue;
@@ -252,7 +250,7 @@ export function createWatchBatchHandler({ get, set, textSaves, external, current
             if (read.tooLarge) {
               if (get().openTabs.includes(rel) || get().activePath === rel) {
                 watcherWarning = true;
-                set({ status: `${rel} changed outside Mesa; it is 8 MiB or larger, so reopen it to see the change.` });
+                set({ status: `${rel} changed outside Mesa; it is ${MAX_TEXT_CACHE_FILE_LABEL} or larger, so reopen it to see the change.` });
               }
               continue;
             }
@@ -396,7 +394,7 @@ export function createWatchBatchHandler({ get, set, textSaves, external, current
               const text = texts.get(file.relPath);
               if (text === undefined) continue;
               cache[file.relPath] = text;
-              notes[file.relPath] = { relPath: file.relPath, title: file.name, rawLinks: extractLinks(text, isMarkdownPath(file.relPath)), tags: extractTags(text, isMarkdownPath(file.relPath)), aliases: extractAliases(text), firstImagePath: undefined };
+              notes[file.relPath] = singleNoteMeta(file, text);
             }
             set({ files: sorted, notes, contentCache: cache });
           } else set({ files: sorted });

@@ -1,4 +1,5 @@
 import { IN_TAURI } from "./vault";
+import { reportStatus } from "./statusReport";
 
 export interface ConfirmActionOptions {
   title?: string;
@@ -20,8 +21,7 @@ export async function confirmAction(message: string, options: ConfirmActionOptio
   } catch (error) {
     console.warn("Confirmation unavailable:", error);
     // Denying silently would look like an ignored click; say why nothing happened.
-    const { useAppStore } = await import("../store");
-    useAppStore.setState({ status: `Confirmation dialog unavailable, so nothing was changed: ${String(error)}` });
+    reportStatus(`Confirmation dialog unavailable, so nothing was changed: ${String(error)}`);
     return false;
   }
 }

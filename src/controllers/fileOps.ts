@@ -1,10 +1,10 @@
 import { bumpActivityAmount } from "../lib/activity";
+import { forEachConcurrent } from "../lib/concurrency";
 import { forkContentCache, moveCacheEntry } from "../lib/documentWorkingSet";
 import { localISO } from "../lib/daily";
 import { ancestorFolders, childRelPath, duplicateRelPath, splitRelPath } from "../lib/fsnames";
-import { makeResolver } from "../lib/graph";
-import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
-import { isMarkdownPath } from "../lib/markdownCode";
+import { makeResolver, singleNoteMeta } from "../lib/graph";
+import { STARTUP_TEXT_READ_CONCURRENCY } from "../lib/startupTextCache";
 import { conflictBackupPath, reviewedConflictPath } from "../lib/syncConflicts";
 import type { TextSaveCoordinator, TextSaveHold } from "../lib/textSaveCoordinator";
 import {
@@ -13,11 +13,10 @@ import {
 } from "../lib/vault";
 import type { VaultFile } from "../types";
 
-import type { StoreApi } from "zustand";
+import type { VaultPort } from "./vaultExternalFiles";
 import type { AppState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   getGeneration: () => number;
   textSaves: TextSaveCoordinator<VaultFile>;
   reportingFailure: (label: string, run: () => Promise<void>) => Promise<void>;
@@ -178,11 +177,7 @@ export function createFileOpsController({
             ...(get().activePath === saved.relPath ? { content: String(content) } : {}),
             notes: {
               ...get().notes,
-              [saved.relPath]: {
-                relPath: saved.relPath,
-                title: saved.name,
-                rawLinks: extractLinks(text, isMarkdownPath(saved.relPath)), tags: extractTags(text, isMarkdownPath(saved.relPath)), aliases: extractAliases(text), firstImagePath: undefined,
-              },
+              [saved.relPath]: singleNoteMeta(saved, text),
             },
             contentCache: forkContentCache(get().contentCache, { [saved.relPath]: text }),
             status: `Saved ${saved.relPath}.`,
@@ -249,14 +244,7 @@ export function createFileOpsController({
             ),
             notes: {
               ...get().notes,
-              [newFile.relPath]: {
-                relPath: newFile.relPath,
-                title: newFile.name,
-                rawLinks: extractLinks(text, isMarkdownPath(newFile.relPath)),
-                tags: extractTags(text, isMarkdownPath(newFile.relPath)),
-                aliases: extractAliases(text),
-                firstImagePath: undefined,
-              },
+              [newFile.relPath]: singleNoteMeta(newFile, text),
             },
             contentCache: forkContentCache(get().contentCache, { [newFile.relPath]: text }),
           });
@@ -340,13 +328,20 @@ export function createFileOpsController({
           set({ status: `${Object.keys(get().notes).length} notes` });
           return;
         }
+        // The watcher usually cached created notes already; read the rest with bounded concurrency.
         const loaded = new Map<string, string>();
+        const unread = created.filter((f) => f.isMarkdown && !(f.relPath in get().contentCache));
+        await forEachConcurrent(unread, STARTUP_TEXT_READ_CONCURRENCY, async (f) => {
+          const text = await readNote(f);
+          if (current()) loaded.set(f.relPath, text);
+        }, () => !current());
+        if (!current()) return;
+        // A cache entry can leave while the reads run; never publish empty text for it.
         for (const f of created) {
-          if (f.isMarkdown) {
-            const text = await readNote(f);
-            if (!current()) return;
-            loaded.set(f.relPath, text);
-          }
+          if (!f.isMarkdown || loaded.has(f.relPath) || f.relPath in get().contentCache) continue;
+          const text = await readNote(f);
+          if (!current()) return;
+          loaded.set(f.relPath, text);
         }
         const files = [...get().files];
         const notes = { ...get().notes };
@@ -361,14 +356,7 @@ export function createFileOpsController({
           if (f.isMarkdown) {
             const text = contentCache[f.relPath] ?? loaded.get(f.relPath) ?? "";
             contentCache[f.relPath] = text;
-            notes[f.relPath] = {
-              relPath: f.relPath,
-              title: f.name,
-              rawLinks: extractLinks(text),
-              tags: extractTags(text),
-              aliases: extractAliases(text),
-              firstImagePath: undefined,
-            };
+            notes[f.relPath] = singleNoteMeta(f, text);
           }
         }
         files.sort((a, b) => a.relPath.localeCompare(b.relPath));

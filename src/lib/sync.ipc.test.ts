@@ -67,7 +67,8 @@ describe("native sync commands", () => {
     const sync = await loadSync(true);
     reply("sync_fetch_manifest", () => ({
       fingerprint: "f".repeat(64),
-      files: [{ rel: "a.md", size: 10, hash: "1".repeat(64) }, { rel: "b.png", size: 2048, hash: "2".repeat(64) }],
+      files: 2,
+      bytes: 2058,
     }));
     await expect(sync.fetchRemoteVaultInfo("203.0.113.5:8787", "credential:stored", "c".repeat(64)))
       .resolves.toEqual({ files: 2, bytes: 2058, fingerprint: "f".repeat(64) });

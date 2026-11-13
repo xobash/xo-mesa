@@ -1,6 +1,6 @@
 import type { GraphNode, GraphLink } from "../types";
 import type { activeRecords } from "../lib/activity";
-import { clamp, incidentLinkIndices, phaseFromId } from "./graphGeometry";
+import { clamp, incidentLinkIndices, phaseFromId } from "../lib/graphGeometry";
 import { nodeFill, type GraphColors } from "./graphColors";
 
 // How many of the highest-degree nodes always get a title label (the rest

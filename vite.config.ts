@@ -1,19 +1,49 @@
 /// <reference types="vitest/config" />
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
 // Vite config tuned for Tauri:
 // - fixed dev port so the Rust shell can find the frontend
 // - don't clear the screen so Rust/cargo logs stay visible
 // - target Mesa's documented system-webview floor, not an open-ended newest JS
+// KaTeX lists woff2, woff and ttf for each face. Every webview at the build
+// target reads woff2, so the fallbacks are never requested; dropping them from
+// the stylesheet keeps Vite from shipping 40 unused font files.
+const katexWoff2Only: Plugin = {
+  name: "mesa-katex-woff2-only",
+  enforce: "pre",
+  transform(code, id) {
+    if (!/\/katex\/dist\/katex(\.min)?\.css(\?|$)/.test(id)) return null;
+    return {
+      code: code.replace(/,\s*url\([^)]+\.(?:woff|ttf)\)\s*format\("(?:woff|truetype)"\)/g, ""),
+      map: null,
+    };
+  },
+};
+
+// Dev only: transform these module graphs while the Rust shell starts (the
+// window opens about three seconds after the server is ready), so the first
+// load and the first open of each surface find them ready. Entry first.
+export const DEV_WARMUP_FILES = [
+  "./src/main.tsx",
+  "./src/components/Editor.tsx",
+  "./src/components/GraphView.tsx",
+  "./src/components/Overlay.tsx",
+  "./src/components/AgentPanel.tsx",
+  "./src/components/CommandPalette.tsx",
+  "./src/components/SearchPanel.tsx",
+  "./src/components/SettingsModal.tsx",
+];
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [katexWoff2Only, react()],
   clearScreen: false,
   // Index workers share lazily loaded codec modules.
   worker: { format: "es" },
   server: {
     port: 1420,
     strictPort: true,
+    warmup: { clientFiles: DEV_WARMUP_FILES },
     watch: {
       // src-tauri is watched by cargo, not vite
       ignored: ["**/src-tauri/**"],

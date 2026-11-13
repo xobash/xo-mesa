@@ -1,13 +1,13 @@
 import { useRef, useState } from "react";
 
-type Props = { src: string; alt: string; className?: string; loading?: "lazy" | "eager" };
+type Props = { src: string; alt: string; className?: string };
 
 /** Keep decode failures local to the image that failed. */
 export function VaultImage(props: Props) {
   return <ImageAttempt key={props.src} {...props} />;
 }
 
-function ImageAttempt({ src, alt, className, loading }: Props) {
+function ImageAttempt({ src, alt, className }: Props) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   // Retry unmounts its own button; give focus to the new one if it fails again.
@@ -26,6 +26,6 @@ function ImageAttempt({ src, alt, className, loading }: Props) {
       }}>Retry image</button>
     </span>
   );
-  return <img key={attempt} className={className} src={src} alt={alt} loading={loading}
+  return <img key={attempt} className={className} src={src} alt={alt}
     onLoad={() => { refocus.current = false; }} onError={() => setFailed(true)} />;
 }

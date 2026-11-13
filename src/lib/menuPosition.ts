@@ -1,3 +1,5 @@
+import { clamp } from "./clamp";
+
 export interface MenuPoint {
   x: number;
   y: number;
@@ -11,11 +13,6 @@ export interface MenuSize {
 export interface ViewportSize {
   width: number;
   height: number;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (max < min) return min;
-  return Math.min(Math.max(value, min), max);
 }
 
 export function clampFloatingMenuPosition(

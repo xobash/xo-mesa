@@ -19,11 +19,6 @@ pub fn json_str(s: &str) -> String {
     o
 }
 
-/// One hexadecimal digit; unlike `from_str_radix`, never accepts a sign.
-fn nibble(byte: u8) -> Option<u8> {
-    (byte as char).to_digit(16).map(|digit| digit as u8)
-}
-
 /// Percent-decode a URL query value ('+' becomes a space).
 pub fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -31,16 +26,18 @@ pub fn url_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'%' if i + 2 < bytes.len() => match nibble(bytes[i + 1]).zip(nibble(bytes[i + 2])) {
-                Some((high, low)) => {
-                    out.push(high << 4 | low);
-                    i += 3;
+            b'%' if i + 2 < bytes.len() => {
+                match super::hex::nibble(bytes[i + 1]).zip(super::hex::nibble(bytes[i + 2])) {
+                    Some((high, low)) => {
+                        out.push(high << 4 | low);
+                        i += 3;
+                    }
+                    None => {
+                        out.push(b'%');
+                        i += 1;
+                    }
                 }
-                None => {
-                    out.push(b'%');
-                    i += 1;
-                }
-            },
+            }
             b'+' => {
                 out.push(b' ');
                 i += 1;

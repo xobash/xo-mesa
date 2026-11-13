@@ -395,6 +395,11 @@ describe("refreshedNoteMeta", () => {
     expect(refreshedNoteMeta(meta(), aliasEdit)).not.toBeNull();
   });
 
+  it("gives an entry without reference metadata its references on the next refresh", () => {
+    const { rawReferences: _references, ...legacy } = makeVault({ "A.md": "plain", "B.md": "" }).notes["A.md"];
+    expect(refreshedNoteMeta(legacy, "plain")?.rawReferences).toEqual([]);
+  });
+
   it("a removed link is a change (shorter arrays compare unequal)", () => {
     expect(refreshedNoteMeta(meta(), SRC.replace(" and [[C]]", ""))).not.toBeNull();
   });

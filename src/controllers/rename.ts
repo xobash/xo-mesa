@@ -9,11 +9,10 @@ import type { TextSaveCoordinator, TextSaveHold } from "../lib/textSaveCoordinat
 import { readNote, renameVaultFile, writeNote } from "../lib/vault";
 import type { VaultFile } from "../types";
 
-import type { StoreApi } from "zustand";
+import type { VaultPort } from "./vaultExternalFiles";
 import type { AppState } from "../storeTypes";
-type Port = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 
-interface Dependencies extends Port {
+interface Dependencies extends VaultPort {
   getGeneration: () => number;
   textSaves: TextSaveCoordinator<VaultFile>;
 }

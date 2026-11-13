@@ -16,7 +16,7 @@ import {
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
-import { resolveOverlaps } from "../components/graphGeometry";
+import { resolveOverlaps } from "./graphGeometry";
 
 /** Size-tiered force constants shared by GraphView's open, retune and benchmark paths. */
 export function graphSimulationTier(count: number) {

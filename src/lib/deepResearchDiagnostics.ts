@@ -5,8 +5,10 @@ import type {
   ResearchActivity,
   ResearchDepth,
 } from "./deepResearch";
-import { redactResearchContent, utf8ByteLength } from "./deepResearch";
+import { utf8ByteLength } from "./deepResearch";
+import { redactResearchContent } from "./deepResearchContext";
 import { formatLogTime } from "./syncDiagnostics";
+import { minutes, observed, selfReported } from "./deepResearchTimeout";
 
 /** Export bounded run diagnostics with observed and reported activity distinguished.
  * Scrub credentials and use vault-relative paths; redaction is not a confidentiality guarantee. */
@@ -106,21 +108,6 @@ function compactEnvironment(value: string): string {
 function markdownFence(value: string): string {
   const longestRun = Math.max(0, ...(value.match(/`+/g) ?? []).map((run) => run.length));
   return "`".repeat(Math.max(3, longestRun + 1));
-}
-
-function minutes(ms: number): string {
-  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))}s`;
-  return `${(ms / 60_000).toFixed(1)}m`;
-}
-
-/** Model self-reports: progress-tool calls (anything Mesa didn't observe
- *  itself, excluding Mesa's own seeded status lines). */
-function selfReported(activity: ResearchActivity[]): ResearchActivity[] {
-  return activity.filter((a) => !a.observed && a.kind !== "status");
-}
-
-function observed(activity: ResearchActivity[]): ResearchActivity[] {
-  return activity.filter((a) => a.observed);
 }
 
 /** Build the copy-pasteable, secret-scrubbed markdown troubleshooting kit. */
