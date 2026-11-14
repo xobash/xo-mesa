@@ -373,6 +373,67 @@ pub(crate) fn portable_name_key(rel: &str) -> String {
         .to_lowercase()
 }
 
+/// One open folder of the walk: its listing and, on Windows, the guard that
+/// keeps its parents in place while the listing is read.
+#[cfg(not(unix))]
+struct WalkFrame {
+    dir: PathBuf,
+    entries: std::fs::ReadDir,
+    #[cfg(windows)]
+    _parents: WindowsParentGuard,
+}
+
+#[cfg(not(unix))]
+enum WalkOpen {
+    Ready(Box<WalkFrame>),
+    /// The folder is reported in `errors` and left out.
+    Skipped,
+    Cancelled,
+}
+
+#[cfg(not(unix))]
+fn open_walk_frame(
+    root: &Path,
+    dir: PathBuf,
+    errors: &mut Vec<(String, String)>,
+    cancelled: Option<&AtomicBool>,
+) -> WalkOpen {
+    #[cfg(windows)]
+    let parents = match WindowsParentGuard::acquire(&dir.join("candidate"), false) {
+        Ok(guard) => guard,
+        Err(error) => {
+            errors.push((
+                rel_for_error(root, &dir),
+                format!("lock directory failed: {error}"),
+            ));
+            return WalkOpen::Skipped;
+        }
+    };
+
+    if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return WalkOpen::Cancelled;
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            errors.push((
+                rel_for_error(root, &dir),
+                format!("read directory failed: {error}"),
+            ));
+            return WalkOpen::Skipped;
+        }
+    };
+    WalkOpen::Ready(Box::new(WalkFrame {
+        dir,
+        entries,
+        #[cfg(windows)]
+        _parents: parents,
+    }))
+}
+
+/// Depth-first walk on an explicit stack of open folders, never recursion:
+/// a nested call per folder level overflows the thread stack on Windows.
+/// The stack holds at most `MAX_REL_SEGMENTS` folders.
 #[cfg(not(unix))]
 fn walk(
     root: &Path,
@@ -382,32 +443,17 @@ fn walk(
     errors: &mut Vec<(String, String)>,
     cancelled: Option<&AtomicBool>,
 ) -> bool {
-    #[cfg(windows)]
-    let _parents = match WindowsParentGuard::acquire(&dir.join("candidate"), false) {
-        Ok(guard) => guard,
-        Err(error) => {
-            errors.push((
-                rel_for_error(root, dir),
-                format!("lock directory failed: {error}"),
-            ));
-            return true;
-        }
-    };
-
-    if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-        return false;
+    let mut stack: Vec<WalkFrame> = Vec::new();
+    match open_walk_frame(root, dir.to_path_buf(), errors, cancelled) {
+        WalkOpen::Ready(frame) => stack.push(*frame),
+        WalkOpen::Skipped => return true,
+        WalkOpen::Cancelled => return false,
     }
-    let rd = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(error) => {
-            errors.push((
-                rel_for_error(root, dir),
-                format!("read directory failed: {error}"),
-            ));
-            return true;
-        }
-    };
-    for entry in rd {
+    while let Some(frame) = stack.last_mut() {
+        let Some(entry) = frame.entries.next() else {
+            stack.pop();
+            continue;
+        };
         if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return false;
         }
@@ -415,7 +461,7 @@ fn walk(
             Ok(entry) => entry,
             Err(error) => {
                 errors.push((
-                    rel_for_error(root, dir),
+                    rel_for_error(root, &frame.dir),
                     format!("read directory entry failed: {error}"),
                 ));
                 continue;
@@ -455,8 +501,10 @@ fn walk(
             }
         };
         if ftype.is_dir() {
-            if !walk(root, &path, out, names, errors, cancelled) {
-                return false;
+            match open_walk_frame(root, path, errors, cancelled) {
+                WalkOpen::Ready(child) => stack.push(*child),
+                WalkOpen::Skipped => {}
+                WalkOpen::Cancelled => return false,
             }
         } else if ftype.is_file() {
             // An online-only cloud file is reported, never hashed or omitted.

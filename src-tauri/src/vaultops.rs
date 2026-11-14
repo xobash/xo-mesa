@@ -336,14 +336,16 @@ fn is_reparse(_entry: &fs::DirEntry) -> bool {
     false
 }
 pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
-    fn walk(
+    /// List one folder: recovery items go to `out`, subfolders to `pending`.
+    fn scan(
         root: &Path,
         dir: &Path,
         in_trash: bool,
         depth: usize,
         out: &mut Vec<RecoveryEntry>,
+        pending: &mut Vec<(std::path::PathBuf, bool, usize)>,
     ) -> Result<(), String> {
-        // Bounds the recursion's stack; no recovery item lives deeper.
+        // No recovery item lives deeper than the vault's depth cap.
         if depth > crate::vault_names::MAX_REL_SEGMENTS {
             return Ok(());
         }
@@ -393,18 +395,24 @@ pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
                         is_directory,
                     });
                 } else if kind.is_dir() {
-                    walk(root, &path, true, depth + 1, out)?;
+                    pending.push((path, true, depth + 1));
                 }
             } else if kind.is_dir()
                 && (name == ".mesa-trash" || !crate::vault_names::is_hidden_name(&name))
             {
-                walk(root, &path, name == ".mesa-trash", depth + 1, out)?;
+                pending.push((path, name == ".mesa-trash", depth + 1));
             }
         }
         Ok(())
     }
+    // An explicit folder stack, never recursion: the result is sorted, so
+    // visit order does not matter, and a deep tree cannot exhaust the stack.
     let mut entries = Vec::new();
-    walk(root, root, false, 0, &mut entries)?;
+    let mut pending: Vec<(std::path::PathBuf, bool, usize)> = Vec::new();
+    scan(root, root, false, 0, &mut entries, &mut pending)?;
+    while let Some((dir, in_trash, depth)) = pending.pop() {
+        scan(root, &dir, in_trash, depth, &mut entries, &mut pending)?;
+    }
     entries.sort_by(|a, b| a.original_rel_path.cmp(&b.original_rel_path));
     Ok(entries)
 }

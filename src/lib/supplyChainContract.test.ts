@@ -81,7 +81,7 @@ describe("Rust supply-chain contract", () => {
   it("keeps Quinn protocol above the known peer-triggered panic ranges", () => {
     const blocks = cargoPackageBlocks("quinn-proto");
     expect(blocks.length).toBeGreaterThan(0);
-    for (const block of blocks) expect(isAtLeast(cargoBlockVersion(block) ?? "0.0.0", [0, 11, 18])).toBe(true);
+    for (const block of blocks) expect(isAtLeast(cargoBlockVersion(block) ?? "0.0.0", [0, 11, 19])).toBe(true);
   });
 
   it("keeps the deprecated tiny_http TLS stack out of the lockfile", () => {

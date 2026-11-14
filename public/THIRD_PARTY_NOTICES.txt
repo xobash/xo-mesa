@@ -1,8 +1,8 @@
 Mesa third-party notices
 Generated from installed, locked dependencies. Mesa's own MIT license is separate.
 package-lock-sha256: dd2f922e03e40687cd6a36afbcc7a3f8c7c8985b982439b81d994dbcdbc38748
-Cargo-lock-sha256: 6d3e43a77ae6436f4c06890ecf58c7ed2384897f8ff9fd194242dadf7d472f9c
-native-notices-sha256: 26ae68e5065dc9f05a9b459656bd188ddb019a7f010983fa5b2e3447f0632602
+Cargo-lock-sha256: bf399d3fec4862eb773b9fe9d39d3546c6e3174adc6e36ee682349a057f4756a
+native-notices-sha256: 97843139892432cfd2fe7fd8061133201c4c8121b9d3a08f609ff282f62d7539
 
 Frontend runtime dependencies (package-lock.json)
 
@@ -54708,7 +54708,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ========================================================================
-quinn-proto@0.11.18
+quinn-proto@0.11.19
 License: MIT OR Apache-2.0
 Desktop targets: x86_64-apple-darwin, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu
 
@@ -54925,7 +54925,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ========================================================================
-quinn-udp@0.5.15
+quinn-udp@0.5.16
 License: MIT OR Apache-2.0
 Desktop targets: x86_64-apple-darwin, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu
 
@@ -59010,7 +59010,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ========================================================================
-rustix@1.1.4
+rustix@1.1.6
 License: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
 Desktop targets: x86_64-unknown-linux-gnu
 

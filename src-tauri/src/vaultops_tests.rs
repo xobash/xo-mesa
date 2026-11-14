@@ -151,3 +151,26 @@ fn linked_parents_cannot_create_or_move_outside_the_vault() {
     assert!(!root.join("outside/new").exists());
     fs::remove_dir_all(root).unwrap();
 }
+
+/// The listing uses a folder stack, so a tree at the depth cap neither
+/// overflows the thread stack nor hides a deleted item above the cap.
+#[test]
+fn recovery_listing_handles_a_tree_at_the_depth_cap() {
+    let root = std::env::temp_dir().join(format!("mesa-recovery-depth-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let deep = vec!["d"; crate::vault_names::MAX_REL_SEGMENTS].join("/");
+    fs::create_dir_all(root.join(&deep)).unwrap();
+    fs::create_dir_all(root.join(".mesa-trash/123/notes")).unwrap();
+    fs::write(root.join(".mesa-trash/123/notes/gone.md"), b"x").unwrap();
+    let listed = list_recovery(&root);
+    let _ = fs::remove_dir_all(&root);
+    let listed = listed.unwrap();
+    assert!(
+        listed.iter().any(|entry| entry.name == "gone.md"),
+        "{:?}",
+        listed
+            .iter()
+            .map(|entry| &entry.trash_rel_path)
+            .collect::<Vec<_>>()
+    );
+}
