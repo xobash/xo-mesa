@@ -1,8 +1,8 @@
 Mesa third-party notices
 Generated from installed, locked dependencies. Mesa's own MIT license is separate.
 package-lock-sha256: 43459fc63e25186f2a734d62cf1a933268b13ceb8fb80a5f14d187347dc7340f
-Cargo-lock-sha256: 4ddd3f7c32ab3d23cb413f3194ee8822891c5981309da9a1c7972beebb18a927
-native-notices-sha256: 36ec434a1b2c484aa141da05d2ff9f552710443041615f74bf968ebf37f800d9
+Cargo-lock-sha256: 911b79cd01fb77db44ae5b4845eccbe3be60b22b83f059b3dfd35e7696a92ab7
+native-notices-sha256: f8fee2062160f4c327cee5d4b3067ef066bf7c11b24654ee880ca6398875824f
 
 Frontend runtime dependencies (package-lock.json)
 
@@ -18691,7 +18691,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ========================================================================
-cookie@0.18.2
+cookie@0.18.3
 License: MIT OR Apache-2.0
 Desktop targets: x86_64-apple-darwin, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu
 
