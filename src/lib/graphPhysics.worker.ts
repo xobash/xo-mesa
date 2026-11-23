@@ -78,8 +78,8 @@ self.onmessage = async (event: MessageEvent<GraphPhysicsRequest>) => {
     const started = performance.now();
     const warm = new GraphPhysicsSession(message.init);
     const pool = helpersFor(warm.nodeCount);
-    if (pool) await warmGraphSimulationParallel(warm.sim, message.count, pool);
-    else warmGraphSimulation(warm.sim, message.count);
+    if (pool) await warmGraphSimulationParallel(warm.sim, message.count, pool, message.startAlpha);
+    else warmGraphSimulation(warm.sim, message.count, message.startAlpha);
     post({ type: "warmed", session: message.session, state: warm.state(), alpha: warm.sim.alpha(), ms: Math.round(performance.now() - started), helpers: pool?.size ?? 0 });
     return;
   }

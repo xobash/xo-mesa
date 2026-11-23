@@ -239,6 +239,22 @@ positions under a hash key, never names or paths) opens with its saved
 layout at once. Seeding and the warm-up are deterministic, so the saved
 layout is the one a new warm-up would produce.
 
+After a small change between opens (owner sign-off 2026-11-23), the graph
+starts from its last layout instead of a fresh one, as a live data change
+does. A saved layout is reused when at least 90% of the nodes are shared in
+both directions and the force settings match; nodes are matched by two 32-bit
+hashes of each node id, never the id. Kept nodes start where they were, new
+nodes are seeded beside their neighbours, and the warm-up runs from alpha 0.3
+(the topology-change alpha) to the open alpha at the usual warm-up decay: 19
+ticks instead of 42 for graphs over 800 nodes. The graph still opens settled.
+Measured in Node (`npm run bench:graph`, one new note): 192 ms instead of
+431 ms at 5,000 nodes, 463 instead of 938 ms at 10,000, 960 instead of
+2,032 ms at 20,000. In the prototype, kept nodes moved a median of 0.2–0.4k
+world units from their last place instead of 3.9–7.8k with a fresh layout,
+and slightly less moved after the first paint. A larger change, other force
+settings or no saved layout warm from scratch as before
+(`graphLayoutCache.test.ts`, `GraphView.heavy.test.tsx`).
+
 A data change rebuilds the graph only when something the graph reads changes:
 note titles, links, references, tags, aliases, first images, file paths and
 times, note order, or the filters. A rebuild reuses each unchanged note's
@@ -282,7 +298,8 @@ and 65 ms at 20,000 (Node; one 150 ms block at 20,000 before).
 `npm run bench:graph` runs a seeded synthetic-vault benchmark at 1k, 5k, 10k
 and 20k nodes (pass a comma-separated size list to change them; a third
 argument sets link density, and 13 gives about 93,000 links at 10,000 notes). It measures
-graph build, seeding, warm ticks, main-thread versus worker settle frames,
+graph build, seeding, warm ticks, the warm-up of a reopen after a one-note
+change, main-thread versus worker settle frames,
 idle overlap passes, worker parity, hit-testing, the label pass and retained
 heap in Node. It does not measure WebKit, WebView2 or WebKitGTK canvas drawing
 or native frame times.

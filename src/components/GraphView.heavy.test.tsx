@@ -21,19 +21,20 @@ vi.mock("d3-force", async (original) => {
   } };
 });
 /** Answer an open warm-up exactly as graphPhysics.worker.ts does. */
-function answerWarm(worker: { onmessage: ((event: { data: unknown }) => void) | null }, message: { type: string; session: number; init?: unknown; count?: number }): boolean {
+function answerWarm(worker: { onmessage: ((event: { data: unknown }) => void) | null }, message: { type: string; session: number; init?: unknown; count?: number; startAlpha?: number }): boolean {
   if (message.type !== "warm") return false;
   // The worker's own simulation must not replace the captured GraphView one.
   const shown = captured.sim;
   const session = new GraphPhysicsSession(message.init as GraphPhysicsInit);
   captured.sim = shown;
-  warmGraphSimulation(session.sim, message.count!);
+  warmGraphSimulation(session.sim, message.count!, message.startAlpha);
   worker.onmessage!({ data: { type: "warmed", session: message.session, state: session.state(), alpha: session.sim.alpha() } });
   return true;
 }
 /** Run a heavy open's deferred steps (layout cache or seeding, then the worker warm-up). */
-function openSteps(): void {
-  for (let i = 0; i < 8; i++) act(() => { vi.advanceTimersByTime(1); });
+async function openSteps(): Promise<void> {
+  // The layout-reuse lookup may await storage between steps.
+  for (let i = 0; i < 8; i++) await act(async () => { vi.advanceTimersByTime(1); });
 }
 vi.mock("./PreviewCard", () => ({ PreviewCard: () => null }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -61,7 +62,7 @@ afterEach(() => {
   simulation()?.stop();
   vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
-it("settles heavy graphs in the worker with overlap cleanup and transferred buffers", () => {
+it("settles heavy graphs in the worker with overlap cleanup and transferred buffers", async () => {
   const posted: { message: { type: string; session: number; init?: { grab: number; overlap?: { gap: number } } }; transfer?: unknown[] }[] = [];
   const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
   vi.stubGlobal("Worker", class {
@@ -82,7 +83,7 @@ it("settles heavy graphs in the worker with overlap cleanup and transferred buff
       settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false } });
     root.render(<GraphView />);
   });
-  openSteps();
+  await openSteps();
   const sim = simulation();
   expect(sim.alpha()).toBeGreaterThan(0.001);
   const tick = vi.spyOn(sim, "tick");
@@ -103,7 +104,7 @@ it("settles heavy graphs in the worker with overlap cleanup and transferred buff
   expect(tick).not.toHaveBeenCalled();
   expect(posted.filter((p) => p.message.type === "start")).toHaveLength(1);
 }, 30000);
-it("restarts a heavy worker settle with the new radii when node size changes mid-settle", () => {
+it("restarts a heavy worker settle with the new radii when node size changes mid-settle", async () => {
   type Start = { type: string; session: number; init?: { overlap?: { radius: Float64Array } } };
   const posted: Start[] = [];
   vi.stubGlobal("Worker", class {
@@ -120,7 +121,7 @@ it("restarts a heavy worker settle with the new radii when node size changes mid
       settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false } });
     root.render(<GraphView />);
   });
-  openSteps();
+  await openSteps();
   runFrame();
   const first = posted.find((p) => p.type === "start")!;
   act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, graphNodeSize: 2 } }));
@@ -130,7 +131,7 @@ it("restarts a heavy worker settle with the new radii when node size changes mid
   expect(second.session).toBeGreaterThan(first.session);
   expect(second.init!.overlap!.radius[0]).toBeCloseTo(first.init!.overlap!.radius[0] * 2);
 }, 30000);
-it("turns on All files in a 4,165-file vault in place: one simulation, every file, settled in the worker", () => {
+it("turns on All files in a 4,165-file vault in place: one simulation, every file, settled in the worker", async () => {
   const posted: { type: string }[] = [];
   vi.stubGlobal("Worker", class {
     onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -153,7 +154,7 @@ it("turns on All files in a 4,165-file vault in place: one simulation, every fil
       settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: false, graphShowAttachments: false, animations: false } });
     root.render(<GraphView />);
   });
-  openSteps();
+  await openSteps();
   const sim = simulation();
   expect(sim.nodes().length).toBeLessThan(files.length);
   act(() => useAppStore.getState().setSetting("graphShowAllFiles", true));
@@ -163,7 +164,7 @@ it("turns on All files in a 4,165-file vault in place: one simulation, every fil
   expect(posted.some((m) => m.type === "start")).toBe(true);
 }, 30000);
 
-it("warms a large graph in the worker: the frame never runs warm ticks, nothing draws until the same layout returns", () => {
+it("warms a large graph in the worker: the frame never runs warm ticks, nothing draws until the same layout returns", async () => {
   const warms: { type: string; session: number; init?: unknown; count?: number }[] = [];
   const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
   vi.stubGlobal("Worker", class {
@@ -183,7 +184,7 @@ it("warms a large graph in the worker: the frame never runs warm ticks, nothing 
   // The render returns before seeding or the simulation: the pane paints first.
   expect(warms).toHaveLength(0);
   expect(host.textContent).toContain("Laying out 1,200 nodes");
-  openSteps();
+  await openSteps();
   // The open returned without laying out: the worker holds the warm-up.
   expect(warms).toHaveLength(1);
   expect(warms[0].count).toBe(1200);
@@ -202,14 +203,14 @@ it("warms a large graph in the worker: the frame never runs warm ticks, nothing 
   act(() => root.unmount());
   root = createRoot(host);
   act(() => root.render(<GraphView />));
-  openSteps();
+  await openSteps();
   expect(warms).toHaveLength(1);
   expect(host.textContent).not.toContain("Laying out");
   expect(simulation().nodes().map((n) => [n.x, n.y])).toEqual(positions);
   expect(simulation().alpha()).toBeCloseTo(0.12, 12);
 }, 30000);
 
-it("replays a heavy graph with worker physics: batches admit in the worker, the frame never ticks, the full graph returns", () => {
+it("replays a heavy graph with worker physics: batches admit in the worker, the frame never ticks, the full graph returns", async () => {
   const posted: { type: string; session: number; ids?: string[]; count?: number; seeds?: Float64Array }[] = [];
   const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
   vi.stubGlobal("Worker", class {
@@ -228,7 +229,7 @@ it("replays a heavy graph with worker physics: batches admit in the worker, the 
       settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false } });
     root.render(<GraphView />);
   });
-  openSteps();
+  await openSteps();
   const sim = simulation();
   const tick = vi.spyOn(sim, "tick");
   act(() => host.querySelector<HTMLButtonElement>('[aria-label="Start timelapse animation"]')!.click());
@@ -277,7 +278,7 @@ it("shows a heavy graph laid out in an earlier session at once, without waiting 
   });
   // First session: the worker lays it out and the layout is saved.
   mount();
-  openSteps();
+  await openSteps();
   await act(async () => { answerWarm(workers[0], warms[0]); await Promise.resolve(); });
   const positions = simulation().nodes().map((n) => [n.x, n.y]);
   expect(saved.size).toBe(1);
@@ -287,9 +288,92 @@ it("shows a heavy graph laid out in an earlier session at once, without waiting 
   root = createRoot(host);
   mount();
   expect(host.textContent).toContain("Laying out");
-  openSteps();
+  await openSteps();
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
   expect(warms).toHaveLength(2);
   expect(host.textContent).not.toContain("Laying out");
   expect(simulation().nodes().map((n) => [n.x, n.y])).toEqual(positions);
+}, 30000);
+
+it("reopens a heavy graph after a small change from its last layout: kept nodes stay, the warm-up starts at alpha 0.3", async () => {
+  const warms: { type: string; session: number; init?: GraphPhysicsInit; count?: number; startAlpha?: number }[] = [];
+  const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
+  vi.stubGlobal("Worker", class {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor() { workers.push(this); }
+    postMessage(message: { type: string; session: number }) { if (message.type === "warm") warms.push(message); }
+    terminate() {}
+  });
+  const entries: Record<string, string> = Object.fromEntries(Array.from({ length: 1200 }, (_, i) => [`R${i}.md`, i % 3 ? `[[R${(i * 7) % 1200}]]` : ""]));
+  const mount = () => act(() => {
+    const files: VaultFile[] = Object.keys(entries).map((relPath) => ({ path: `/demo/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true }));
+    useAppStore.setState({ files, notes: buildNotes(files, new Map(Object.entries(entries))),
+      settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false } });
+    root.render(<GraphView />);
+  });
+  mount();
+  await openSteps();
+  expect(warms[0].startAlpha ?? 1).toBe(1);
+  act(() => { answerWarm(workers[0], warms[0]); });
+  const before = new Map(simulation().nodes().map((n) => [n.id, [n.x!, n.y!]]));
+  act(() => root.unmount());
+  // One new note linking to two kept ones: today's key misses the cache.
+  entries["R new.md"] = "[[R1]] [[R2]]";
+  root = createRoot(host);
+  mount();
+  await openSteps();
+  expect(warms).toHaveLength(2);
+  expect(warms[1].startAlpha).toBe(0.3);
+  // The worker starts from the last layout: every kept node at its old place.
+  const sent = simulation().nodes();
+  for (const node of sent) {
+    const old = before.get(node.id);
+    if (!old) continue;
+    const i = sent.indexOf(node);
+    expect([warms[1].init!.state[i * 4], warms[1].init!.state[i * 4 + 1]]).toEqual(old);
+  }
+  act(() => { answerWarm(workers[workers.length - 1], warms[1]); });
+  expect(host.textContent).not.toContain("Laying out");
+  const moved = simulation().nodes().filter((n) => before.has(n.id)).map((n) => Math.hypot(n.x! - before.get(n.id)![0], n.y! - before.get(n.id)![1])).sort((a, b) => a - b);
+  // A fresh layout would move kept nodes thousands of units; reuse keeps them close.
+  expect(moved[Math.floor(moved.length / 2)]).toBeLessThan(200);
+}, 30000);
+
+it("reuses a layout saved by an earlier session when the graph changed in between", async () => {
+  const saved = new Map<string, { state: Float64Array; ids?: Uint32Array }>();
+  setGraphLayoutStore({
+    get: async (key) => saved.get(key)?.state ?? null,
+    put: async (key, state, ids) => void saved.set(key, { state, ids }),
+    recent: async () => [...saved].reverse().map(([key, entry]) => ({ key, ...entry })),
+  });
+  const warms: { type: string; session: number; init?: GraphPhysicsInit; count?: number; startAlpha?: number }[] = [];
+  const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
+  vi.stubGlobal("Worker", class {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor() { workers.push(this); }
+    postMessage(message: { type: string; session: number }) { if (message.type === "warm") warms.push(message); }
+    terminate() {}
+  });
+  const entries: Record<string, string> = Object.fromEntries(Array.from({ length: 1100 }, (_, i) => [`S${i}.md`, i % 2 ? `[[S${(i * 3) % 1100}]]` : ""]));
+  const mount = () => act(() => {
+    const files: VaultFile[] = Object.keys(entries).map((relPath) => ({ path: `/demo/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true }));
+    useAppStore.setState({ files, notes: buildNotes(files, new Map(Object.entries(entries))),
+      settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false } });
+    root.render(<GraphView />);
+  });
+  mount();
+  await openSteps();
+  await act(async () => { answerWarm(workers[0], warms[0]); await Promise.resolve(); });
+  expect(saved.size).toBe(1);
+  // A new session (empty memory cache) after a note was added elsewhere.
+  act(() => root.unmount());
+  clearGraphLayoutCache();
+  entries["S new.md"] = "[[S1]]";
+  root = createRoot(host);
+  mount();
+  await openSteps();
+  expect(warms).toHaveLength(2);
+  expect(warms[1].startAlpha).toBe(0.3);
 }, 30000);

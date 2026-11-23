@@ -162,6 +162,31 @@ export function seedGraphNodes<N extends SeedNode>(
 }
 
 /**
+ * Start a graph from a reused layout (`positions`: x, y per node, NaN where
+ * unknown): kept nodes take their place at rest, new nodes are seeded beside
+ * them as a live topology change seeds them.
+ */
+export function seedFromReusedLayout<N extends SeedNode>(
+  nodes: readonly N[],
+  positions: Float64Array,
+  neighbors: ReadonlyMap<string, ReadonlySet<string>>,
+  random: () => number
+): void {
+  const placed = new Map<string, N>();
+  const fresh: N[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i], x = positions[i * 2], y = positions[i * 2 + 1];
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      node.x = x; node.y = y; node.vx = 0; node.vy = 0;
+      placed.set(node.id, node);
+    } else {
+      fresh.push(node);
+    }
+  }
+  seedGraphNodes(fresh, placed, neighbors, random);
+}
+
+/**
  * The synchronous ticks GraphView runs before the first paint, and the alpha
  * left for the visible tail. Larger graphs run fewer ticks to bound the block.
  */
@@ -172,17 +197,31 @@ export function graphOpenWarmup(count: number): { ticks: number; openAlpha: numb
 }
 
 /**
- * Run the open warm-up: anneal from alpha 1 down to the open alpha within the
- * warm ticks, then leave a short, fast-decaying tail for the visible frames.
- * The result matches a full standard anneal closely (same spread and link
- * lengths), with little movement left after the first paint.
+ * Ticks and per-tick decay of an open warm-up from `startAlpha` to the open
+ * alpha. From alpha 1 it is the full warm-up; a reused layout starts at the
+ * topology-change alpha and needs fewer ticks at the same decay.
+ */
+function warmSchedule(count: number, startAlpha: number): { ticks: number; decay: number } {
+  const { ticks, openAlpha } = graphOpenWarmup(count);
+  const decay = 1 - Math.pow(openAlpha, 1 / ticks);
+  if (startAlpha >= 1) return { ticks, decay };
+  return { ticks: Math.ceil(ticks * Math.log(openAlpha / startAlpha) / Math.log(openAlpha)), decay };
+}
+
+/**
+ * Run the open warm-up: anneal from alpha 1 (or `startAlpha` for a reused
+ * layout) down to the open alpha within the warm ticks, then leave a short,
+ * fast-decaying tail for the visible frames. The result matches a full
+ * standard anneal closely (same spread and link lengths), with little
+ * movement left after the first paint.
  */
 export function warmGraphSimulation<N extends GraphForceNode, L extends SimulationLinkDatum<N>>(
   sim: Simulation<N, L>,
-  count: number
+  count: number,
+  startAlpha = 1
 ): void {
-  const { ticks, openAlpha } = graphOpenWarmup(count);
-  sim.alpha(1).alphaDecay(1 - Math.pow(openAlpha, 1 / ticks));
+  const { ticks, decay } = warmSchedule(count, startAlpha);
+  sim.alpha(startAlpha).alphaDecay(decay);
   for (let i = 0; i < ticks; i++) sim.tick();
   finishGraphWarmup(sim, count);
 }
@@ -191,10 +230,11 @@ export function warmGraphSimulation<N extends GraphForceNode, L extends Simulati
 export async function warmGraphSimulationParallel<N extends GraphForceNode, L extends SimulationLinkDatum<N>>(
   sim: Simulation<N, L>,
   count: number,
-  helpers: ChargeHelpers
+  helpers: ChargeHelpers,
+  startAlpha = 1
 ): Promise<void> {
-  const { ticks, openAlpha } = graphOpenWarmup(count);
-  sim.alpha(1).alphaDecay(1 - Math.pow(openAlpha, 1 / ticks));
+  const { ticks, decay } = warmSchedule(count, startAlpha);
+  sim.alpha(startAlpha).alphaDecay(decay);
   for (let i = 0; i < ticks; i++) await tickParallel(sim, helpers);
   finishGraphWarmup(sim, count);
 }
@@ -617,7 +657,7 @@ export type GraphPhysicsRequest =
   /** A heavy open is coming: start helper workers for `count` nodes now. */
   | { type: "helpers"; count: number }
   /** Run the open warm-up for `count` nodes on a copy and return it once. */
-  | { type: "warm"; session: number; init: GraphPhysicsInit; count: number }
+  | { type: "warm"; session: number; init: GraphPhysicsInit; count: number; startAlpha?: number }
   /** A timelapse replay: node ids in replay order, links as id-index pairs in admission order. */
   | { type: "replay"; session: number; ids: string[]; links: Int32Array; admitAt: Int32Array; settings: GraphForceSettings }
   /** Admit replay nodes up to `count`; `seeds` holds x, y, vx, vy of the newly admitted ones. */

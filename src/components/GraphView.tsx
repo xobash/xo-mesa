@@ -22,10 +22,10 @@ import { OVERLAP_GAP, clampZoom, drawGraph, isZooming, type GraphBounds, type Gr
 import { GraphActivityCards, updateActivityCards, updateGraphHover, type ActivityCard, type GraphCardRefs, type GraphHoverCard } from "./GraphActivityCards";
 import { useGraphPointer, type DragPerf, type DragState } from "./useGraphPointer";
 import { GearIcon, GraphRangeRow, GraphSettingRow, GraphSettingSection, TimelapseIcon } from "./GraphSettingsControls";
-import { GRAPH_OVERLAP_ALPHA, GRAPH_SETTLED_ALPHA, applyGraphForces, reheatGraphSimulation, createGraphSimulation, graphPhysicsTransferables, seedGraphNodes, seededRandom, snapshotGraphPhysics, warmGraphSimulation, finishGraphWarmup, replayLinkCount, replayLinkOrder, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
+import { GRAPH_OVERLAP_ALPHA, GRAPH_REHEAT_ALPHA, GRAPH_SETTLED_ALPHA, applyGraphForces, reheatGraphSimulation, createGraphSimulation, graphPhysicsTransferables, seedFromReusedLayout, seedGraphNodes, seededRandom, snapshotGraphPhysics, warmGraphSimulation, finishGraphWarmup, replayLinkCount, replayLinkOrder, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
 import { DEFAULT_SETTINGS } from "../lib/settings";
 import { markMesaPerf } from "../lib/mesaPerf";
-import { cachedGraphLayout, graphLayoutKey, persistedGraphLayout, rememberGraphLayout } from "../lib/graphLayoutCache";
+import { cachedGraphLayout, graphLayoutKey, persistedGraphLayout, persistedReusableLayout, rememberGraphLayout, reusableGraphLayout, type ReusableLayout } from "../lib/graphLayoutCache";
 import { THUMB_CACHE_MAX, WORKER_DRAG_MIN_NODES, WORKER_SETTLE_MIN_NODES, WORKER_WARM_MIN_NODES, HEAVY_STEP_MS, ambientFrameMs } from "./graphViewTuning";
 
 /** "Restore display defaults" covers these; filters are not display settings. */
@@ -402,7 +402,7 @@ export function GraphView() {
   }
 
   /** Lay out a new graph's open warm-up in the worker; false when no worker can take it. */
-  function startWorkerWarmup(sim: Simulation<GraphNode, GraphLink>, nodes: GraphNode[], links: GraphLink[], layoutKey: string, session: number): boolean {
+  function startWorkerWarmup(sim: Simulation<GraphNode, GraphLink>, nodes: GraphNode[], links: GraphLink[], layoutKey: string, session: number, startAlpha: number): boolean {
     const worker = physicsWorker();
     if (!worker) return false;
     const init = snapshotGraphPhysics(sim, { grab: null });
@@ -412,7 +412,7 @@ export function GraphView() {
     forceNodesRef.current = [];
     linksRef.current = [];
     setWarmingCount(nodes.length);
-    worker.postMessage({ type: "warm", session, init, count: nodes.length } satisfies GraphPhysicsRequest, graphPhysicsTransferables(init));
+    worker.postMessage({ type: "warm", session, init, count: nodes.length, startAlpha } satisfies GraphPhysicsRequest, graphPhysicsTransferables(init));
     // A layout saved earlier for the same graph wins the race with the worker.
     void persistedGraphLayout(layoutKey, nodes.length).then((state) => { if (state) adoptWarmup(session, state); });
     return true;
@@ -461,20 +461,28 @@ export function GraphView() {
         });
         return;
       }
-      later(() => {
-        seedGraphNodes(nodes, new Map(), neighborsOf(new Set(nodes.map((n) => n.id)), links), seededRandom(nodes.length));
-        markMesaPerf("graph-open-step", { step: "seeded" });
+      // After a small change, start from the last layout of this graph
+      // (this window's, else one saved earlier) instead of a fresh one.
+      const seed = (reuse: ReusableLayout | null) => later(() => {
+        const neighbors = neighborsOf(new Set(nodes.map((n) => n.id)), links);
+        if (reuse) seedFromReusedLayout(nodes, reuse.positions, neighbors, seededRandom(nodes.length));
+        else seedGraphNodes(nodes, new Map(), neighbors, seededRandom(nodes.length));
+        markMesaPerf("graph-open-step", { step: "seeded", reused: reuse?.kept ?? 0 });
+        const startAlpha = reuse ? GRAPH_REHEAT_ALPHA : 1;
         later(() => {
           const sim = createGraphSimulation<GraphNode, GraphLink>(nodes, links, settings);
           appliedForcesRef.current = settings;
-          if (startWorkerWarmup(sim, nodes, links, layoutKey, session)) {
+          if (startWorkerWarmup(sim, nodes, links, layoutKey, session, startAlpha)) {
             markMesaPerf("graph-open-step", { step: "warm-posted" });
             return;
           }
-          warmGraphSimulation(sim, nodes.length);
+          warmGraphSimulation(sim, nodes.length, startAlpha);
           settle(sim, layoutKey);
         });
       });
+      const reuse = reusableGraphLayout(nodes, settings);
+      if (reuse) seed(reuse);
+      else void persistedReusableLayout(nodes, settings).then(seed);
     });
   }
 
@@ -876,7 +884,10 @@ export function GraphView() {
         }
         finishGraphWarmup(sim, nodes.length);
       } else {
-        warmGraphSimulation(sim, nodes.length);
+        // After a small change, start from this window's last layout.
+        const reuse = reusableGraphLayout(nodes, forceSettings);
+        if (reuse) seedFromReusedLayout(nodes, reuse.positions, neighborsOf(new Set(nodes.map((n) => n.id)), links), seededRandom(nodes.length));
+        warmGraphSimulation(sim, nodes.length, reuse ? GRAPH_REHEAT_ALPHA : 1);
         rememberGraphLayout(layoutKey, nodes);
       }
       completeOpen(sim, nodes);

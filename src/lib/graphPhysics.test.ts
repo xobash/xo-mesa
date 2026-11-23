@@ -163,6 +163,23 @@ describe("graph seeding", () => {
 });
 
 describe("graph open warm-up", () => {
+  it("warms a reused layout from the topology-change alpha at the open decay, so it takes fewer ticks and ends at the open alpha", () => {
+    for (const count of [50, 500, 1500, 10_000]) {
+      const { ticks, openAlpha } = graphOpenWarmup(count);
+      const nodes: Node[] = Array.from({ length: 30 }, (_, i) => ({ id: `n${i}`, degree: 0 }));
+      seedGraphNodes(nodes, new Map(), new Map(), seededRandom(3));
+      const sim = createGraphSimulation<Node, Link>(nodes, [], GRAPH_FORCE_DEFAULTS);
+      let ticked = 0;
+      const tick = sim.tick.bind(sim);
+      sim.tick = ((n?: number) => { ticked += n ?? 1; return tick(n); }) as typeof sim.tick;
+      warmGraphSimulation(sim, count, GRAPH_REHEAT_ALPHA);
+      // 0.3 to the open alpha at the full warm-up's per-tick decay.
+      expect(ticked).toBe(Math.ceil(ticks * Math.log(openAlpha / GRAPH_REHEAT_ALPHA) / Math.log(openAlpha)));
+      expect(ticked).toBeLessThan(ticks / 2);
+      expect(sim.alpha()).toBe(openAlpha);
+    }
+  });
+
   it("anneals from alpha 1 to the open alpha in the warm ticks, leaves a short tail, and returns to the standard decay on reheat", () => {
     for (const count of [50, 500, 1500]) {
       const { ticks, openAlpha } = graphOpenWarmup(count);

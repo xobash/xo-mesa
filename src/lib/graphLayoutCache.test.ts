@@ -1,5 +1,5 @@
-import { beforeEach, expect, it } from "vitest";
-import { cachedGraphLayout, clearGraphLayoutCache, graphLayoutKey, persistedGraphLayout, rememberGraphLayout, setGraphLayoutStore, indexedDbLayoutStore, type LayoutStore } from "./graphLayoutCache";
+import { beforeEach, describe, expect, it } from "vitest";
+import { cachedGraphLayout, clearGraphLayoutCache, graphLayoutKey, persistedGraphLayout, persistedReusableLayout, rememberGraphLayout, reusableGraphLayout, setGraphLayoutStore, indexedDbLayoutStore, type LayoutStore } from "./graphLayoutCache";
 import { GRAPH_FORCE_DEFAULTS } from "./graphForceDefaults";
 
 const nodes = [{ id: "A" }, { id: "B" }, { id: "C" }];
@@ -47,4 +47,44 @@ it("keeps the memory cache at four layouts when layouts come back from storage",
   for (let i = 0; i < 5; i++) await persistedGraphLayout(`p${i}`, 1);
   expect(cachedGraphLayout("p0", 1)).toBeNull();
   for (let i = 1; i < 5; i++) expect(cachedGraphLayout(`p${i}`, 1)).not.toBeNull();
+});
+
+describe("reuse after a small change", () => {
+  const graph = (count: number) => Array.from({ length: count }, (_, i) => ({ id: `note ${i}`, x: i * 10, y: -i, vx: 1, vy: 1 }));
+  const forces = (nodes: readonly { id: string }[]) => graphLayoutKey(nodes, [], GRAPH_FORCE_DEFAULTS);
+
+  it("places kept nodes where they were, leaves new ones unplaced, and refuses a large change or other forces", () => {
+    const before = graph(100);
+    rememberGraphLayout(forces(before), before);
+    const after = [...graph(100).slice(5), { id: "new note" }];
+    const reuse = reusableGraphLayout(after, GRAPH_FORCE_DEFAULTS)!;
+    expect(reuse.kept).toBe(95);
+    expect([reuse.positions[0], reuse.positions[1]]).toEqual([50, -5]);
+    expect(reuse.positions[95 * 2]).toBeNaN();
+    // Under 90% of either side shared: lay out afresh.
+    expect(reusableGraphLayout(graph(100).slice(20), GRAPH_FORCE_DEFAULTS)).toBeNull();
+    expect(reusableGraphLayout([...graph(100), ...graph(20).map((n) => ({ id: "x" + n.id }))], GRAPH_FORCE_DEFAULTS)).toBeNull();
+    expect(reusableGraphLayout(after, { ...GRAPH_FORCE_DEFAULTS, repel: GRAPH_FORCE_DEFAULTS.repel + 1 })).toBeNull();
+  });
+
+  it("finds a changed graph's layout saved by an earlier session, by node id hashes only", async () => {
+    const saved = new Map<string, { state: Float64Array; ids?: Uint32Array }>();
+    setGraphLayoutStore({
+      get: async (key) => saved.get(key)?.state ?? null,
+      put: async (key, state, ids) => void saved.set(key, { state, ids }),
+      recent: async () => [...saved].map(([key, entry]) => ({ key, ...entry })),
+    });
+    const before = graph(50);
+    rememberGraphLayout(forces(before), before);
+    await Promise.resolve();
+    expect(JSON.stringify([...saved.values()][0])).not.toContain("note");
+    clearGraphLayoutCache();
+    const after = [...graph(50), { id: "new note" }];
+    expect(reusableGraphLayout(after, GRAPH_FORCE_DEFAULTS)).toBeNull();
+    const reuse = (await persistedReusableLayout(after, GRAPH_FORCE_DEFAULTS))!;
+    expect(reuse.kept).toBe(50);
+    expect([reuse.positions[98], reuse.positions[99]]).toEqual([490, -49]);
+    setGraphLayoutStore({ get: async () => null, put: async () => {}, recent: async () => { throw new Error("blocked"); } });
+    expect(await persistedReusableLayout(after, GRAPH_FORCE_DEFAULTS)).toBeNull();
+  });
 });

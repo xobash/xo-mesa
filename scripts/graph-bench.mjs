@@ -21,7 +21,8 @@ try {
   const entry = join(directory, 'entry.ts');
   writeFileSync(entry, [
     `export { buildGraph } from ${JSON.stringify(resolve('src/lib/graph.ts'))};`,
-    `export { createGraphSimulation, graphOpenWarmup, warmGraphSimulation, seedGraphNodes, seededRandom, GraphPhysicsSession, snapshotGraphPhysics, GRAPH_FORCE_DEFAULTS, GRAPH_SETTLED_ALPHA, GRAPH_OVERLAP_ALPHA } from ${JSON.stringify(resolve('src/lib/graphPhysics.ts'))};`,
+    `export { createGraphSimulation, graphOpenWarmup, warmGraphSimulation, seedGraphNodes, seedFromReusedLayout, seededRandom, GraphPhysicsSession, snapshotGraphPhysics, GRAPH_FORCE_DEFAULTS, GRAPH_SETTLED_ALPHA, GRAPH_OVERLAP_ALPHA, GRAPH_REHEAT_ALPHA } from ${JSON.stringify(resolve('src/lib/graphPhysics.ts'))};`,
+    `export { graphLayoutKey, rememberGraphLayout, reusableGraphLayout } from ${JSON.stringify(resolve('src/lib/graphLayoutCache.ts'))};`,
     `export { nodeRadius, resolveOverlaps, GraphHitIndex, nearestNodeLinear } from ${JSON.stringify(resolve('src/lib/graphGeometry.ts'))};`,
     `export { buildNeighbors } from ${JSON.stringify(resolve('src/lib/graph.ts'))};`,
   ].join('\n'));
@@ -107,6 +108,21 @@ const [createMs, sim] = time(() => g.createGraphSimulation(nodes, links, g.GRAPH
 const [warmMs] = time(() => g.warmGraphSimulation(sim, nodes.length));
 const workerNodes = nodes.map(() => ({ x: 0, y: 0, vx: 0, vy: 0 }));
 
+// Reopen after a small change (one new note linking to three): the open
+// reuses the warmed layout above instead of warming from scratch.
+g.rememberGraphLayout(g.graphLayoutKey(nodes, links, g.GRAPH_FORCE_DEFAULTS), nodes);
+const changedNotes = { ...notes, 'New/added.md': { relPath: 'New/added.md', title: 'added', rawLinks: [0, 1, 2].map(() => files[pick(noteCount)].name), rawReferences: [], tags: [], aliases: [] } };
+changedNotes['New/added.md'].rawReferences = [...changedNotes['New/added.md'].rawLinks];
+const changed = g.buildGraph(changedNotes, [...files, { path: '/vault/New/added.md', relPath: 'New/added.md', name: 'added', ext: 'md', isMarkdown: true, size: 100 }], opts);
+const reuse = g.reusableGraphLayout(changed.nodes, g.GRAPH_FORCE_DEFAULTS);
+g.seedFromReusedLayout(changed.nodes, reuse.positions, g.buildNeighbors(changed.links), g.seededRandom(changed.nodes.length));
+const changedSim = g.createGraphSimulation(changed.nodes, changed.links, g.GRAPH_FORCE_DEFAULTS);
+let reuseTicks = 0;
+const countTick = changedSim.tick.bind(changedSim);
+changedSim.tick = (n) => { reuseTicks += n ?? 1; return countTick(n); };
+const [reuseWarmMs] = time(() => g.warmGraphSimulation(changedSim, changed.nodes.length, g.GRAPH_REHEAT_ALPHA));
+changedSim.stop();
+
 // Settling after first paint, from the same warmed layout two ways.
 // Main thread (below 2,000 nodes): one GraphView frame of ticks, then idle
 // overlap passes until nothing moves. Worker (2,000+ nodes): the main thread
@@ -183,6 +199,7 @@ const heapAfter = process.memoryUsage().heapUsed;
 console.log(JSON.stringify({
   size, mode: allFiles ? 'all-files' : 'notes', nodes: nodes.length, fileNodesMatchCatalog: allFiles ? new Set(nodes.filter(n => n.kind === 'note' || n.kind === 'attachment').map(n => n.id)).size === files.length : undefined, links: links.length, orphans: nodes.filter(n => n.degree === 0).length,
   buildMs: +buildMs.toFixed(1), seedMs: +seedMs.toFixed(1), createMs: +createMs.toFixed(1), warmTicks: warm.ticks, warmMs: +warmMs.toFixed(1),
+  reuseKept: reuse.kept, reuseWarmTicks: reuseTicks, reuseWarmMs: +reuseWarmMs.toFixed(1),
   settleTicks, mainSettleFrames: settleFrames.length, mainSettleFrameMs: stats(settleFrames), mainLongFrames: settleFrames.filter(ms => ms > 50).length,
   idleOverlapFrames: overlapFrames.length, idleOverlapFrameMs: stats(overlapFrames),
   workerSnapshotMs: +snapshotMs.toFixed(2), workerSteps: workerSteps.length, workerStepMs: stats(workerSteps), workerCopyFrameMs: stats(copyFrames), workerMaxDrift: +maxDrift.toExponential(2),
