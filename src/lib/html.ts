@@ -1,4 +1,5 @@
 import DOMPurify from "dompurify";
+import { bytesToBase64 } from "./base64";
 import { mapSrcset } from "./remoteImages";
 import { cssList, cssUrlMatches, replaceCssUrls } from "./htmlCssUrls";
 import { escapeStyleText, FONT_FACE_RULE_RE, stripSavedMarkup } from "./htmlMarkupStrip";
@@ -312,9 +313,7 @@ export async function hydrateSavedHtml(
         const bytes = await options.fonts!.readBytes(path);
         if (bytes.length > 2 * 1024 * 1024 || fontBytes + bytes.length > 8 * 1024 * 1024) return;
         fontBytes += bytes.length;
-        let binary = "";
-        for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-        result = `data:font/${path.split('.').pop()!.toLowerCase()};base64,${btoa(binary)}`;
+        result = `data:font/${path.split('.').pop()!.toLowerCase()};base64,${bytesToBase64(bytes)}`;
       } catch { /* omit unreadable fonts */ }
     });
     fontQueue = pending;

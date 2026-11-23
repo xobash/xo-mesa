@@ -31,8 +31,7 @@ function sameTasks(a: readonly TaskItem[], b: readonly TaskItem[]): boolean {
  * by exact content revision and title; returned TaskItems are shared and read-only. */
 export function collectVaultTasks(
   notes: Record<string, TaskNoteMeta>,
-  cache: Record<string, string>,
-  _personalRel: string
+  cache: Record<string, string>
 ): TaskItem[] {
   if (lastTasks?.notes === notes && lastTasks.cache === cache) return lastTasks.result;
   const changed = lastTasks?.notes === notes ? cacheChangedKeysSince(cache, lastTasks.cache) : null;

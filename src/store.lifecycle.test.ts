@@ -141,3 +141,16 @@ it('imports Markdown without re-reading cached files and reads the rest concurre
   expect(useAppStore.getState().contentCache['B.md']).toBe('text of B.md');
   expect(useAppStore.getState().notes['Cached.md']).toMatchObject({ rawLinks: ['A'], rawReferences: ['A'] });
 });
+
+it('refreshes the task note references as soon as a task is added', async () => {
+  const held = deferred();
+  const file = { relPath: 'Tasks.md', path: '/vault/Tasks.md', name: 'Tasks', ext: 'md', isMarkdown: true };
+  useAppStore.setState({ vaultPath: '/vault', files: [file], contentCache: { 'Tasks.md': '# Tasks\n' },
+    notes: { 'Tasks.md': { relPath: 'Tasks.md', title: 'Tasks', rawLinks: [], rawReferences: [], tags: [], aliases: [] } } });
+  io.write.mockImplementationOnce(async () => { await held.promise; });
+  const pending = useAppStore.getState().addPersonalTask('see [[Plan]]');
+  await vi.waitFor(() => expect(useAppStore.getState().contentCache['Tasks.md']).toContain('[[Plan]]'));
+  expect(useAppStore.getState().notes['Tasks.md']).toMatchObject({ rawLinks: ['Plan'], rawReferences: ['Plan'] });
+  held.resolve();
+  await pending;
+});

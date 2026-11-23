@@ -1,7 +1,8 @@
 import type { GraphNode, GraphLink } from "../types";
 import { getStore } from "../store";
 import type { activeRecords, ActivityOp } from "../lib/activity";
-import { clamp, rectContains, rectLinePenalty } from "../lib/graphGeometry";
+import { clamp } from "../lib/clamp";
+import { rectContains, rectLinePenalty } from "../lib/graphGeometry";
 import { isSyntheticNode } from "./graphColors";
 import type { Transform } from "./graphDraw";
 import { PreviewCard } from "./PreviewCard";
@@ -47,7 +48,8 @@ export interface GraphCardRefs {
   nodeByIdRef: Ref<Map<string, GraphNode>>;
   graphControlsHoverRef: Ref<boolean>;
   dragRef: Ref<{ node: GraphNode | null; panning: boolean }>;
-  hoverRef: Ref<{ id: string | null; since: number }>;
+  /** `preview`: the hovered node has a file, so it may show a card. */
+  hoverRef: Ref<{ id: string | null; since: number; preview: boolean }>;
   shownIdRef: Ref<string | null>;
   pointerRef: Ref<{ x: number; y: number; inside: boolean }>;
   activityRef: Ref<ActivityCard[]>;
@@ -208,24 +210,27 @@ export function updateGraphHover(refs: GraphCardRefs, now: number): void {
     }
     return;
   }
-  const hit = refs.nodeAtScreen(p.x, p.y);
-  // Tag/phantom nodes have no underlying file, so they get no preview card.
-  const n = hit && !isSyntheticNode(hit) ? hit : null;
+  const n = refs.nodeAtScreen(p.x, p.y);
   const id = n?.id ?? null;
+  // Every hovered node takes the highlight. Tag/phantom nodes have no
+  // underlying file, so they get no preview card.
+  const preview = !!n && !isSyntheticNode(n);
   const delay = getStore().settings.hoverDelayMs;
   if (id !== refs.hoverRef.current.id) {
     refs.hoverRef.current.id = id;
     refs.hoverRef.current.since = now;
+    refs.hoverRef.current.preview = preview;
     // Prewarm the preview content the moment a node is hovered, so the
     // card body is ready when the hover delay elapses (peek = capped read).
-    if (id) void getStore().ensurePeek(id);
-    if (id === null && refs.shownIdRef.current !== null) {
+    if (id && preview) void getStore().ensurePeek(id);
+    if (!preview && refs.shownIdRef.current !== null) {
       refs.shownIdRef.current = null;
       refs.setHover(null);
     }
   } else if (
     id &&
     n &&
+    preview &&
     now - refs.hoverRef.current.since >= delay &&
     refs.shownIdRef.current !== id
   ) {

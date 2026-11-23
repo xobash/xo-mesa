@@ -411,6 +411,8 @@ export function createFileOpsController({
       const emptyFolder = get().emptyFolders.some((f) => f === relPath || f.startsWith(prefix));
       if (!root || (!file && matches.length === 0 && !emptyFolder)) return;
       const isFolder = !file;
+      const generation = getGeneration();
+      const current = () => get().vaultPath === root && getGeneration() === generation;
       await reportingFailure("Delete", async () => {
         const keys = matches.map((entry) => entry.path);
         let saveHold: TextSaveHold<VaultFile> | undefined;
@@ -425,6 +427,9 @@ export function createFileOpsController({
           saveHold?.release();
           throw error;
         }
+        // A vault opened while the removal ran (nothing held an empty
+        // folder's switch) must not lose same-named entries.
+        if (!current()) return;
         const removed = new Set(matches.map((f) => f.relPath));
         if (file) removed.add(relPath);
         const files = get().files.filter((f) => !removed.has(f.relPath));

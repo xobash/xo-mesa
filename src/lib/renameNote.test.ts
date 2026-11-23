@@ -21,6 +21,9 @@ const renamed = vi.hoisted(() => ({
   onRename: null as null | (() => void),
   onMigrate: null as null | (() => void),
   reads: [] as string[],
+  disk: new Map<string, string>(),
+  inFlight: 0,
+  maxInFlight: 0,
 }));
 
 vi.mock("./textRevisionHistory", async (importOriginal) => {
@@ -65,6 +68,13 @@ vi.mock("./vault", async (importOriginal) => {
     }) satisfies VaultFile,
     readNote: async (file: VaultFile) => {
       renamed.reads.push(file.relPath);
+      const disk = renamed.disk.get(file.relPath);
+      if (disk !== undefined) {
+        renamed.maxInFlight = Math.max(renamed.maxInFlight, ++renamed.inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        renamed.inFlight--;
+        return disk;
+      }
       const state = useAppStore.getState();
       return state.contentCache[file.relPath] ?? "";
     },
@@ -307,6 +317,24 @@ describe("renameNote type preservation", () => {
     expect(performance.now() - started).toBeLessThan(500);
     expect(renamed.writes.map((write) => write.rel)).toEqual([target.relPath]);
     expect(renamed.writes[0].content).toBe("![[../docs/Contract v2.pdf]]");
+  });
+
+  it("reads uncached linking notes in parallel and still writes them in note order", async () => {
+    const linking = Array.from({ length: 40 }, (_, index) => file(`inbound/n${String(index).padStart(2, "0")}.md`));
+    renamed.disk.clear(); renamed.inFlight = 0; renamed.maxInFlight = 0;
+    for (const entry of linking) renamed.disk.set(entry.relPath, "Links [[a]].");
+    useAppStore.setState({
+      files: [...useAppStore.getState().files, ...linking],
+      notes: { ...useAppStore.getState().notes, ...Object.fromEntries(linking.map((entry) => [entry.relPath, {
+        relPath: entry.relPath, title: entry.name, rawLinks: ["a"], rawReferences: ["a"], tags: [], aliases: [],
+      }])) },
+    });
+    await useAppStore.getState().renameNote("a.md", "alpha");
+    expect(renamed.maxInFlight).toBeGreaterThan(1);
+    const written = renamed.writes.map((write) => write.rel).filter((rel) => rel.startsWith("inbound/"));
+    expect(written).toEqual(linking.map((entry) => entry.relPath));
+    expect(renamed.writes.find((write) => write.rel === "inbound/n00.md")?.content).toBe("Links [[alpha]].");
+    renamed.disk.clear();
   });
 
   it("does not inspect a note created this session that has no link to the renamed note", async () => {

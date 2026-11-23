@@ -3,9 +3,10 @@ import { useRemoteImageRewrite } from "./useRemoteImageRewrite";
 import type { DeepResearchRunState } from "../store";
 import { canonicalizeSourceUrl, presentResearchSource, type ResearchSourcePresentation } from "../lib/deepResearch";
 import { buildResearchGraph, type ResearchGraphLayout } from "../lib/deepResearchGraph";
-import { copyText } from "./deepResearchPanelHelpers";
+import { copyText } from "../lib/clipboard";
+import { clamp } from "../lib/clamp";
 
-export const GRAPH_NODE_GLYPH: Record<string, string> = {
+const GRAPH_NODE_GLYPH: Record<string, string> = {
   query: "?",
   plan: "▤",
   round: "↻",
@@ -115,7 +116,7 @@ export function ResearchActivityGraph({
     await copyText(url);
   };
   const actionCount = run.activity.filter((activity) => activity.kind !== "status").length;
-  const cardWidth = Math.min(300, Math.max(220, graph.width - 24));
+  const cardWidth = clamp(graph.width - 24, 220, 300);
   const cardHeight = hoveredSource ? 158 : 118;
   const cardLeft = hovered
     ? hovered.x + hovered.radius * 1.55 + 14 + cardWidth <= graph.width - 8
@@ -123,7 +124,7 @@ export function ResearchActivityGraph({
       : Math.max(8, hovered.x - hovered.radius * 1.55 - cardWidth - 14)
     : 8;
   const cardTop = hovered
-    ? Math.max(8, Math.min(graph.height - cardHeight - 8, hovered.y - cardHeight / 2))
+    ? clamp(hovered.y - cardHeight / 2, 8, graph.height - cardHeight - 8)
     : 8;
   return (
     <div className="dr-research-graph">
@@ -182,10 +183,7 @@ export function ResearchActivityGraph({
                 : source.x >= graph.width / 2 ? 1 : -1;
               const startX = source.x + direction * (source.radius + 3);
               const targetX = target.x + (sameRow ? -direction : direction) * (target.radius + 7);
-              const turnX = Math.max(
-                4,
-                Math.min(graph.width - 4, source.x + direction * (graph.nodeWidth / 2 - 3))
-              );
+              const turnX = clamp(source.x + direction * (graph.nodeWidth / 2 - 3), 4, graph.width - 4);
               const path = sameRow
                 ? `M ${startX} ${source.y} H ${targetX}`
                 : `M ${startX} ${source.y} H ${turnX} V ${target.y} H ${targetX}`;

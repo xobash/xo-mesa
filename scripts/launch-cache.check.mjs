@@ -50,3 +50,29 @@ it("rebuilds after a source or dependency change and reuses unchanged output", {
   assert.equal(run("check-deps"), 1);
   assert.equal(run("check-build"), 1);
 });
+
+it("walks a 300-level source tree on a small stack and still sees its deepest file", { skip: process.platform === "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "mesa-launch-deep-"));
+  fixtures.push(root);
+  mkdirSync(join(root, "scripts"));
+  copyFileSync(resolve(import.meta.dirname, "launch-cache.mjs"), join(root, "scripts", "launch-cache.mjs"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, "package-lock.json"), "lock");
+  const deepest = join(root, "src", ...Array(300).fill("d"));
+  mkdirSync(deepest, { recursive: true });
+  writeFileSync(join(deepest, "leaf.ts"), "first");
+  const artifact = process.platform === "darwin" ? "src-tauri/target/release/bundle/macos/Mesa.app" : "src-tauri/target/release/mesa";
+  mkdirSync(join(root, artifact), { recursive: true });
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "rustc"), "#!/bin/sh\necho rustc-test\n", { mode: 0o755 });
+  // 80 KB is enough for Node itself but not for one JS frame per folder level.
+  const run = mode => spawnSync(process.execPath, ["--stack-size=80", join(root, "scripts", "launch-cache.mjs"), mode], {
+    cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8",
+  });
+  const stamped = run("stamp-build");
+  assert.equal(stamped.status, 0, stamped.stderr);
+  assert.equal(run("check-build").status, 0);
+  writeFileSync(join(deepest, "leaf.ts"), "second");
+  assert.equal(run("check-build").status, 1);
+});

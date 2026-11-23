@@ -29,14 +29,14 @@ npm run mesa
   floors), `npm run test:assets`, `npm run audit:assets`,
   `npm run test:toolchains`, `npm run test:documents`, `npm run test:capabilities`,
   `npm run test:release`, `npm run test:bootstrap`, `npm run test:index`,
-  `npm run test:activity-api`, `npm run test:markdown`, `npm run test:notices`,
-  `npm run build`, `npm run audit:public`, `npm run audit:independent`, and
-  `npm audit --audit-level=moderate`.
-- Native CI runs `cargo test --locked --manifest-path src-tauri/Cargo.toml`
+  `npm run test:activity-api`, `npm run test:markdown`, `npm run test:notices`
+  (which includes the production build), `npm run audit:public`,
+  `npm run audit:independent`, and `npm audit --audit-level=moderate`.
+- Native CI runs `cargo fmt --manifest-path src-tauri/Cargo.toml --check`,
+  `cargo test --locked --manifest-path src-tauri/Cargo.toml`
   and `cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`
   on Linux, macOS, and Windows. It also runs `cargo audit --file src-tauri/Cargo.lock`
-  and the native notice check. Run `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check`
-  for Rust changes. Fixture benchmarks and native acceptance runs are
+  and the native notice check. Fixture benchmarks and native acceptance runs are
   optional local checks.
 - `scripts/public-files.txt` is the sorted allowlist of files intended for the
   public repository. Add a new source, test, or documentation file there when

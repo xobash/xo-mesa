@@ -1,12 +1,7 @@
 import {
   forceSimulation,
-  forceManyBody,
-  forceLink,
-  forceCenter,
-  forceCollide,
   forceX,
   forceY,
-  type ForceCenter,
   type ForceCollide,
   type ForceLink,
   type ForceManyBody,
@@ -17,85 +12,202 @@ import {
   type SimulationNodeDatum,
 } from "d3-force";
 import { resolveOverlaps } from "./graphGeometry";
+import { flatCollide, flatLink, flatManyBody } from "./graphForces";
+import { tickParallel, type ChargeHelpers } from "./graphChargeParallel";
+import { graphForceValues, type GraphForceSettings } from "./graphForceDefaults";
 
-/** Size-tiered force constants shared by GraphView's open, retune and benchmark paths. */
-export function graphSimulationTier(count: number) {
-  const big = count > 300;
-  const huge = count > 800;
-  return {
-    big,
-    huge,
-    chargeScale: huge ? -12 : big ? -18 : -24,
-    chargeDistanceMax: huge ? 1400 : big ? 1100 : 900,
-    theta: huge ? 0.95 : 0.9,
-    warmTicks: huge ? 42 : big ? 56 : 78,
-    collideIterations: big ? 3 : 4,
-    velocityDecay: huge ? 0.42 : big ? 0.4 : 0.38,
-    alphaDecay: huge ? 0.06 : big ? 0.04 : 0.028,
-    /** Alpha left after the synchronous warm ticks, before the first paint. */
-    openAlpha: huge ? 0.12 : big ? 0.16 : 0.2,
-  };
-}
-
-export interface GraphForceSettings {
-  w: number;
-  h: number;
-  radius: (node: GraphForceNode) => number;
-  repel: number;
-  center: number;
-  linkForce: number;
-  linkDistance: number;
-}
-type GraphForceNode = SimulationNodeDatum & { degree?: number };
-const clampForce = (value: number, lo: number, hi: number) => Math.max(lo, Math.min(value, hi));
+export { GRAPH_FORCE_DEFAULTS, graphForceValues, sliderPosition, sliderStrength, type GraphForceSettings } from "./graphForceDefaults";
 
 /**
- * Build GraphView's single force simulation, stopped at alpha 0.85. Every node
- * shares charge and centering; links are degree-scaled; collision keys off the
- * displayed radius plus the overlap gap.
+ * Graph force model, matched to Obsidian 1.x defaults (measured from its
+ * simulation worker): x/y pull to the origin, degree-scaled link springs,
+ * many-body charge with a 30-unit minimum distance, and a fixed 60-unit soft
+ * collision. One model at every graph size; world units are Obsidian's.
  */
+const CHARGE_DISTANCE_MIN = 30;
+const COLLIDE_RADIUS = 60;
+const COLLIDE_STRENGTH = 0.5;
+const VELOCITY_DECAY = 0.4;
+/** d3's default: alpha falls from 1 to 0.001 in 300 ticks. */
+const ALPHA_DECAY = 1 - Math.pow(0.001, 1 / 300);
+/** A released graph stops ticking at or below this alpha. */
+export const GRAPH_SETTLED_ALPHA = 0.001;
+/** The idle overlap cleanup runs only at or below this alpha, never while a node is grabbed. */
+export const GRAPH_OVERLAP_ALPHA = 0.02;
+/** Alpha for a drag, a data change and a force retune. */
+export const GRAPH_REHEAT_ALPHA = 0.3;
+/**
+ * Decay of the visible tail after the open warm-up: it reaches rest in about
+ * 80 frames with little movement. The first reheat restores `ALPHA_DECAY`.
+ */
+const OPEN_TAIL_DECAY = 0.06;
+
+type GraphForceNode = SimulationNodeDatum;
+type LinkStrength<N extends GraphForceNode, L extends SimulationLinkDatum<N>> = (link: L, i: number, links: L[]) => number;
+/** Each link force's built-in `1 / min(degree)` strength, kept so a retune can rescale it. */
+const degreeStrength = new WeakMap<object, LinkStrength<never, never>>();
+
+/**
+ * Set every slider-driven force value on a simulation. Creation and retune
+ * share this, so they cannot drift apart. Never changes alpha or positions.
+ */
+export function applyGraphForces<N extends GraphForceNode, L extends SimulationLinkDatum<N>>(
+  sim: Simulation<N, L>,
+  settings: GraphForceSettings
+): void {
+  const values = graphForceValues(settings);
+  (sim.force("x") as ForceX<N> | undefined)?.strength(values.center);
+  (sim.force("y") as ForceY<N> | undefined)?.strength(values.center);
+  (sim.force("charge") as ForceManyBody<N> | undefined)?.strength(values.charge);
+  const link = sim.force("link") as ForceLink<N, L> | undefined;
+  if (!link) return;
+  let base = degreeStrength.get(link) as LinkStrength<N, L> | undefined;
+  if (!base) {
+    base = link.strength() as LinkStrength<N, L>;
+    degreeStrength.set(link, base as LinkStrength<never, never>);
+  }
+  const degreeScaled = base;
+  link.distance(values.linkDistance).strength((l, i, all) => values.link * degreeScaled(l, i, all));
+}
+
+/** Build GraphView's single force simulation, stopped at alpha 1. */
 export function createGraphSimulation<N extends GraphForceNode & { id: string }, L extends SimulationLinkDatum<N>>(
   nodes: N[],
   links: L[],
   settings: GraphForceSettings
 ): Simulation<N, L> {
-  const tier = graphSimulationTier(nodes.length);
-  const chargeStrength = tier.chargeScale * settings.repel;
-  const centerStrength = clampForce(settings.center, 0, 1) * 0.1;
-  const pull = centerStrength * 0.4;
-  const radius = settings.radius as (node: N) => number;
-  const endpoint = (value: N | string | number) => (typeof value === "object" ? value : null);
-  return forceSimulation<N, L>(nodes)
-    .force("charge", forceManyBody<N>().strength(() => chargeStrength).distanceMax(tier.chargeDistanceMax).theta(tier.theta))
-    .force(
-      "link",
-      forceLink<N, L>(links)
-        .id((d) => d.id)
-        // Link distance respects both endpoint radii so links cannot pull circles into overlap.
-        .distance((l) => {
-          const s = endpoint(l.source), t = endpoint(l.target);
-          return (s ? radius(s) : 6) + (t ? radius(t) : 6) + settings.linkDistance / 10;
-        })
-        // d3's default degree scaling: hub-to-hub links are weak, leaf links stay strong.
-        .strength((l) => {
-          const s = endpoint(l.source), t = endpoint(l.target);
-          return clampForce((1 / Math.max(1, Math.min(s?.degree ?? 1, t?.degree ?? 1))) * settings.linkForce, 0, 2);
-        })
-    )
-    .force("center", forceCenter<N>(settings.w / 2, settings.h / 2).strength(centerStrength))
-    .force("collide", forceCollide<N>().radius((n) => radius(n) + 6).strength(1).iterations(tier.collideIterations))
-    .force("x", forceX<N>(settings.w / 2).strength(() => pull))
-    .force("y", forceY<N>(settings.h / 2).strength(() => pull))
-    .velocityDecay(tier.velocityDecay)
-    .alphaDecay(tier.alphaDecay)
-    .alpha(0.85)
+  const sim = forceSimulation<N, L>(nodes)
+    .force("x", forceX<N>(0))
+    .force("y", forceY<N>(0))
+    .force("link", flatLink<N, L>(links).id((d) => d.id))
+    // Flat-array copies of d3's many-body and collide (bit-identical, faster).
+    .force("charge", flatManyBody<N>().distanceMin(CHARGE_DISTANCE_MIN))
+    .force("collide", flatCollide<N>(COLLIDE_RADIUS).strength(COLLIDE_STRENGTH))
+    .velocityDecay(VELOCITY_DECAY)
+    .alphaDecay(ALPHA_DECAY)
+    .alphaMin(GRAPH_SETTLED_ALPHA)
     .stop();
+  applyGraphForces(sim, settings);
+  return sim;
 }
 
-/** Alpha below which a released graph counts as settled (GraphView's tick threshold). */
-export const GRAPH_SETTLED_ALPHA = 0.004;
-/** Drag reheat target shared with GraphView. */
-const GRAPH_DRAG_ALPHA = 0.3;
+/** Position fields the seeding step reads and writes. */
+interface SeedNode {
+  id: string;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+  fx?: number | null;
+  fy?: number | null;
+}
+
+/** World area reserved per new node when seeding (a 60-unit square). */
+const SEED_AREA = 60 * 60;
+
+/** mulberry32: a small deterministic generator, so one graph always seeds the same way. */
+export function seededRandom(seed: number): () => number {
+  let state = seed | 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Place new nodes as Obsidian does. A node with an already placed neighbour
+ * starts near the centroid of those neighbours; any other node starts in a
+ * ring just outside the placed graph, sized for the number of new nodes.
+ */
+export function seedGraphNodes<N extends SeedNode>(
+  fresh: readonly N[],
+  placed: ReadonlyMap<string, N>,
+  neighbors: ReadonlyMap<string, ReadonlySet<string>>,
+  random: () => number
+): void {
+  if (fresh.length === 0) return;
+  let farthest = 0;
+  for (const node of placed.values()) farthest = Math.max(farthest, (node.x ?? 0) ** 2 + (node.y ?? 0) ** 2);
+  const inner = Math.sqrt(farthest);
+  const area = SEED_AREA * fresh.length;
+  const ring = Math.sqrt(area / Math.PI + inner * inner) - inner;
+  const spread = Math.sqrt(area);
+  const known = new Map(placed);
+  for (const node of fresh) {
+    let sx = 0, sy = 0, count = 0;
+    for (const id of neighbors.get(node.id) ?? []) {
+      const other = known.get(id);
+      if (!other || other.x == null || other.y == null) continue;
+      sx += other.x;
+      sy += other.y;
+      count++;
+    }
+    if (count > 0) {
+      node.x = sx / count + (random() - 0.5) * spread;
+      node.y = sy / count + (random() - 0.5) * spread;
+    } else {
+      const angle = 2 * random() * Math.PI;
+      const radius = inner + Math.sqrt(random()) * ring;
+      node.x = radius * Math.cos(angle);
+      node.y = radius * Math.sin(angle);
+    }
+    node.vx = 0;
+    node.vy = 0;
+    node.fx = null;
+    node.fy = null;
+    known.set(node.id, node);
+  }
+}
+
+/**
+ * The synchronous ticks GraphView runs before the first paint, and the alpha
+ * left for the visible tail. Larger graphs run fewer ticks to bound the block.
+ */
+export function graphOpenWarmup(count: number): { ticks: number; openAlpha: number } {
+  if (count > 800) return { ticks: 42, openAlpha: 0.12 };
+  if (count > 300) return { ticks: 56, openAlpha: 0.16 };
+  return { ticks: 78, openAlpha: 0.2 };
+}
+
+/**
+ * Run the open warm-up: anneal from alpha 1 down to the open alpha within the
+ * warm ticks, then leave a short, fast-decaying tail for the visible frames.
+ * The result matches a full standard anneal closely (same spread and link
+ * lengths), with little movement left after the first paint.
+ */
+export function warmGraphSimulation<N extends GraphForceNode, L extends SimulationLinkDatum<N>>(
+  sim: Simulation<N, L>,
+  count: number
+): void {
+  const { ticks, openAlpha } = graphOpenWarmup(count);
+  sim.alpha(1).alphaDecay(1 - Math.pow(openAlpha, 1 / ticks));
+  for (let i = 0; i < ticks; i++) sim.tick();
+  finishGraphWarmup(sim, count);
+}
+
+/** `warmGraphSimulation` with the many-body pass spread over helper workers; the same layout. */
+export async function warmGraphSimulationParallel<N extends GraphForceNode, L extends SimulationLinkDatum<N>>(
+  sim: Simulation<N, L>,
+  count: number,
+  helpers: ChargeHelpers
+): Promise<void> {
+  const { ticks, openAlpha } = graphOpenWarmup(count);
+  sim.alpha(1).alphaDecay(1 - Math.pow(openAlpha, 1 / ticks));
+  for (let i = 0; i < ticks; i++) await tickParallel(sim, helpers);
+  finishGraphWarmup(sim, count);
+}
+
+/** The decay state a warm-up leaves; applied on the main simulation after a worker warm-up. */
+export function finishGraphWarmup<N extends GraphForceNode, L extends SimulationLinkDatum<N>>(sim: Simulation<N, L>, count: number): void {
+  sim.alphaDecay(OPEN_TAIL_DECAY).alpha(graphOpenWarmup(count).openAlpha);
+}
+
+/** Reheat for a drag, new graph data or a force retune, at the standard decay. Never lowers alpha. */
+export function reheatGraphSimulation<N extends GraphForceNode, L extends SimulationLinkDatum<N>>(sim: Simulation<N, L>): Simulation<N, L> {
+  return sim.alphaDecay(ALPHA_DECAY).alpha(Math.max(sim.alpha(), GRAPH_REHEAT_ALPHA));
+}
 
 /**
  * A plain-number copy of a live GraphView simulation: node state, every
@@ -116,12 +228,8 @@ export interface GraphPhysicsInit {
   chargeTheta: number;
   chargeDistanceMin: number;
   chargeDistanceMax: number;
-  centerX: number;
-  centerY: number;
-  centerStrength: number;
   collideRadius: Float64Array;
   collideStrength: number;
-  /** Configured passes; a grab runs one pass until release. */
   collideIterations: number;
   xTarget: Float64Array;
   xStrength: Float64Array;
@@ -132,16 +240,12 @@ export interface GraphPhysicsInit {
   alphaDecay: number;
   alphaTarget: number;
   velocityDecay: number;
-  /** Velocity cap for every non-grabbed node while a grab is active. */
-  velocityCap: number;
-  /** Settling runs two ticks per step below this node count. */
-  doubleTickBelow: number;
   /** Grabbed node index, or -1. */
   grab: number;
   /**
    * When present, the session also runs GraphView's idle overlap cleanup: it
    * ticks only while hot or grabbed, resolves overlaps once alpha falls to
-   * 0.02, and counts as settled only after a pass moves nothing.
+   * `GRAPH_OVERLAP_ALPHA`, and counts as settled only after a pass moves nothing.
    */
   overlap?: { gap: number; radius: Float64Array; phase: Float64Array };
 }
@@ -153,9 +257,6 @@ type IndexLink = SimulationLinkDatum<SimulationNodeDatum> & { source: number; ta
 export function snapshotGraphPhysics<N extends GraphNodeLike, L extends SimulationLinkDatum<N>>(
   sim: Simulation<N, L>,
   options: {
-    collideIterations: number;
-    velocityCap: number;
-    doubleTickBelow: number;
     grab: N | null;
     overlap?: { gap: number; radius: (node: N) => number; phase: (node: N) => number };
   }
@@ -193,7 +294,6 @@ export function snapshotGraphPhysics<N extends GraphNodeLike, L extends Simulati
   });
 
   const charge = sim.force("charge") as ForceManyBody<N> | undefined;
-  const center = sim.force("center") as ForceCenter<N> | undefined;
   const collide = sim.force("collide") as ForceCollide<N> | undefined;
   const fx = sim.force("x") as ForceX<N> | undefined;
   const fy = sim.force("y") as ForceY<N> | undefined;
@@ -208,12 +308,9 @@ export function snapshotGraphPhysics<N extends GraphNodeLike, L extends Simulati
     chargeTheta: charge?.theta() ?? 0.9,
     chargeDistanceMin: charge?.distanceMin() ?? 1,
     chargeDistanceMax: charge?.distanceMax() ?? Infinity,
-    centerX: center?.x() ?? 0,
-    centerY: center?.y() ?? 0,
-    centerStrength: center ? center.strength() : 0,
     collideRadius: perNode(collide?.radius(), 0),
     collideStrength: collide?.strength() ?? 0,
-    collideIterations: options.collideIterations,
+    collideIterations: collide?.iterations() ?? 1,
     xTarget: perNode(fx?.x(), 0),
     xStrength: perNode(fx?.strength(), 0),
     yTarget: perNode(fy?.y(), 0),
@@ -223,8 +320,6 @@ export function snapshotGraphPhysics<N extends GraphNodeLike, L extends Simulati
     alphaDecay: sim.alphaDecay(),
     alphaTarget: sim.alphaTarget(),
     velocityDecay: sim.velocityDecay(),
-    velocityCap: options.velocityCap,
-    doubleTickBelow: options.doubleTickBelow,
     grab: options.grab ? index.get(options.grab) ?? -1 : -1,
     overlap: options.overlap && {
       gap: options.overlap.gap,
@@ -245,10 +340,6 @@ export function graphPhysicsTransferables(init: GraphPhysicsInit): ArrayBuffer[]
 export class GraphPhysicsSession {
   readonly nodes: SimulationNodeDatum[];
   readonly sim: Simulation<SimulationNodeDatum, IndexLink>;
-  private readonly collide: ForceCollide<SimulationNodeDatum>;
-  private readonly configuredCollide: number;
-  private readonly velocityCap: number;
-  private readonly doubleTickBelow: number;
   private readonly overlap: GraphPhysicsInit["overlap"];
   private overlapsResolved = false;
   private grabbed = -1;
@@ -271,34 +362,33 @@ export class GraphPhysicsSession {
     for (let i = 0; i < init.links.length; i += 2) {
       links.push({ source: init.links[i], target: init.links[i + 1] });
     }
-    this.configuredCollide = init.collideIterations;
-    this.velocityCap = init.velocityCap;
-    this.doubleTickBelow = init.doubleTickBelow;
     this.overlap = init.overlap;
-    this.collide = forceCollide<SimulationNodeDatum>()
-      .radius((_, i) => init.collideRadius[i])
-      .strength(init.collideStrength)
-      .iterations(init.collideIterations);
+    // Same force order as createGraphSimulation, so both paths tick identically.
     this.sim = forceSimulation<SimulationNodeDatum, IndexLink>(this.nodes)
+      .force("x", forceX<SimulationNodeDatum>((_, i) => init.xTarget[i]).strength((_, i) => init.xStrength[i]))
+      .force("y", forceY<SimulationNodeDatum>((_, i) => init.yTarget[i]).strength((_, i) => init.yStrength[i]))
+      .force(
+        "link",
+        flatLink<SimulationNodeDatum, IndexLink>(links)
+          .distance((_, i) => init.linkDistance[i])
+          .strength((_, i) => init.linkStrength[i])
+          .iterations(init.linkIterations)
+      )
       .force(
         "charge",
-        forceManyBody<SimulationNodeDatum>()
+        flatManyBody<SimulationNodeDatum>()
           .strength((_, i) => init.charge[i])
           .theta(init.chargeTheta)
           .distanceMin(init.chargeDistanceMin)
           .distanceMax(init.chargeDistanceMax)
       )
       .force(
-        "link",
-        forceLink<SimulationNodeDatum, IndexLink>(links)
-          .distance((_, i) => init.linkDistance[i])
-          .strength((_, i) => init.linkStrength[i])
-          .iterations(init.linkIterations)
+        "collide",
+        flatCollide<SimulationNodeDatum>()
+          .radius((_, i) => init.collideRadius[i])
+          .strength(init.collideStrength)
+          .iterations(init.collideIterations)
       )
-      .force("center", forceCenter(init.centerX, init.centerY).strength(init.centerStrength))
-      .force("collide", this.collide)
-      .force("x", forceX<SimulationNodeDatum>((_, i) => init.xTarget[i]).strength((_, i) => init.xStrength[i]))
-      .force("y", forceY<SimulationNodeDatum>((_, i) => init.yTarget[i]).strength((_, i) => init.yStrength[i]))
       .velocityDecay(init.velocityDecay)
       .alphaMin(init.alphaMin)
       .alphaDecay(init.alphaDecay)
@@ -331,8 +421,7 @@ export class GraphPhysicsSession {
     node.fx = fx;
     node.fy = fy;
     this.grabbed = index;
-    this.sim.alpha(Math.max(this.sim.alpha(), GRAPH_DRAG_ALPHA)).alphaTarget(GRAPH_DRAG_ALPHA);
-    this.collide.iterations(1);
+    reheatGraphSimulation(this.sim).alphaTarget(GRAPH_REHEAT_ALPHA);
   }
 
   move(index: number, fx: number, fy: number): void {
@@ -351,42 +440,40 @@ export class GraphPhysicsSession {
     }
     if (index === this.grabbed) this.grabbed = -1;
     this.sim.alphaTarget(0);
-    this.collide.iterations(this.configuredCollide);
   }
 
-  /** One GraphView frame of physics: tick count and velocity caps match the main thread. */
+  /** One GraphView frame of physics: one tick while hot or grabbed, then idle overlap cleanup. */
   step(): void {
-    const grabbing = this.grabbed >= 0;
-    if (this.overlap) {
-      // GraphView's frame order: tick while hot or grabbed, then clean up
-      // overlaps below alpha 0.02 until a pass moves nothing.
-      if (grabbing || this.sim.alpha() > GRAPH_SETTLED_ALPHA) {
-        this.tick(grabbing);
-        this.overlapsResolved = false;
-      }
-      if (!grabbing && this.sim.alpha() <= 0.02 && !this.overlapsResolved) {
-        const { gap, radius, phase } = this.overlap;
-        const moved = resolveOverlaps(this.nodes, (n) => radius[n.index!], gap, 2, (n) => phase[n.index!]);
-        this.overlapsResolved = !moved;
-      }
-      return;
+    if (this.needsTick()) {
+      this.sim.tick();
+      this.overlapsResolved = false;
     }
-    this.tick(grabbing);
+    this.idleOverlap();
   }
 
-  private tick(grabbing: boolean): void {
-    const ticks =
-      this.nodes.length < this.doubleTickBelow && this.sim.alpha() > 0.06 && !grabbing ? 2 : 1;
-    for (let t = 0; t < ticks; t++) {
-      this.sim.tick();
-      if (!grabbing) continue;
-      const cap = this.velocityCap;
-      const pinned = this.nodes[this.grabbed];
-      for (const node of this.nodes) {
-        if (node === pinned) continue;
-        if (node.vx != null) node.vx = Math.max(-cap, Math.min(node.vx, cap));
-        if (node.vy != null) node.vy = Math.max(-cap, Math.min(node.vy, cap));
-      }
+  /** `step` with the many-body pass spread over helper workers (same result). */
+  async stepParallel(helpers: ChargeHelpers): Promise<void> {
+    if (this.needsTick()) {
+      await tickParallel(this.sim, helpers);
+      this.overlapsResolved = false;
+    }
+    this.idleOverlap();
+  }
+
+  get nodeCount(): number {
+    return this.nodes.length;
+  }
+
+  private needsTick(): boolean {
+    return this.grabbed >= 0 || this.sim.alpha() > GRAPH_SETTLED_ALPHA;
+  }
+
+  private idleOverlap(): void {
+    const grabbing = this.grabbed >= 0;
+    if (this.overlap && !grabbing && this.sim.alpha() <= GRAPH_OVERLAP_ALPHA && !this.overlapsResolved) {
+      const { gap, radius, phase } = this.overlap;
+      const moved = resolveOverlaps(this.nodes, (n) => radius[n.index!], gap, 2, (n) => phase[n.index!]);
+      this.overlapsResolved = !moved;
     }
   }
 
@@ -403,14 +490,141 @@ export class GraphPhysicsSession {
   }
 }
 
+/**
+ * Replay links in admission order: a link joins once both ends are admitted,
+ * so the links among the first `count` nodes are always a prefix. `order`
+ * is the replay's node order; links whose ends are not in it are dropped.
+ */
+export function replayLinkOrder<L extends { source: string | { id: string }; target: string | { id: string } }>(
+  order: readonly { id: string }[],
+  links: readonly L[]
+): { links: L[]; admitAt: Int32Array } {
+  const rank = new Map<string, number>();
+  order.forEach((node, i) => rank.set(node.id, i));
+  const id = (end: string | { id: string }) => (typeof end === "string" ? end : end.id);
+  const keyed: { link: L; at: number; i: number }[] = [];
+  links.forEach((link, i) => {
+    const s = rank.get(id(link.source)), t = rank.get(id(link.target));
+    if (s !== undefined && t !== undefined) keyed.push({ link, at: Math.max(s, t) + 1, i });
+  });
+  keyed.sort((a, b) => a.at - b.at || a.i - b.i);
+  return { links: keyed.map((k) => k.link), admitAt: Int32Array.from(keyed, (k) => k.at) };
+}
+
+/** Number of replay links visible with `count` nodes admitted (`admitAt` is ascending). */
+export function replayLinkCount(admitAt: Int32Array, count: number): number {
+  let lo = 0, hi = admitAt.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (admitAt[mid] <= count) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * The worker copy of a timelapse replay: the same force model as
+ * `createGraphSimulation`, holding only admitted nodes and their links, as
+ * GraphView's main-thread replay does. Never sends "idle": the replay ends it.
+ */
+type ReplayNode = SimulationNodeDatum & { id: string };
+type ReplayLink = SimulationLinkDatum<ReplayNode>;
+
+export class GraphReplaySession {
+  private readonly nodes: ReplayNode[];
+  private readonly links: ReplayLink[];
+  private readonly admitAt: Int32Array;
+  readonly sim: Simulation<ReplayNode, ReplayLink>;
+  private count = 0;
+
+  constructor(ids: readonly string[], links: Int32Array, admitAt: Int32Array, settings: GraphForceSettings) {
+    this.nodes = ids.map((id) => ({ id, x: 0, y: 0, vx: 0, vy: 0 }));
+    this.links = [];
+    for (let i = 0; i < links.length; i += 2) this.links.push({ source: ids[links[i]], target: ids[links[i + 1]] });
+    this.admitAt = admitAt;
+    this.sim = createGraphSimulation<ReplayNode, ReplayLink>([], [], settings);
+  }
+
+  /** Admits that arrived while a parallel step was running; applied when it ends. */
+  private deferred: { count: number; seeds: Float64Array }[] = [];
+  private stepping = false;
+
+  /**
+   * Admit nodes up to `count`, placing the new ones at `seeds` (x, y, vx, vy
+   * each), and reheat. During a parallel step the batch waits for the step to
+   * end: changing the node list mid-step wrote velocities the step never
+   * computed (NaN) and blanked the graph after a replay.
+   */
+  admit(count: number, seeds: Float64Array): void {
+    if (this.stepping) { this.deferred.push({ count, seeds }); return; }
+    this.admitNow(count, seeds);
+  }
+
+  private admitNow(count: number, seeds: Float64Array): void {
+    const next = Math.max(this.count, Math.min(count, this.nodes.length));
+    for (let i = this.count, k = 0; i < next; i++, k++) {
+      const node = this.nodes[i];
+      node.x = seeds[k * 4]; node.y = seeds[k * 4 + 1]; node.vx = seeds[k * 4 + 2]; node.vy = seeds[k * 4 + 3];
+    }
+    this.count = next;
+    const link = this.sim.force("link") as ForceLink<ReplayNode, ReplayLink>;
+    link.links([]);
+    this.sim.nodes(this.nodes.slice(0, next));
+    link.links(this.links.slice(0, replayLinkCount(this.admitAt, next)));
+    reheatGraphSimulation(this.sim).stop();
+  }
+
+  get hot(): boolean {
+    return this.sim.alpha() > GRAPH_SETTLED_ALPHA;
+  }
+
+  step(): void {
+    if (this.hot) this.sim.tick();
+  }
+
+  /** `step` with the many-body pass spread over helper workers (same result). */
+  async stepParallel(helpers: ChargeHelpers): Promise<void> {
+    if (!this.hot) return;
+    this.stepping = true;
+    try {
+      await tickParallel(this.sim, helpers);
+    } finally {
+      this.stepping = false;
+      for (const batch of this.deferred.splice(0)) this.admitNow(batch.count, batch.seeds);
+    }
+  }
+
+  get nodeCount(): number {
+    return this.count;
+  }
+
+  /** x, y, vx, vy per admitted node, in replay order. */
+  state(): Float64Array {
+    const out = new Float64Array(this.count * 4);
+    for (let i = 0; i < this.count; i++) {
+      const node = this.nodes[i];
+      out[i * 4] = node.x ?? 0; out[i * 4 + 1] = node.y ?? 0; out[i * 4 + 2] = node.vx ?? 0; out[i * 4 + 3] = node.vy ?? 0;
+    }
+    return out;
+  }
+}
+
 /** Worker protocol: main → worker. */
 export type GraphPhysicsRequest =
   | { type: "start"; session: number; init: GraphPhysicsInit }
   | { type: "grab" | "move"; session: number; index: number; fx: number; fy: number }
   | { type: "release"; session: number; index: number }
-  | { type: "stop"; session: number };
+  | { type: "stop"; session: number }
+  /** A heavy open is coming: start helper workers for `count` nodes now. */
+  | { type: "helpers"; count: number }
+  /** Run the open warm-up for `count` nodes on a copy and return it once. */
+  | { type: "warm"; session: number; init: GraphPhysicsInit; count: number }
+  /** A timelapse replay: node ids in replay order, links as id-index pairs in admission order. */
+  | { type: "replay"; session: number; ids: string[]; links: Int32Array; admitAt: Int32Array; settings: GraphForceSettings }
+  /** Admit replay nodes up to `count`; `seeds` holds x, y, vx, vy of the newly admitted ones. */
+  | { type: "admit"; session: number; count: number; seeds: Float64Array };
 
 /** Worker protocol: worker → main. `idle` means the released graph settled. */
 export type GraphPhysicsResponse =
   | { type: "state"; session: number; state: Float64Array; alpha: number }
-  | { type: "idle"; session: number; state: Float64Array; alpha: number };
+  | { type: "idle"; session: number; state: Float64Array; alpha: number }
+  | { type: "warmed"; session: number; state: Float64Array; alpha: number; ms?: number; helpers?: number };

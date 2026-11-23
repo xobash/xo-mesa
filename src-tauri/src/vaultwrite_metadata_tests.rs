@@ -98,7 +98,7 @@ fn linux_posix_acl_and_user_xattr_survive_replacement() {
     fs::create_dir_all(&dir).unwrap();
     let target = dir.join("note");
     write_atomic(&target, b"private", &ExpectedCurrent::Missing).unwrap();
-    let file = File::open(&target).unwrap();
+    let file = fs::File::open(&target).unwrap();
     let mut acl = 2u32.to_le_bytes().to_vec();
     for (tag, perm, id) in [
         (1u16, 6u16, u32::MAX),
@@ -131,7 +131,7 @@ fn linux_posix_acl_and_user_xattr_survive_replacement() {
         );
     }
     write_atomic(&target, b"edited", &ExpectedCurrent::Any).unwrap();
-    let file = File::open(&target).unwrap();
+    let file = fs::File::open(&target).unwrap();
     for (name, expected) in [
         ("system.posix_acl_access", acl.as_slice()),
         ("user.mesa_test", b"synthetic-value".as_slice()),

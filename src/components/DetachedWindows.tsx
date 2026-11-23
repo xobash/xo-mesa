@@ -55,7 +55,7 @@ export function AgentWindow() {
     }).then((off) => {
       if (alive) unlisten = off;
       else off();
-    });
+    }).catch((error) => console.warn("[mesa] agent context listener unavailable:", error));
     return () => {
       alive = false;
       unlisten?.();
@@ -69,13 +69,14 @@ export function AgentWindow() {
   };
   useEffect(() => {
     let dispose: (() => void) | undefined;
+    let alive = true;
     void installNativeDragDock(
       { kind: "agent" },
       { requireUserDragArm: true }
     )
-      .then((cleanup) => (dispose = cleanup))
+      .then((cleanup) => { if (alive) dispose = cleanup; else cleanup(); })
       .catch((error) => console.warn("[mesa] native Pi docking unavailable:", error));
-    return () => dispose?.();
+    return () => { alive = false; dispose?.(); };
   }, []);
 
   return (
@@ -133,10 +134,11 @@ export function ResearchWindow() {
 
   useEffect(() => {
     let dispose: (() => void) | undefined;
+    let alive = true;
     void installNativeDragDock({ kind: "research" }, { requireUserDragArm: true })
-      .then((cleanup) => (dispose = cleanup))
+      .then((cleanup) => { if (alive) dispose = cleanup; else cleanup(); })
       .catch((error) => console.warn("[mesa] native Deep Research docking unavailable:", error));
-    return () => dispose?.();
+    return () => { alive = false; dispose?.(); };
   }, []);
 
   const dockResearchWithKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {

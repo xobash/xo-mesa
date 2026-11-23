@@ -85,7 +85,7 @@ export function createSyncPeersController({
 
   function commitSettings(settings: Settings): void {
     const secretChanged = syncSecretSignature(settings) !== syncSecretSignature(get().settings);
-    const settingsIssue = persistSettings(settings);
+    const settingsIssue = persistSettings(settings, undefined, get().settings);
     set({ settings, settingsIssue: secretSaveError ? secretStoreError(secretSaveError) : settingsIssue });
     if (IN_TAURI && secretChanged) queueSecretWrite(false);
   }
@@ -96,9 +96,14 @@ export function createSyncPeersController({
     listenerTail = next.then(() => {}, () => {});
     return next;
   }
+  // Starts that have not finished. A start waits for the credential store
+  // outside the queue; a vault switch in that window found nothing listening,
+  // declined to resume, and the older start then gave up on its stale root.
+  let pendingStarts = 0;
+  /** Stop receiving; true when the caller should resume on its new root (it was listening, or about to). */
   async function stopListening(): Promise<boolean> {
     return queueListener(async () => {
-      if (!get().syncListening) return false;
+      if (!get().syncListening) return pendingStarts > 0;
       const { stopSyncServer } = await import("../lib/sync");
       await stopSyncServer();
       set({ syncListening: false });
@@ -106,6 +111,14 @@ export function createSyncPeersController({
     });
   }
   async function startListening(root: string): Promise<void> {
+    pendingStarts += 1;
+    try {
+      await startListeningNow(root);
+    } finally {
+      pendingStarts -= 1;
+    }
+  }
+  async function startListeningNow(root: string): Promise<void> {
     await loadSyncSecrets();
     await secretsWriteTail;
     if (secretSaveError) throw new Error(`Sync key was not saved: ${secretSaveError}`);

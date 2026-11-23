@@ -204,9 +204,10 @@ Mesa's context strip, Deep Research and browser controls, app state, or
 review-before-apply workflow. Mesa therefore owns the one PTY process and
 renders it with xterm.js inside a real movable/resizable OS window.
 
-Mesa launches `pi` directly in the current vault folder. The terminal receives
-an initial path-only fallback through Pi's `--append-system-prompt` startup
-hook and mirrors the launch values through `MESA_*` environment variables:
+Mesa launches `pi` directly in the current vault folder and passes the launch
+values through `MESA_*` environment variables. `MESA_CONTEXT` is a path-only
+fallback: Mesa's `mesa-context` extension adds it to the prompt before a turn
+only when the live context bridge does not answer.
 
 - `MESA_VAULT_NAME`
 - `MESA_VAULT_PATH`

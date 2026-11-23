@@ -786,22 +786,12 @@ impl RootedTarget {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: openat returned a nonnegative descriptor with no other owner.
-        let mut file = unsafe { std::fs::File::from_raw_fd(raw) };
+        let file = unsafe { std::fs::File::from_raw_fd(raw) };
         if !file.metadata()?.is_file() {
             return Err(invalid_data("vault input is not a regular file"));
         }
-        let mut hash = ContentHasher::new();
-        let mut size = 0u64;
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let n = file.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            size += n as u64;
-            hash.update(&buffer[..n]);
-        }
-        Ok((size, hash.hex()))
+        let (size, digest) = hash_reader(file)?;
+        Ok((size, hex::encode(&digest)))
     }
 
     pub(super) fn unlink(&self, name: &std::ffi::CStr) -> std::io::Result<()> {

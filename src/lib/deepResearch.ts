@@ -1,4 +1,4 @@
-import { codeLineScanner } from "./markdownCode";
+import { atxHeading, codeLineScanner } from "./markdownCode";
 import {
   DEFAULT_DEEP_RESEARCH_LIMITS,
   clampDepth,
@@ -326,8 +326,8 @@ export function researchReportQualityIssues(
   const isCode = codeLineScanner();
   for (const line of markdown.split(/\r?\n/)) {
     if (isCode(line)) continue;
-    const heading = line.match(/^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
-    if (heading) sections.push({ level: heading[1].length, title: heading[2].replace(/[*_`]/g, ""), body: "" });
+    const heading = atxHeading(line, 3);
+    if (heading) sections.push({ level: heading.level, title: heading.label.replace(/[*_`]/g, ""), body: "" });
     else if (sections.length) sections[sections.length - 1].body += `${line}\n`;
   }
   const headings = sections.filter((section) => section.level === 2).map((section) =>

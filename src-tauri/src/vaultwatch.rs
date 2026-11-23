@@ -39,7 +39,10 @@ fn is_indexable_rel(rel: &str) -> bool {
         return false;
     }
     for seg in rel.split('/') {
-        if seg.is_empty() || crate::vault_names::is_hidden_name(seg) {
+        if seg.is_empty()
+            || crate::vault_names::is_hidden_name(seg)
+            || crate::sync_core::platform_fs::is_windows_shell_artifact(seg)
+        {
             return false;
         }
     }

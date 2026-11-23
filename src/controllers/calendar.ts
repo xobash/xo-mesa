@@ -5,8 +5,7 @@ import {
 } from "../lib/activity";
 import { applyTemplate, editCalendarJson, localISO, localTime, serializeEvents } from "../lib/daily";
 import { forkContentCache } from "../lib/documentWorkingSet";
-import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
-import { isMarkdownPath } from "../lib/markdownCode";
+import { refreshedNoteMeta } from "../lib/graph";
 import { taskLineHasText, updateTaskLine } from "../lib/tasks";
 import { createNote } from "../lib/vault";
 import type { VaultFile } from "../types";
@@ -170,14 +169,7 @@ export function createCalendarController({ get, set, getGeneration, reportingFai
         const next = cur.replace(/\s*$/, "") + "\n" + line + "\n";
         const notes = { ...get().notes };
         const m = notes[rel];
-        if (m) {
-          notes[rel] = {
-            ...m,
-            rawLinks: extractLinks(next, isMarkdownPath(rel)),
-            tags: extractTags(next, isMarkdownPath(rel)),
-            aliases: extractAliases(next),
-          };
-        }
+        if (m) notes[rel] = refreshedNoteMeta(m, next) ?? m;
         set({
           notes,
           content: get().activePath === rel ? next : get().content,

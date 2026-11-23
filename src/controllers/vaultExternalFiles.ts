@@ -1,6 +1,5 @@
 import type { StoreApi } from "zustand";
 import { exists, stat } from "@tauri-apps/plugin-fs";
-import { invoke } from "@tauri-apps/api/core";
 import type { ActivityOp } from "../lib/activity";
 import { forEachConcurrent } from "../lib/concurrency";
 import { forkContentCache } from "../lib/documentWorkingSet";
@@ -21,6 +20,7 @@ import {
 } from "../lib/vault";
 import type { VaultFile } from "../types";
 import type { AppState, UnreadableTextReason } from "../storeTypes";
+import { readVaultBytes } from "../lib/vaultByteRead";
 
 export type VaultPort = { get: () => AppState; set: StoreApi<AppState>["setState"] };
 export const CALENDAR_FILE = "calendar.json";
@@ -160,6 +160,10 @@ export function createExternalFiles({ get, set }: VaultPort) {
   /** After lost watcher events: one scan turns the difference between disk and
    * the catalog into ordinary watcher events (create, remove, metadata modify). */
   async function rescanAsEvents(root: string, isCurrent: () => boolean): Promise<VaultWatchEvent[] | null> {
+    // A file Mesa creates or renames while the scan runs is missing from the
+    // listing: only files catalogued before the scan, and unchanged since, can
+    // be reported removed.
+    const before = new Set(get().files);
     let scanned: VaultFile[];
     try {
       scanned = await scanVault(root);
@@ -179,7 +183,7 @@ export function createExternalFiles({ get, set }: VaultPort) {
     }
     // An empty listing of a non-empty catalog is treated as unavailable, not as
     // a mass deletion.
-    const removed = scanned.length ? [...known.values()].filter((file) => !onDisk.has(file.relPath)).map((file) => file.path) : [];
+    const removed = scanned.length ? [...known.values()].filter((file) => before.has(file) && !onDisk.has(file.relPath)).map((file) => file.path) : [];
     const events: VaultWatchEvent[] = [];
     if (removed.length) events.push({ kind: "remove", paths: removed });
     if (created.length) events.push({ kind: "create", paths: created });
@@ -205,9 +209,7 @@ export function createExternalFiles({ get, set }: VaultPort) {
   async function readWatchedText(file: VaultFile): Promise<{ ok: boolean; text: string; tooLarge?: boolean }> {
     if (!IN_TAURI || file.path.startsWith(DEMO_ROOT)) return readNoteResult(file);
     try {
-      const bytes = new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", {
-        path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: false,
-      }));
+      const bytes = await readVaultBytes(file.path, MAX_TEXT_CACHE_FILE_BYTES, false);
       if (bytes.length >= MAX_TEXT_CACHE_FILE_BYTES) return { ok: false, text: "", tooLarge: true };
       return { ok: true, text: new TextDecoder().decode(bytes) };
     } catch {

@@ -13,8 +13,8 @@ pub fn is_hidden_name(name: &str) -> bool {
 }
 
 /// Deepest folder nesting a vault walk follows and a peer path may have. The
-/// walks recurse once per level, so the cap bounds their stack use; a deeper
-/// tree is skipped, never followed.
+/// walks keep explicit folder stacks, so the cap bounds their work and memory;
+/// a deeper tree is skipped, never followed.
 pub const MAX_REL_SEGMENTS: usize = 255;
 
 /// A `/`-separated relative path with more than `MAX_REL_SEGMENTS` segments.

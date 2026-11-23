@@ -7,8 +7,13 @@ if (!['macos', 'windows', 'linux'].includes(platform)) throw new Error('Specify 
 const base = `${releaseTargetDir(platform)}/bundle`;
 const extensions = { macos: ['.dmg'], windows: ['.msi', '.exe'], linux: ['.AppImage', '.deb'] }[platform];
 const products = [];
-function walk(dir) { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) walk(p); else if (e.isFile() && extensions.some(ext => p.endsWith(ext))) products.push(p); } }
-walk(base);
+// Explicit stack, no recursion. Product order does not matter: counts are per
+// extension and the checksum list is sorted.
+const pending = [base];
+while (pending.length) {
+  const dir = pending.pop();
+  for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) pending.push(p); else if (e.isFile() && extensions.some(ext => p.endsWith(ext))) products.push(p); }
+}
 for (const ext of extensions) if (products.filter(p => p.endsWith(ext)).length !== 1) throw new Error(`Expected exactly one ${ext} release product.`);
 const output = `output/release-${platform}`;
 mkdirSync(output, { recursive: true });

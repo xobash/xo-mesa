@@ -588,7 +588,7 @@ input[type="range"] {
   height: 18px;
   border-radius: 50%;
   /* off: a light knob that still reads on light tracks via a soft shadow */
-  background: #fff;
+  background: var(--toggle-knob);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
   transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.2, 1),
     background-color 0.15s ease;

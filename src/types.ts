@@ -142,18 +142,30 @@ export interface Settings {
   /** Show attachment nodes (every non-markdown vault file) in the graph.
    *  Attachments join the same force layout as notes, like Obsidian. */
   graphShowAttachments: boolean;
-  /** Obsidian-style graph display and force controls. Optional for old settings. */
-  graphArrows?: boolean;
-  graphTextFadeThreshold?: number;
-  graphNodeSize?: number;
-  graphLinkThickness?: number;
-  graphCenterForce?: number;
-  graphRepelForce?: number;
-  graphLinkForce?: number;
-  graphLinkDistance?: number;
+  /** Show every file the vault catalog lists as a node, whatever the
+   *  Attachments and Orphans filters say. Opt-in; off matches Obsidian. */
+  graphShowAllFiles: boolean;
+  /** Graph display and force controls, in Obsidian's units and with its defaults. */
+  graphArrows: boolean;
+  /** -3..3; labels appear at a higher zoom as this rises. */
+  graphTextFade: number;
+  /** 0.1..5 multipliers. */
+  graphNodeSize: number;
+  graphLinkThickness: number;
+  /** 0..1 slider positions on a log curve. */
+  graphCenterForce: number;
+  graphLinkForce: number;
+  /** 0..20; the charge is this value cubed. */
+  graphRepelForce: number;
+  /** World units, 30..500. */
+  graphLinkDistance: number;
+  /** Opt-in ambient graph motion: drift, breathing, twinkle and bloom. */
+  graphLivingMotion: boolean;
+  /** Version of the graph settings' units; older values reset to the defaults once. */
+  graphSettingsVersion: number;
   /** View shown in the center region. Can be empty after the user closes it. */
   centerView: WorkspaceView;
-  /** Views stacked in the right region (any number visible at once). */
+  /** The side pane beside the center: at most one view (`panes.ts`). */
   rightStack: PaneView[];
   /** Which side of the center the side stack docks to. Flippable so the
    *  workspace is a constrained snap workspace, not hard-coded left/right. */
@@ -169,6 +181,8 @@ export interface GraphNode extends SimulationNodeDatum {
   thumbPath?: string;
   /** File kind for visual differentiation in the graph. */
   kind: GraphNodeKind;
+  /** Colour group of a non-note file, set only in the All files view. */
+  fileGroup?: GraphFileGroup;
   /** Lower-cased extension (e.g. "md", "png", "zip"). */
   ext: string;
   /** File timestamp used by the graph timelapse, when the vault provides it. */
@@ -192,6 +206,9 @@ type GraphNodeKind =
   | "tag"         // a #tag, shown as its own node with edges from notes
   | "phantom"     // a placeholder for an unresolved [[link]] (no file yet)
   | "attachment"; // a non-markdown vault file (pdf, html, css, images, …)
+
+/** Colour group of a non-note file node in the All files view. */
+export type GraphFileGroup = "image" | "pdf" | "media" | "office" | "archive" | "other";
 
 /** A directed link between two notes. */
 export interface GraphLink extends SimulationLinkDatum<GraphNode> {

@@ -143,8 +143,10 @@ fn decode_path(raw: &str) -> Result<String, String> {
     while at < raw.len() {
         let b = raw.as_bytes()[at];
         if b == b'%' {
-            let hex = raw.get(at + 1..at + 3).ok_or("invalid escape")?;
-            bytes.push(u8::from_str_radix(hex, 16).map_err(|_| "invalid escape")?);
+            let pair = raw.as_bytes().get(at + 1..at + 3).ok_or("invalid escape")?;
+            let high = crate::hex::nibble(pair[0]).ok_or("invalid escape")?;
+            let low = crate::hex::nibble(pair[1]).ok_or("invalid escape")?;
+            bytes.push(high << 4 | low);
             at += 3;
         } else {
             bytes.push(b);
@@ -361,5 +363,15 @@ mod tests {
         assert!(admit_resource(&mut s, &app, Sha256::digest(b"run()").into()).is_ok());
         assert!(admit_resource(&mut s, &app, Sha256::digest(b"run()").into()).is_ok());
         assert!(admit_resource(&mut s, &app, Sha256::digest(b"steal()").into()).is_err());
+    }
+
+    // `u8::from_str_radix` accepted a sign, so `%+f` decoded as 0x0f.
+    #[test]
+    fn path_escapes_take_exactly_two_hex_digits() {
+        assert_eq!(decode_path("a%20b%2Fc").as_deref(), Ok("a b/c"));
+        assert!(decode_path("%+f").is_err());
+        assert!(decode_path("%-1").is_err());
+        assert!(decode_path("%2").is_err());
+        assert!(decode_path("%zz").is_err());
     }
 }

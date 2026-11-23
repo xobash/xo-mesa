@@ -42,23 +42,28 @@ import { Welcome } from "./components/Welcome";
 import { CenterRegion } from "./components/CenterRegion";
 import { RightStack } from "./components/RightStack";
 import { PanelWindow } from "./components/PanelWindow";
+import { startPaneResizeDrag } from "./components/paneResizeDrag";
+import { followOtherWindows } from "./controllers/settingsFollow";
 
 const initialRouteParams = new URLSearchParams(location.search);
-let graphWindowBootstrapped = false;
+/** Resolves true once a torn-out graph window has shown the main window's snapshot. */
+let graphWindowBootstrap: Promise<boolean> = Promise.resolve(false);
 if (initialRouteParams.get("panel") === "graph") {
   const bootstrapKey = initialRouteParams.get("graphBootstrap");
-  const snapshot = bootstrapKey ? consumeGraphWindowBootstrap(bootstrapKey, localStorage, initialRouteParams.get("vault") ?? undefined) : null;
-  if (snapshot) {
-    useAppStore.setState((state) => ({
-      vaultPath: snapshot.vaultPath,
-      vaultName: snapshot.vaultName,
-      files: snapshot.files,
-      notes: snapshot.notes,
-      settings: { ...state.settings, ...snapshot.settings },
-      loading: false,
-      status: `${Object.keys(snapshot.notes).length} notes`,
-    }));
-    graphWindowBootstrapped = true;
+  if (bootstrapKey) {
+    graphWindowBootstrap = consumeGraphWindowBootstrap(bootstrapKey, undefined, initialRouteParams.get("vault") ?? undefined).then((snapshot) => {
+      if (!snapshot || useAppStore.getState().vaultPath) return false;
+      useAppStore.setState((state) => ({
+        vaultPath: snapshot.vaultPath,
+        vaultName: snapshot.vaultName,
+        files: snapshot.files,
+        notes: snapshot.notes,
+        settings: { ...state.settings, ...snapshot.settings },
+        loading: false,
+        status: `${Object.keys(snapshot.notes).length} notes`,
+      }));
+      return true;
+    });
   }
 }
 
@@ -113,7 +118,7 @@ export default function App() {
   const routeParams = useMemo(() => new URLSearchParams(location.search), []);
   // A spawned document window carries ?doc in its URL → render the reader only.
   const docMode = useMemo(() => routeParams.has("doc"), [routeParams]);
-  // A popped-out panel window carries ?panel=preview|graph|tasks|calendar.
+  // A popped-out panel window carries ?panel=preview|graph|tasks.
   const panelMode = useMemo(() => {
     const p = routeParams.get("panel");
     return p === "preview" || p === "graph" || p === "tasks"
@@ -146,6 +151,8 @@ export default function App() {
   const setCollapsedFolders = useAppStore((s) => s.setCollapsedFolders);
   const appRootRef = useRef<HTMLDivElement | null>(null);
   const layoutRef = useRef<HTMLDivElement | null>(null);
+  const endResizeRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => endResizeRef.current?.(), []);
   const mainWindow = !docMode && !panelMode && !agentMode && !researchMode;
 
   useApplyTheme(theme, uiStyle);
@@ -170,7 +177,7 @@ export default function App() {
     }).then((off) => {
       if (alive) unlisten = off;
       else off();
-    });
+    }).catch((error) => console.warn("[mesa] Deep Research state relay unavailable:", error));
     // Mirror run updates without re-rendering the shell for each progress patch.
     const unsubscribe = useAppStore.subscribe((state, prev) => {
       if (state.deepResearch === prev.deepResearch) return;
@@ -190,6 +197,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.accel = hardwareAccel ? "on" : "off";
   }, [hardwareAccel]);
+  useEffect(() => followOtherWindows(useAppStore), []);
 
   // Blur/visibility are early flush signals. Browser beforeunload cannot wait
   // for asynchronous filesystem work, so the native close interceptor in
@@ -223,7 +231,7 @@ export default function App() {
   });
 
   if (docMode) return <DocumentView />;
-  if (panelMode) return <PanelWindow kind={panelMode} graphWindowBootstrapped={graphWindowBootstrapped} />;
+  if (panelMode) return <PanelWindow kind={panelMode} bootstrap={graphWindowBootstrap} />;
   if (agentMode) return <AgentWindow />;
   if (researchMode) return <ResearchWindow />;
 
@@ -257,44 +265,24 @@ export default function App() {
   };
 
   // Drag the pane borders to resize. Width is updated live on the element, then
-  // committed to settings on release.
+  // committed to settings on release (`startPaneResizeDrag`).
   const startResize = (side: "left" | "right", e: React.PointerEvent) => {
     e.preventDefault();
     const el = layoutRef.current;
-    const startX = e.clientX;
-    const startW = side === "left" ? sidebarWidth : usableRightWidth;
-    const move = (ev: PointerEvent) => {
-      if (!el) return;
-      const dx = ev.clientX - startX;
-      if (side === "left") {
-        const w = Math.max(160, Math.min(520, startW + dx));
-        el.style.setProperty("--sidebar-w", w + "px");
-        el.style.setProperty("--sidebar-slot-w", w + "px");
-        el.dataset.dragS = String(w);
-      } else {
-        // Dock resize: the splitter sits on the dock's outer edge, so the drag
-        // sign flips with the dock side (drag toward the dock widens it).
-        const sign = dockSide === "left" ? 1 : -1;
-        const minRightWidth = rightStack.includes("agent") ? PI_MIN_WIDTH : 260;
-        const w = Math.max(minRightWidth, Math.min(760, startW + sign * dx));
-        el.style.setProperty("--right-w", w + "px");
-        el.dataset.dragR = String(w);
-      }
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (el?.dataset.dragS) {
-        setSetting("sidebarWidth", Number(el.dataset.dragS));
-        delete el.dataset.dragS;
-      }
-      if (el?.dataset.dragR) {
-        setSetting("rightWidth", Number(el.dataset.dragR));
-        delete el.dataset.dragR;
-      }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    if (!el) return;
+    endResizeRef.current?.();
+    endResizeRef.current = side === "left"
+      ? startPaneResizeDrag({
+        el, vars: ["--sidebar-w", "--sidebar-slot-w"], startX: e.clientX, startWidth: sidebarWidth,
+        min: 160, max: 520, sign: 1, commit: (w) => setSetting("sidebarWidth", w),
+      })
+      // Dock resize: the splitter sits on the dock's outer edge, so the drag
+      // sign flips with the dock side (drag toward the dock widens it).
+      : startPaneResizeDrag({
+        el, vars: ["--right-w"], startX: e.clientX, startWidth: usableRightWidth,
+        min: rightStack.includes("agent") ? PI_MIN_WIDTH : 260, max: 760, sign: dockSide === "left" ? 1 : -1,
+        commit: (w) => setSetting("rightWidth", w),
+      });
   };
 
   return (

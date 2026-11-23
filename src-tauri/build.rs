@@ -37,6 +37,7 @@ fn main() {
             "vault_scan",
             "vault_read_text",
             "vault_read_bytes",
+            "vault_read_range",
             "vault_text_fingerprints",
             "vault_rename_no_replace",
             "vault_purge_recovery",

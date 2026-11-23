@@ -1,6 +1,6 @@
 import { watch } from "@tauri-apps/plugin-fs";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { IN_TAURI } from "./vault";
+import { IN_TAURI } from "./vaultFs";
 import { DEMO_ROOT } from "./vaultDemo";
 
 /** Longest delay before the plugin-watch fallback delivers a batch. */

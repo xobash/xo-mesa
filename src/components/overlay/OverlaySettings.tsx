@@ -71,11 +71,11 @@ export function OverlaySettings({ onReset }: { onReset: () => void }) {
         </div>
         <div className="ov-setting-line">
           <div>
-            <div className="setting-name">Graph canvas smoothing</div>
-            <div className="setting-desc">Ask the system canvas to favor smoother graph motion when available.</div>
+            <div className="setting-name">Layered overlays</div>
+            <div className="setting-desc">Draw menus, hover cards and dialogs on their own layer for smoother fades.</div>
           </div>
           <SettingToggle
-            label="Graph canvas smoothing"
+            label="Layered overlays"
             on={settings.hardwareAccel}
             onChange={(v) => setSetting("hardwareAccel", v)}
           />

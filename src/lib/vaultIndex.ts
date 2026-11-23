@@ -2,6 +2,7 @@ import { vaultStorageId, privateImagePath, restoreImagePath, VAULT_INDEX_STORAGE
 import type { NoteMeta, VaultFile } from '../types';
 import { createImageResolver, noteMetaFor } from './graph';
 import { isTextualVaultFile, sha256Hex } from './vault';
+import { openIdbWithTimeout } from './idbOpen';
 import type { TextReadOutcome } from './vault';
 import { indexedContentCache, type IndexedDocument } from './documentWorkingSet';
 import { runCancellableBackgroundWork } from "./backgroundWorkGovernor";
@@ -40,24 +41,15 @@ export function retainedSnapshotMetadata(
   }
   return retained;
 }
-const database = (): Promise<IDBDatabase> => new Promise((resolve, reject) => {
-  if (typeof indexedDB === 'undefined') { reject(new Error('Index storage unavailable')); return; }
-  const request = indexedDB.open('mesa-vault-index', VERSION);
-  let finished = false;
-  const timer = setTimeout(() => { finished = true; reject(new Error('Index storage timed out')); }, 2000);
-  request.onupgradeneeded = () => {
-    // Rebuild old snapshots, which lack the metadata used by Diagnostics.
-    if (request.result.objectStoreNames.contains('vaults')) request.result.deleteObjectStore('vaults');
-    if (request.result.objectStoreNames.contains('metadata')) request.result.deleteObjectStore('metadata');
-    const store = request.result.createObjectStore('vaults', { keyPath: 'root' });
-    store.createIndex('cachedAt', 'cachedAt');
-    const metadata = request.result.createObjectStore('metadata', { keyPath: 'root' });
-    metadata.createIndex('cachedAt', 'cachedAt');
-  };
-  request.onblocked = () => { finished = true; clearTimeout(timer); reject(new Error('Index storage blocked')); };
-  request.onerror = () => { finished = true; clearTimeout(timer); reject(request.error); };
-  request.onsuccess = () => { clearTimeout(timer); if (finished) request.result.close(); else { finished = true; request.result.onversionchange = () => request.result.close(); resolve(request.result); } };
-});
+const database = (): Promise<IDBDatabase> => openIdbWithTimeout('mesa-vault-index', VERSION, (db) => {
+  // Rebuild old snapshots, which lack the metadata used by Diagnostics.
+  if (db.objectStoreNames.contains('vaults')) db.deleteObjectStore('vaults');
+  if (db.objectStoreNames.contains('metadata')) db.deleteObjectStore('metadata');
+  const store = db.createObjectStore('vaults', { keyPath: 'root' });
+  store.createIndex('cachedAt', 'cachedAt');
+  const metadata = db.createObjectStore('metadata', { keyPath: 'root' });
+  metadata.createIndex('cachedAt', 'cachedAt');
+}, 'Index storage');
 const vaultIndexStorage: VaultIndexStorage = {
   async load(root) {
     const db = await database();

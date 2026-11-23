@@ -16,7 +16,8 @@ import { IN_TAURI } from "../lib/vault";
 import { groupPdfTextRunsByPage } from "../lib/pdfTextRuns";
 import { usePdfEditor } from "./usePdfEditor";
 import { usePdfZoom } from "./usePdfZoom";
-import { findPdfHeader, sniffFileType, sanitizePdfBytes } from "../lib/pdfBytes";
+import { findPdfHeader, sanitizePdfBytes } from "../lib/pdfBytes";
+import { sniffFileType } from "../lib/fileSniff";
 import type { InkPoint, RGB } from "../lib/pdf";
 import { loadPdfEditModule } from "../lib/pdfEditModule";
 import type { VaultFile } from "../types";
@@ -24,6 +25,7 @@ import type { PdfTextRun } from "./usePdfEditor";
 import { markPdfPerf } from "./pdfPerf";
 import { createFramePublisher } from "../lib/framePublisher";
 import { type Tool, NATIVE_WARM_START_DELAY_MS, COLORS, type PendingText, type PendingReplace } from "./pdfViewParts";
+import { clamp } from "../lib/clamp";
 
 export function PdfView({
   rel,
@@ -211,7 +213,7 @@ export function PdfView({
     setMountedPageCount(0);
   }
   const shellCount =
-    pageCount > 0 ? Math.min(pageCount, Math.max(mountedPageCount, 1)) : 0;
+    pageCount > 0 ? clamp(mountedPageCount, 1, pageCount) : 0;
 
   // The rest of the shells follow once page 1 is up. Batches grow geometrically
   // so a 748-page document costs ~15 admissions rather than 93, while each
@@ -225,7 +227,7 @@ export function PdfView({
       if (cancelled) return;
       setMountedPageCount((prev) => {
         const from = Math.max(prev, 1);
-        const next = Math.min(pageCount, from + Math.min(64, Math.max(7, from)));
+        const next = Math.min(pageCount, from + clamp(from, 7, 64));
         if (next !== prev) {
           markPdfPerf(perfRunId, "page-shell-batch-mounted", {
             mountedPages: next,
@@ -450,7 +452,7 @@ export function PdfView({
           width: run.pdfWidth,
           height: run.pdfHeight,
           text: next,
-          size: Math.max(8, Math.min(64, run.pdfHeight * 0.82)),
+          size: clamp(run.pdfHeight * 0.82, 8, 64),
           color,
         });
       },
@@ -459,7 +461,7 @@ export function PdfView({
     setReplacePending(null);
   };
 
-  const strokeWidth = Math.max(1.5, Math.min(10, size / 4));
+  const strokeWidth = clamp(size / 4, 1.5, 10);
 
   // highlight + pencil drag
   const onDown = (pageIdx: number, e: React.PointerEvent) => {
@@ -691,7 +693,7 @@ export function PdfView({
             </button>
           </>
         ) : (
-          !loadFailed && (
+          !loadFailed && !invalidPdfType && (
             <button
               className="btn primary"
               onClick={() => setMode("edit")}
@@ -896,29 +898,26 @@ export function PdfView({
                   <input
                     type="checkbox"
                     checked={f.value === "true"}
-                    onChange={(e) =>
-                      void apply(
-                        async (current) => {
-                          const { setFormField } = await loadPdfEditModule();
-                          return setFormField(
-                            current,
-                            f.name,
-                            e.target.checked ? "true" : "false"
-                          );
-                        }
-                      )
-                    }
+                    onChange={(e) => {
+                      // Read before any await: React restores a controlled input's old value.
+                      const next = e.target.checked ? "true" : "false";
+                      void apply(async (current) => {
+                        const { setFormField } = await loadPdfEditModule();
+                        return setFormField(current, f.name, next);
+                      });
+                    }}
                   />
                 ) : f.options ? (
                   <select
                     className="text-input"
                     value={f.value}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const next = e.target.value;
                       void apply(async (current) => {
                         const { setFormField } = await loadPdfEditModule();
-                        return setFormField(current, f.name, e.target.value);
-                      })
-                    }
+                        return setFormField(current, f.name, next);
+                      });
+                    }}
                   >
                     {f.options.map((o) => (
                       <option key={o} value={o}>{o}</option>

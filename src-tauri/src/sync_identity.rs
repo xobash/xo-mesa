@@ -636,6 +636,7 @@ pub(super) async fn get_identity_async(app: &tauri::AppHandle) -> Result<Arc<Ide
 /// display so users can compare it out-of-band with a peer.
 // Blocking work: run off the main (UI) thread.
 #[tauri::command(async)]
-pub fn sync_identity(app: tauri::AppHandle) -> Result<String, String> {
+pub fn sync_identity(window: tauri::Window, app: tauri::AppHandle) -> Result<String, String> {
+    crate::require_main(window.label())?;
     Ok(get_identity(&app)?.fingerprint.clone())
 }

@@ -430,30 +430,60 @@ fn resource_tokens() -> &'static Mutex<std::collections::HashMap<String, Resourc
         OnceLock::new();
     TOKENS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
+/// A token's lifetime; past it the token is refused and reclaimed first.
+const TOKEN_LIFETIME: std::time::Duration = std::time::Duration::from_secs(600);
+/// Live tokens one window may hold; its oldest goes when it opens another.
+const TOKENS_PER_OWNER: usize = 8;
+/// Hard bound across all windows, so memory stays bounded.
+const TOKENS_TOTAL: usize = 64;
+fn token_expired(budget: &ResourceBudget, now: std::time::Instant) -> bool {
+    now.saturating_duration_since(budget.created) > TOKEN_LIFETIME
+}
 fn create_resource_token(owner: &str) -> Result<String, String> {
     let token = crate::hex::random_token()?;
     let mut tokens = resource_tokens()
         .lock()
         .map_err(|_| "resources unavailable")?;
-    if tokens.len() >= 8 {
-        if let Some(oldest) = tokens
-            .iter()
-            .min_by_key(|(_, b)| b.created)
-            .map(|(key, _)| key.clone())
-        {
-            tokens.remove(&oldest);
-        }
+    admit_token(&mut tokens, token.clone(), owner, std::time::Instant::now());
+    Ok(token)
+}
+/// Reclaim expired tokens, then make room within the owner's own cap, so a
+/// new window never cancels another window's live token below the hard bound.
+fn admit_token(
+    tokens: &mut std::collections::HashMap<String, ResourceBudget>,
+    token: String,
+    owner: &str,
+    now: std::time::Instant,
+) {
+    tokens.retain(|_, budget| !token_expired(budget, now));
+    if tokens.values().filter(|b| b.owner == owner).count() >= TOKENS_PER_OWNER {
+        remove_oldest_token(tokens, Some(owner));
+    }
+    if tokens.len() >= TOKENS_TOTAL {
+        remove_oldest_token(tokens, None);
     }
     tokens.insert(
-        token.clone(),
+        token,
         ResourceBudget {
             owner: owner.into(),
             requests: 0,
             bytes: 0,
-            created: std::time::Instant::now(),
+            created: now,
         },
     );
-    Ok(token)
+}
+fn remove_oldest_token(
+    tokens: &mut std::collections::HashMap<String, ResourceBudget>,
+    owner: Option<&str>,
+) {
+    if let Some(oldest) = tokens
+        .iter()
+        .filter(|(_, b)| owner.is_none_or(|owner| b.owner == owner))
+        .min_by_key(|(_, b)| b.created)
+        .map(|(key, _)| key.clone())
+    {
+        tokens.remove(&oldest);
+    }
 }
 fn charge_resource(owner: &str, token: &str, bytes: usize, request: bool) -> Result<(), String> {
     charge_resource_at(owner, token, bytes, request, std::time::Instant::now())
@@ -470,7 +500,7 @@ fn charge_resource_at(
         .map_err(|_| "resources unavailable")?;
     let budget = tokens.get_mut(token).ok_or("resources expired")?;
     if budget.owner != owner
-        || now.saturating_duration_since(budget.created) > std::time::Duration::from_secs(600)
+        || token_expired(budget, now)
         || (request && budget.requests >= 400)
         || bytes > VIEW_LIMIT.saturating_sub(budget.bytes)
     {

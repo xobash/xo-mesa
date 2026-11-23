@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { useAppStore, getStore } from "../store";
-import { fileKind, isEditableTextExt, isTextualVaultFile } from "../lib/vault";
+import { documentKind } from "../lib/vault";
 import { docPanePath, isDocPane, type DocPaneId } from "../lib/docSplit";
 import { claimKeyboardShortcut, isWindowTransferShortcut } from "../lib/shortcuts";
 import type { RightPanel, WorkspaceView } from "../types";
@@ -16,7 +16,6 @@ import { AgentSurface, Editor, GraphView } from "./LazySurfaces";
 function DocPane() {
   const activePath = useAppStore((s) => s.activePath);
   const activeContentState = useAppStore((s) => s.activeContentState);
-  const loadActiveContent = useAppStore((s) => s.loadActiveContent);
   // Resolve the active file through the store index instead of subscribing to
   // the whole `files` array and scanning it. Only `ext` is read below, so this
   // also stops the editor stack re-rendering for vault-wide array replacements
@@ -24,31 +23,22 @@ function DocPane() {
   const activeFile = useAppStore((s) =>
     s.activePath ? s.fileFor(s.activePath) : undefined
   );
-  const kind = activeFile ? fileKind(activeFile.ext) : "text";
-  const editable = !activeFile || isEditableTextExt(activeFile.ext);
-  const unavailableText = activeFile && isTextualVaultFile(activeFile) && !editable && activeContentState !== "ready";
+  // Every text file (code, data, sniffed unknown extensions) opens in the
+  // editor. An unknown extension shows Loading while its prefix is sniffed.
+  const kind = activeFile ? documentKind(activeFile) : "text";
+  const sniffing = kind === "other" && activeContentState === "loading";
   return (
     // Pi's mesa_view tool captures the live document from this marked region.
     <div className="doc-live-view" data-mesa-view-root="live-doc">
       <Tabs />
-      {unavailableText ? (
-        <div className="doc-load-state" role="status">
-          <p>{activeContentState === "loading" ? "Loading document…" : activeContentState === "size-limit"
-            ? "This file exceeds the 8 MiB automatic text limit." : "This document could not be read."}</p>
-          {activeContentState !== "loading" && <button className="btn" onClick={() => void loadActiveContent()}>
-            {activeContentState === "size-limit" ? "Load file anyway" : "Retry read"}
-          </button>}
-        </div>
+      {sniffing ? (
+        <div className="doc-load-state" role="status"><p>Loading document…</p></div>
       ) : kind === "text" ? (
-        editable ? (
-          // The fallback mirrors the editor's wrapper so the pane doesn't
-          // jump during the (local, ~ms) lazy-chunk load.
-          <Suspense fallback={<div className="editor-wrap" />}>
-            <Editor />
-          </Suspense>
-        ) : (
-          <CodeView rel={activePath!} />
-        )
+        // The fallback mirrors the editor's wrapper so the pane doesn't
+        // jump during the (local, ~ms) lazy-chunk load.
+        <Suspense fallback={<div className="editor-wrap" />}>
+          <Editor />
+        </Suspense>
       ) : activePath ? (
         <MediaView rel={activePath!} />
       ) : (
@@ -69,7 +59,7 @@ function DocSlot({ pane }: { pane: DocPaneId }) {
     return <div className="editor-empty">Drag a file here, or use “Open to the side” on a file.</div>;
   }
   const activate = () => void getStore().focusDocPane(pane);
-  const kind = fileKind(file.ext);
+  const kind = documentKind(file);
   return (
     <div
       className="doc-slot-idle"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { clamp } from "../lib/clamp";
 
 /**
  * PDF zoom: the compositor preview (`--pdf-zoom` once per animation frame, no
@@ -136,7 +137,7 @@ export function usePdfZoom(
       anchor?: { x: number; y: number },
       source: "button" | "pinch" = "button"
     ) => {
-      const clamped = Math.min(3, Math.max(0.5, nextScale));
+      const clamped = clamp(nextScale, 0.5, 3);
       if (clamped === scaleRef.current) return;
       manualZoomRef.current = true;
       captureZoomAnchor(anchor);
@@ -185,12 +186,10 @@ export function usePdfZoom(
       if (!e.ctrlKey) return; // ordinary scroll → let it through
       e.preventDefault();
       const pageSize = bodyRef.current?.clientHeight ?? 800;
-      const normalizedDelta = Math.max(
+      const normalizedDelta = clamp(
+        e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? pageSize : 1),
         -120,
-        Math.min(
-          120,
-          e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? pageSize : 1)
-        )
+        120
       );
       const factor = Math.exp(-normalizedDelta * 0.003);
       zoomTo(

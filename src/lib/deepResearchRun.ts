@@ -5,6 +5,7 @@ import { IN_TAURI, readNote, writeNote, createNote, removeVaultEntry } from "./v
 import { getPiSessionSnapshot } from "./piSessionBridge";
 import type { ApplyPlan, ProposedOp } from "./researchApplyPlan";
 import { buildApplyPlan as resolvePlan } from "./researchApplyPlan";
+import { toVaultFile } from "./vaultPaths";
 
 /** Coordinate the shared Pi session, research events, and reviewed writes.
  * Desktop apply uses native recovery; browser apply uses compensating rollback and can remain partial. */
@@ -147,7 +148,7 @@ export async function applyChangeSet(input: {
     // Restore updated files' original bytes (verified writes), newest first.
     for (let i = doneUpdates.length - 1; i >= 0; i--) {
       const u = doneUpdates[i];
-      const file = findFile(root, u.relPath);
+      const file = toVaultFile(root, u.relPath);
       await writeNote(file, u.originalContent, u.appliedContent).catch((e) => {
         failures.push(`restore ${u.relPath}: ${String(e)}`);
       });
@@ -155,7 +156,7 @@ export async function applyChangeSet(input: {
     // Remove created files, newest first.
     for (let i = doneCreates.length - 1; i >= 0; i--) {
       const relPath = doneCreates[i];
-      const file = findFile(root, relPath);
+      const file = toVaultFile(root, relPath);
       await readNote(file)
         .then((current) => {
           if (current !== plan.steps.find((step) => step.kind === "create" && step.relPath === relPath)?.content) {
@@ -178,7 +179,7 @@ export async function applyChangeSet(input: {
         await createNote(root, step.relPath, step.content, true);
         doneCreates.push(step.relPath);
       } else {
-        const file = findFile(root, step.relPath);
+        const file = toVaultFile(root, step.relPath);
         // Re-check exact on-disk bytes inside the verified-write transaction;
         // the store cache is only the proposal snapshot, never apply authority.
         await writeNote(file, step.content, step.expectedBytes ?? step.originalContent ?? "");
@@ -204,22 +205,6 @@ export async function applyChangeSet(input: {
     }
   }
   return { ok: true, appliedRelPaths: applied };
-}
-
-// A minimal VaultFile lookup for the driver's writes. The store passes the
-// authoritative file map via `resolveApplyPlan`; this helper only rebuilds a
-// VaultFile for a known in-vault relPath when the caller already validated it.
-function findFile(root: string, relPath: string): VaultFile {
-  const sep = root.includes("\\") && !root.includes("/") ? "\\" : "/";
-  const name = relPath.split("/").pop() ?? relPath;
-  const dot = name.lastIndexOf(".");
-  return {
-    path: `${root.replace(/[\\/]+$/, "")}${sep}${relPath.split("/").join(sep)}`,
-    relPath,
-    name: dot > 0 ? name.slice(0, dot) : name,
-    ext: dot > 0 ? name.slice(dot + 1).toLowerCase() : "",
-    isMarkdown: /\.(md|markdown)$/i.test(name),
-  };
 }
 
 /**

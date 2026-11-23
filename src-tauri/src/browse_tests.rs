@@ -373,3 +373,46 @@ async fn bounded_page_read_reports_truncation() {
     assert_eq!(body.len(), MAX_BODY_BYTES);
     assert!(truncated);
 }
+
+/// Another window filling its own tokens never evicts this window's live one.
+#[test]
+fn a_new_window_never_cancels_another_windows_live_resource_token() {
+    let kept = create_resource_token("resource-owner-a").unwrap();
+    for _ in 0..12 {
+        create_resource_token("resource-owner-b").unwrap();
+    }
+    assert!(charge_resource("resource-owner-a", &kept, 0, true).is_ok());
+    revoke_resource_window("resource-owner-a");
+    revoke_resource_window("resource-owner-b");
+}
+
+#[test]
+fn token_admission_reclaims_expired_first_caps_each_owner_and_bounds_the_total() {
+    let mut tokens = std::collections::HashMap::new();
+    let start = std::time::Instant::now();
+    let at = |secs: u64| start + std::time::Duration::from_secs(secs);
+    admit_token(&mut tokens, "stale".into(), "doc-a", at(0));
+    admit_token(&mut tokens, "a-live".into(), "doc-a", at(500));
+    admit_token(&mut tokens, "b-0".into(), "doc-b", at(601));
+    assert!(!tokens.contains_key("stale"), "expired tokens go first");
+    for i in 1..20 {
+        admit_token(&mut tokens, format!("b-{i}"), "doc-b", at(601 + i));
+    }
+    assert!(
+        tokens.contains_key("a-live"),
+        "another owner's live token stays"
+    );
+    let b_count = tokens.values().filter(|b| b.owner == "doc-b").count();
+    assert_eq!(b_count, TOKENS_PER_OWNER);
+    assert!(!tokens.contains_key("b-0") && tokens.contains_key("b-19"));
+    for owner in 0..(2 * TOKENS_TOTAL) {
+        admit_token(
+            &mut tokens,
+            format!("o-{owner}"),
+            &format!("doc-{owner}"),
+            at(700),
+        );
+        assert!(tokens.len() <= TOKENS_TOTAL);
+    }
+    assert_eq!(tokens.len(), TOKENS_TOTAL);
+}

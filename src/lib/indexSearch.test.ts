@@ -41,3 +41,38 @@ it('rejects superseded work and ignores late replies', async () => {
 it('does not create a worker for the compatibility cache', () => {
   vi.stubGlobal('Worker', vi.fn()); expect(createIndexSearch({ a: 'plain' })).toBeNull(); expect(Worker).not.toHaveBeenCalled();
 });
+it('lets two surfaces share the worker without rejecting each other', async () => {
+  vi.stubGlobal('Worker', FakeWorker);
+  const { acquireSharedIndexSearch } = await import('./indexSearch');
+  const cache = indexedContentCache([]);
+  const palette = acquireSharedIndexSearch(cache, 'turns')!, pane = acquireSharedIndexSearch(cache, 'turns')!;
+  const fromPalette = palette.run([], cache, 'palette');
+  const paneOld = pane.run([], cache, 'pane-1');
+  const rejected = expect(paneOld).rejects.toThrow('superseded');
+  const paneNew = pane.run([], cache, 'pane-2'); // replaces only the pane's own search
+  await rejected;
+  // The palette's search runs first, then the pane's newest.
+  expect(FakeWorker.latest.messages.slice(-1)[0]).toMatchObject({ query: 'palette' });
+  FakeWorker.latest.reply({ hits: ['p'] });
+  expect(await fromPalette).toMatchObject({ hits: ['p'] });
+  await Promise.resolve();
+  expect(FakeWorker.latest.messages.slice(-1)[0]).toMatchObject({ query: 'pane-2' });
+  FakeWorker.latest.reply({ hits: ['q'] });
+  expect(await paneNew).toMatchObject({ hits: ['q'] });
+  pane.cancel(); palette.release(); pane.release();
+});
+
+it('settles queued and later searches once a vault switch disposes the shared worker', async () => {
+  vi.stubGlobal('Worker', FakeWorker);
+  const { acquireSharedIndexSearch } = await import('./indexSearch');
+  const cache = indexedContentCache([]);
+  const palette = acquireSharedIndexSearch(cache, 'vault-a')!, pane = acquireSharedIndexSearch(cache, 'vault-a')!;
+  const running = palette.run([], cache, 'palette');
+  const queued = pane.run([], cache, 'pane');
+  const settled = Promise.allSettled([running, queued]);
+  acquireSharedIndexSearch(cache, 'vault-b')!.release();
+  const outcomes = await settled;
+  expect(outcomes.map((o) => o.status)).toEqual(['rejected', 'rejected']);
+  await expect(pane.run([], cache, 'again')).rejects.toThrow('disposed');
+  palette.release(); pane.release();
+});

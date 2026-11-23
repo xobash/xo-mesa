@@ -5,15 +5,22 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   generation: 1,
   purge: vi.fn(),
+  section: 'deleted',
+  confirm: vi.fn(async (_message: string, _options?: unknown) => true),
+  purgeRevision: vi.fn(async () => {}),
+  revisions: [{ id: 'r1', root: '/vault', relPath: 'note.md', savedAt: 1, content: 'old text' }],
   entries: [
     { originalRelPath: 'first.md', trashRelPath: '.mesa-trash/100/first.md', isDirectory: false },
     { originalRelPath: 'second.md', trashRelPath: '.mesa-trash/100/second.md', isDirectory: false },
   ],
 }));
 vi.mock('../store', () => ({ THEMES: [], useAppStore: (select: (state: unknown) => unknown) => select({
-  settingsSection: 'deleted', settingsOpen: true, settings: {}, vaultPath: '/vault', activePath: 'note.md',
+  settingsSection: mocks.section, settingsOpen: true, settings: {}, vaultPath: '/vault', activePath: 'note.md',
   revisionHistoryRequest: 0, getVaultGeneration: () => mocks.generation,
+  listActiveTextRevisions: listRevisions, purgeTextRevision: mocks.purgeRevision, content: 'current text',
 }) }));
+const listRevisions = async () => mocks.revisions;
+vi.mock('../lib/confirmAction', () => ({ confirmAction: mocks.confirm }));
 vi.mock('../lib/vault', () => ({ listRecoveryEntries: async () => mocks.entries, purgeRecoveryEntry: mocks.purge }));
 vi.mock('./Modal', () => ({ Modal: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 import { SettingsModal } from './SettingsModal';
@@ -62,3 +69,21 @@ it('Cancel retains recovery entries', async () => {
   expect(mocks.purge).not.toHaveBeenCalled();
   expect(host.querySelectorAll('.recovery-row')).toHaveLength(2);
 });
+it.each([true, false])('asks before permanently removing a local revision (confirmed: %s)', async (confirmed) => {
+  await act(async () => root.unmount());
+  mocks.section = 'history'; mocks.confirm.mockResolvedValueOnce(confirmed);
+  root = createRoot(host);
+  try {
+    await act(async () => root.render(<SettingsModal />));
+    await click('Remove');
+    expect(mocks.confirm).toHaveBeenCalledOnce();
+    expect(mocks.confirm.mock.calls[0][0]).toMatch(/cannot be undone/);
+    if (confirmed) {
+      expect(mocks.purgeRevision).toHaveBeenCalledExactlyOnceWith('r1');
+      expect(host.textContent).toContain('Revision removed.');
+    } else {
+      expect(mocks.purgeRevision).not.toHaveBeenCalled();
+    }
+  } finally { mocks.section = 'deleted'; mocks.purgeRevision.mockClear(); mocks.confirm.mockClear(); }
+});
+

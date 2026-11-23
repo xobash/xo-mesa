@@ -21,6 +21,20 @@ const katexWoff2Only: Plugin = {
   },
 };
 
+// The entry already uses fflate, and Rollup keeps one copy of a module in one
+// chunk, so every fflate export the Word engine uses would land in the entry.
+// Give the engine's imports their own module id: a private copy stays in the
+// lazy engine chunk.
+const wordEngineOwnFflate: Plugin = {
+  name: "mesa-word-engine-own-fflate",
+  enforce: "pre",
+  async resolveId(source, importer, options) {
+    if (source !== "fflate" || !importer?.includes("/node_modules/@docx-editor.dev/")) return null;
+    const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+    return resolved && !resolved.external ? { ...resolved, id: `${resolved.id}?word-engine` } : null;
+  },
+};
+
 // Dev only: transform these module graphs while the Rust shell starts (the
 // window opens about three seconds after the server is ready), so the first
 // load and the first open of each surface find them ready. Entry first.
@@ -35,8 +49,12 @@ export const DEV_WARMUP_FILES = [
   "./src/components/SettingsModal.tsx",
 ];
 
+/** Mesa's system-webview floor. Dev dependency pre-bundling must use it too:
+ *  esbuild's default dev target rejects top-level await (the Word engine). */
+export const WEBVIEW_TARGET = ["chrome111", "safari16.4"];
+
 export default defineConfig({
-  plugins: [katexWoff2Only, react()],
+  plugins: [katexWoff2Only, wordEngineOwnFflate, react()],
   clearScreen: false,
   // Index workers share lazily loaded codec modules.
   worker: { format: "es" },
@@ -49,8 +67,9 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
   },
+  optimizeDeps: { esbuildOptions: { target: WEBVIEW_TARGET } },
   build: {
-    target: ["chrome111", "safari16.4"],
+    target: WEBVIEW_TARGET,
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {

@@ -39,7 +39,7 @@ it("refuses an oversized dropped file before reading it and still imports the ot
   fs.bytes.set("/drop/note.md", new TextEncoder().encode("# hi"));
   const result = await importDroppedPaths("/vault", ["/drop/huge.mov", "/drop/note.md"]);
   expect(fs.read).not.toContain("/drop/huge.mov");
-  expect(result.failures).toEqual([{ name: "huge.mov", message: expect.stringContaining("512 MB import limit") }]);
+  expect(result.failures).toEqual([{ name: "huge.mov", message: expect.stringContaining("512 MiB import limit") }]);
   expect(result.created.map((file) => file.relPath)).toEqual(["note.md"]);
 });
 

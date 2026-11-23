@@ -2,7 +2,7 @@ import { VaultImage } from "./VaultImage";
 import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
-import { fileKind, isTextExt, urlForPath } from "../lib/vault";
+import { fileKind, isOpenableTextFile, urlForPath } from "../lib/vault";
 import { readSavedStylesheet } from "../lib/vaultStylesheet";
 import { rtfToText } from "../lib/rtf";
 import { statusLine } from "../lib/faces";
@@ -116,8 +116,7 @@ function PreviewCardImpl({
   // Graph nodes are always markdown; sidebar files can be anything. Only read
   // content for textual files — reading a binary (image/pdf) as text is garbage.
   const isRtf = noteFile?.ext === "rtf";
-  const isTextual =
-    noteFile ? noteFile.isMarkdown || isTextExt(noteFile.ext) || isRtf : true;
+  const isTextual = noteFile ? isOpenableTextFile(noteFile) : true;
   const isHtml = noteFile ? fileKind(noteFile.ext) === "html" : false;
 
   // For live activity cards, throttle the content shown so a fast typer (or an
@@ -283,7 +282,7 @@ function PreviewCardImpl({
       sub = noteFile.ext.toUpperCase();
       body = (
         <div className="preview-media-other">
-          No preview available for .{noteFile.ext} files
+          Click to open this .{noteFile.ext} file in Mesa.
         </div>
       );
     } else if (isRtf) {

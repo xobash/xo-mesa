@@ -4,7 +4,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../store";
 import { markMesaPerf } from "../lib/mesaPerf";
+import { clearLocalIndexCache } from "../lib/vaultIndex";
 import { DiagnosticsModal } from "./DiagnosticsModal";
+
+vi.mock("../lib/vaultIndex", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/vaultIndex")>();
+  return { ...actual, clearLocalIndexCache: vi.fn(actual.clearLocalIndexCache) };
+});
 
 describe("DiagnosticsModal", () => {
   let host: HTMLDivElement;
@@ -87,5 +93,12 @@ describe("DiagnosticsModal", () => {
     useAppStore.setState({ diagnosticsOpen: false });
     act(() => { vi.advanceTimersByTime(2000); });
     vi.useRealTimers();
+  });
+  it("says so when clearing the local cache fails", async () => {
+    vi.mocked(clearLocalIndexCache).mockRejectedValueOnce(new Error("storage blocked"));
+    act(() => root.render(<DiagnosticsModal />));
+    const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "Clear local cache")!;
+    await act(async () => { button.click(); });
+    expect(host.textContent).toContain("Could not clear the local cache: storage blocked");
   });
 });

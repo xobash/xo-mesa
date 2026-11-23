@@ -36,6 +36,7 @@ function notePurifier() {
     purifier = DOMPurify(window);
     purifier.addHook("uponSanitizeAttribute", keepRendererClasses);
     purifier.addHook("afterSanitizeAttributes", deferRemoteMedia);
+    purifier.addHook("afterSanitizeAttributes", lazyImages);
   }
   return purifier;
 }
@@ -88,6 +89,13 @@ function deferRemoteMedia(node: Element) {
     node.setAttribute(`data-remote-${name.replace(":", "-")}`, value);
     node.removeAttribute(name);
   }
+}
+
+/** Note images below the fold load when they scroll near, not with the note. */
+function lazyImages(node: Element) {
+  if (node.localName !== "img") return;
+  node.setAttribute("loading", "lazy");
+  node.setAttribute("decoding", "async");
 }
 
 /** Synchronous compatibility renderer; always sanitize before DOM insertion. */

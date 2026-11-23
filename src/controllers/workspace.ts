@@ -73,7 +73,15 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
     commitSettings(settings);
     reconcileSplit();
   };
+  // Moving the live editor to the other pane unmounts it, which drops a
+  // binary editor's unsaved edits, so ask before the split changes.
+  const mayLeaveLiveEditor = async (next: string | null) => {
+    const leaving = get().activePath;
+    if (!next || !leaving || leaving === next || !get().dirtyBinaryPaths.includes(leaving)) return true;
+    return get().confirmDiscardBinaryEdits([leaving], "Opening another file");
+  };
   const applySplit = async ({ placement, split, select }: DocSplitStep) => {
+    if (!(await mayLeaveLiveEditor(select))) return;
     const { centerView, rightStack } = get().settings;
     if (placement.centerView !== centerView || placement.rightStack.join() !== rightStack.join()) {
       commitSettings({ ...get().settings, ...placement });
@@ -82,13 +90,15 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
     if (select) await get().selectFile(select);
   };
 
+  /** Panel labels whose window is being created right now. */
+  const openingPanels = new Set<string>();
   const actions: Pick<AppState, 'openDocWindow' | 'openAgentWindow' | 'openResearchWindow' | 'openPanelWindow' | 'openToSide' | 'openFileInRegion' | 'focusDocPane'> & ReturnType<typeof createWorkspaceActions> = {
     ...createWorkspaceActions({ get, set: (patch) => set(patch as Partial<AppState>), commitSettings: commitWorkspace, setSetting: (key, value) => get().setSetting(key as never, value as never) }),
     openToSide: (rel) => applySplit(openToSide(get().settings, get().docSplit, get().activePath, rel)),
     openFileInRegion: (rel, region) => applySplit(openInRegion(get().settings, get().docSplit, get().activePath, rel, region)),
     focusDocPane: async (pane) => {
       const step = focusDocPane(get().docSplit, get().activePath, pane);
-      if (!step) return;
+      if (!step || !(await mayLeaveLiveEditor(step.select))) return;
       set({ docSplit: step.split });
       await get().selectFile(step.select);
     },
@@ -334,26 +344,30 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
     openPanelWindow: async (panel, placement) => {
       if (!IN_TAURI) return;
       const dockPanel = () => {
-        /* fall back: just dock it in the right stack */
+        /* fall back: dock it in the workspace; the one side pane is replaced */
         const settings = get().settings;
         get().setSetting(
           "centerView",
           settings.centerView === "empty" ? panel : settings.centerView
         );
         if (settings.centerView !== "empty" && !settings.rightStack.includes(panel)) {
-          get().setSetting("rightStack", [...settings.rightStack, panel]);
+          get().setSetting("rightStack", [panel]);
         } else if (settings.centerView === "empty") {
           get().setSetting("rightStack", []);
         }
       };
+      // A panel is a singleton surface. Timestamped labels made every
+      // repeated tear-out create another Mesa window, which macOS then
+      // displayed as a second app thumbnail. Reuse the stable panel label.
+      const label = `panel-${panel}`;
+      // A second tear-out while this one is still saving its snapshot and
+      // creating the window would hit the label and dock the panel too.
+      if (openingPanels.has(label)) return;
+      openingPanels.add(label);
       try {
         const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
         const vault = get().vaultPath ?? "";
         const theme = get().theme;
-        // A panel is a singleton surface. Timestamped labels made every
-        // repeated tear-out create another Mesa window, which macOS then
-        // displayed as a second app thumbnail. Reuse the stable panel label.
-        const label = `panel-${panel}`;
         const existing = await WebviewWindow.getByLabel(label);
         if (existing) {
           await existing.setFocus();
@@ -363,9 +377,13 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
         // window shows the same document, not the vault's first note.
         const active = get().activePath;
         const docParam = active ? `&sel=${encodeURIComponent(active)}` : "";
+        // A fresh key per tear-out: a late discard of an earlier snapshot can
+        // never remove this one. `pruneGraphWindowBootstraps` reads the
+        // base36 save time from this shape.
+        const bootstrapKey = `${label}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         const graphBootstrapSaved =
           panel === "graph" && vault
-            ? saveGraphWindowBootstrap(label, {
+            ? await saveGraphWindowBootstrap(bootstrapKey, {
               vaultPath: vault,
               vaultName: get().vaultName,
               files: get().files,
@@ -377,22 +395,25 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
                 graphExistingFilesOnly: get().settings.graphExistingFilesOnly,
                 graphShowOrphans: get().settings.graphShowOrphans,
                 graphShowAttachments: get().settings.graphShowAttachments,
+                graphShowAllFiles: get().settings.graphShowAllFiles,
                 graphArrows: get().settings.graphArrows,
-                graphTextFadeThreshold: get().settings.graphTextFadeThreshold,
+                graphTextFade: get().settings.graphTextFade,
                 graphNodeSize: get().settings.graphNodeSize,
                 graphLinkThickness: get().settings.graphLinkThickness,
                 graphCenterForce: get().settings.graphCenterForce,
                 graphRepelForce: get().settings.graphRepelForce,
                 graphLinkForce: get().settings.graphLinkForce,
                 graphLinkDistance: get().settings.graphLinkDistance,
+                graphLivingMotion: get().settings.graphLivingMotion,
+                graphSettingsVersion: get().settings.graphSettingsVersion,
               },
             })
             : false;
         const bootstrapParam = graphBootstrapSaved
-          ? `&graphBootstrap=${encodeURIComponent(label)}`
+          ? `&graphBootstrap=${encodeURIComponent(bootstrapKey)}`
           : "";
         if (graphBootstrapSaved) {
-          window.setTimeout(() => discardGraphWindowBootstrap(label), 30_000);
+          window.setTimeout(() => void discardGraphWindowBootstrap(bootstrapKey), 30_000);
         }
         const url = `index.html?panel=${panel}&vault=${encodeURIComponent(
           vault
@@ -417,6 +438,8 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
         });
       } catch {
         dockPanel();
+      } finally {
+        openingPanels.delete(label);
       }
     },
 

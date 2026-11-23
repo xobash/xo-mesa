@@ -29,6 +29,8 @@ const MARKER_RE = /^(?:[-+*]|(\d{1,9})[.)])(?=[ \t]|$)/;
 const MARKER_AT_RE = /(?:[-+*]|(\d{1,9})[.)])(?=[ \t]|$)/y;
 const BREAK_RE = /^([-*_])[ \t]*(?:\1[ \t]*){2,}$/;
 const HEADING_RE = /^#{1,6}(?:[ \t]|$)/;
+const LINE_BREAK_RE = /[\n\r\u2028\u2029]/;
+const WHITESPACE_RE = /\s/;
 const FENCE_RE = /^(`{3,}|~{3,})(.*)$/;
 const SETEXT_RE = /^(?:=+|-+)[ \t]*$/;
 /** A first character that starts no block, container or indentation. */
@@ -495,4 +497,34 @@ export function inlineCodeSpans(text: string): number[] {
     at = text.indexOf("`", closeEnd);
   }
   return out;
+}
+
+/**
+ * An ATX heading's level and label, matching
+ * `/^ {0,maxIndent}(#{1,6})\s+(.+?)\s*#*\s*$/` exactly. That regex
+ * backtracks cubically on a long run of spaces (seconds for a 2,000-space
+ * line); this scan is linear.
+ */
+export function atxHeading(line: string, maxIndent = 0): { level: number; label: string } | null {
+  let at = 0;
+  while (at < maxIndent && line[at] === " ") at++;
+  let hashes = 0;
+  while (hashes < 7 && line[at + hashes] === "#") hashes++;
+  if (hashes === 0 || hashes > 6) return null;
+  const rest = line.slice(at + hashes);
+  let lead = 0;
+  while (lead < rest.length && WHITESPACE_RE.test(rest[lead])) lead++;
+  if (lead === 0) return null;
+  if (lead === rest.length) {
+    // All whitespace: `\s+` gives back the last character `.` can match.
+    let last = rest.length - 1;
+    while (last > 0 && LINE_BREAK_RE.test(rest[last])) last--;
+    return last > 0 ? { level: hashes, label: rest[last] } : null;
+  }
+  const content = rest.slice(lead);
+  let end = content.trimEnd().length;
+  while (end > 0 && content[end - 1] === "#") end--;
+  const label = content.slice(0, end).trimEnd() || content[0];
+  // `.` never matches a line break, so a break inside the label fails the match.
+  return LINE_BREAK_RE.test(label) ? null : { level: hashes, label };
 }

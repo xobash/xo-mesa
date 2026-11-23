@@ -210,3 +210,21 @@ it('removes a listener that resolves after unmount', async () => {
   await act(async () => { await Promise.resolve(); });
   expect(late).toHaveBeenCalledOnce();
 });
+
+it('reports an unavailable tray bridge instead of leaving rejected listeners unhandled', async () => {
+  const rejected: unknown[] = [];
+  const onRejection = (reason: unknown) => { rejected.push(reason); };
+  process.on('unhandledRejection', onRejection);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  io.listen.mockRejectedValue(new Error('no tray'));
+  try {
+    await render(true);
+    vi.useRealTimers();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(rejected).toEqual([]);
+    expect(warn).toHaveBeenCalledWith('[mesa] tray bridge unavailable:', expect.any(Error));
+  } finally {
+    process.off('unhandledRejection', onRejection);
+    warn.mockRestore();
+  }
+});

@@ -6,6 +6,7 @@
  * The native settings (`src-tauri/src/webview_settings.rs`) turn those keys
  * off; this capture-phase guard is the second layer and also covers a
  * WebView2 runtime without the native setting. macOS never installs it. */
+import { unsavedEditsLabel } from "./binaryEdits";
 
 type KeyLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey"> &
   Partial<Pick<KeyboardEvent, "getModifierState" | "target">>;
@@ -72,5 +73,9 @@ export function installBrowserKeyGuard(target: Window, options: BrowserKeyGuardO
 export function saveNowStatus(savedPaths: readonly string[], dirtyPdfs: readonly string[]): string {
   const text = savedPaths.length === 0 ? "All text is saved."
     : savedPaths.length === 1 ? `Saved ${savedPaths[0]}.` : `Saved ${savedPaths.length} notes.`;
-  return dirtyPdfs.length ? `${text} PDF edits in ${dirtyPdfs.join(", ")} are not saved yet.` : text;
+  return dirtyPdfs.length ? `${text} ${capitalize(unsavedEditsLabel(dirtyPdfs))} in ${dirtyPdfs.join(", ")} are not saved yet.` : text;
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }

@@ -32,6 +32,22 @@ describe('sync workflow boundaries', () => {
     await actions.syncNow('one');
     expect(deps.transfer).toHaveBeenCalledWith('/vault', 'one', 'loaded-key', null, null, expect.any(Function), 'One');
   });
+  it('reports a peer removed while saving, not a missing sync key', async () => {
+    const { state, deps, actions } = setup();
+    vi.mocked(state.flushSave).mockImplementationOnce(async () => { state.settings.peers = state.settings.peers.filter(peer => peer.id !== 'one'); });
+    await actions.syncNow('one');
+    expect(deps.transfer).not.toHaveBeenCalled();
+    expect(state.syncStatus).toBe('Sync stopped: One was removed.');
+    expect(state.syncPhase).toBe('cancelled');
+    expect(state.syncBusy).toBe(false);
+  });
+  it('still asks for the sync key when none is stored', async () => {
+    const { state, deps, actions } = setup();
+    state.settings.syncToken = '';
+    await actions.syncNow('one');
+    expect(deps.transfer).not.toHaveBeenCalled();
+    expect(state.syncStatus).toBe('Set the sync key first.');
+  });
   it('cancels during preparation without beginning a transfer', async () => {
     const { state, deps, actions } = setup(); const wait = deferred<void>(); deps.prepare.mockReturnValueOnce(wait.promise);
     const work = actions.syncNow('one'); await Promise.resolve(); await actions.cancelCurrentSync(); wait.resolve(); await work;

@@ -30,7 +30,6 @@ export function OverlayCalendar() {
   const setOverlayOpen = useAppStore((s) => s.setOverlayOpen);
   const notes = useAppStore((s) => s.notes);
   const contentCache = useAppStore((s) => s.contentCache);
-  const tasksFile = useAppStore((s) => s.settings.tasksFile);
 
   const today = localISO();
   const [view, setView] = useState<CalView>("month");
@@ -55,14 +54,14 @@ export function OverlayCalendar() {
   // tasks file is only where new personal tasks are created.
   const personalTasksByDate = useMemo(() => {
     const map = new Map<string, TaskItem[]>();
-    for (const t of collectVaultTasks(notes, contentCache, (tasksFile || "Tasks.md").trim())) {
+    for (const t of collectVaultTasks(notes, contentCache)) {
       if (t.kind !== "personal" || t.checked || !t.due) continue;
       const l = map.get(t.due) ?? [];
       l.push(t);
       map.set(t.due, l);
     }
     return map;
-  }, [notes, contentCache, tasksFile]);
+  }, [notes, contentCache]);
 
   type Banner = { title: string; holiday: boolean; task?: boolean };
   const banners = (date: string): Banner[] => {

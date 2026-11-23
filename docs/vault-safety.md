@@ -117,14 +117,22 @@ never deciding to write the wrong bytes in the first place — the failure mode
 they cannot catch, because a verified write of the wrong content verifies
 perfectly.
 
-- `isTextualVaultFile` (`src/lib/vault.ts`) is the one definition of "Mesa may
-  read and write this file as text": markdown, `isTextExt`, and rtf. The read
-  side (`selectFile` deciding whether to load a file's content) and every write
-  side ask that same question, so they cannot disagree about what a file is.
+- `isTextualVaultFile` (`src/lib/vaultFileKinds.ts`) is the vault-scale
+  definition of a text file: markdown, `isTextExt`, and rtf. Indexing, search,
+  the graph and counts use only it.
+- `isOpenableTextFile` is the open-time rule: `isTextualVaultFile`, plus an
+  unknown-extension file whose first 8 KiB this session sniffed as valid UTF-8
+  with no NUL byte. The read side (`selectFile`, `ensureContent`), the watcher
+  refresh and every write side ask that same question, so they cannot disagree
+  about what a file is.
 - `writeNote` fails closed on anything else. It is the last checkpoint every
   text write passes through, so no caller — present or future — can reach the
   disk with a text-encoded overwrite of a PDF, image, or archive. Binary
-  editing has its own byte-level path (`pdfSave.ts` → `persistVerifiedBytes`).
+  editing has its own byte-level path (`pdfSave.ts`, and for RTF, image and
+  PowerPoint edits `documentBytesSave.ts`, → `persistVerifiedBytes` with the
+  opened bytes as precondition; image and presentation copies and editable
+  copies of legacy `.doc`/`.xls`/`.ppt` files require a missing target; Mesa
+  never writes a legacy binary Office file).
 - `textSaveCoordinator` keeps one dirty record per absolute file path. Editing
   one tab cannot cancel another tab's debounce. Writes are serialized, a newer
   revision waits for the in-flight revision, and each successful write advances
@@ -178,7 +186,8 @@ perfectly.
   for whatever path an agent touches, which is how a binary could get in.
 
 Regression net: `isTextualVaultFile` / `flushableNoteText` / `writeNote`
-fail-closed in `src/lib/vault.test.ts`; queue and lifecycle behavior in
+fail-closed in `src/lib/vault.test.ts`; the open-time sniff in
+`src/lib/vaultTextSniff.test.ts`; queue and lifecycle behavior in
 `src/lib/textSaveCoordinator.test.ts` and the vault recovery/write suites.
 
 Two operations that LOOK like text operations are held to the same rule:
@@ -417,8 +426,9 @@ name such as `GIT~1` cannot reach `.git`. On Windows, a save also refuses a file
 name with `:` (alternate data streams), a device name such as `CON`, `CONIN$`
 or `CLOCK$`, or a trailing dot or space. Bulk text reads accept at most 128
 visible paths per request, never hidden or `node_modules` paths, and never
-above the 8 MiB automatic text limit. Single bounded byte reads have the same
-visible-path rule, so `.git`, `.env` and recovery storage are not
+above the 8 MiB automatic text limit. Single bounded byte reads and range reads
+(`vault_read_range`, ≤ 1 MiB from an offset no larger than the file) have the
+same visible-path rule, so `.git`, `.env` and recovery storage are not
 renderer-readable. Reads open each file once without following a final link
 or blocking on a FIFO, then check its type and size on that handle. On Windows
 a reparse point passes only when its tag keeps the data at that path: cloud

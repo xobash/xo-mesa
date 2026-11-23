@@ -8,6 +8,9 @@ import {
   backlinksFor,
   refreshedNoteMeta,
   resolveAssetPath,
+  sameGraphTopology,
+  sameGraphNotes,
+  createGraphBuilder,
 } from "./graph";
 
 function vf(relPath: string, isMarkdown = true): VaultFile {
@@ -65,7 +68,7 @@ describe("buildGraph", () => {
     expect(node.thumbPath).toBe("/vault/hero.png");
   });
 
-  it("includes all supported text documents by default", () => {
+  it("graphs Markdown notes by default and every other file with attachments shown", () => {
     const { notes, files } = makeVault({
       "Readme.md": "links [[Data]]",
       "Data.md": "",
@@ -75,12 +78,13 @@ describe("buildGraph", () => {
       "doc.pdf": "",
       "script.ts": "",
     });
-    const { nodes } = buildGraph(notes, files);
+    // Obsidian's default: Markdown only. Other text documents count as attachments.
+    expect(buildGraph(notes, files).nodes.map((n) => n.id).sort()).toEqual(["Data.md", "Orphan.md", "Readme.md"]);
+    const { nodes } = buildGraph(notes, files, { showTags: false, existingOnly: false, showOrphans: true, showAttachments: true });
     const byId = Object.fromEntries(nodes.map((n) => [n.id, n]));
-    expect(Object.keys(byId).sort()).toEqual(["Data.md", "Orphan.md", "Readme.md", "script.ts"]);
-    expect(byId["photo.png"]).toBeUndefined();
-    expect(byId["archive.zip"]).toBeUndefined();
-    expect(byId["doc.pdf"]).toBeUndefined();
+    expect(Object.keys(byId).sort()).toEqual(["Data.md", "Orphan.md", "Readme.md", "archive.zip", "doc.pdf", "photo.png", "script.ts"]);
+    expect(byId["photo.png"].kind).toBe("attachment");
+    // A text document keeps its note kind and parsed links when shown.
     expect(byId["script.ts"].kind).toBe("note");
     // Notes keep their kind/degree; an unlinked note is an isolated node in the
     // same force simulation.
@@ -88,6 +92,14 @@ describe("buildGraph", () => {
     expect(byId["Orphan.md"].degree).toBe(0);
     expect(byId["Readme.md"].degree).toBe(1);
     expect(byId["Data.md"].degree).toBe(1);
+  });
+
+  it("drops a link to a hidden non-Markdown document instead of showing it as unresolved", () => {
+    const { notes, files } = makeVault({ "A.md": "[[Notes.txt]] and [[Notes]]", "Notes.txt": "[[A]]" });
+    expect(buildGraph(notes, files)).toMatchObject({ nodes: [{ id: "A.md", kind: "note", degree: 0 }], links: [] });
+    const shown = buildGraph(notes, files, { showTags: false, existingOnly: false, showOrphans: true, showAttachments: true });
+    expect(shown.nodes.map((n) => n.id).sort()).toEqual(["A.md", "Notes.txt"]);
+    expect(shown.links).toHaveLength(2);
   });
 
   it("binary files stay out of the graph", () => {
@@ -114,7 +126,9 @@ describe("buildGraph", () => {
       "Lorem Ipsum.txt": "[[Lorem Ipsum copy 1]]",
       "Lorem Ipsum copy 1.txt": "[[Lorem Ipsum.txt]]",
     });
-    const { nodes, links } = buildGraph(notes, files);
+    // Hidden by default, together with their links.
+    expect(buildGraph(notes, files)).toMatchObject({ nodes: [], links: [] });
+    const { nodes, links } = buildGraph(notes, files, { showTags: false, existingOnly: false, showOrphans: true, showAttachments: true });
     expect(nodes.map((node) => node.id).sort()).toEqual([
       "Lorem Ipsum copy 1.txt",
       "Lorem Ipsum.txt",
@@ -164,8 +178,10 @@ describe("buildGraph", () => {
       "A.md": "points at [[Ghost]] and [[Real]]",
       "Real.md": "exists",
     });
-    // existingOnly true (default) → no phantom for the missing [[Ghost]].
-    expect(buildGraph(notes, files).nodes.some((n) => n.kind === "phantom")).toBe(false);
+    // Obsidian shows unresolved links by default.
+    expect(buildGraph(notes, files).nodes.some((n) => n.kind === "phantom")).toBe(true);
+    // "Existing files only" hides them.
+    expect(buildGraph(notes, files, { showTags: false, existingOnly: true, showOrphans: true, showAttachments: false }).nodes.some((n) => n.kind === "phantom")).toBe(false);
 
     const { nodes, links } = buildGraph(notes, files, {
       showTags: false,
@@ -177,6 +193,20 @@ describe("buildGraph", () => {
     expect(ghost?.title).toBe("Ghost");
     const endId = (e: unknown) => (typeof e === "string" ? e : (e as { id: string }).id);
     expect(links.some((l) => endId(l.source) === "A.md" && endId(l.target) === ghost!.id)).toBe(true);
+  });
+
+  it("links a heading or block reference to its note and never phantoms a same-note heading", () => {
+    const { notes, files } = makeVault({
+      "A.md": "[[B#Section]] [[sub/C.md#^block|alias]] [[#Local heading]] [[Ghost#Part]]",
+      "B.md": "# Section",
+      "sub/C.md": "text ^block",
+    });
+    const { nodes, links } = buildGraph(notes, files);
+    expect(links).toContainEqual({ source: "A.md", target: "B.md" });
+    expect(links).toContainEqual({ source: "A.md", target: "sub/C.md" });
+    // Only the missing note is unresolved, named without its heading.
+    expect(nodes.filter((n) => n.kind === "phantom").map((n) => n.title)).toEqual(["Ghost"]);
+    expect(backlinksFor(notes, "B.md")).toEqual(["A.md"]);
   });
 
   it("embeds and links to non-markdown files do not create graph nodes or links", () => {
@@ -466,5 +496,77 @@ describe("Unicode normalization in link resolution", () => {
     expect(links.some((link) => link.source === "Index.md" && link.target === `${nfd}.md`)).toBe(true);
     const back = makeVault({ [`${nfc}.md`]: "body" });
     expect(resolveTarget(back.notes, nfd)).toBe(`${nfc}.md`);
+  });
+});
+
+describe("graph topology check", () => {
+  const graph = (entries: Record<string, string>) => {
+    const files = Object.keys(entries).map((rel) => vf(rel));
+    return buildGraph(buildNotes(files, new Map(Object.entries(entries))), files).topology;
+  };
+  it("matches only the same node ids and link pairs, in any order", () => {
+    const base = graph({ "A.md": "[[B]] [[C]]", "B.md": "[[A]]", "C.md": "" });
+    expect(sameGraphTopology(null, base)).toBe(false);
+    expect(sameGraphTopology(base, graph({ "C.md": "", "B.md": "[[A]]", "A.md": "[[C]] [[B]] text" }))).toBe(true);
+    // Same counts, one link moved.
+    expect(sameGraphTopology(base, graph({ "A.md": "[[B]] [[C]]", "B.md": "[[C]]", "C.md": "" }))).toBe(false);
+    // Same link count, one node renamed.
+    expect(sameGraphTopology(base, graph({ "A.md": "[[B]] [[D]]", "B.md": "[[A]]", "D.md": "" }))).toBe(false);
+    expect(sameGraphTopology(base, graph({ "A.md": "[[B]] [[C]] [[Missing]]", "B.md": "[[A]]", "C.md": "" }))).toBe(false);
+  });
+});
+
+describe("graph builder", () => {
+  it("equals a full build after every kind of change, reusing unchanged notes", () => {
+    const files = ["A.md", "B.md", "C.md", "D.txt", "img/p.png", "doc.pdf"].map((rel) => vf(rel, rel.endsWith(".md")));
+    let notes = buildNotes(files, new Map([
+      ["A.md", "[[B]] [[Ghost]] ![[p.png]] #x"], ["B.md", "[[A]] [[doc.pdf]] [[C#Part]]"], ["C.md", "[[Ghost]] #y [[D.txt]]"], ["D.txt", "plain"],
+    ]));
+    const steps: ((n: typeof notes) => typeof notes)[] = [
+      (n) => ({ ...n, "A.md": { ...n["A.md"], rawLinks: [...n["A.md"].rawLinks, "C", "C", "Other ghost"] } }),
+      (n) => ({ ...n, "C.md": { ...n["C.md"], tags: ["z", "y"], rawReferences: ["../doc.pdf"] } }),
+      (n) => ({ ...n, "B.md": { ...n["B.md"], title: "Renamed" } }),
+      (n) => ({ ...n, "B.md": { ...n["B.md"], aliases: ["Ghost"] } }),
+      (n) => { const { ["D.txt"]: _removed, ...rest } = n; return rest; },
+      (n) => ({ "C.md": n["C.md"], ...n }),
+    ];
+    for (const opts of [
+      { showTags: true, existingOnly: false, showOrphans: true, showAttachments: true },
+      { showTags: false, existingOnly: true, showOrphans: false, showAttachments: false },
+      { showTags: true, existingOnly: false, showOrphans: false, showAttachments: false, showAllFiles: true },
+    ]) {
+      const build = createGraphBuilder();
+      let current = notes;
+      const strip = (g: ReturnType<typeof buildGraph>) => ({ nodes: g.nodes, links: g.links, ids: [...g.topology.ids], targets: [...g.topology.targets].map(([k, v]) => [k, [...v]]) });
+      expect(strip(build(current, files, opts))).toEqual(strip(buildGraph(current, files, opts)));
+      for (const step of steps) {
+        current = step(current);
+        expect(strip(build(current, files, opts))).toEqual(strip(buildGraph(current, files, opts)));
+      }
+      // A different file list or filter set rebuilds every note.
+      expect(strip(build(current, files.slice(0, 5), opts))).toEqual(strip(buildGraph(current, files.slice(0, 5), opts)));
+    }
+    notes = {};
+  });
+
+  it("prepares a large build in deadline steps, then assembles exactly the full graph", () => {
+    const files = Array.from({ length: 300 }, (_, i) => vf(`n${i}.md`));
+    const notes = buildNotes(files, new Map(files.map((f, i) => [f.relPath, `[[n${(i * 7) % 300}]] [[Ghost ${i % 9}]] #t${i % 4}`])));
+    const opts = { showTags: true, existingOnly: false, showOrphans: true, showAttachments: true };
+    const build = createGraphBuilder();
+    let steps = 0;
+    // A deadline already past stops after every 64 notes.
+    while (!build.prepare(notes, files, opts, -Infinity) && steps < 20) steps++;
+    expect(steps).toBe(4);
+    const strip = (g: ReturnType<typeof buildGraph>) => ({ nodes: g.nodes, links: g.links });
+    expect(strip(build(notes, files, opts))).toEqual(strip(buildGraph(notes, files, opts)));
+  });
+
+  it("treats a reordered note list as a change", () => {
+    const files = ["A.md", "B.md"].map((rel) => vf(rel));
+    const notes = buildNotes(files, new Map([["A.md", "[[B]]"], ["B.md", ""]]));
+    expect(sameGraphNotes(notes, { ...notes })).toBe(true);
+    expect(sameGraphNotes(notes, { "B.md": notes["B.md"], "A.md": notes["A.md"] })).toBe(false);
+    expect(sameGraphNotes(notes, { "A.md": notes["A.md"] })).toBe(false);
   });
 });

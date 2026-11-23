@@ -8,7 +8,7 @@ import {
 } from "../lib/backgroundWorkGovernor";
 import { forkContentCache } from "../lib/documentWorkingSet";
 import { confirmAction } from "../lib/confirmAction";
-import { extractAliases, extractLinks, extractLinksAndFirstImage, extractTags } from "../lib/markdownExtract";
+import { refreshedNoteMeta, singleNoteMeta } from "../lib/graph";
 import type { TextSaveCoordinator, TextSaveHold } from "../lib/textSaveCoordinator";
 import type { VaultFile } from "../types";
 import {
@@ -58,6 +58,7 @@ const loadDeepResearchRun = () => import("../lib/deepResearchRun");
 
 import type { VaultPort } from "./vaultExternalFiles";
 import type { AppState, DeepResearchRunState } from "../storeTypes";
+import { clamp } from "../lib/clamp";
 
 interface Dependencies extends VaultPort {
   getGeneration: () => number;
@@ -421,7 +422,7 @@ export function createResearchController({ get, set, getGeneration, registerExte
           ? (evt.activityKind as ResearchActivity["kind"])
           : "status";
         const round = typeof evt.round === "number"
-          ? Math.max(1, Math.min(cur.depth.rounds, Math.round(evt.round)))
+          ? clamp(Math.round(evt.round), 1, cur.depth.rounds)
           : undefined;
         const sourceUrl = evt.sourceUrl ? canonicalizeSourceUrl(evt.sourceUrl) ?? undefined : undefined;
         const activity: ResearchActivity = {
@@ -964,15 +965,9 @@ export function createResearchController({ get, set, getGeneration, registerExte
           contentCache[op.relPath] = op.content;
           if (file?.isMarkdown) {
             const existing = notes[op.relPath];
-            notes[op.relPath] = {
-              relPath: op.relPath,
-              title: existing?.title ?? file.name,
-              rawLinks: extractLinks(op.content),
-              rawReferences: extractLinksAndFirstImage(op.content).references,
-              tags: extractTags(op.content),
-              aliases: extractAliases(op.content),
-              firstImagePath: existing?.firstImagePath,
-            };
+            notes[op.relPath] = existing
+              ? refreshedNoteMeta(existing, op.content) ?? existing
+              : singleNoteMeta(file, op.content);
           }
           bumpActivityAmount(op.relPath, 1.3, op.kind === "create" ? "create" : "write");
         }

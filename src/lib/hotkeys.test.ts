@@ -104,3 +104,8 @@ describe("terminalOwnsChord", () => {
     expect(terminalOwnsChord("Mod+E", true)).toBe(false);
   });
 });
+
+it("keeps the RTF editor's bold and underline chords from custom hotkeys", () => {
+  expect(reservedBy("Mod+B", true)).toBe("Bold");
+  expect(reservedBy("Mod+U", false)).toBe("Underline");
+});

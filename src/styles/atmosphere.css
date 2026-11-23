@@ -13,7 +13,9 @@
   position: relative;
   z-index: 1;
 }
-.graph-wrap::before {
+/* The drifting nebula and core glow belong to the opt-in living motion
+   (graph settings); the default graph is a plain field, as in Obsidian. */
+.graph-wrap.living::before {
   content: "";
   position: absolute;
   inset: -25%;
@@ -22,7 +24,7 @@
   /* Only the top bloom (atmos-a) drifts over the graph — the bottom spark is
      dropped and overall opacity halved so the canvas reads calm, matching the
      gentle top halo of the empty preview rather than a busy nebula. */
-  background: var(--graph-atmos, var(--atmos-a, transparent));
+  background: var(--atmos-a, transparent);
   opacity: 0.28;
   filter: blur(10px);
   animation:
@@ -30,7 +32,7 @@
     nebula-drift 26s ease-in-out infinite alternate;
   will-change: opacity, filter, transform;
 }
-.graph-wrap::after {
+.graph-wrap.living::after {
   content: "";
   position: absolute;
   inset: -12%;
@@ -52,6 +54,19 @@
   filter: blur(18px);
   animation: graph-core-breathe 7.4s ease-in-out infinite alternate;
   will-change: opacity, filter, transform;
+}
+/* The backdrop stops with the living frames: unfocused, 15 s without input
+   (GraphView toggles `.quiet`), or reduced motion, where the global 1 ms
+   duration guard would otherwise cycle the layers every millisecond. */
+.graph-wrap.living.quiet::before,
+.graph-wrap.living.quiet::after {
+  animation-play-state: paused;
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-wrap.living::before,
+  .graph-wrap.living::after {
+    animation: none;
+  }
 }
 @keyframes graph-breathe {
   0%,

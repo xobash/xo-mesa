@@ -515,6 +515,22 @@ fn streamed_hash_equals_whole_buffer_hash() {
 }
 
 #[test]
+fn shared_stream_hasher_equals_sha256_across_chunk_boundaries() {
+    for len in [0usize, 1, 64 * 1024 - 1, 64 * 1024, 64 * 1024 + 1, 200_000] {
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        let (size, digest) = hash_reader(data.as_slice()).unwrap();
+        assert_eq!(size, len as u64, "{len}");
+        assert_eq!(
+            crate::hex::encode(&digest),
+            crate::hex::sha256_hex(&data),
+            "{len}"
+        );
+    }
+    let cancelled = AtomicBool::new(true);
+    assert!(hash_reader_until(&b"bytes"[..], Some(&cancelled)).is_none());
+}
+
+#[test]
 fn hash_file_streams() {
     let dir = std::env::temp_dir().join(format!("mesa-core-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -2781,4 +2797,25 @@ fn peer_paths_and_local_walks_share_the_depth_and_length_caps() {
             .any(|(rel, error)| rel == &format!("{at_cap}/e/lost.md") && error.contains("nesting")),
         "{errors:?}"
     );
+}
+
+/// The local walk keeps open folders on the heap: a nested call per folder
+/// level overflowed a small thread stack at the depth cap.
+#[test]
+fn local_walk_of_the_deepest_tree_fits_a_small_thread_stack() {
+    let rel = vec!["d"; vault_names::MAX_REL_SEGMENTS - 1].join("/");
+    let dir = std::env::temp_dir().join(format!("mesa-sync-stack-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(&rel)).unwrap();
+    std::fs::write(dir.join(&rel).join("note.md"), b"deep").unwrap();
+    let walk_root = dir.clone();
+    let files = std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || list_vault_files(&walk_root))
+        .unwrap()
+        .join()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let rels: Vec<String> = files.into_iter().map(|(rel, _)| rel).collect();
+    assert_eq!(rels, vec![format!("{rel}/note.md")]);
 }

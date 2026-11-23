@@ -29,7 +29,7 @@ export const UI_STYLE_KEY = "mesa:uiStyle";
 export const UI_STYLE_IDS = ["classic", "studio", "vault", "canvas"] as const;
 export type UiStyleId = (typeof UI_STYLE_IDS)[number];
 
-function isUiStyleId(value: unknown): value is UiStyleId {
+export function isUiStyleId(value: unknown): value is UiStyleId {
   return typeof value === "string" && (UI_STYLE_IDS as readonly string[]).includes(value);
 }
 

@@ -14,6 +14,7 @@ vi.mock('../store', () => ({ useAppStore: (select: (state: unknown) => unknown) 
 vi.mock('../lib/confirmAction', () => ({ confirmAction: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke, convertFileSrc: (_path: string, protocol: string) => `${protocol}://localhost/` }));
 vi.mock('../lib/vault', () => ({ get IN_TAURI() { return mocks.native; }, urlForPath: (path: string) => `asset://localhost${path}` }));
+vi.mock('../lib/vaultByteRead', () => ({ readVaultBytes: vi.fn(async () => new Uint8Array()) }));
 vi.mock('@tauri-apps/plugin-fs', () => ({ readTextFile: vi.fn(async () => mocks.text), stat: async () => ({ size: mocks.text.length }) }));
 import { confirmAction } from '../lib/confirmAction';
 import { readTextFile } from '@tauri-apps/plugin-fs';

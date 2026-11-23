@@ -1,12 +1,13 @@
+import { forEachConcurrent } from "../lib/concurrency";
 import { forkContentCache, moveCacheEntry } from "../lib/documentWorkingSet";
+import { STARTUP_TEXT_READ_CONCURRENCY } from "../lib/startupTextCache";
 import { linkKey, safeBaseName, splitRelPath } from "../lib/fsnames";
-import { makeResolver } from "../lib/graph";
+import { makeResolver, refreshedNoteMeta, singleNoteMeta } from "../lib/graph";
 import { normalizeRelativeTarget, referenceMayTarget, rewriteInboundLinks } from "../lib/linkRewrite";
-import { extractAliases, extractLinks, extractLinksAndFirstImage, extractTags } from "../lib/markdownExtract";
-import { isMarkdownPath } from "../lib/markdownCode";
+import { extractAliases, extractLinks, extractTags } from "../lib/markdownExtract";
 import { migrateTextRevisionsAsync } from "../lib/textRevisionHistory";
 import type { TextSaveCoordinator, TextSaveHold } from "../lib/textSaveCoordinator";
-import { readNote, renameVaultFile, writeNote } from "../lib/vault";
+import { moveSniffedText, readNote, renameVaultFile, writeNote } from "../lib/vault";
 import type { VaultFile } from "../types";
 
 import type { VaultPort } from "./vaultExternalFiles";
@@ -91,8 +92,14 @@ export function createRenameController({ get, set, getGeneration, textSaves }: D
           } catch (error) {
             throw new Error(`pending edits in a note that links here could not be saved first (${String(error)}). Nothing was renamed.`);
           }
+          // Read uncached linking notes in parallel (bounded), not one IPC
+          // round trip after another; a failed read retries in order below.
+          const prefetched = new Map<string, string>();
+          await forEachConcurrent(inboundFiles.filter((f) => !(f.relPath in get().contentCache)), STARTUP_TEXT_READ_CONCURRENCY, async (f) => {
+            try { prefetched.set(f.relPath, await readNote(f)); } catch { /* read again below, where failure aborts the rename */ }
+          });
           for (const inbound of inboundFiles) {
-            const before = get().contentCache[inbound.relPath] ?? await readNote(inbound);
+            const before = get().contentCache[inbound.relPath] ?? prefetched.get(inbound.relPath) ?? await readNote(inbound);
             const { text, changed } = rewriteInboundLinks(
               inbound.relPath,
               before,
@@ -107,6 +114,7 @@ export function createRenameController({ get, set, getGeneration, textSaves }: D
         }
         newFile = await renameVaultFile(root, relPath, newRel);
         saveHold.move(file.path, newFile.path, newFile);
+        moveSniffedText(file.path, newFile.path);
       } catch (e) {
         saveHold?.release();
         linkHold?.release();
@@ -194,14 +202,10 @@ export function createRenameController({ get, set, getGeneration, textSaves }: D
         if (editedSince(update)) continue;
         contentCache[update.file.relPath] = update.after;
         if (get().activePath === update.file.relPath) activeContent = update.after;
-        notes[update.file.relPath] = {
-          relPath: update.file.relPath,
-          title: update.file.name,
-          rawLinks: extractLinks(update.after, isMarkdownPath(update.file.relPath)),
-          rawReferences: extractLinksAndFirstImage(update.after, isMarkdownPath(update.file.relPath)).references,
-          tags: extractTags(update.after, isMarkdownPath(update.file.relPath)),
-          aliases: extractAliases(update.after),
-        };
+        const known = notes[update.file.relPath];
+        notes[update.file.relPath] = known
+          ? refreshedNoteMeta(known, update.after) ?? known
+          : singleNoteMeta(update.file, update.after);
       }
       set({
         ...(appliedLinkUpdates.length ? { notes, contentCache } : {}),

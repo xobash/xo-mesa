@@ -26,6 +26,7 @@ const fsCalls = vi.hoisted(() => ({
   fail: null as string | null,
   created: [] as string[],
   removed: [] as string[],
+  onRemove: null as null | (() => void),
   copied: [] as string[],
   folders: [] as string[],
   partialImportFailure: null as string | null,
@@ -72,6 +73,7 @@ vi.mock("./vault", async (importOriginal) => {
     },
     removeVaultEntry: async (_root: string, rel: string) => {
       if (fsCalls.fail) throw new Error(fsCalls.fail);
+      fsCalls.onRemove?.();
       fsCalls.removed.push(rel);
     },
     importDroppedPaths: async () => {
@@ -283,6 +285,15 @@ describe("the success paths are unchanged", () => {
     expect(fsCalls.removed).toContain("Drafts");
     expect(useAppStore.getState().emptyFolders).toEqual(["Other"]);
     expect(useAppStore.getState().status).toBe("Moved folder Drafts to Mesa recovery storage");
+  });
+
+  it("leaves a vault opened during an empty-folder delete untouched", async () => {
+    useAppStore.setState({ emptyFolders: ["Drafts"] });
+    fsCalls.onRemove = () => useAppStore.setState({ vaultPath: "/other-vault", emptyFolders: ["Drafts", "Drafts/Keep"], status: "Opened other" });
+    await useAppStore.getState().deleteEntry("Drafts");
+    fsCalls.onRemove = null;
+    expect(useAppStore.getState().emptyFolders).toEqual(["Drafts", "Drafts/Keep"]);
+    expect(useAppStore.getState().status).toBe("Opened other");
   });
 
   it("clears the side-by-side pane when its file is deleted", async () => {

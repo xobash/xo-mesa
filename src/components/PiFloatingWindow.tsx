@@ -4,6 +4,7 @@ import { claimKeyboardShortcut, isWindowTransferShortcut } from "../lib/shortcut
 import { PI_MIN_WIDTH } from "../lib/agent";
 import { keyboardWinPatch } from "../lib/overlayWins";
 import { detachedWindowPlacement, isWindowTearOffPoint } from "../lib/windowTearOff";
+import { clamp } from "../lib/clamp";
 
 /** Title-bar handlers and hint the floating window hands to the Pi surface it hosts. */
 export interface PiFloatingTitleBar {
@@ -98,14 +99,14 @@ export function PiFloatingWindow({
         const vw = window.innerWidth;
         const vh = window.innerHeight;
         setTearOffArmed(isWindowTearOffPoint(e.clientX, e.clientY, vw, vh));
-        const nx = Math.max(-ds.origW + 80, Math.min(vw - 80, ds.origX + dx));
-        const ny = Math.max(0, Math.min(vh - 48, ds.origY + dy));
+        const nx = clamp(ds.origX + dx, -ds.origW + 80, vw - 80);
+        const ny = clamp(ds.origY + dy, 0, vh - 48);
         setWin((w) => ({ ...w, x: nx, y: ny }));
       } else if (ds.mode === "resize") {
         const vw = window.innerWidth;
         const vh = window.innerHeight;
-        const nw = Math.max(PI_MIN_WIDTH, Math.min(vw - ds.origX, ds.origW + dx));
-        const nh = Math.max(320, Math.min(vh - ds.origY, ds.origH + dy));
+        const nw = clamp(ds.origW + dx, PI_MIN_WIDTH, vw - ds.origX);
+        const nh = clamp(ds.origH + dy, 320, vh - ds.origY);
         setWin((w) => ({ ...w, w: nw, h: nh }));
       }
     };

@@ -51,3 +51,18 @@ it('danger hover text uses the AA-checked contrast token instead of raw white', 
   const rule = css.match(/\.context-item\.danger:hover\s*\{([^}]*)\}/)?.[1] ?? '';
   expect(rule).toContain('color: var(--danger-contrast)');
 });
+
+it('the off toggle knob reads a theme-wide token, not raw hex', () => {
+  const rule = css.match(/\.toggle-knob\s*\{([^}]*)\}/)?.[1] ?? '';
+  expect(rule).toContain('background: var(--toggle-knob)');
+  expect(rule).not.toMatch(/#[\da-f]{3,8}\b/i);
+  expect(css.match(/:root\s*\{[^}]*--toggle-knob:\s*(#[\da-f]{6})/i)?.[1]).toBe('#ffffff');
+});
+
+const graphKinds = ['tag', 'phantom', 'attachment', 'image', 'pdf', 'media', 'office', 'archive'].map(kind => `--graph-node-${kind}`);
+for (const [selector, tokens] of palettes) {
+  it(`${selector} sets its own graph node-kind colours`, () => {
+    // Otherwise the palette inherits Void's dark-tuned tag, phantom and file colours.
+    for (const token of graphKinds) expect(tokens[token], token).toMatch(/^#[\da-f]{6}$/i);
+  });
+}

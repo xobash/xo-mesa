@@ -43,6 +43,17 @@ it('permits only the exact tracked upstream warning versions and fails on new vu
   assert.throws(() => validateNativeAudit(zbus, reviewDay(-1)), /Unreviewed/);
   assert.throws(() => validateNativeAudit({ ...clean, vulnerabilities: { found: true, count: 1 } }));
 });
+it('admits a locked-only warning only while no build compiles that crate', () => {
+  const chrono = { vulnerabilities: { found: false, count: 0, list: [] }, warnings: { unmaintained: [{ advisory: { id: 'RUSTSEC-2026-0543' }, package: { name: 'chrono', version: '0.4.45' } }] } };
+  const asked = [];
+  assert.equal(validateNativeAudit(chrono, reviewDay(-1), (name, version) => { asked.push(`${name}@${version}`); return false; }), 1);
+  assert.deepEqual(asked, ['chrono@0.4.45']);
+  assert.throws(() => validateNativeAudit(chrono, reviewDay(-1), () => true), /now compiled.*chrono/);
+  assert.throws(() => validateNativeAudit(chrono, reviewDay(-1)), /now compiled/);
+  assert.throws(() => validateNativeAudit(chrono, reviewDay(1), () => false), /expired/);
+  chrono.warnings.unmaintained[0].package.version = '0.4.46';
+  assert.throws(() => validateNativeAudit(chrono, reviewDay(-1), () => false), /Unreviewed/);
+});
 
 import { mkdtempSync, writeFileSync, rmSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -95,6 +106,17 @@ it('CI builds and tests Windows the way release does; the Windows frontend job c
   assert.match(readFileSync(fileURLToPath(new URL('./release-gate.mjs', import.meta.url)), 'utf8'), /run\.conclusion === 'success'/, 'if the gate stops requiring a successful run, revisit this job');
 });
 
+it('the Linux frontend job builds the production bundle once, through the Docker-context notice check', () => {
+  const build = readFileSync(fileURLToPath(new URL('../.github/workflows/build.yml', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
+  const frontend = build.slice(build.indexOf('\n  frontend:\n'), build.indexOf('\n  frontend-windows:\n'));
+  assert.ok(frontend.includes('- run: npm run test:notices\n'));
+  assert.doesNotMatch(frontend, /- run: npm run build\b/);
+  // The notice check must keep running the image's own build script.
+  const notices = readFileSync(fileURLToPath(new URL('./third-party-notices.check.mjs', import.meta.url)), 'utf8');
+  assert.match(notices, /spawnSync\(process\.execPath, \[npm, 'run', scripts\[0\]\]/);
+  assert.match(readFileSync(fileURLToPath(new URL('../Dockerfile', import.meta.url)), 'utf8'), /^RUN npm run build$/m);
+});
+
 it('packages Windows products from the target-triple folder that the launcher builds into', () => {
   const root = mkdtempSync(join(tmpdir(), 'mesa-release-windows-'));
   try {
@@ -113,14 +135,50 @@ it('packages Windows products from the target-triple folder that the launcher bu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// Skipped on Windows: a 300-level path exceeds the 260-character MAX_PATH.
+it('packages products nested 300 folders deep on a small stack', { skip: process.platform === 'win32' }, () => {
+  const root = mkdtempSync(join(tmpdir(), 'mesa-release-deep-'));
+  try {
+    const bundle = join(root, 'src-tauri', 'target', 'x86_64-pc-windows-msvc', 'release', 'bundle');
+    const deep = join(bundle, ...Array(300).fill('d'));
+    mkdirSync(deep, { recursive: true });
+    mkdirSync(join(bundle, 'msi'));
+    writeFileSync(join(bundle, 'msi', 'Mesa_0.1.0_x64_en-US.msi'), 'msi bytes');
+    writeFileSync(join(deep, 'Mesa_0.1.0_x64-setup.exe'), 'nsis bytes');
+    const script = fileURLToPath(new URL('./release-products.mjs', import.meta.url));
+    // 80 KB is enough for Node itself but not for one JS frame per folder level.
+    const result = spawnSync(process.execPath, ['--stack-size=80', script, 'windows'], { cwd: root, encoding: 'utf8', env: { ...process.env, MESA_RELEASE_SHA: sha, MESA_RELEASE_TAG: tag } });
+    assert.equal(result.status, 0, result.stderr);
+    const listed = readFileSync(join(root, 'output', 'release-windows', 'checksums-windows.txt'), 'utf8').trim().split('\n').map(line => line.split('  ')[1]);
+    assert.deepEqual(listed.sort(), ['Mesa_0.1.0_x64-setup.exe', 'Mesa_0.1.0_x64_en-US.msi']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it('keeps the acceptance contract, template and native acceptance guide on the same row names', () => {
+  const tableNames = (text, heading) => {
+    const section = text.slice(text.indexOf(`\n${heading}\n`) + 1).split(/\n#{2,3} /)[0];
+    return [...section.matchAll(/^\| ([^|]+?) \|/gm)].map(match => match[1]).slice(1).filter(name => !/^-+$/.test(name));
+  };
+  const guide = readFileSync(fileURLToPath(new URL('../docs/native-acceptance.md', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
+  // A row marked "(pending)" in the guide is not yet required.
+  const required = names => names.filter(name => !name.endsWith(' (pending)'));
+  assert.deepEqual(tableNames(guide, '## Support Matrix'), matrixTargets);
+  assert.deepEqual(required(tableNames(guide, '## Required Workflows')), requiredWorkflows);
+  const template = spawnSync(process.execPath, [fileURLToPath(new URL('./native-acceptance-template.mjs', import.meta.url))], { encoding: 'utf8' });
+  assert.equal(template.status, 0, template.stderr);
+  assert.deepEqual(tableNames(template.stdout, '## Supported Matrix Targets'), matrixTargets);
+  assert.deepEqual(tableNames(template.stdout, '## Required Rows'), requiredWorkflows);
+});
+
 import { chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { reviewExpiryWarning } from './native-advisory-check.mjs';
-function runAdvisoryCheck(report, status, args = [], today = null) {
+function runAdvisoryCheck(report, status, args = [], today = null, tree = { status: 0, out: '' }) {
   const bin = mkdtempSync(join(tmpdir(), 'mesa-fake-cargo-'));
   try {
     writeFileSync(join(bin, 'report.json'), JSON.stringify(report));
-    writeFileSync(join(bin, 'cargo'), `#!/bin/sh\ncat "${join(bin, 'report.json')}"\nexit ${status}\n`);
+    writeFileSync(join(bin, 'tree.txt'), tree.out);
+    writeFileSync(join(bin, 'cargo'), `#!/bin/sh\nif [ "$1" = tree ]; then printf '%s\\n' "$*" >> "${join(bin, 'tree-args.txt')}"; cat "${join(bin, 'tree.txt')}"; echo "tree diagnostic" >&2; exit ${tree.status}; fi\ncat "${join(bin, 'report.json')}"\nexit ${status}\n`);
     chmodSync(join(bin, 'cargo'), 0o755);
     const clock = today ? ['--import', 'data:text/javascript,' + encodeURIComponent(`const Real = Date; globalThis.Date = class extends Real { constructor(...a) { super(...(a.length ? a : ['${today}T12:00:00Z'])); } };`)] : [];
     const script = fileURLToPath(new URL('./native-advisory-check.mjs', import.meta.url));
@@ -132,6 +190,17 @@ it('prints the cargo audit vulnerability list when the native audit fails', { sk
   const result = runAdvisoryCheck(report, 1);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /vulnerability RUSTSEC-2099-0001 example-crate 1\.2\.3: Example flaw; patched: >=1\.2\.4/);
+});
+it('proves a locked-only warning with cargo tree and fails closed', { skip: process.platform === 'win32' && 'uses a POSIX fake cargo' }, () => {
+  const report = { vulnerabilities: { found: false, count: 0, list: [] }, warnings: { unmaintained: [{ advisory: { id: 'RUSTSEC-2026-0543', title: 'chrono is unmaintained' }, package: { name: 'chrono', version: '0.4.45' } }] } };
+  const today = reviewDate(-30);
+  assert.equal(runAdvisoryCheck(report, 0, [], today).status, 0);
+  const built = runAdvisoryCheck(report, 0, [], today, { status: 0, out: 'chrono v0.4.45\n' });
+  assert.equal(built.status, 1);
+  assert.match(built.stderr, /now compiled: RUSTSEC-2026-0543:chrono/);
+  const broken = runAdvisoryCheck(report, 0, [], today, { status: 101, out: '' });
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /Could not prove chrono@0\.4\.45 is not compiled[\s\S]*tree diagnostic/);
 });
 it('prints cargo audit diagnostics when the audit exits without a usable report', { skip: process.platform === 'win32' && 'uses a POSIX fake cargo' }, () => {
   const bin = mkdtempSync(join(tmpdir(), 'mesa-fake-cargo-'));

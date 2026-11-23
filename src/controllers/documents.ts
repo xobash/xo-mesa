@@ -1,3 +1,4 @@
+import { isWorkspaceWindow } from "../lib/windowRole";
 import {
   bumpActivityAmount,
   changedLineStats,
@@ -14,9 +15,13 @@ import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
 import {
   IN_TAURI,
   createNote,
+  isOpenableTextFile,
   isTextualVaultFile,
   isValidUtf8Text,
+  needsTextSniff,
   peekNote,
+  rememberSniffedText,
+  sniffVaultText,
   readNoteResult,
   resolveTextVaultLink
 } from "../lib/vault";
@@ -47,6 +52,24 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       activeContentState: "invalid-encoding" as const,
       status: `${file.relPath} is not valid UTF-8; opened read-only to avoid corrupting it.`,
     };
+  };
+  /** Sniff an unknown-extension file at open. True: it is text and is now
+   *  readable and savable as text. False: the binary view shows it. */
+  const sniffOpenedFile = async (file: VaultFile, stillOpen: () => boolean): Promise<boolean> => {
+    let text: boolean;
+    try {
+      text = await sniffVaultText(file);
+    } catch (error) {
+      if (stillOpen()) set({ activeContentState: "ready", status: `Could not inspect ${file.relPath}: ${String(error)}` });
+      return false;
+    }
+    if (!stillOpen()) return false;
+    if (!text) {
+      set({ activeContentState: "ready" });
+      return false;
+    }
+    rememberSniffedText(file.path);
+    return true;
   };
   const pendingContentReads = new Map<string, Promise<string>>();
   // Lazy non-markdown content is evictable. Keep the recency metadata beside
@@ -91,15 +114,18 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       const file = get().fileFor(relPath);
       if (!file) return;
       const settings = get().settings;
-      if (settings.centerView === "empty") {
+      // A torn-out window selecting its note must not rewrite the main window's layout.
+      if (settings.centerView === "empty" && isWorkspaceWindow()) {
         commitSettings({
           ...settings,
           ...openViewInWorkspace(settings.centerView, settings.rightStack, get().docSplit.active),
         });
       }
       // text/markdown loads content for the editor; media (image/pdf/video)
-      // renders from its path, so no content read is needed.
-      const textual = isTextualVaultFile(file);
+      // renders from its path, so no content read is needed. An unknown
+      // extension is sniffed from a bounded prefix first.
+      const sniffing = needsTextSniff(file);
+      let textual = isOpenableTextFile(file);
       const tabs = get().settings.enableTabs
         ? get().openTabs.includes(relPath)
           ? get().openTabs
@@ -107,17 +133,24 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
         : [];
       // Open instantly: switch the active file now, stream the content in as
       // soon as the disk read lands. On a cache hit this is fully synchronous.
-      const cached = textual ? get().contentCache[relPath] : "";
+      let cached = textual ? get().contentCache[relPath] : "";
       const openRoot = get().vaultPath;
       const openGeneration = getGeneration();
+      const stillOpen = () =>
+        get().activePath === relPath && get().vaultPath === openRoot && getGeneration() === openGeneration;
       markMesaPerf("file-open-requested", {
         textual,
         cached: cached !== undefined,
       });
       set({
         activePath: relPath, content: cached ?? "", openTabs: tabs,
-        activeContentState: textual ? "loading" : "ready"
+        activeContentState: textual || sniffing ? "loading" : "ready"
       });
+      if (sniffing) {
+        textual = await sniffOpenedFile(file, stillOpen);
+        if (!textual) return;
+        cached = get().contentCache[relPath];
+      }
       if (!textual || cached !== undefined) {
         markMesaPerf("file-open-ready", { textual, cached: cached !== undefined });
       }
@@ -275,7 +308,7 @@ export function createDocumentController({ get, set, getGeneration, textSaves, c
       const pending = pendingContentReads.get(key);
       if (pending) return pending;
       // Keep non-text files out of the text cache and save pipeline.
-      if (!isTextualVaultFile(file)) return "";
+      if (!isOpenableTextFile(file)) return "";
       const read = readNoteResult(file)
         .then((result) => {
           if (!result.ok) throw new Error(`File read failed: ${relPath}`);

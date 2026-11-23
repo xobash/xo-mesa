@@ -336,3 +336,29 @@ fn creates_a_new_file_without_artifacts() {
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
     let _ = fs::remove_dir_all(dir);
 }
+
+/// A link swapped in at a save target is refused on the hashing handle
+/// itself, so neither the precondition nor the read-back hashes its target.
+#[cfg(unix)]
+#[test]
+fn save_hash_refuses_a_link_and_never_hashes_through_it() {
+    let dir = test_folder("hash-no-follow");
+    fs::write(dir.join("elsewhere.md"), b"outside bytes").unwrap();
+    std::os::unix::fs::symlink(dir.join("elsewhere.md"), dir.join("note.md")).unwrap();
+    assert!(file_hash(&dir.join("note.md")).is_err());
+    let expected = ExpectedCurrent::Hash {
+        sha256: crate::hex::sha256_hex(b"outside bytes"),
+        size: 13,
+    };
+    assert!(write_atomic(&dir.join("note.md"), b"new", &expected).is_err());
+    assert_eq!(
+        fs::read(dir.join("elsewhere.md")).unwrap(),
+        b"outside bytes"
+    );
+    fs::write(dir.join("plain.md"), b"plain").unwrap();
+    assert_eq!(
+        file_hash(&dir.join("plain.md")).unwrap(),
+        (Sha256::digest(b"plain").into(), 5)
+    );
+    fs::remove_dir_all(dir).unwrap();
+}

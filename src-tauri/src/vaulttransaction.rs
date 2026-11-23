@@ -174,13 +174,7 @@ fn expected(bytes: Option<&[u8]>) -> ExpectedCurrent {
     }
 }
 fn flush_folder(root: &Path) -> Result<(), String> {
-    #[cfg(not(unix))]
-    let _ = root;
-    #[cfg(unix)]
-    fs::File::open(root)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::sync_core::platform_fs::sync_directory(root).map_err(|e| e.to_string())
 }
 fn flush_parents(root: &Path, target: &Path) -> Result<(), String> {
     let mut folder = target.parent().ok_or("research target has no parent")?;
@@ -228,6 +222,34 @@ fn validate(record: &Record) -> Result<(), String> {
     }
     Ok(())
 }
+/// Move a file the transaction created to Deleted files instead of deleting
+/// authored bytes, in the form that lists and restores the exact original
+/// path. Recheck at once; an external replacement goes back, and if it cannot,
+/// the error names where its bytes are (vault-relative, never absolute).
+fn trash_created(root: &Path, entry: &Entry, path: &Path) -> Result<(), String> {
+    let stamp = crate::sync_core::now_ms();
+    let trash_rel = match entry.rel.rsplit_once('/') {
+        Some((parent, name)) => format!("{parent}/.mesa-trash/{stamp}-{name}"),
+        None => format!(".mesa-trash/{stamp}/{}", entry.rel),
+    };
+    crate::vaultops::move_entry(root, &entry.rel, &trash_rel)?;
+    #[cfg(test)]
+    tests::after_trash_move(root, &entry.rel, &trash_rel);
+    let rescue = crate::sync_core::safe_join_confined(root, &trash_rel)
+        .ok_or("unsafe research recovery path")?;
+    if read(&rescue)?.as_deref() != Some(entry.after.as_slice()) {
+        return Err(match crate::vaultops::move_entry(root, &trash_rel, &entry.rel) {
+            Ok(()) => format!("{} changed during recovery", entry.rel),
+            Err(error) => format!(
+                "{} changed during recovery and could not be put back ({error}); its bytes are in {trash_rel}",
+                entry.rel
+            ),
+        });
+    }
+    // Make both the source unlink and rescued bytes durable.
+    flush_parents(root, path)?;
+    flush_parents(root, &rescue)
+}
 fn rollback(root: &Path, record: &Record) -> Result<(), String> {
     let mut failures = Vec::new();
     for entry in record.entries.iter().rev() {
@@ -242,26 +264,7 @@ fn rollback(root: &Path, record: &Record) -> Result<(), String> {
             }
             match &entry.before {
                 Some(bytes) => write_atomic(&path, bytes, &expected(Some(&entry.after))),
-                None => {
-                    // Move to Deleted files instead of deleting authored bytes,
-                    // in the form that lists and restores the exact original path.
-                    // Recheck immediately; external replacement stays intact.
-                    let stamp = crate::sync_core::now_ms();
-                    let trash_rel = match entry.rel.rsplit_once('/') {
-                        Some((parent, name)) => format!("{parent}/.mesa-trash/{stamp}-{name}"),
-                        None => format!(".mesa-trash/{stamp}/{}", entry.rel),
-                    };
-                    crate::vaultops::move_entry(root, &entry.rel, &trash_rel)?;
-                    let rescue = crate::sync_core::safe_join_confined(root, &trash_rel)
-                        .ok_or("unsafe research recovery path")?;
-                    if read(&rescue)?.as_deref() != Some(entry.after.as_slice()) {
-                        let _ = crate::vaultops::move_entry(root, &trash_rel, &entry.rel);
-                        return Err(format!("{} changed during recovery", entry.rel));
-                    }
-                    // Make both the source unlink and rescued bytes durable.
-                    flush_parents(root, &path)?;
-                    flush_parents(root, &rescue)
-                }
+                None => trash_created(root, entry, &path),
             }
         })();
         if let Err(error) = result {
@@ -399,6 +402,7 @@ fn apply(
     let _ = remove_record(root);
     Ok(paths)
 }
+pub(crate) const RESEARCH_APPLY_MAIN_ONLY: &str = "research apply belongs to the main workspace";
 #[tauri::command]
 pub async fn vault_apply_research(
     app: tauri::AppHandle,
@@ -406,9 +410,7 @@ pub async fn vault_apply_research(
     root: String,
     changes: Vec<Change>,
 ) -> Result<Vec<String>, String> {
-    if window.label() != "main" {
-        return Err("research apply belongs to the main workspace".into());
-    }
+    crate::require_main_for(window.label(), RESEARCH_APPLY_MAIN_ONLY)?;
     let root = crate::vaultscope::require_approved(&app, &root)?;
     // Avoid queuing a writer behind an outgoing sync whose network requests
     // need this server to keep accepting readers. Applies and outgoing sync

@@ -8,7 +8,7 @@ mesa_rustup_target() {
     Darwin:arm64) printf 'aarch64-apple-darwin 20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5' ;;
     Darwin:x86_64) printf 'x86_64-apple-darwin 9c331076f62b4d0edeae63d9d1c9442d5fe39b37b05025ec8d41c5ed35486496' ;;
     Linux:x86_64) printf 'x86_64-unknown-linux-gnu 20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c' ;;
-    Linux:aarch64) printf 'aarch64-unknown-linux-gnu e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c' ;;
+    Linux:aarch64|Linux:arm64) printf 'aarch64-unknown-linux-gnu e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c' ;;
     *) return 1 ;;
   esac
 }

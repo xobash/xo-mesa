@@ -69,3 +69,11 @@ export function retainLazyTextCache(
   }
   return next ?? cache;
 }
+
+/** Largest text the source editor edits. Each keystroke serializes the whole
+ *  document for the save path, so larger files open read-only to keep typing
+ *  under a frame. */
+export const MAX_EDITABLE_TEXT_CHARS = 16 * 1024 * 1024;
+/** Largest text the CSV/TSV table edits. A cell commit re-serializes the
+ *  whole file, so larger tables are view-only there (Raw still edits). */
+export const MAX_TABLE_EDIT_CHARS = 8 * 1024 * 1024;

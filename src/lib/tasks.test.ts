@@ -149,13 +149,13 @@ describe("collectVaultTasks", () => {
   beforeEach(() => resetVaultTaskMemo());
 
   it("matches the un-memoised pass", () => {
-    expect(collectVaultTasks(notes, cache, "Tasks.md")).toEqual(
+    expect(collectVaultTasks(notes, cache)).toEqual(
       reference(notes, cache, "Tasks.md")
     );
   });
 
   it("uses explicit agent markers regardless of the task file", () => {
-    const all = collectVaultTasks(notes, cache, "Tasks.md");
+    const all = collectVaultTasks(notes, cache);
     expect(all.filter((t) => t.kind === "personal").map((t) => t.text)).toEqual([
       "buy milk 📅 2026-08-01",
       "done thing",
@@ -171,30 +171,30 @@ describe("collectVaultTasks", () => {
       "Tasks.md": "- [ ] Buy groceries\n- [ ] Hand off report @agent",
       "Personal.md": "- [ ] Pay bill\n- [ ] Process inbox 🤖",
     };
-    const all = collectVaultTasks(localNotes, localCache, "Tasks.md");
+    const all = collectVaultTasks(localNotes, localCache);
     expect(all.map(({ text, kind }) => [text, kind])).toEqual([
       ["Buy groceries", "personal"], ["Hand off report @agent", "agent"],
       ["Pay bill", "personal"], ["Process inbox 🤖", "agent"],
     ]);
     const changed = collectVaultTasks(localNotes, {
       ...localCache, "Personal.md": "- [ ] Pay bill #agent\n- [ ] Process inbox",
-    }, "Tasks.md");
+    });
     expect(changed.slice(2).map(({ kind }) => kind)).toEqual(["agent", "personal"]);
   });
 
   it("skips notes with no cached content", () => {
     const partial = { ...cache };
     delete partial["work/plan.md"];
-    expect(collectVaultTasks(notes, partial, "Tasks.md").map((t) => t.rel)).toEqual([
+    expect(collectVaultTasks(notes, partial).map((t) => t.rel)).toEqual([
       "Tasks.md",
       "Tasks.md",
     ]);
   });
 
   it("reuses unchanged notes and re-parses only the edited one", () => {
-    const first = collectVaultTasks(notes, cache, "Tasks.md");
+    const first = collectVaultTasks(notes, cache);
     const edited = { ...cache, "work/plan.md": "notes\n- [ ] ship it later" };
-    const second = collectVaultTasks(notes, edited, "Tasks.md");
+    const second = collectVaultTasks(notes, edited);
 
     // Untouched note keeps item identity; the edited note is re-parsed.
     expect(second[0]).toBe(first[0]);
@@ -207,11 +207,11 @@ describe("collectVaultTasks", () => {
     const indexed = indexedContentCache([]);
     indexed["Tasks.md"] = "- [ ] Buy groceries\nSome prose";
     const noteMap = { "Tasks.md": { title: "Tasks" } };
-    const before = collectVaultTasks(noteMap, indexed, "Tasks.md");
+    const before = collectVaultTasks(noteMap, indexed);
     const proseEdit = forkContentCache(indexed, { "Tasks.md": "- [ ] Buy groceries\nMore prose" });
-    expect(collectVaultTasks(noteMap, proseEdit, "Tasks.md")).toBe(before);
+    expect(collectVaultTasks(noteMap, proseEdit)).toBe(before);
     const taskEdit = forkContentCache(proseEdit, { "Tasks.md": "- [ ] Buy milk\nMore prose" });
-    expect(collectVaultTasks(noteMap, taskEdit, "Tasks.md")[0].text).toBe("Buy milk");
+    expect(collectVaultTasks(noteMap, taskEdit)[0].text).toBe("Buy milk");
   });
 
   it("does not rescan a large note for a certified prose-only edit", () => {
@@ -219,7 +219,7 @@ describe("collectVaultTasks", () => {
     const indexed = indexedContentCache([]);
     indexed["Personal.md"] = content;
     const noteMap = { "Personal.md": { title: "Personal" } };
-    const before = collectVaultTasks(noteMap, indexed, "Tasks.md");
+    const before = collectVaultTasks(noteMap, indexed);
     const edited = forkContentCache(indexed, { "Personal.md": content + "x" });
     markCacheTaskStable(edited, "Personal.md");
     const originalSplit = String.prototype.split;
@@ -228,42 +228,42 @@ describe("collectVaultTasks", () => {
       return (originalSplit as (this: string, separator: string | RegExp, limit?: number) => string[]).call(String(this), separator, limit);
     } as typeof String.prototype.split;
     try {
-      expect(collectVaultTasks(noteMap, edited, "Tasks.md")).toBe(before);
+      expect(collectVaultTasks(noteMap, edited)).toBe(before);
     } finally {
       String.prototype.split = originalSplit;
     }
   });
 
   it("re-parses when the note title or markers change", () => {
-    const first = collectVaultTasks(notes, cache, "Tasks.md");
+    const first = collectVaultTasks(notes, cache);
     const retitled = { ...notes, "work/plan.md": { title: "renamed" } };
-    expect(collectVaultTasks(retitled, cache, "Tasks.md")[2].noteTitle).toBe("renamed");
+    expect(collectVaultTasks(retitled, cache)[2].noteTitle).toBe("renamed");
 
     // Changing the creation destination cannot change ownership.
-    const retagged = collectVaultTasks(notes, cache, "work/plan.md");
+    const retagged = collectVaultTasks(notes, cache);
     expect(retagged).toEqual(reference(notes, cache, "work/plan.md"));
     expect(retagged[2].kind).toBe("agent");
-    const changed = collectVaultTasks(notes, { ...cache, "work/plan.md": "- [ ] ship it later" }, "Tasks.md");
+    const changed = collectVaultTasks(notes, { ...cache, "work/plan.md": "- [ ] ship it later" });
     expect(changed[2].kind).toBe("personal");
     expect(changed[2]).not.toBe(first[2]);
   });
 
   it("drops notes that left the vault so their content is not retained", () => {
-    collectVaultTasks(notes, cache, "Tasks.md");
+    collectVaultTasks(notes, cache);
     const fewer = { "Tasks.md": { title: "Tasks" } };
-    expect(collectVaultTasks(fewer, cache, "Tasks.md").map((t) => t.rel)).toEqual([
+    expect(collectVaultTasks(fewer, cache).map((t) => t.rel)).toEqual([
       "Tasks.md",
       "Tasks.md",
     ]);
     // A note that returns with different content must not serve a stale parse.
     const revived = { ...cache, "work/plan.md": "- [ ] brand new" };
-    expect(collectVaultTasks(notes, revived, "Tasks.md")[2].text).toBe("brand new");
+    expect(collectVaultTasks(notes, revived)[2].text).toBe("brand new");
   });
 
   it("returns a fresh pass after the memo is reset", () => {
-    const first = collectVaultTasks(notes, cache, "Tasks.md");
+    const first = collectVaultTasks(notes, cache);
     resetVaultTaskMemo();
-    const second = collectVaultTasks(notes, cache, "Tasks.md");
+    const second = collectVaultTasks(notes, cache);
     expect(second).toEqual(first);
     expect(second[0]).not.toBe(first[0]);
   });

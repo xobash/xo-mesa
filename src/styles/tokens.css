@@ -11,6 +11,8 @@
     Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --ok: #36d27f;
+  /* off toggle knob: white in every theme; a shadow separates it on light tracks */
+  --toggle-knob: #ffffff;
   --surface-panel: color-mix(in srgb, var(--bg-1) 97%, transparent);
   --surface-header: color-mix(in srgb, var(--bg-1) 94%, var(--bg-2));
   --surface-control: var(--bg-2);
@@ -73,17 +75,23 @@
   --graph-node: #9088c4;
   --graph-node-active: #e6e2ff;
   --graph-node-isolated: #625e7a;
-  --graph-link: rgba(150, 158, 164, 0.13);
+  --graph-link: rgba(150, 158, 164, 0.23);
   --graph-link-active: rgba(170, 150, 255, 0.55);
   --graph-flicker-rgb: 227, 170, 96;
   --graph-label: rgba(226, 229, 240, 0.85);
-  --graph-label-halo: rgba(0, 0, 0, 0.6);
   --graph-bloom-alpha: 1;
   --graph-thumb-border: rgba(180, 160, 255, 0.6);
   --graph-node-tag: #4fb8a4;
   --graph-node-phantom: #4e4b5e;
   /* Attachment dots use the theme attachment token. */
   --graph-node-attachment: #e3a948;
+  /* All files view: one colour per kind of non-note file; other files
+     use the attachment colour. */
+  --graph-node-image: #e489a8;
+  --graph-node-pdf: #e36d5d;
+  --graph-node-media: #d79cf0;
+  --graph-node-office: #6ea2ea;
+  --graph-node-archive: #a39484;
   /* subtler than before: a gentle violet halo near the top (mirroring the
      liked empty-preview glow) falling to pure black — not a bright center. */
   --graph-bg: radial-gradient(820px 560px at 50% -14%, #16131f 0%, #0d0c12 56%, #08080b 100%);
@@ -153,17 +161,21 @@
   --graph-node: #a3a3a5;
   --graph-node-active: #ffffff;
   --graph-node-isolated: #767a7c;
-  --graph-link: rgba(255, 255, 255, 0.1);
+  --graph-link: rgba(255, 255, 255, 0.13);
   --graph-link-active: rgba(255, 255, 255, 0.5);
   --graph-flicker-rgb: 255, 255, 255;
   --graph-label: rgba(255, 255, 255, 0.85);
-  --graph-label-halo: rgba(0, 0, 0, 0.65);
   /* Quiet halo everywhere except Void (which keeps the full pulse). */
   --graph-bloom-alpha: 0.2;
   --graph-thumb-border: rgba(255, 255, 255, 0.55);
   --graph-node-tag: #5bc0d0;
   --graph-node-phantom: #676a70;
   --graph-node-attachment: #c8c985;
+  --graph-node-image: #e489a8;
+  --graph-node-pdf: #e36d5d;
+  --graph-node-media: #b48be6;
+  --graph-node-office: #6ea2ea;
+  --graph-node-archive: #a39484;
   /* subtler: a soft light bloom at the top (the gallery wall) over near-black. */
   --graph-bg: radial-gradient(820px 560px at 50% -14%, #0f0f0f 0%, #060606 54%, #000 100%);
   /* atmosphere: cool monochrome light bloom, cinematic gallery wall */
@@ -229,13 +241,21 @@
   --graph-node: #757b86;
   --graph-node-active: #50607a;
   --graph-node-isolated: #5f666d;
-  --graph-link: rgba(0, 0, 0, 0.1);
+  --graph-link: rgba(0, 0, 0, 0.18);
   --graph-link-active: rgba(80, 96, 122, 0.5);
   --graph-flicker-rgb: 80, 96, 122;
   --graph-label: rgba(27, 28, 31, 0.92);
-  --graph-label-halo: rgba(255, 255, 255, 0.82);
   --graph-bloom-alpha: 0.14;
   --graph-thumb-border: rgba(0, 0, 0, 0.18);
+  /* Node kinds share Paper's light set: Void's dark set reads poorly here. */
+  --graph-node-tag: #5d7c8c;
+  --graph-node-phantom: #cbc4b8;
+  --graph-node-attachment: #c09a4e;
+  --graph-node-image: #b4577a;
+  --graph-node-pdf: #b0442f;
+  --graph-node-media: #7a5aa8;
+  --graph-node-office: #3f6fae;
+  --graph-node-archive: #7d7266;
   --pane-atmos: radial-gradient(
     900px 520px at 82% -10%,
     rgba(80, 96, 122, 0.025),
@@ -273,13 +293,21 @@
   --graph-node: #8d94a1;
   --graph-node-active: #aab4c5;
   --graph-node-isolated: #69717a;
-  --graph-link: rgba(255, 255, 255, 0.1);
+  --graph-link: rgba(255, 255, 255, 0.14);
   --graph-link-active: rgba(170, 180, 197, 0.5);
   --graph-flicker-rgb: 170, 180, 197;
   --graph-label: rgba(230, 232, 237, 0.9);
-  --graph-label-halo: rgba(0, 0, 0, 0.6);
   --graph-bloom-alpha: 0.22;
   --graph-thumb-border: rgba(200, 210, 225, 0.5);
+  /* Node kinds share Darkroom's neutral dark set. */
+  --graph-node-tag: #5bc0d0;
+  --graph-node-phantom: #676a70;
+  --graph-node-attachment: #c8c985;
+  --graph-node-image: #e489a8;
+  --graph-node-pdf: #e36d5d;
+  --graph-node-media: #b48be6;
+  --graph-node-office: #6ea2ea;
+  --graph-node-archive: #a39484;
   --atmos-a: radial-gradient(
     780px 520px at 80% -10%,
     rgba(170, 180, 197, 0.04),
@@ -345,16 +373,20 @@
   --graph-node: #8f9095;
   --graph-node-active: #f6f5f1;
   --graph-node-isolated: #66676b;
-  --graph-link: rgba(255, 255, 255, 0.075);
+  --graph-link: rgba(255, 255, 255, 0.14);
   --graph-link-active: rgba(236, 234, 229, 0.5);
   --graph-flicker-rgb: 236, 234, 229;
   --graph-label: rgba(243, 242, 238, 0.86);
-  --graph-label-halo: rgba(10, 10, 11, 0.7);
   --graph-bloom-alpha: 0.18;
   --graph-thumb-border: rgba(236, 234, 229, 0.45);
   --graph-node-tag: #9fadc2;
   --graph-node-phantom: #4f5054;
   --graph-node-attachment: #bfb296;
+  --graph-node-image: #c49aa8;
+  --graph-node-pdf: #c9897f;
+  --graph-node-media: #a99cc4;
+  --graph-node-office: #7f9bd8;
+  --graph-node-archive: #9a9288;
   --atmos-a: radial-gradient(860px 560px at 82% -12%, rgba(255, 255, 255, 0.035), transparent 70%);
   --atmos-b: radial-gradient(620px 460px at 4% 114%, rgba(170, 182, 204, 0.025), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);
@@ -411,16 +443,20 @@
   --graph-node: #7c8bb0;
   --graph-node-active: #e2eaff;
   --graph-node-isolated: #4f5a74;
-  --graph-link: rgba(141, 165, 220, 0.11);
+  --graph-link: rgba(141, 165, 220, 0.21);
   --graph-link-active: rgba(141, 179, 255, 0.58);
   --graph-flicker-rgb: 141, 179, 255;
   --graph-label: rgba(226, 233, 250, 0.86);
-  --graph-label-halo: rgba(6, 8, 13, 0.7);
   --graph-bloom-alpha: 0.5;
   --graph-thumb-border: rgba(141, 179, 255, 0.55);
   --graph-node-tag: #bfa8ff;
   --graph-node-phantom: #434b5e;
   --graph-node-attachment: #7fd3e6;
+  --graph-node-image: #f09ab8;
+  --graph-node-pdf: #f07a66;
+  --graph-node-media: #f2c46d;
+  --graph-node-office: #7fb0ff;
+  --graph-node-archive: #a8a090;
   --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(110, 150, 255, 0.08), transparent 70%);
   --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(170, 140, 255, 0.05), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);
@@ -477,16 +513,20 @@
   --graph-node: #a6978a;
   --graph-node-active: #fbe2bc;
   --graph-node-isolated: #6c625a;
-  --graph-link: rgba(255, 226, 190, 0.085);
+  --graph-link: rgba(255, 226, 190, 0.16);
   --graph-link-active: rgba(229, 166, 94, 0.55);
   --graph-flicker-rgb: 229, 166, 94;
   --graph-label: rgba(247, 240, 229, 0.86);
-  --graph-label-halo: rgba(14, 11, 9, 0.7);
   --graph-bloom-alpha: 0.42;
   --graph-thumb-border: rgba(229, 166, 94, 0.5);
   --graph-node-tag: #d08b6c;
   --graph-node-phantom: #4f4842;
   --graph-node-attachment: #c9b37a;
+  --graph-node-image: #e08aa8;
+  --graph-node-pdf: #e0685a;
+  --graph-node-media: #a990dd;
+  --graph-node-office: #7aa5e0;
+  --graph-node-archive: #8f8a80;
   --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(229, 166, 94, 0.07), transparent 70%);
   --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(208, 139, 108, 0.045), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);
@@ -543,16 +583,20 @@
   --graph-node: #a397ad;
   --graph-node-active: #fbdde8;
   --graph-node-isolated: #675d6f;
-  --graph-link: rgba(238, 214, 252, 0.09);
+  --graph-link: rgba(238, 214, 252, 0.15);
   --graph-link-active: rgba(234, 166, 188, 0.55);
   --graph-flicker-rgb: 234, 166, 188;
   --graph-label: rgba(246, 240, 249, 0.86);
-  --graph-label-halo: rgba(12, 9, 14, 0.7);
   --graph-bloom-alpha: 0.45;
   --graph-thumb-border: rgba(234, 166, 188, 0.5);
   --graph-node-tag: #b9a6ea;
   --graph-node-phantom: #4c4453;
   --graph-node-attachment: #ecc7a6;
+  --graph-node-image: #f095b5;
+  --graph-node-pdf: #ee7a68;
+  --graph-node-media: #8fd6d0;
+  --graph-node-office: #7f9cf0;
+  --graph-node-archive: #b0a49a;
   --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(234, 166, 188, 0.07), transparent 70%);
   --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(185, 166, 234, 0.05), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);
@@ -610,16 +654,20 @@
   --graph-node: #8794a8;
   --graph-node-active: #e5f3f7;
   --graph-node-isolated: #5c6577;
-  --graph-link: rgba(216, 222, 233, 0.09);
+  --graph-link: rgba(216, 222, 233, 0.18);
   --graph-link-active: rgba(136, 192, 208, 0.58);
   --graph-flicker-rgb: 136, 192, 208;
   --graph-label: rgba(236, 239, 244, 0.88);
-  --graph-label-halo: rgba(20, 23, 29, 0.72);
   --graph-bloom-alpha: 0.35;
   --graph-thumb-border: rgba(136, 192, 208, 0.5);
   --graph-node-tag: #b48ead;
   --graph-node-phantom: #4c5466;
   --graph-node-attachment: #ebcb8b;
+  --graph-node-image: #d08770;
+  --graph-node-pdf: #bf616a;
+  --graph-node-media: #a3be8c;
+  --graph-node-office: #81a1c1;
+  --graph-node-archive: #9a9184;
   --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(136, 192, 208, 0.06), transparent 70%);
   --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(180, 142, 173, 0.04), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);
@@ -676,16 +724,20 @@
   --graph-node: #8e867b;
   --graph-node-active: #b0522c;
   --graph-node-isolated: #b2aa9e;
-  --graph-link: rgba(60, 45, 30, 0.11);
+  --graph-link: rgba(60, 45, 30, 0.22);
   --graph-link-active: rgba(176, 82, 44, 0.5);
   --graph-flicker-rgb: 176, 82, 44;
   --graph-label: rgba(30, 27, 24, 0.9);
-  --graph-label-halo: rgba(251, 249, 245, 0.85);
   --graph-bloom-alpha: 0.12;
   --graph-thumb-border: rgba(60, 45, 30, 0.2);
   --graph-node-tag: #5d7c8c;
   --graph-node-phantom: #cbc4b8;
   --graph-node-attachment: #c09a4e;
+  --graph-node-image: #b4577a;
+  --graph-node-pdf: #b0442f;
+  --graph-node-media: #7a5aa8;
+  --graph-node-office: #3f6fae;
+  --graph-node-archive: #7d7266;
   --atmos-a: radial-gradient(860px 540px at 82% -10%, rgba(176, 82, 44, 0.03), transparent 70%);
   --atmos-b: radial-gradient(620px 460px at 4% 114%, rgba(93, 124, 140, 0.025), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);

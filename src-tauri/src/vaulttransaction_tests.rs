@@ -185,3 +185,43 @@ fn record_bytes_use_hex_and_legacy_number_arrays_still_load() {
         assert!(serde_json::from_str::<Entry>(&text).is_err());
     }
 }
+
+type TrashMoveHook = Box<dyn FnOnce(&Path, &str, &str)>;
+
+thread_local! {
+    /// Runs once on this test thread right after a rollback moves a created
+    /// file into `.mesa-trash`, to stage a concurrent external change.
+    static AFTER_TRASH_MOVE: std::cell::RefCell<Option<TrashMoveHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn after_trash_move(root: &Path, rel: &str, trash_rel: &str) {
+    if let Some(hook) = AFTER_TRASH_MOVE.with(|slot| slot.borrow_mut().take()) {
+        hook(root, rel, trash_rel);
+    }
+}
+
+#[test]
+fn failed_move_back_names_the_trash_path_and_keeps_bytes_and_record() {
+    let root = folder("move-back");
+    fs::write(root.join("old.md"), "original").unwrap();
+    assert!(apply(&root, changes(), Some(1)).is_err());
+    // Between the move-out and the recheck, another writer edits the rescued
+    // bytes and recreates the original path, so a no-replace move-back fails.
+    AFTER_TRASH_MOVE.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|root: &Path, rel: &str, trash_rel: &str| {
+            fs::write(root.join(trash_rel), b"edited elsewhere").unwrap();
+            fs::write(root.join(rel), b"recreated").unwrap();
+        }));
+    });
+    let error = recover(&root).unwrap_err();
+    let listed = crate::vaultops::list_recovery(&root).unwrap();
+    assert_eq!(listed.len(), 1);
+    let trash_rel = &listed[0].trash_rel_path;
+    assert!(error.contains(trash_rel.as_str()), "{error}");
+    assert!(!error.contains(root.to_str().unwrap()), "{error}");
+    assert_eq!(fs::read(root.join(trash_rel)).unwrap(), b"edited elsewhere");
+    assert_eq!(fs::read(root.join("new.md")).unwrap(), b"recreated");
+    assert!(root.join(RECORD).exists());
+    fs::remove_dir_all(root).unwrap();
+}

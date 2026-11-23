@@ -5,6 +5,7 @@ import {
   purgeRecoveryEntry,
   type RecoveryEntry,
 } from "../lib/vault";
+import { confirmAction } from "../lib/confirmAction";
 import { Modal } from "./Modal";
 import { InterfaceStyleChoice, SettingToggle } from "./SettingsControls";
 import { HotkeySettings } from "./HotkeySettings";
@@ -173,6 +174,11 @@ export function SettingsModal() {
   };
 
   const removeRevision = async (revisionId: string) => {
+    const confirmed = await confirmAction(
+      "Permanently remove this local revision? The current vault file is not changed. This cannot be undone.",
+      { title: "Remove revision", okLabel: "Remove", kind: "warning" }
+    );
+    if (!confirmed || contextRef.current !== context) return;
     setRevisionBusy(true);
     setRevisionMessage("");
     try {
@@ -287,13 +293,13 @@ export function SettingsModal() {
 
         <div className="setting-row">
           <div className="setting-meta">
-            <div className="setting-name">Smooth graph motion</div>
+            <div className="setting-name">Layered overlays</div>
             <div className="setting-desc">
-              May improve graph motion. Applies when the graph next opens.
+              Draw menus, hover cards and dialogs on their own layer for smoother fades.
             </div>
           </div>
           <SettingToggle
-            label="Smooth graph motion"
+            label="Layered overlays"
             on={settings.hardwareAccel}
             onChange={(v) => setSetting("hardwareAccel", v)}
           />

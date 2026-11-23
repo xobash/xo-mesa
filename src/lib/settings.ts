@@ -3,7 +3,15 @@ import { normalizeAutoSyncMinutes } from "./syncAutoSchedule";
 import { generateDeviceName } from "./deviceName";
 import { normalizeSyncPort } from "./pairing";
 import { normalizeHotkeys } from "./hotkeys";
+import { GRAPH_FORCE_DEFAULTS } from "./graphForceDefaults";
+import { clamp } from "./clamp";
 export const SETTINGS_KEY = "mesa:settings";
+/** Bump when a graph setting changes units; stored values from an older version reset once. */
+const GRAPH_SETTINGS_VERSION = 2;
+const GRAPH_SETTING_RANGES: Partial<Record<keyof Settings, [number, number]>> = {
+  graphTextFade: [-3, 3], graphNodeSize: [0.1, 5], graphLinkThickness: [0.1, 5],
+  graphCenterForce: [0, 1], graphRepelForce: [0, 20], graphLinkForce: [0, 1], graphLinkDistance: [30, 500],
+};
 export const DEFAULT_SETTINGS: Settings = {
   hoverDelayMs: 450,
   hardwareAccel: true,
@@ -37,20 +45,24 @@ export const DEFAULT_SETTINGS: Settings = {
   bookmarks: [],
   bookmarksCollapsed: false,
   sidebarAutoHide: false,
+  // Graph filters, display and forces start at Obsidian's defaults. Markdown
+  // files are notes; every other file is an attachment.
   graphShowTags: false,
-  graphExistingFilesOnly: true,
+  graphExistingFilesOnly: false,
   graphShowOrphans: true,
-  // Mesa's graph includes the complete vault by default; this differs from
-  // Obsidian's Markdown-only graph. Users can still hide non-Markdown files.
-  graphShowAttachments: true,
+  graphShowAttachments: false,
+  // Opt-in: every cataloged file as a node (not an Obsidian filter).
+  graphShowAllFiles: false,
   graphArrows: false,
-  graphTextFadeThreshold: 0.42,
+  graphTextFade: 0,
   graphNodeSize: 1,
   graphLinkThickness: 1,
-  graphCenterForce: 0.5,
-  graphRepelForce: 10,
-  graphLinkForce: 1,
-  graphLinkDistance: 250,
+  graphCenterForce: GRAPH_FORCE_DEFAULTS.center,
+  graphRepelForce: GRAPH_FORCE_DEFAULTS.repel,
+  graphLinkForce: GRAPH_FORCE_DEFAULTS.linkForce,
+  graphLinkDistance: GRAPH_FORCE_DEFAULTS.linkDistance,
+  graphLivingMotion: false,
+  graphSettingsVersion: GRAPH_SETTINGS_VERSION,
   centerView: "doc",
   rightStack: ["preview"],
   dockSide: "right",
@@ -72,7 +84,8 @@ function withoutLegacyAgentSettings(value: Record<string, unknown>): { value: Re
   return { value: next, changed };
 }
 
-/** Validate persisted shape without changing any valid setting or its numeric value. */
+/** Validate persisted shape. Graph values are clamped to `GRAPH_SETTING_RANGES`,
+ *  and graph settings saved by an older version reset to the defaults. */
 export function normalizeSettings(value: unknown): Settings {
   const next: Settings = { ...DEFAULT_SETTINGS, peers: [], bookmarks: [], hotkeys: {}, rightStack: [...DEFAULT_SETTINGS.rightStack] };
   if (!record(value)) return next;
@@ -82,6 +95,17 @@ export function normalizeSettings(value: unknown): Settings {
     if (typeof candidate === typeof fallback && (typeof candidate !== 'number' || Number.isFinite(candidate))) {
       Object.assign(next, { [key]: candidate });
     }
+  }
+  // Graph settings saved before the Obsidian-parity units (different slider
+  // curves, text fade and filters) would misread; they restart at the defaults.
+  if (value.graphSettingsVersion !== GRAPH_SETTINGS_VERSION) {
+    for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
+      if (key.startsWith('graph')) Object.assign(next, { [key]: DEFAULT_SETTINGS[key] });
+    }
+  }
+  for (const [key, [lo, hi]] of Object.entries(GRAPH_SETTING_RANGES)) {
+    const k = key as keyof Settings;
+    Object.assign(next, { [k]: clamp(next[k] as number, lo, hi) });
   }
   const enums: Partial<Record<keyof Settings, string[]>> = {
     sortMode: ['name', 'modified', 'size', 'links', 'type'], sortDir: ['asc', 'desc'], dockSide: ['left', 'right'],
@@ -135,8 +159,12 @@ export function loadSettings(storage?: StorageAccess): { settings: Settings; iss
   return { settings, issue };
 }
 
-/** localStorage replaces one value atomically. Preserve unreadable data before a repair. */
-export function persistSettings(settings: Settings, storage?: StorageAccess): string {
+/**
+ * localStorage replaces one value atomically. Preserve unreadable data before a repair.
+ * With `previous`, only keys that differ from it are written over the stored value, so
+ * a second window's stale copy never reverts a key it did not change.
+ */
+export function persistSettings(settings: Settings, storage?: StorageAccess, previous?: Settings): string {
   try {
     const target = storage ?? localStorage;
     const raw = target.getItem(SETTINGS_KEY);
@@ -165,13 +193,23 @@ export function persistSettings(settings: Settings, storage?: StorageAccess): st
       const legacyToken = legacyPeers.get(peer.id);
       return typeof legacyToken === 'string' ? { ...peer, token: legacyToken } : peer;
     });
-    const next: Record<string, unknown> = { ...existing, ...publicSettings, peers };
+    const partial = previous !== undefined && existing.graphSettingsVersion === settings.graphSettingsVersion;
+    const changed = partial ? changedSettings(publicSettings, previous) : publicSettings;
+    const next: Record<string, unknown> = {
+      ...existing, ...changed,
+      peers: partial && Object.is(previous.peers, settings.peers) && Array.isArray(existing.peers) ? existing.peers : peers,
+    };
     if (typeof existing.syncToken !== 'string') delete next.syncToken;
     target.setItem(SETTINGS_KEY, JSON.stringify(next));
     return '';
   } catch {
     return 'Settings are active for this session but could not be saved. Free local storage, then Retry settings.';
   }
+}
+
+function changedSettings(current: Record<string, unknown>, previous: Settings): Record<string, unknown> {
+  const before = previous as unknown as Record<string, unknown>;
+  return Object.fromEntries(Object.entries(current).filter(([key, value]) => !Object.is(value, before[key])));
 }
 
 /** Remove migrated legacy keys only after the OS credential store confirms them. */

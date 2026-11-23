@@ -9,6 +9,8 @@ import { buildNotes } from "../lib/graph";
 import { bumpActivityAmount } from "../lib/activity";
 import { GraphView } from "./GraphView";
 import { resolveOverlaps } from "../lib/graphGeometry";
+import { sliderStrength } from "../lib/graphPhysics";
+import { DEFAULT_SETTINGS } from "../lib/settings";
 
 const captured = vi.hoisted(() => ({ sim: null as unknown, builds: 0 }));
 vi.mock("d3-force", async (original) => {
@@ -120,7 +122,8 @@ it("runs large-graph drag physics in a worker while the canvas keeps the grabbed
   pointer("pointermove", x + 8, y + 2);
   const start = posted.find(m => m.type === "start")!;
   expect(start.init!.grab).toBe(hubIndex);
-  expect(start.init!.collideIterations).toBeGreaterThan(1);
+  // One collision pass at every size, as in Obsidian: a drag changes no force.
+  expect(start.init!.collideIterations).toBe(1);
   pointer("pointermove", x + 20, y + 5);
   expect(posted.at(-1)).toMatchObject({ type: "move", session: start.session, index: hubIndex, fx: x + 20 });
   expect(hub.x).toBeCloseTo(x + 20);
@@ -140,7 +143,7 @@ it("runs large-graph drag physics in a worker while the canvas keeps the grabbed
   expect(posted.at(-1)).toMatchObject({ type: "release", session: start.session, index: hubIndex });
   state.fill(0);
   nodes.forEach((n, i) => { state[i * 4] = n.x!; state[i * 4 + 1] = n.y!; });
-  act(() => workers[0].onmessage!({ data: { type: "idle", session: start.session, state, alpha: 0.003 } }));
+  act(() => workers[0].onmessage!({ data: { type: "idle", session: start.session, state, alpha: 0.0005 } }));
   runFrame();
   expect(posted.at(-1)).toMatchObject({ type: "stop", session: start.session });
   expect(Number.isFinite(hub.x)).toBe(true);
@@ -184,10 +187,11 @@ it("stops and restarts playback, and cancels it on filter changes without stale 
 it("retunes low hub link strengths without a floor or a layout reset", () => {
   mount(); const sim = simulation(); const nodes = sim.nodes();
   const positions = nodes.map(n => [n.x, n.y]);
-  nodes.forEach(n => n.degree = 100);
   act(() => useAppStore.getState().setSetting("graphLinkForce", 0.1));
+  // Middle has two links, so its links scale by 1/min(1, 2) = 1; the slider's log curve gives the factor.
   const link = linkForce().links()[0];
-  expect(linkForce().strength()(link, 0, linkForce().links())).toBeCloseTo(0.001);
+  expect(linkForce().strength()(link, 0, linkForce().links())).toBeCloseTo(sliderStrength(0.1), 12);
+  expect(sliderStrength(0.1)).toBeLessThan(0.01);
   expect(simulation()).toBe(sim);
   expect(sim.nodes()).toBe(nodes);
   expect(nodes.map(n => [n.x, n.y])).toEqual(positions);
@@ -231,6 +235,85 @@ it("keeps toolbar pointer presses out of canvas drag capture", () => {
   }
 });
 
+it("restores every display and force setting to the shipped defaults, leaving filters alone", () => {
+  const changed = { graphArrows: true, graphTextFade: 2, graphNodeSize: 3, graphLinkThickness: 2, graphLivingMotion: true,
+    graphCenterForce: 0.9, graphRepelForce: 19, graphLinkForce: 0.1, graphLinkDistance: 40, graphShowTags: false };
+  act(() => {
+    useAppStore.setState({ files: [], notes: {}, settings: { ...initial.settings, animations: false, ...changed } });
+    root.render(<GraphView />);
+  });
+  click("Graph settings");
+  const reset = [...host.querySelectorAll("button")].find((b) => b.textContent === "Restore display defaults")!;
+  act(() => reset.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+  const settings = useAppStore.getState().settings;
+  for (const key of Object.keys(changed) as (keyof typeof changed)[]) {
+    expect(settings[key], key).toBe(key === "graphShowTags" ? false : DEFAULT_SETTINGS[key]);
+  }
+});
+
+it("keeps the built graph and a held grab when a save changes only file times or body text", () => {
+  mount(); const sim = simulation(); const nodes = sim.nodes();
+  nodes.forEach((n, i) => { n.x = 100 + i * 100; n.y = 100; });
+  pointer("pointerdown", 100, 100);
+  const grabbed = nodes.find((n) => n.fx != null);
+  expect(grabbed).toBeDefined();
+  // The watcher updates size and mtime in place and republishes a new array.
+  const files = useAppStore.getState().files;
+  for (const f of files) { f.size = 99; f.mtime = 12345; }
+  act(() => useAppStore.setState({ files: [...files] }));
+  expect(sim.nodes()).toBe(nodes);
+  expect(grabbed!.fx).toBe(100);
+  // Saving body text replaces the note record but keeps everything the graph reads.
+  const notes = useAppStore.getState().notes;
+  const [rel, meta] = Object.entries(notes)[0];
+  act(() => useAppStore.setState({ notes: { ...notes, [rel]: { ...meta, rawLinks: [...meta.rawLinks], tags: [...meta.tags] } } }));
+  expect(sim.nodes()).toBe(nodes);
+  expect(grabbed!.fx).toBe(100);
+  pointer("pointercancel", 100, 100);
+  // A new link is a real change and rebuilds.
+  act(() => useAppStore.setState({ notes: { ...useAppStore.getState().notes, [rel]: { ...meta, rawLinks: [...meta.rawLinks, "Somewhere"] } } }));
+  expect(sim.nodes()).not.toBe(nodes);
+  // A new file is a real change and rebuilds.
+  const added: VaultFile = { path: "/demo/New.md", relPath: "New.md", name: "New", ext: "md", isMarkdown: true, createdAt: 500 };
+  act(() => useAppStore.setState({ files: [...files, added], notes: { ...useAppStore.getState().notes, ...buildNotes([added], new Map([["New.md", ""]])) } }));
+  expect(sim.nodes().map((n) => n.id)).toContain("New.md");
+});
+it("highlights an unresolved-link node on hover without a preview, then lets the frames sleep", () => {
+  let callback: FrameRequestCallback = () => {};
+  const accentFills: number[] = [];
+  const translates: number[][] = [];
+  const target: Record<string, unknown> = {
+    fill() { if (target.fillStyle === "#58a6ff") accentFills.push(1); },
+    translate: (x: number, y: number) => { translates.push([x, y]); },
+    createRadialGradient: () => ({ addColorStop: () => {} }),
+    measureText: (text: string) => ({ width: text.length * 7 }),
+  };
+  const context = new Proxy(target, { get: (t, key) => key in t ? t[key as string] : () => {} });
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480, toJSON: () => ({}) });
+  const raf = vi.fn((next: FrameRequestCallback) => { callback = next; return 1; });
+  vi.stubGlobal("requestAnimationFrame", raf);
+  const files: VaultFile[] = [{ path: "/v/A.md", relPath: "A.md", name: "A", ext: "md", isMarkdown: true }];
+  const ensurePeek = vi.fn().mockResolvedValue(undefined);
+  act(() => {
+    useAppStore.setState({ files, notes: buildNotes(files, new Map([["A.md", "[[Ghost]]"]])), ensurePeek,
+      settings: { ...initial.settings, animations: false, graphShowOrphans: true, graphShowTags: false, graphExistingFilesOnly: false } });
+    root.render(<GraphView />);
+  });
+  const sim = simulation(); sim.alpha(0);
+  sim.nodes().forEach((n, i) => { n.x = i * 100; n.y = 0; n.vx = 0; n.vy = 0; });
+  const tick = () => act(() => { vi.advanceTimersByTime(20); callback(performance.now()); });
+  for (let i = 0; i < 5; i++) tick();
+  const ghost = sim.nodes().find((n) => n.kind === "phantom")!;
+  const [tx, ty] = translates.at(-1)!;
+  pointer("pointermove", ghost.x! + tx, ghost.y! + ty);
+  accentFills.length = 0;
+  for (let i = 0; i < 80; i++) tick();
+  expect(accentFills.length).toBeGreaterThan(0);
+  expect(ensurePeek).not.toHaveBeenCalled();
+  raf.mockClear(); tick();
+  expect(raf).not.toHaveBeenCalled();
+});
 it("waits for note metadata before its first build so an opening vault paints the full graph settled", () => {
   const entries = { "A.md": "[[B]]", "B.md": "" };
   const files: VaultFile[] = [
@@ -381,15 +464,13 @@ it("replays and drags a synthetic large graph without non-finite physics", () =>
   const orphan = sim.nodes().find(n => n.degree === 0)!;
   expect(hub.degree).toBeGreaterThan(50);
   const collide = sim.force("collide") as ForceCollide<GraphNode>;
-  const collidePasses = collide.iterations();
-  expect(collidePasses).toBeGreaterThan(1);
+  expect(collide.iterations()).toBe(1);
   for (const node of [hub, orphan]) {
     const x = node.x!, y = node.y!;
     pointer("pointerdown", x, y);
     expect(node.fx).toBeCloseTo(x);
     for (let i = 1; i <= 60; i++) {
       pointer("pointermove", x + i * 4, y + i);
-      if (i > 1) expect(collide.iterations()).toBe(1);
       sim.tick();
       expect(node.x).toBeCloseTo(x + i * 4);
       expect(node.y).toBeCloseTo(y + i);
@@ -397,15 +478,16 @@ it("replays and drags a synthetic large graph without non-finite physics", () =>
     const alpha = sim.alpha();
     pointer("pointerup", x + 240, y + 60);
     expect(sim.alpha()).toBe(alpha);
-    expect(collide.iterations()).toBe(collidePasses);
+    expect(collide.iterations()).toBe(1);
     sim.tick(100);
     expect(sim.nodes().every(n => Number.isFinite(n.x) && Number.isFinite(n.y))).toBe(true);
   }
   const charge = sim.force("charge") as ForceManyBody<GraphNode>;
   const originalCharge = charge.strength()(sim.nodes()[0], 0, sim.nodes());
   click("Start timelapse animation");
-  act(() => useAppStore.getState().setSetting("graphRepelForce", (initial.settings.graphRepelForce ?? 10) * 2));
-  expect(charge.strength()(sim.nodes()[0], 0, sim.nodes())).toBeCloseTo(originalCharge * 2);
+  // The repel slider is cubed: doubling it multiplies the charge by eight.
+  act(() => useAppStore.getState().setSetting("graphRepelForce", initial.settings.graphRepelForce * 2));
+  expect(charge.strength()(sim.nodes()[0], 0, sim.nodes())).toBeCloseTo(originalCharge * 8);
   const first = sim.nodes()[0];
   pointer("pointerdown", first.x!, first.y!);
   pointer("pointermove", first.x! + 10, first.y! + 10);
@@ -446,7 +528,7 @@ function frameHarness() {
 }
 it('honours reduced motion and draws no ambient frames after settling',()=>{
   vi.stubGlobal('matchMedia',()=>({matches:true,addEventListener:vi.fn(),removeEventListener:vi.fn()}));
-  const f=frameHarness();act(()=>useAppStore.setState({settings:{...useAppStore.getState().settings,animations:true}}));
+  const f=frameHarness();act(()=>useAppStore.setState({settings:{...useAppStore.getState().settings,animations:true,graphLivingMotion:true}}));
   for(let i=0;i<20;i++)f.tick();f.clear.mockClear();
   for(let i=0;i<60;i++)f.tick();expect(f.clear).not.toHaveBeenCalled();
 });
@@ -466,7 +548,7 @@ it('stops off-screen frames, resumes on intersection and ignores callbacks after
 it('updates reduced motion while mounted and removes the subscription',()=>{
   let notify!: (event:MediaQueryListEvent)=>void;const remove=vi.fn();
   vi.stubGlobal('matchMedia',()=>({matches:false,addEventListener:(_name:string,listener:typeof notify)=>{notify=listener;},removeEventListener:remove}));
-  const f=frameHarness();act(()=>useAppStore.setState({settings:{...useAppStore.getState().settings,animations:true}}));
+  const f=frameHarness();act(()=>useAppStore.setState({settings:{...useAppStore.getState().settings,animations:true,graphLivingMotion:true}}));
   for(let i=0;i<20;i++){vi.advanceTimersByTime(20);f.tick();}
   f.clear.mockClear();for(let i=0;i<3;i++){vi.advanceTimersByTime(20);f.tick();}expect(f.clear).toHaveBeenCalled();
   act(()=>notify({matches:true} as MediaQueryListEvent));f.tick();f.clear.mockClear();
@@ -477,7 +559,7 @@ it('updates reduced motion while mounted and removes the subscription',()=>{
 it('sleeps after reduced-motion settling and wakes on pointer input', async () => {
   vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
   const f = frameHarness();
-  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true } }));
+  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true, graphLivingMotion: true } }));
   for (let i = 0; i < 20; i++) { vi.advanceTimersByTime(20); f.tick(); }
   f.raf.mockClear();
   for (let i = 0; i < 60; i++) { vi.advanceTimersByTime(20); f.tick(); }
@@ -499,18 +581,24 @@ it('sleeps after reduced-motion settling and wakes on pointer input', async () =
 
 it('stops settled ambient frames after 15 seconds and resumes once on input and activity', () => {
   const f = frameHarness();
-  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true } }));
+  act(() => useAppStore.setState({ settings: { ...useAppStore.getState().settings, animations: true, graphLivingMotion: true } }));
   for (let i = 0; i < 500; i++) { vi.advanceTimersByTime(20); f.tick(); }
   act(() => window.dispatchEvent(new Event('focus')));
+  const wrap = document.querySelector('.graph-wrap')!;
+  f.tick();
+  expect(wrap.classList.contains('quiet')).toBe(false);
   vi.advanceTimersByTime(15_000); f.tick();
+  expect(wrap.classList.contains('quiet')).toBe(true);
   f.raf.mockClear();
   vi.advanceTimersByTime(1000);
   expect(f.raf).not.toHaveBeenCalled();
   pointer('pointermove', 10, 10); pointer('pointermove', 10, 10);
   expect(f.raf).toHaveBeenCalledOnce();
   f.tick();
+  expect(wrap.classList.contains('quiet')).toBe(false);
   vi.mocked(document.hasFocus).mockReturnValue(false);
   f.tick(); f.raf.mockClear();
+  expect(wrap.classList.contains('quiet')).toBe(true);
   vi.advanceTimersByTime(1000); expect(f.raf).not.toHaveBeenCalled();
   act(() => bumpActivityAmount('Newest.md', 1));
   expect(f.raf).toHaveBeenCalledOnce();
@@ -543,7 +631,7 @@ it('reallocates the backing store when display scaling changes, keeping zoom and
   vi.stubGlobal('requestAnimationFrame', vi.fn((next: FrameRequestCallback) => { callback = next; return 1; }));
   mount();
   const tick = () => act(() => { vi.advanceTimersByTime(20); callback(performance.now()); });
-  const canvas = host.querySelector('canvas')!;
+  const canvas = host.querySelector<HTMLCanvasElement>('.graph-canvas')!;
   expect([canvas.width, canvas.height]).toEqual([640, 480]);
   for (let i = 0; i < 30; i++) tick();
   // The user zooms in; the eased zoom converges over a few frames.
@@ -568,4 +656,39 @@ it('reallocates the backing store when display scaling changes, keeping zoom and
   act(() => root.unmount());
   expect(removed).toContain('(resolution: 1.5dppx)');
   root = createRoot(host);
+});
+it("All files shows every cataloged file as a node and opens a file node on click", () => {
+  const rels = ["Note.md", "Lonely.md", "papers/a.pdf", "img/b.png", "Makefile", "data.csv", "office/c.docx", "x.bin"];
+  const files: VaultFile[] = rels.map((relPath) => {
+    const base = relPath.split("/").pop()!;
+    const dot = base.lastIndexOf(".");
+    const ext = dot >= 0 ? base.slice(dot + 1) : "";
+    return { path: `/v/${relPath}`, relPath, name: dot >= 0 ? base.slice(0, dot) : base, ext, isMarkdown: ext === "md" };
+  });
+  const openDocWindow = vi.fn().mockResolvedValue(undefined);
+  act(() => {
+    useAppStore.setState({ files, notes: buildNotes(files, new Map([["Note.md", "[[Lonely]] ![[b.png]]"], ["data.csv", "a,b"]])), openDocWindow,
+      settings: { ...initial.settings, animations: false, graphShowOrphans: false, graphShowAttachments: false, graphShowTags: false } });
+    root.render(<GraphView />);
+  });
+  expect(simulation().nodes().map((n) => n.id).sort()).toEqual(["Lonely.md", "Note.md"]);
+  click("Graph settings");
+  const allFiles = host.querySelector('[aria-label="All files"]');
+  expect(allFiles?.getAttribute("aria-checked")).toBe("false");
+  click("All files");
+  expect(useAppStore.getState().settings.graphShowAllFiles).toBe(true);
+  expect(simulation().nodes().map((n) => n.id).sort()).toEqual([...rels].sort());
+  // The filters All files overrides read as on and cannot be changed meanwhile.
+  for (const label of ["Attachments", "Orphans"]) {
+    const row = host.querySelector(`[aria-label="${label}"]`) as HTMLButtonElement;
+    expect(row.getAttribute("aria-checked")).toBe("true");
+    expect(row.disabled).toBe(true);
+  }
+  expect(linkForce().links().map((l) => [(l.source as GraphNode).id, (l.target as GraphNode).id])).toEqual([["Note.md", "Lonely.md"], ["Note.md", "img/b.png"]]);
+  const nodes = simulation().nodes();
+  nodes.forEach((n, i) => { n.x = 100 + i * 200; n.y = 100; });
+  const pdf = nodes.findIndex((n) => n.id === "papers/a.pdf");
+  pointer("pointerdown", 100 + pdf * 200, 100);
+  pointer("pointerup", 100 + pdf * 200, 100);
+  expect(openDocWindow).toHaveBeenCalledWith("papers/a.pdf");
 });

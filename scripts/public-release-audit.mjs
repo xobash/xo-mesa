@@ -50,7 +50,8 @@ if (trackedSet.has("package.json")) {
   const scripts = JSON.parse(git(["show", ":package.json"])).scripts ?? {};
   for (const [name, command] of Object.entries(scripts)) {
     for (const match of command.matchAll(/(?:^|[;&|]\s*)node(?:\s+--[^\s]+)*\s+([\w/.-]+\.(?:mjs|cjs|js))(?=\s|$)/g)) {
-      if (!trackedSet.has(match[1])) failures.push(`package.json: script ${name} requires missing ${match[1]}`);
+      // Installed dependencies are restored by `npm ci`, never published.
+      if (!match[1].startsWith("node_modules/") && !trackedSet.has(match[1])) failures.push(`package.json: script ${name} requires missing ${match[1]}`);
     }
   }
 }

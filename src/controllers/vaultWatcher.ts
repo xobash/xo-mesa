@@ -17,6 +17,7 @@ import { recordTextRevisionsAsync, type RevisionInput } from "../lib/textRevisio
 import type { TextSaveCoordinator } from "../lib/textSaveCoordinator";
 import {
   isIndexableVaultRelPath,
+  isOpenableTextFile,
   isTextualVaultFile,
   isValidUtf8Text,
   needsCachedTextRefresh,
@@ -239,8 +240,8 @@ export function createWatchBatchHandler({ get, set, textSaves, external, current
             continue;
           }
 
-          // Existing file — refresh content/metadata
-          if (isTextualVaultFile(file)) {
+          // Existing file — refresh content/metadata (sniffed text included)
+          if (isOpenableTextFile(file)) {
             watcherReads++;
             const startedAt = performance.now();
             const read = await readWatchedText(file).finally(() => {

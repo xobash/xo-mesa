@@ -26,10 +26,13 @@ function syncStatusLine(name: string, report: SyncReport): string {
   return message;
 }
 
+/** Errors that mean the peer could not be reached. */
+const OFFLINE_ERROR = /offline|unreachable|timed? out|timeout|network|connection|refused|dns/i;
+
 function syncFailurePhase(report: SyncReport): SyncState["syncPhase"] {
   if (report.cancelled) return "cancelled";
   const failed = report.failed.filter(file => file.error !== 'cancelled');
-  if (failed.some(file => /offline|unreachable|timed? out|timeout|network|connection|refused|dns/i.test(file.error))) {
+  if (failed.some(file => OFFLINE_ERROR.test(file.error))) {
     return "offline";
   }
   if (failed.length) return "incomplete";
@@ -75,7 +78,11 @@ export function createSyncWorkflow(deps: Dependencies) {
       if (!admitted()) return;
       const currentPeer = get().settings.peers.find(saved => saved.id === peer.id);
       const token = currentPeer?.token || get().settings.syncToken;
-      if (!currentPeer || !token) {
+      if (!currentPeer) {
+        set({ syncStatus: `Sync stopped: ${peer.name} was removed.`, syncPhase: 'cancelled' });
+        return;
+      }
+      if (!token) {
         set({ syncStatus: 'Set the sync key first.', syncPhase: 'error' });
         return;
       }
@@ -114,7 +121,7 @@ export function createSyncWorkflow(deps: Dependencies) {
       deps.log('error', `sync with ${peer.name} failed: ${message}`);
       // A local save or listener failure does not make the remote device unhealthy.
       if (contacted) get().updatePeer(peer.id, { lastChecked: Date.now(), lastStatus: 'error', lastError: message });
-      if (currentOp === op) set({ syncStatus: `Sync stopped: ${message}`, syncPhase: /offline|unreachable|timed? out|timeout|network|connection|refused|dns/i.test(message) ? 'offline' : 'error' });
+      if (currentOp === op) set({ syncStatus: `Sync stopped: ${message}`, syncPhase: OFFLINE_ERROR.test(message) ? 'offline' : 'error' });
     } finally {
       if (currentOp === op) {
         transferring = false;

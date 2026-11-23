@@ -17,7 +17,8 @@ import {
   keyboardFileOrder,
   moveKeyboardFocus,
 } from "../lib/keyboardNav";
-import { DOCK_WINDOW_EVENT, GLOBAL_AGENT_EVENT, normalizeDockWindowPayload } from "../lib/windowDock";
+import { normalizeDockWindowPayload } from "../lib/windowDock";
+import { installDockBridge } from "./dockBridge";
 import {
   claimPlainShiftTabToggle,
   claimKeyboardShortcut,
@@ -30,6 +31,7 @@ import { AGENT_CONTEXT_EVENT } from "../lib/piSessionBridge";
 import { buildAgentContext, contextPrompt } from "../lib/agent";
 import { LatestWinsQueue, SupersededTaskError } from "../lib/latestWinsQueue";
 import { autoSyncBaseDelayMs, nextAutoSyncDelayMs } from "../lib/syncAutoSchedule";
+import { pruneGraphWindowBootstraps } from "../lib/graphWindowBootstrap";
 
 const QUIT_REQUESTED_EVENT = "mesa://quit-requested";
 
@@ -137,7 +139,7 @@ export function useMainWindowEffects({
     }).then((stop) => {
       if (alive) unlisten = stop;
       else stop();
-    });
+    }).catch((error) => console.warn("[mesa] Pi view request listener unavailable:", error));
     return () => {
       alive = false;
       unlisten?.();
@@ -254,6 +256,13 @@ export function useMainWindowEffects({
     };
   }, [mainWindow, onBlocked]);
 
+  // Graph-window snapshots that no window consumed (failed window, quit
+  // before the timed discard) would stay in IndexedDB forever.
+  useEffect(() => {
+    if (!mainWindow || !IN_TAURI) return;
+    void pruneGraphWindowBootstraps();
+  }, [mainWindow]);
+
   // Auto-open: demo vault in the browser, last-used vault in the desktop app.
   useEffect(() => {
     if (!IN_TAURI || !mainWindow) return;
@@ -357,11 +366,8 @@ export function useMainWindowEffects({
   // sender owns closing itself; the main app only restores the view/context.
   useEffect(() => {
     if (!mainWindow || !IN_TAURI) return;
-    let alive = true;
-    let unlistenDock: (() => void) | null = null;
-    let unlistenAgent: (() => void) | null = null;
-    void (async () => {
-      const offDock = await listen(DOCK_WINDOW_EVENT, async (event) => {
+    return installDockBridge(listen, {
+      dock: async (event) => {
         const payload = normalizeDockWindowPayload(event.payload);
         if (!payload) return;
         const st = getStore();
@@ -385,24 +391,12 @@ export function useMainWindowEffects({
         st.moveViewToRight(payload.view);
         const idx = getStore().settings.rightStack.indexOf(payload.view);
         getStore().setKeyboardFocus({ region: "right", rightIndex: Math.max(0, idx) });
-      });
-      const offAgent = await listen(GLOBAL_AGENT_EVENT, () => {
+      },
+      globalAgent: () => {
         const st = getStore();
         st.setPiOverlayOpen(!st.piOverlayOpen);
-      });
-      if (alive) {
-        unlistenDock = offDock;
-        unlistenAgent = offAgent;
-      } else {
-        offDock();
-        offAgent();
-      }
-    })();
-    return () => {
-      alive = false;
-      unlistenDock?.();
-      unlistenAgent?.();
-    };
+      },
+    }, (error) => console.warn("[mesa] window dock bridge unavailable:", error));
   }, [mainWindow]);
 
   // Focus the main webview after its first paint so renderer shortcuts receive input.
@@ -498,7 +492,7 @@ export function useMainWindowEffects({
         e.preventDefault();
         vimPrefixRef.current = "window";
         useAppStore.setState({
-          status: "Window command: h/l focus, H/L move, j/k choose stacked panel, f flip side.",
+          status: "Window command: h/l focus, Shift-H/L move between panes, q close, f flip side.",
         });
         return;
       }
@@ -521,7 +515,7 @@ export function useMainWindowEffects({
           st.flipDockSide();
           return;
         }
-        if (k === "h" || k === "j" || k === "k" || k === "l") {
+        if (k === "h" || k === "l") {
           if (e.shiftKey && k === "h" && focus.region === "right") {
             const view = stack[focus.rightIndex];
             if (view) st.moveViewToCenter(view);
@@ -534,20 +528,8 @@ export function useMainWindowEffects({
           ) {
             st.moveViewToRight(st.settings.centerView);
             st.setKeyboardFocus({ region: "right", rightIndex: stack.length });
-          } else if (e.shiftKey && focus.region === "right" && (k === "j" || k === "k")) {
-            const view = stack[focus.rightIndex];
-            if (view) {
-              const next = Math.max(
-                0,
-                Math.min(stack.length - 1, focus.rightIndex + (k === "j" ? 1 : -1))
-              );
-              st.moveViewToRight(view, next);
-              st.setKeyboardFocus({ region: "right", rightIndex: next });
-            }
           } else {
-            st.setKeyboardFocus(
-              moveKeyboardFocus(focus, k as "h" | "j" | "k" | "l", stack.length, st.settings.sidebarOpen)
-            );
+            st.setKeyboardFocus(moveKeyboardFocus(focus, k, stack.length, st.settings.sidebarOpen));
           }
         }
         return;
@@ -566,14 +548,7 @@ export function useMainWindowEffects({
       }
 
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (k === "g") {
-        e.preventDefault();
-        vimPrefixRef.current = "g";
-        useAppStore.setState({
-          status: "g again jumps to the first file. Shift-G jumps to the last file.",
-        });
-        return;
-      }
+      // Shift-G first: `k` is lower-cased, so the prefix check would swallow it.
       if (key === "G") {
         e.preventDefault();
         const ordered = keyboardFileOrder(st.files, st.notes, st.settings);
@@ -582,22 +557,22 @@ export function useMainWindowEffects({
         st.setKeyboardFocus({ ...st.keyboardFocus, region: "sidebar" });
         return;
       }
+      if (k === "g") {
+        e.preventDefault();
+        vimPrefixRef.current = "g";
+        useAppStore.setState({
+          status: "g again jumps to the first file. Shift-G jumps to the last file.",
+        });
+        return;
+      }
       if (k === "j" || k === "k") {
         e.preventDefault();
         const focus = clampKeyboardFocus(
           st.keyboardFocus,
           st.settings.rightStack.length
         );
-        if (focus.region === "right") {
-          st.setKeyboardFocus(
-            moveKeyboardFocus(
-              focus,
-              k as "j" | "k",
-              st.settings.rightStack.length,
-              st.settings.sidebarOpen
-            )
-          );
-        } else {
+        // The side region holds one pane (panes.ts), so j/k there has nothing to step through.
+        if (focus.region !== "right") {
           const ordered = keyboardFileOrder(st.files, st.notes, st.settings);
           const next = adjacentPath(ordered, st.activePath, k === "j" ? 1 : -1);
           if (next) void st.selectFile(next);
@@ -613,7 +588,7 @@ export function useMainWindowEffects({
         );
         const next = moveKeyboardFocus(
           focus,
-          k as "h" | "l",
+          k,
           st.settings.rightStack.length,
           st.settings.sidebarOpen
         );

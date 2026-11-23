@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "../store";
 import type { DeepResearchRunState } from "../store";
+import { clamp } from "../lib/clamp";
 
 function phaseLabel(run: DeepResearchRunState): string {
   if (["planning", "researching", "synthesizing"].includes(run.phase)) {
@@ -60,10 +61,7 @@ export function DeepResearchPhaseChipWithRun({
     const popoverRect = popover.getBoundingClientRect();
     const edge = 8;
     const gap = 8;
-    const left = Math.max(
-      edge,
-      Math.min(anchorRect.right - popoverRect.width, window.innerWidth - popoverRect.width - edge)
-    );
+    const left = clamp(anchorRect.right - popoverRect.width, edge, window.innerWidth - popoverRect.width - edge);
     const below = anchorRect.bottom + gap;
     const top = below + popoverRect.height <= window.innerHeight - edge
       ? below

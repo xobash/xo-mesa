@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
@@ -61,23 +61,12 @@ fn file_hash(path: &Path) -> io::Result<([u8; 32], u64)> {
     platform_fs::retry_transient_lock(|| file_hash_once(path))
 }
 
+/// Hash from one no-follow handle whose type is checked on that handle, so a
+/// swap to a link after `observed`'s inspection is refused, never hashed through.
 fn file_hash_once(path: &Path) -> io::Result<([u8; 32], u64)> {
-    let mut file = File::open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::other("vault target is not a regular file"));
-    }
-    let mut hasher = Sha256::new();
-    let mut length = 0u64;
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-        length += count as u64;
-    }
-    Ok((hasher.finalize().into(), length))
+    let file = crate::sync_core::open_regular_no_follow(path)?;
+    let (length, digest) = crate::sync_core::hash_reader(file)?;
+    Ok((digest, length))
 }
 
 fn observed(path: &Path) -> Result<Option<([u8; 32], u64)>, String> {
@@ -439,6 +428,7 @@ fn export_copy(path: &Path, vaults: &[PathBuf], data: &[u8]) -> Result<(), Strin
     sync_parent(&target).map_err(|e| e.to_string())
 }
 
+pub(crate) const RECOVERY_COPY_MAIN_ONLY: &str = "recovery copies belong to the main workspace";
 /// Only a native user-selected, new file outside the vault may receive recovery text.
 #[tauri::command]
 pub async fn text_save_copy(
@@ -449,9 +439,7 @@ pub async fn text_save_copy(
     content: String,
 ) -> Result<bool, String> {
     use tauri_plugin_dialog::DialogExt;
-    if window.label() != "main" {
-        return Err("recovery copies belong to the main workspace".into());
-    }
+    crate::require_main_for(window.label(), RECOVERY_COPY_MAIN_ONLY)?;
     if content.len() > 64 * 1024 * 1024 {
         return Err("recovery copy exceeds 64 MiB".into());
     }

@@ -2,12 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState, Compartment, StateEffect, StateField } from "@codemirror/state";
 import { invertedEffects } from "@codemirror/commands";
-import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { openSearchPanel, search } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
 import { useAppStore, getStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
+import { TableEditor } from "./TableEditor";
+import { isProseFile, languageFor } from "./editorSyntax";
+import { delimiterForExt, detectDelimiter } from "../lib/delimitedTable";
+import { extOf } from "../lib/vaultPaths";
+import { atxHeading } from "../lib/markdownCode";
+import { MAX_EDITABLE_TEXT_CHARS, MAX_TABLE_EDIT_CHARS } from "../lib/textCachePlan";
+import { formatBytes } from "../lib/formatBytes";
 import { focusEditorCommands, registerEditorCommands, type EditorCommandTarget } from "../lib/editorCommands";
 import {
   joinWithLineBreaks,
@@ -126,7 +132,23 @@ function docText(state: EditorState): string {
   return joinWithLineBreaks(state.doc.iterLines(), tracked);
 }
 
-function makeState(doc: string, onUserEdit: (text: string, activity: EditorActivityChange) => void, editable = true): EditorState {
+/** The editor accepts edits only for a loaded, valid file within the edit limit. */
+function canEdit(activePath: string | null, state: string, text: string): boolean {
+  return Boolean(activePath) && state === "ready" && text.length <= MAX_EDITABLE_TEXT_CHARS;
+}
+
+/** Extension of the active file, for language and toolbar choices. The
+ *  catalog wins; an uncatalogued path uses its name; no document is prose. */
+function editorExt(state: { activePath: string | null; fileFor: (rel: string) => { ext: string } | undefined }): string {
+  if (!state.activePath) return "md";
+  return state.fileFor(state.activePath)?.ext ?? extOf(state.activePath.split("/").pop() ?? "");
+}
+
+function activeExt(): string {
+  return editorExt(getStore());
+}
+
+function makeState(doc: string, onUserEdit: (text: string, activity: EditorActivityChange) => void, editable = true, ext = activeExt()): EditorState {
   return EditorState.create({
     doc,
     extensions: [
@@ -134,11 +156,11 @@ function makeState(doc: string, onUserEdit: (text: string, activity: EditorActiv
       basicSetup,
       // Find and replace (Mod-F) opens above the note, like other editors.
       search({ top: true }),
-      markdown(),
+      languageFor(ext),
       syntaxHighlighting(themedHighlight),
       editorLayout,
       EditorView.lineWrapping,
-      EditorView.contentAttributes.of({ "aria-label": "Note editor", "aria-multiline": "true" }),
+      EditorView.contentAttributes.of({ "aria-label": isProseFile(ext) ? "Note editor" : "Text editor", "aria-multiline": "true" }),
       editableCompartment.of(EditorView.editable.of(editable)),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
@@ -154,6 +176,15 @@ export function Editor() {
   const content = useAppStore((s) => s.content);
   const activeContentState = useAppStore((s) => s.activeContentState);
   const loadActiveContent = useAppStore((s) => s.loadActiveContent);
+  const ext = useAppStore(editorExt);
+  const prose = isProseFile(ext);
+  const extDelimiter = delimiterForExt(ext);
+  const [tableView, setTableView] = useState(true);
+  const showTable = extDelimiter !== null && tableView;
+  // The table reads the file's own delimiter (e.g. `;` in European CSV) from a
+  // bounded prefix; edits keep it. Raw view skips the check.
+  const delimiter = showTable ? detectDelimiter(content, extDelimiter) : extDelimiter;
+  const tooLarge = content.length > MAX_EDITABLE_TEXT_CHARS;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   // The exact string we last pushed into the store from a user edit. When the
@@ -171,11 +202,19 @@ export function Editor() {
     // The full outline is optional work. Run after the input event and coalesce
     // rapid edits instead of scanning the whole document in the render path.
     const timer = setTimeout(() => setHeadings(content.split("\n").flatMap((line, index) => {
-      const match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
-      return match ? [{ level: match[1].length, label: match[2], line: index + 1 }] : [];
+      const heading = atxHeading(line);
+      return heading ? [{ ...heading, line: index + 1 }] : [];
     })), 80);
     return () => clearTimeout(timer);
   }, [content, outlineOpen, activeContentState]);
+
+  // Table edits reach the store like keystrokes; the effect below then
+  // replaces the hidden source view's document.
+  const onTableChange = (text: string) => {
+    const store = getStore();
+    if (docKeyRef.current !== `${store.vaultPath ?? ""}\0${store.activePath ?? ""}`) return;
+    store.setContentFromEditor(text);
+  };
 
   const goToHeading = (line: number) => {
     const view = viewRef.current;
@@ -278,12 +317,12 @@ export function Editor() {
         view.setState(cached.state);
         view.scrollDOM.scrollTop = cached.scrollTop;
       } else {
-        view.setState(makeState(next, onUserEditRef.current, Boolean(activePath) && activeContentState === "ready"));
+        view.setState(makeState(next, onUserEditRef.current, canEdit(activePath, activeContentState, next)));
       }
     } else if (cur !== next) {
       lastEditorTextRef.current = null;
       const anchor = Math.min(view.state.selection.main.anchor, next.length);
-      view.setState(makeState(next, onUserEditRef.current, Boolean(activePath) && activeContentState === "ready"));
+      view.setState(makeState(next, onUserEditRef.current, canEdit(activePath, activeContentState, next)));
       view.dispatch({ selection: { anchor } });
     }
   }, [key, activePath, activeContentState, content]);
@@ -292,9 +331,9 @@ export function Editor() {
     const view = viewRef.current;
     if (!view) return;
     view.dispatch({ effects: editableCompartment.reconfigure(EditorView.editable.of(
-      Boolean(activePath) && activeContentState === "ready"
+      canEdit(activePath, getStore().activeContentState, getStore().content)
     )) });
-  }, [key, activePath, activeContentState]);
+  }, [key, activePath, activeContentState, tooLarge]);
 
   // The host div is always rendered so CodeMirror can mount even before the
   // first note is selected (the vault picks the first note a tick after the
@@ -319,7 +358,7 @@ export function Editor() {
         >
           Find
         </button>
-        <button
+        {prose && <button
           className={"seg-btn" + (outlineOpen ? " on" : "")}
           aria-pressed={outlineOpen}
           onClick={() => setOutlineOpen((open) => !open)}
@@ -327,8 +366,16 @@ export function Editor() {
           title="Show document outline"
         >
           Outline
-        </button>
-        <div className="seg">
+        </button>}
+        {delimiter !== null && <div className="seg">
+          <button className={"seg-btn" + (showTable ? " on" : "")} aria-pressed={showTable} onClick={() => setTableView(true)}>
+            Table
+          </button>
+          <button className={"seg-btn" + (!showTable ? " on" : "")} aria-pressed={!showTable} onClick={() => setTableView(false)}>
+            Raw
+          </button>
+        </div>}
+        {prose && <div className="seg">
           <button
             className={"seg-btn" + (mode === "source" ? " on" : "")}
             aria-pressed={mode === "source"}
@@ -343,11 +390,25 @@ export function Editor() {
           >
             Live
           </button>
-        </div>
+        </div>}
       </div>
       {activePath && activeContentState === "invalid-encoding" && <p role="status">This file is not valid UTF-8; opened read-only to avoid corrupting it.</p>}
-      <div className={"editor-workspace " + mode + (outlineOpen ? " with-outline" : "")}>
+      {activePath && activeContentState === "ready" && tooLarge && !showTable && <p role="status">
+        This file is larger than {formatBytes(MAX_EDITABLE_TEXT_CHARS)} of text; opened read-only so typing stays fast.
+      </p>}
+      <div className={"editor-workspace " + (showTable ? "table" : prose ? mode : "source") + (prose && outlineOpen ? " with-outline" : "")}>
         <div className="editor-host" ref={hostRef} />
+        {showTable && delimiter !== null && activePath && (activeContentState === "ready" || activeContentState === "invalid-encoding") && (
+          <TableEditor
+            key={key}
+            text={content}
+            delimiter={delimiter}
+            readOnlyReason={activeContentState !== "ready" ? "this file is not valid UTF-8, so saving could corrupt it."
+              : content.length > MAX_TABLE_EDIT_CHARS ? `tables above ${formatBytes(MAX_TABLE_EDIT_CHARS)} are view-only to keep edits fast; use Raw to edit.`
+              : null}
+            onChange={onTableChange}
+          />
+        )}
         {activePath && activeContentState !== "ready" && activeContentState !== "invalid-encoding" && (
           <div className="editor-load-state" role="status">
             <p>{activeContentState === "loading" ? "Loading document…" :
@@ -358,12 +419,12 @@ export function Editor() {
             </button>}
           </div>
         )}
-        {mode === "live" && (
+        {prose && mode === "live" && (
           <aside className="editor-live-preview">
             <MarkdownView source={content} />
           </aside>
         )}
-        {outlineOpen && (
+        {prose && outlineOpen && (
           <nav className="editor-outline" aria-label="Document outline">
             {headings.map((heading) => (
               <button

@@ -54,6 +54,9 @@ export const RESERVED_HOTKEYS: Readonly<Record<string, string>> = {
   "Mod+Alt+[": "Fold",
   "Mod+Alt+]": "Unfold",
   "Mod+Space": "Autocomplete",
+  // RTF editor formatting (Mod+I above is shared with it).
+  "Mod+B": "Bold",
+  "Mod+U": "Underline",
 };
 
 // Mesa's own handlers match these keys with Mod whatever other modifiers are

@@ -9,8 +9,8 @@ on:
 permissions:
   contents: read
 
-# A newer pull-request run cancels the superseded one. Push, scheduled and
-# manual runs get their own group so every commit keeps its full check run.
+# A newer pull-request run cancels the superseded one. Push and manual runs
+# get their own group so every commit keeps its full check run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -44,8 +44,10 @@ jobs:
       - run: npm run test:index
       - run: npm run test:activity-api
       - run: npm run test:markdown
+      # Also the production build: the check runs the Dockerfile's own
+      # `npm run build` on exactly the image's COPY inputs, so a second
+      # full-checkout build here would prove nothing more.
       - run: npm run test:notices
-      - run: npm run build
       - run: npm run audit:public
       - run: npm run audit:independent
       # Registry-backed advisory gate. Kept separate from the offline

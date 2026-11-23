@@ -1192,12 +1192,14 @@ pub(super) fn ipv6_listener(
 // Blocking work: run off the main (UI) thread.
 #[tauri::command(async)]
 pub fn sync_start(
+    window: tauri::Window,
     app: tauri::AppHandle,
     port: u16,
     token: String,
     vault: String,
     bind_address: String,
 ) -> Result<(), String> {
+    crate::require_main(window.label())?;
     let token = crate::secrets::resolve(&token)?;
     require_sync_key(&token)?;
     let bind_ip = listener_address(&bind_address)?;
@@ -1360,7 +1362,8 @@ pub(super) fn finish_server_runtime(runtime: tokio::runtime::Runtime) {
 
 // Blocking work: run off the main (UI) thread.
 #[tauri::command(async)]
-pub fn sync_stop() -> Result<(), String> {
+pub fn sync_stop(window: tauri::Window) -> Result<(), String> {
+    crate::require_main(window.label())?;
     // Hold the state lock until the old threads exit, so a concurrent start
     // cannot bind the port while the old listener still owns it. The join is
     // bounded by the server runtime shutdown timeout.
@@ -1374,7 +1377,12 @@ pub fn sync_stop() -> Result<(), String> {
 
 /// Never waits on the state lock: start/stop may hold it while joining.
 #[tauri::command]
-pub fn sync_status() -> bool {
+pub fn sync_status(window: tauri::Window) -> Result<bool, String> {
+    crate::require_main(window.label())?;
+    Ok(server_running())
+}
+
+pub(crate) fn server_running() -> bool {
     SERVER_RUNNING.load(Ordering::Acquire)
 }
 
@@ -1382,7 +1390,8 @@ pub fn sync_status() -> bool {
 /// code. The UDP "connect" trick sends no packets — it just asks the OS which
 /// local interface it would use to reach a public address, revealing our IP.
 #[tauri::command]
-pub fn sync_local_addr() -> Result<String, String> {
+pub fn sync_local_addr(window: tauri::Window) -> Result<String, String> {
+    crate::require_main(window.label())?;
     local_lan_ip()
 }
 

@@ -1670,7 +1670,7 @@ fn sync_status_answers_while_start_or_stop_holds_the_state_lock() {
     });
     wait_locked.recv().unwrap();
     let (answered, answer) = std::sync::mpsc::channel();
-    std::thread::spawn(move || answered.send(sync_status()).unwrap());
+    std::thread::spawn(move || answered.send(server_running()).unwrap());
     let status = answer.recv_timeout(Duration::from_secs(1));
     release.send(()).unwrap();
     holder.join().unwrap();

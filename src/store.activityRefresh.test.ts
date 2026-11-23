@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { useAppStore } from './store';
 import type { VaultFile } from './types';
+import { rememberSniffedText } from './lib/vaultFileKinds';
 const boundary = vi.hoisted(() => ({ handlers: new Map<string, (event: {payload:unknown})=>Promise<void>>(), scan: vi.fn(), read: vi.fn(), invoke: vi.fn(async (_name: string, _args?: unknown): Promise<unknown> => undefined) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async (name:string, callback:(event:{payload:unknown})=>Promise<void>) => { boundary.handlers.set(name,callback);return ()=>boundary.handlers.delete(name); } }));
 vi.mock('@tauri-apps/api/core', async original => ({...await original<object>(), invoke: (name:string,args?:unknown)=>boundary.invoke(name,args)}));
@@ -69,4 +70,18 @@ it('50 activity events outside the vault or in hidden folders cause at most one 
   await vi.advanceTimersByTimeAsync(1000);
   expect(boundary.scan.mock.calls.length).toBeLessThanOrEqual(1);
   expect(useAppStore.getState().files).toEqual([]);
+});
+
+it('Pi activity on a file sniffed as text loads its excerpt', async () => {
+  const file: VaultFile = { path: '/v/app.zzz', relPath: 'app.zzz', name: 'app', ext: 'zzz', isMarkdown: false };
+  boundary.scan.mockResolvedValue([file]);
+  await useAppStore.getState().openVault('/v');
+  const ensurePeek = vi.fn(async () => 'text');
+  useAppStore.setState({ ensurePeek });
+  const activity = boundary.handlers.get('activity')!;
+  await activity({ payload: { path: '/v/app.zzz', op: 'read', status: 'ok' } });
+  expect(ensurePeek).not.toHaveBeenCalled();
+  rememberSniffedText('/v/app.zzz');
+  await activity({ payload: { path: '/v/app.zzz', op: 'read', status: 'ok' } });
+  expect(ensurePeek).toHaveBeenCalledWith('app.zzz');
 });

@@ -194,20 +194,25 @@ async function renderRoute(search: string) {
 
 it("renders a detached graph panel window from its bootstrap snapshot without the workspace shell", async () => {
   const { vaultPath, vaultName, files, notes } = useAppStore.getState();
-  // The main window hands the graph a relative-path snapshot; the URL carries the root.
-  localStorage.setItem("mesa:graph-window:route-test", JSON.stringify({
-    vaultPath: "", vaultName, settings: {}, notes,
-    files: files.map((file) => ({ ...file, path: file.relPath })),
-  }));
+  // The main window hands the graph a relative-path snapshot (IndexedDB in the
+  // app; a memory store here, as jsdom has none); the URL carries the root.
+  const real = await vi.importActual<typeof import("./lib/graphWindowBootstrap")>("./lib/graphWindowBootstrap");
+  const values = new Map<string, unknown>();
+  const memory = { put: async (key: string, value: unknown) => void values.set(key, structuredClone(value)),
+    take: async (key: string) => { const value = values.get(key) ?? null; values.delete(key); return value; }, remove: async (key: string) => void values.delete(key),
+    keys: async (limit: number) => [...values.keys()].slice(0, limit), removeMany: async (keys: readonly string[]) => { for (const key of keys) values.delete(key); } };
+  expect(await real.saveGraphWindowBootstrap("route-test", { vaultPath: vaultPath!, vaultName, settings: {}, notes, files }, memory)).toBe(true);
+  vi.doMock("./lib/graphWindowBootstrap", () => ({ ...real, consumeGraphWindowBootstrap: (id: string, _store: unknown, root?: string) => real.consumeGraphWindowBootstrap(id, memory, root) }));
   const { routeHost, routeStore, cleanup } = await renderRoute(`?panel=graph&graphBootstrap=route-test&vault=${encodeURIComponent(vaultPath!)}`);
+  vi.doUnmock("./lib/graphWindowBootstrap");
   try {
     expect(await settle(() => routeHost.querySelector(".panel-window-chromeless") !== null)).toBe(true);
     // The OS title bar is the drag handle: no Mesa header, sidebar or status bar.
     expect(routeHost.querySelector(".panel-window-chromeless .doc-window-bar")).toBeNull();
     expect(routeHost.querySelector(".status-bar")).toBeNull();
-    expect(routeStore.getState().vaultPath).toBe(vaultPath);
+    expect(await settle(() => routeStore.getState().vaultPath === vaultPath)).toBe(true);
     expect(Object.keys(routeStore.getState().notes)).toHaveLength(Object.keys(notes).length);
-    expect(localStorage.getItem("mesa:graph-window:route-test")).toBeNull();
+    expect(values.has("route-test")).toBe(false);
     expect(await settle(() => routeHost.querySelector(".panel-window-body .graph-wrap") !== null)).toBe(true);
   } finally {
     cleanup();

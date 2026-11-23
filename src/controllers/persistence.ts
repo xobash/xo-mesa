@@ -12,7 +12,7 @@ import {
 import {
   IN_TAURI,
   flushableNoteText,
-  isTextualVaultFile,
+  isOpenableTextFile,
   isValidUtf8Text,
   readNote,
   readNoteResult,
@@ -158,7 +158,7 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
         // the confirmation and cannot race a write under the same path.
         saveHold = await textSaves.hold([key], false);
         const file = get().files.find((candidate) => candidate.path === key);
-        if (!file || !isTextualVaultFile(file)) {
+        if (!file || !isOpenableTextFile(file)) {
           throw new Error(`The text file is no longer available: ${issue.relPath}`);
         }
         // Strict reads preserve errors; conflict resolution needs actual disk bytes.
@@ -234,14 +234,14 @@ export function createPersistenceController({ get, set, getGeneration, refreshMi
       const root = get().vaultPath;
       const active = get().activePath;
       const file = active ? get().fileFor(active) : null;
-      if (!root || !active || !file || !isTextualVaultFile(file)) return [];
+      if (!root || !active || !file || !isOpenableTextFile(file)) return [];
       return listTextRevisionsAsync(root, active);
     },
     restoreTextRevision: async (revisionId) => {
       const root = get().vaultPath;
       const active = get().activePath;
       const file = active ? get().fileFor(active) : null;
-      if (!root || !active || !file || !isTextualVaultFile(file)) {
+      if (!root || !active || !file || !isOpenableTextFile(file)) {
         throw new Error("Open a text file before restoring a revision.");
       }
       const generation = getGeneration();

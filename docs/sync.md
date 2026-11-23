@@ -500,7 +500,7 @@ the connection or times out, the Sync window on Windows suggests allowing Mesa
 on private networks or setting the network to **Private**. Name-resolution and
 internet failures do not show this note. Mesa adds no firewall rule itself.
 
-Discovery retains at most 128 nearby devices and expires entries after 20 seconds.
+Discovery retains at most 64 nearby devices and expires entries after 20 seconds.
 Asynchronous discovery registration and shutdown are serialized so rapid opening,
 closing and settings changes cannot leave duplicate listeners behind.
 

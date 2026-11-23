@@ -114,6 +114,22 @@ it('turns a watcher overflow into one rescan that applies lost creates, deletes 
   f.controller.dispose();
 });
 
+it('never removes a note Mesa created while the overflow rescan was listing the vault', async () => {
+  const f = watcherFixture(); await f.controller.actions.openVault('/v');
+  const sized = (rel: string): VaultFile => ({ ...file(rel), size: 1, mtime: 1 });
+  f.state.setState({ files: [sized('kept.md')], contentCache: { 'kept.md': 'k' }, fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });
+  // The listing finishes after Mesa published Fresh.md; the listing does not contain it.
+  io.scan.mockReset().mockImplementation(async () => {
+    f.state.setState({ files: [...f.state.getState().files, sized('Fresh.md')], contentCache: { ...f.state.getState().contentCache, 'Fresh.md': '' } });
+    return [sized('kept.md')] as never;
+  });
+  f.change([{ kind: 'rescan', paths: ['/v'] }]);
+  await vi.waitFor(() => expect(io.scan).toHaveBeenCalled());
+  await new Promise(resolve => setTimeout(resolve, 30));
+  expect(f.state.getState().files.map(file => file.relPath).sort()).toEqual(['Fresh.md', 'kept.md']);
+  f.controller.dispose();
+});
+
 it('never treats an empty rescan listing as a mass deletion', async () => {
   const f = watcherFixture(); await f.controller.actions.openVault('/v');
   f.state.setState({ files: [file('a.md')], fileFor: rel => f.state.getState().files.find(file => file.relPath === rel) });

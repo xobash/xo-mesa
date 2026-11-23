@@ -1,8 +1,8 @@
 import { useRef, type PointerEvent as ReactPointerEvent } from "react";
-import type { ForceCollide, Simulation } from "d3-force";
+import type { Simulation } from "d3-force";
 import type { GraphNode, GraphLink } from "../types";
 import { getStore } from "../store";
-import type { GraphPhysicsRequest } from "../lib/graphPhysics";
+import { GRAPH_REHEAT_ALPHA, reheatGraphSimulation, type GraphPhysicsRequest } from "../lib/graphPhysics";
 import { markMesaPerf } from "../lib/mesaPerf";
 import { isSyntheticNode } from "./graphColors";
 import type { Transform } from "./graphDraw";
@@ -15,8 +15,8 @@ export interface DragState {
   moved: boolean;
   offsetX?: number;
   offsetY?: number;
-  /** Configured collide passes, restored when a moved node drag ends. */
-  collideIterations?: number;
+  /** Time of the last pan move, for release inertia. */
+  lastMoveAt?: number;
 }
 
 /** Bounded per-drag frame samples, summarized into one local `graph-drag` mark. */
@@ -49,9 +49,11 @@ export interface GraphPointerDeps {
   fitPendingRef: Ref<boolean>;
   resumeRef: Ref<() => void>;
   forceNodesRef: Ref<GraphNode[]>;
+  /** Pan inertia in CSS px per ms; the frame loop coasts and decays it. */
+  panVelocityRef: Ref<{ x: number; y: number; at: number }>;
   nodeAtScreen: (sx: number, sy: number) => GraphNode | null;
   kickGraph: (dx: number, dy: number, strength?: number) => void;
-  startDragPhysics: (node: GraphNode | null, collideIterations: number | undefined) => void;
+  startDragPhysics: (node: GraphNode | null) => void;
   postPhysics: (message: GraphPhysicsRequest) => void;
 }
 
@@ -73,6 +75,7 @@ export function useGraphPointer(deps: GraphPointerDeps) {
     deps.resumeRef.current();
     if (e.button !== 0 || deps.dragRef.current.node || deps.dragRef.current.panning) return;
     deps.replayCameraRef.current = false;
+    deps.panVelocityRef.current = { x: 0, y: 0, at: 0 };
     const { x, y } = localPoint(e.clientX, e.clientY);
     const n = deps.nodeAtScreen(x, y);
     try {
@@ -92,7 +95,7 @@ export function useGraphPointer(deps: GraphPointerDeps) {
         offsetX: n.x! - gx, offsetY: n.y! - gy };
     } else {
       deps.fastDrawUntilRef.current = performance.now() + 500;
-      deps.dragRef.current = { node: null, panning: true, lastX: x, lastY: y, moved: false };
+      deps.dragRef.current = { node: null, panning: true, lastX: x, lastY: y, moved: false, lastMoveAt: performance.now() };
     }
   }
 
@@ -112,20 +115,10 @@ export function useGraphPointer(deps: GraphPointerDeps) {
         d.moved = true;
         if (firstMove) {
           const sim = deps.simRef.current;
-          // Reheat with a uniform drag target so neighbours follow the pointer.
-          // Degree-based boosts can make hub drags jittery.
-          const target = 0.3;
-          sim?.alpha(Math.max(sim.alpha(), target));
-          sim?.alphaTarget(target);
-          // A drag frame is dominated by the whole-graph tick. One collide pass
-          // per tick keeps the drag within layout noise of the configured
-          // passes; idle overlap cleanup still runs after release.
-          const collide = sim?.force("collide") as ForceCollide<GraphNode> | null | undefined;
-          if (collide) {
-            d.collideIterations = collide.iterations();
-            collide.iterations(1);
-          }
-          deps.startDragPhysics(d.node, d.collideIterations);
+          // Reheat to a steady drag target so the neighbourhood follows the
+          // pointer, as Obsidian does: no velocity cap, no hub boost.
+          if (sim) reheatGraphSimulation(sim).alphaTarget(GRAPH_REHEAT_ALPHA);
+          deps.startDragPhysics(d.node);
           const startedAt = performance.now();
           deps.dragPerfRef.current = { startedAt, last: startedAt, intervals: [], work: [], draw: [], physics: 0 };
         }
@@ -151,6 +144,13 @@ export function useGraphPointer(deps: GraphPointerDeps) {
       d.lastX = x;
       d.lastY = y;
       d.moved = true;
+      // Smoothed pointer velocity, for the coast after release.
+      const now = performance.now();
+      const dt = Math.max(1, now - (d.lastMoveAt ?? now));
+      d.lastMoveAt = now;
+      const v = deps.panVelocityRef.current;
+      v.x = v.x * 0.8 + (dx / dt) * 0.2;
+      v.y = v.y * 0.8 + (dy / dt) * 0.2;
       deps.kickGraph(dx, dy, 0.65);
       deps.motionUntilRef.current = performance.now() + 2400;
       deps.fastDrawUntilRef.current = performance.now() + 260;
@@ -171,19 +171,21 @@ export function useGraphPointer(deps: GraphPointerDeps) {
       const physics = deps.physicsRef.current;
       const physicsIndex = physics.active ? physics.index.get(d.node) : undefined;
       if (physicsIndex != null) deps.postPhysics({ type: "release", session: physics.session, index: physicsIndex });
-      const sim = deps.simRef.current;
-      if (sim) {
-        // Let existing energy decay; releasing a hub must not add a kick.
-        sim.alphaTarget(0);
-        if (d.collideIterations != null) {
-          (sim.force("collide") as ForceCollide<GraphNode> | null)?.iterations(d.collideIterations);
-        }
-      }
+      // Let existing energy decay; releasing a hub must not add a kick.
+      deps.simRef.current?.alphaTarget(0);
       // Longer, eased motion tail so the post-drag settle reads as living
       // motion, not a hard stop. The draw loop scales ambient amplitude with
       // this tail (lifeBoost), so the graph visibly breathes out.
       deps.motionUntilRef.current = performance.now() + 4600;
       deps.fastDrawUntilRef.current = performance.now() + 220;
+      deps.needsRedrawRef.current = true;
+      deps.resumeRef.current();
+    } else if (d.panning && d.moved) {
+      // Coast only when the pointer was still moving at release.
+      const now = performance.now();
+      const v = deps.panVelocityRef.current;
+      if (!click || now - (d.lastMoveAt ?? 0) > 100) v.x = v.y = 0;
+      v.at = now;
       deps.needsRedrawRef.current = true;
       deps.resumeRef.current();
     } else if (click && !d.moved && d.panning) {

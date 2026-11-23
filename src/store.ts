@@ -15,7 +15,9 @@ import { setStatusSink } from "./lib/statusReport";
 import { normalizeSyncPort } from "./lib/pairing";
 import { normalizeAutoSyncMinutes } from "./lib/syncAutoSchedule";
 import { loadSettings } from "./lib/settings";
-import { IN_TAURI, isTextualVaultFile } from "./lib/vault";
+import { IN_TAURI, isOpenableTextFile, isTextualVaultFile } from "./lib/vault";
+import { forkContentCache } from "./lib/documentWorkingSet";
+import { refreshedNoteMeta, singleNoteMeta } from "./lib/graph";
 import { forgetVaultIndex } from "./lib/vaultIndex";
 
 import { listen } from "@tauri-apps/api/event";
@@ -32,6 +34,7 @@ import {
   type UiStyleId
 } from "./lib/persistedUi";
 import { createSyncEventBridge } from "./lib/syncEventBridge";
+import { unsavedEditsLabel } from "./lib/binaryEdits";
 import type { AppState } from "./storeTypes";
 export type {
   AppState,
@@ -114,7 +117,7 @@ export const useAppStore = create<AppState>((set, get) => {
           // here let Pi activity bypass the startup search-cache budget and
           // retain every touched text file for the whole session.
           const activityFile = get().fileFor(rel);
-          if (activityFile && isTextualVaultFile(activityFile)) {
+          if (activityFile && isOpenableTextFile(activityFile)) {
             void get().ensurePeek(rel).catch(() => undefined);
           }
         } catch {
@@ -422,13 +425,29 @@ export const useAppStore = create<AppState>((set, get) => {
       if (paths.includes(relPath) === dirty) return;
       set({ dirtyBinaryPaths: dirty ? [...paths, relPath] : paths.filter((path) => path !== relPath) });
     },
+    adoptSavedBytes: (relPath, bytes, savedPath) => {
+      const file = get().fileFor(relPath);
+      // A save that finishes after a vault switch must not seed the new vault.
+      if (!file || file.path !== savedPath || !isTextualVaultFile(file)) return;
+      // Decoded as the watcher decodes a change, so the watcher sees its own
+      // save as unchanged instead of reporting an outside edit.
+      const text = new TextDecoder().decode(bytes);
+      // Refresh, not replace: the record keeps its title and thumbnail, and
+      // an unchanged one keeps the notes object so graph caches stay valid.
+      const known = get().notes[relPath];
+      const note = known ? refreshedNoteMeta(known, text) : singleNoteMeta(file, text);
+      set({
+        contentCache: forkContentCache(get().contentCache, { [relPath]: text }),
+        ...(note ? { notes: { ...get().notes, [relPath]: note } } : {}),
+      });
+    },
     confirmDiscardBinaryEdits: async (relPaths, action) => {
       const dirty = get().dirtyBinaryPaths.filter((path) => !relPaths ||
         relPaths.some((rel) => path === rel || path.startsWith(`${rel.replace(/\/+$/, "")}/`)));
       if (!dirty.length) return true;
       return confirmAction(
-        `${dirty.join(", ")} ${dirty.length === 1 ? "has" : "have"} unsaved PDF edits. ${action} will discard them.`,
-        { title: "Discard PDF edits?", okLabel: "Discard edits", cancelLabel: "Keep editing", kind: "warning" }
+        `${dirty.join(", ")} ${dirty.length === 1 ? "has" : "have"} unsaved ${unsavedEditsLabel(dirty)}. ${action} will discard them.`,
+        { title: `Discard ${unsavedEditsLabel(dirty)}?`, okLabel: "Discard edits", cancelLabel: "Keep editing", kind: "warning" }
       );
     },
   };

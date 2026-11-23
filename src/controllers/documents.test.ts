@@ -6,8 +6,9 @@ import { indexedContentCache } from '../lib/documentWorkingSet';
 import { TextSaveCoordinator } from '../lib/textSaveCoordinator';
 import type { VaultFile } from '../types';
 import { createDocumentController } from './documents';
-const io = vi.hoisted(() => ({ read: vi.fn(), valid: vi.fn(), create: vi.fn() }));
-vi.mock('../lib/vault', async original => ({ ...await original<object>(), readNoteResult: io.read, isValidUtf8Text: io.valid, createNote: io.create }));
+import { clearSniffedText } from '../lib/vault';
+const io = vi.hoisted(() => ({ read: vi.fn(), valid: vi.fn(), create: vi.fn(), sniff: vi.fn() }));
+vi.mock('../lib/vault', async original => ({ ...await original<object>(), readNoteResult: io.read, isValidUtf8Text: io.valid, createNote: io.create, sniffVaultText: io.sniff }));
 it('coalesces reads and refuses another vault cache after a generation change', async () => {
   let resolve!: (value: { ok: true; text: string }) => void;
   io.read.mockReturnValue(new Promise(r => { resolve = r; }));
@@ -132,4 +133,75 @@ it('does not scan every file for dirty saves when a lazy read lands in an indexe
   expect(await controller.actions.ensureContent('n3.txt')).toBe('lazy text');
   expect(state.getState().contentCache['n3.txt']).toBe('lazy text');
   expect(isDirty).not.toHaveBeenCalled();
+});
+
+function sniffFixture(file: VaultFile) {
+  const state = createStore<AppState>(() => ({ ...useAppStore.getInitialState(), vaultPath: '/vault', files: [file], contentCache: {}, fileFor: rel => rel === file.relPath ? file : undefined }));
+  const saves = new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: vi.fn() });
+  const controller = createDocumentController({ get: state.getState, set: state.setState, getGeneration: () => 1,
+    textSaves: saves, commitSettings: vi.fn(), reportingFailure: async (_, run) => run() });
+  state.setState(controller.actions);
+  return { state, saves, controller };
+}
+
+it('opens an unknown extension as editable text when its prefix sniffs as UTF-8', async () => {
+  clearSniffedText();
+  const file: VaultFile = { path: '/vault/paper.tex', relPath: 'paper.tex', name: 'paper', ext: 'tex', isMarkdown: false };
+  io.sniff.mockReset().mockResolvedValue(true);
+  io.read.mockReset().mockResolvedValue({ ok: true, text: '\\section{A}\r\n' });
+  io.valid.mockReset().mockResolvedValue(true);
+  const { state, saves, controller } = sniffFixture(file);
+  await controller.actions.selectFile('paper.tex');
+  expect(io.sniff).toHaveBeenCalledOnce();
+  expect(state.getState().activeContentState).toBe('ready');
+  expect(state.getState().content).toBe('\\section{A}\r\n');
+  expect(saves.pendingSnapshots()).toHaveLength(0); // opening writes nothing
+  controller.actions.setContentFromEditor('\\section{B}\r\n');
+  expect(saves.pendingSnapshots()).toHaveLength(1);
+  await controller.actions.selectFile('paper.tex');
+  expect(io.sniff).toHaveBeenCalledOnce(); // remembered for the session
+  clearSniffedText();
+});
+
+it('leaves a binary unknown file to the binary view without reading it as text', async () => {
+  clearSniffedText();
+  const file: VaultFile = { path: '/vault/blob.dat', relPath: 'blob.dat', name: 'blob', ext: 'dat', isMarkdown: false };
+  io.sniff.mockReset().mockResolvedValue(false);
+  io.read.mockReset();
+  const { state, saves, controller } = sniffFixture(file);
+  await controller.actions.selectFile('blob.dat');
+  expect(state.getState().activePath).toBe('blob.dat');
+  expect(state.getState().activeContentState).toBe('ready');
+  expect(io.read).not.toHaveBeenCalled();
+  expect(state.getState().contentCache['blob.dat']).toBeUndefined();
+  controller.actions.setContentFromEditor('must not save');
+  expect(saves.pendingSnapshots()).toHaveLength(0);
+});
+
+it('reports a failed sniff and shows the binary view', async () => {
+  clearSniffedText();
+  const file: VaultFile = { path: '/vault/locked', relPath: 'locked', name: 'locked', ext: '', isMarkdown: false };
+  io.sniff.mockReset().mockRejectedValue(new Error('permission denied'));
+  const { state, controller } = sniffFixture(file);
+  await controller.actions.selectFile('locked');
+  expect(state.getState().activeContentState).toBe('ready');
+  expect(state.getState().status).toContain('Could not inspect locked');
+});
+
+it('opens a note into an empty workspace only in the main window, never from a torn-out window', async () => {
+  const file: VaultFile = { path: '/vault/a.md', relPath: 'a.md', name: 'a', ext: 'md', isMarkdown: true };
+  io.read.mockReset().mockResolvedValue({ ok: true, text: '# a' });
+  io.valid.mockReset().mockResolvedValue(true);
+  for (const [route, commits] of [['/index.html?panel=graph&vault=%2Fvault', 0], ['/index.html', 1]] as const) {
+    window.history.replaceState(null, '', route);
+    const state = createStore<AppState>(() => ({ ...useAppStore.getInitialState(), vaultPath: '/vault', files: [file], contentCache: {}, fileFor: rel => rel === file.relPath ? file : undefined,
+      settings: { ...useAppStore.getInitialState().settings, centerView: 'empty', rightStack: [] } }));
+    const commitSettings = vi.fn();
+    const controller = createDocumentController({ get: state.getState, set: state.setState, getGeneration: () => 1,
+      textSaves: new TextSaveCoordinator<VaultFile>({ delayMs: 500, write: vi.fn() }), commitSettings, reportingFailure: async (_, run) => run() });
+    state.setState(controller.actions);
+    await controller.actions.selectFile('a.md');
+    expect(commitSettings, route).toHaveBeenCalledTimes(commits);
+  }
+  window.history.replaceState(null, '', '/');
 });

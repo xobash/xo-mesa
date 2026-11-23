@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/api/event',()=>({listen:vi.fn(async()=>()=>{})}));
 vi.mock('../lib/syncUi',async original=>({...await original<object>(),syncServerRunning:async()=>false,localSyncAddr:async()=> '192.0.2.1',syncIdentity:async()=> 'f'.repeat(64),startSyncDiscovery:io.start,stopSyncDiscovery:io.stop,get IS_WINDOWS(){return io.windows;}}));
 vi.mock('./Modal',()=>({Modal:({children}:{children:React.ReactNode})=><div>{children}</div>}));
 vi.mock('./SyncConflictReview',()=>({SyncConflictReview:()=>null}));
-import { SyncModal } from './SyncModal';
+import { DEVICE_NAME_SETTLE_MS, SyncModal } from './SyncModal';
 let host:HTMLDivElement;let root:ReturnType<typeof createRoot>;
 // App mounts the lazy SyncModal only while Sync is open; render through the same gate.
 async function render() { await act(async()=>{root.render(io.state.syncOpen ? <SyncModal/> : null);}); }
@@ -80,4 +80,36 @@ it('healthy keys show no reset',async()=>{
   host=document.createElement('div');document.body.append(host);root=createRoot(host);
   await render();
   expect([...host.querySelectorAll('button')].some(node=>node.textContent==='Reset sync keys…')).toBe(false);
+});
+it('says Copied only after the clipboard write succeeds',async()=>{
+  io.state={...baseState(),syncListening:true};
+  const writeText=vi.fn(async(_text:string):Promise<void>=>{throw new Error('denied');});
+  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText}});
+  host=document.createElement('div');document.body.append(host);root=createRoot(host);
+  await render();
+  const copy=()=>host.querySelector('.sync-receive-code button') as HTMLButtonElement;
+  await act(async()=>{copy().click();});
+  expect(writeText).toHaveBeenCalledOnce();
+  expect(copy().textContent).toBe('Copy');
+  writeText.mockResolvedValueOnce(undefined);
+  await act(async()=>{copy().click();});
+  expect(copy().textContent).toBe('Copied');
+});
+it('typing a device name restarts discovery once after the pause, not per character',async()=>{
+  io.state=baseState({syncDiscovery:true,syncDeviceName:'Desk'});
+  host=document.createElement('div');document.body.append(host);root=createRoot(host);
+  await render();await vi.waitFor(()=>expect(io.start).toHaveBeenCalledTimes(1));
+  const input=host.querySelector<HTMLInputElement>('input[aria-label="This device\'s name"]')!;
+  const setValue=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!;
+  for(const name of ['Desk 2','Desk 20','Desk 201','Desk 2019','Desk 2019!']){
+    await act(async()=>{setValue.call(input,name);input.dispatchEvent(new Event('input',{bubbles:true}));});
+    await render();
+  }
+  expect(io.setSetting).toHaveBeenLastCalledWith('syncDeviceName','Desk 2019!');
+  await act(async()=>{await new Promise(r=>setTimeout(r,50));});
+  expect(io.start).toHaveBeenCalledTimes(1);expect(io.stop).not.toHaveBeenCalled();
+  await act(async()=>{await new Promise(r=>setTimeout(r,DEVICE_NAME_SETTLE_MS+50));});
+  await vi.waitFor(()=>expect(io.start).toHaveBeenCalledTimes(2));
+  expect(io.stop).toHaveBeenCalledTimes(1);
+  expect(io.start).toHaveBeenLastCalledWith('Desk 2019!',expect.any(Number),false);
 });

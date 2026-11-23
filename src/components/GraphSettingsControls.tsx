@@ -1,4 +1,4 @@
-import { clamp } from "../lib/graphGeometry";
+import { clamp } from "../lib/clamp";
 
 /** A gear glyph for the graph-settings button. */
 export function GearIcon() {
@@ -48,10 +48,13 @@ export function TimelapseIcon() {
 export function GraphSettingRow({
   label,
   on,
+  disabled = false,
   onChange,
 }: {
   label: string;
   on: boolean;
+  /** Shown but locked, e.g. a filter that All files overrides. */
+  disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
@@ -63,6 +66,7 @@ export function GraphSettingRow({
         role="switch"
         aria-checked={on}
         aria-label={label}
+        disabled={disabled}
         onClick={() => onChange(!on)}
       >
         <span className="toggle-knob" />

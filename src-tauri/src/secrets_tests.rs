@@ -3,7 +3,10 @@ use super::*;
 fn only_main_can_manage_credentials() {
     assert!(main_window_label_only("main").is_ok());
     for label in ["doc-1", "panel-1", "agent-1", "pi-harness", ""] {
-        assert!(main_window_label_only(label).is_err());
+        assert_eq!(
+            main_window_label_only(label),
+            Err(CREDENTIALS_MAIN_ONLY.to_string())
+        );
     }
 }
 #[test]

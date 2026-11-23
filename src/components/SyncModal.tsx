@@ -24,6 +24,9 @@ import { Modal } from "./Modal";
 import { SecretInput, Toggle, PeerRow } from "./SyncPeerRow";
 import { SyncConsole } from "./SyncConsole";
 
+/** Typing pause after which discovery announces an edited device name. */
+export const DEVICE_NAME_SETTLE_MS = 500;
+
 export function SyncModal() {
   const open = useAppStore((s) => s.syncOpen);
   const setOpen = useAppStore((s) => s.setSyncOpen);
@@ -66,6 +69,16 @@ export function SyncModal() {
     void syncIdentity().then(setMyFp);
   }, [open]);
 
+  // Discovery announces the name only after typing pauses: each new name
+  // restarts the native socket, so a per-keystroke restart would churn it.
+  const typedDeviceName = settings.syncDeviceName.trim() || vaultName || "Mesa device";
+  const [announcedName, setAnnouncedName] = useState(typedDeviceName);
+  useEffect(() => {
+    if (announcedName === typedDeviceName) return;
+    const timer = setTimeout(() => setAnnouncedName(typedDeviceName), DEVICE_NAME_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [announcedName, typedDeviceName]);
+
   useEffect(() => {
     if (!IN_TAURI) return;
     const shouldDiscover = settings.syncEnabled && settings.syncDiscovery && open;
@@ -74,7 +87,7 @@ export function SyncModal() {
     // The quiet window starts only once the socket is bound.
     let quiet: ReturnType<typeof setTimeout> | undefined;
     const release = syncDiscovery(
-      { name: settings.syncDeviceName.trim() || vaultName || "Mesa device", port: settings.syncPort, listening },
+      { name: announcedName, port: settings.syncPort, listening },
       (packet) => {
         const peer = peerFromDiscovery(packet);
         if (!peer || !alive) return;
@@ -94,8 +107,7 @@ export function SyncModal() {
     settings.syncEnabled,
     settings.syncDiscovery,
     settings.syncPort,
-    settings.syncDeviceName,
-    vaultName,
+    announcedName,
   ]);
 
   useEffect(() => {
@@ -141,6 +153,12 @@ export function SyncModal() {
     };
   }, [open]);
 
+  // "Copied" appears only after the clipboard accepted the code.
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1400);
+    return () => clearTimeout(timer);
+  }, [copied]);
   if (!open) return null;
 
   const submitPeer = () => {
@@ -157,9 +175,7 @@ export function SyncModal() {
   };
 
   const copyCode = (text: string) => {
-    void navigator.clipboard?.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+    void navigator.clipboard?.writeText(text).then(() => setCopied(true), () => setCopied(false));
   };
 
   const enabled = settings.syncEnabled;

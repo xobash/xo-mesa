@@ -111,3 +111,27 @@ it("resolves every capability command and confines destructive lifecycle grants 
     if (mainOnly.test(command)) expect(capability.windows, command).toEqual(["main"]);
   }
 });
+
+// Capabilities are the outer gate; the Rust command repeats the caller-label
+// check (src-tauri/AGENTS.md). The sync and quit-guard commands skipped it.
+describe("main-only native commands", () => {
+  const sources = import.meta.glob<string>("../../src-tauri/src/*.rs", { eager: true, query: "?raw", import: "default" });
+  const grantedOnlyToMain = (permission: string) => capabilities.every(
+    (capability) => !(capability.permissions ?? []).includes(permission) || (capability.windows ?? []).every((pattern) => pattern === "main"),
+  );
+  const mainOnly = [...new Set(capabilities.flatMap((capability) => capability.permissions ?? []))]
+    .filter((permission): permission is string => typeof permission === "string" && permission.startsWith("allow-") && grantedOnlyToMain(permission))
+    .map((permission) => permission.slice("allow-".length).replace(/-/g, "_"));
+
+  it.each(mainOnly)("%s checks the caller window in Rust", (command) => {
+    const header = new RegExp(`fn ${command}\\b[^{]*\\{`);
+    const file = Object.entries(sources).find(([path, text]) => !path.endsWith("_tests.rs") && header.test(text));
+    expect(file, `no Rust command ${command}`).toBeDefined();
+    const text = file![1];
+    const start = text.search(header);
+    const body = text.slice(start, text.indexOf("\n}\n", start));
+    expect(body).toMatch(/window: tauri::(Webview)?Window/);
+    // Every helper below delegates to `require_main_for` in lib.rs.
+    expect(body).toMatch(/require_main(_for)?\(|main_only\(|main_window_label_only\(/);
+  });
+});

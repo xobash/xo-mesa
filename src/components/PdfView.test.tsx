@@ -215,3 +215,18 @@ it('places a click by the page box, not the bitmap, when the bitmap is scaled fo
     expect(input.style.top).toBe('50px');
   } finally { await act(async () => root.unmount()); host.remove(); }
 });
+
+it('offers no PDF editing for a file named .pdf whose bytes are not a PDF', async () => {
+  // Common in real vaults: a saved web page named `.pdf`. The view explains
+  // it; "Edit PDF" stayed enabled although nothing there can be edited.
+  mock.bytes = new TextEncoder().encode('<!DOCTYPE html><html><body>Sign in to continue</body></html>');
+  vi.stubGlobal('URL', class extends URL { static createObjectURL = vi.fn(() => 'blob:x'); static revokeObjectURL = vi.fn(); });
+  mock.invoke.mockResolvedValue(undefined);
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => root.render(<PdfView rel="sample.pdf" file={file} />));
+  expect(host.textContent).toContain("Couldn't render this PDF");
+  expect([...host.querySelectorAll('button')].some(button => button.textContent?.includes('Edit PDF'))).toBe(false);
+  await act(async () => root.unmount());
+  host.remove();
+});

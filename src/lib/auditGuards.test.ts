@@ -69,7 +69,7 @@ it("confines saved-HTML preview consumers to opaque sandboxed srcDoc frames", ()
     consumers.push(path);
     assertOpaqueFrames(path, source);
   }
-  expect(consumers.sort()).toEqual(["../components/HtmlView.tsx", "../components/PreviewCard.tsx"]);
+  expect(consumers.sort()).toEqual(["../components/EpubView.tsx", "../components/HtmlView.tsx", "../components/PreviewCard.tsx"]);
 });
 
 it("the preview guard rejects a relaxed sandbox, direct source and spread overrides", () => {

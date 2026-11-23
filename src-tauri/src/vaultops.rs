@@ -6,12 +6,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+pub(crate) const RECOVERY_MAIN_ONLY: &str = "recovery belongs to the main workspace";
 fn main_only(window: &tauri::Window) -> Result<(), String> {
-    if window.label() == "main" {
-        Ok(())
-    } else {
-        Err("recovery belongs to the main workspace".into())
-    }
+    crate::require_main_for(window.label(), RECOVERY_MAIN_ONLY)
 }
 fn visible(rel: &str) -> bool {
     sync_core::safe_join(Path::new(""), rel).is_some()
@@ -299,10 +296,11 @@ fn recovery_original(rel: &str) -> Option<String> {
 }
 /// A root-trash delete keeps the original folders (`.mesa-trash/<stamp>/notes/a.md`).
 /// Follow a chain of single visible children so the item lists as the deleted
-/// entry, not a folder that may still exist in the vault.
-fn deepest_single_entry(path: std::path::PathBuf) -> (std::path::PathBuf, bool) {
+/// entry, not a folder that may still exist in the vault. At most `steps`
+/// levels are followed, so the listed path stays within the depth cap.
+fn deepest_single_entry(path: std::path::PathBuf, steps: usize) -> (std::path::PathBuf, bool) {
     let mut current = path;
-    loop {
+    for _ in 0..steps {
         let Ok(mut entries) = fs::read_dir(&current) else {
             return (current, true);
         };
@@ -321,6 +319,7 @@ fn deepest_single_entry(path: std::path::PathBuf) -> (std::path::PathBuf, bool) 
         }
         current = only.path();
     }
+    (current, true)
 }
 /// A link-like reparse point (junction, mount point); cloud placeholders are not.
 #[cfg(windows)]
@@ -380,7 +379,9 @@ pub(crate) fn list_recovery(root: &Path) -> Result<Vec<RecoveryEntry>, String> {
                         continue;
                     }
                     let (path, is_directory) = if kind.is_dir() && rel.starts_with(".mesa-trash/") {
-                        deepest_single_entry(path)
+                        let steps = crate::vault_names::MAX_REL_SEGMENTS
+                            .saturating_sub(rel.split('/').count());
+                        deepest_single_entry(path, steps)
                     } else {
                         (path, kind.is_dir())
                     };

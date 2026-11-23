@@ -9,16 +9,31 @@ const trackedWarnings = new Set([
 // into zbus 6 (2026-10-16); secret-service 5.2.0 (keyring) and the latest
 // tauri-plugin-opener 2.7.2 and tauri-plugin-single-instance 2.5.4 still require zbus 5
 // (locked: 2.5.5 and 2.5.2).
-export const nativeAdvisoryReview = { reviewedOn: '2026-10-22', reviewBy: '2026-12-21', removal: 'Upgrade the complete Tauri/wry/GTK binding chain and repeat Linux native acceptance; move secret-service and the opener/single-instance plugins to zbus 6 once upstream releases them.' };
-export function validateNativeAudit(report, now = new Date()) {
+// Cargo locks every optional dependency, so a crate can be in the lock and in
+// the audit without ever being built. These are admitted only while cargo tree
+// finds no use on any target, feature or edge kind; a failed proof rejects them.
+// chrono: optional in serde_with (via tauri-utils), never enabled (2026-11-22).
+const lockedOnlyWarnings = new Set(['RUSTSEC-2026-0543:chrono:0.4.45:unmaintained']);
+export const nativeAdvisoryReview = { reviewedOn: '2026-11-22', reviewBy: '2026-12-21', removal: 'Upgrade the complete Tauri/wry/GTK binding chain and repeat Linux native acceptance; move secret-service and the opener/single-instance plugins to zbus 6 once upstream releases them.' };
+export function validateNativeAudit(report, now = new Date(), isCompiled = () => true) {
   if (!report?.vulnerabilities || !report.warnings) throw new Error('Incomplete native audit output.');
   if (report.vulnerabilities.found || report.vulnerabilities.count || report.vulnerabilities.list?.length) throw new Error('Native dependency vulnerability found.');
   for (const [kind, warnings] of Object.entries(report.warnings)) for (const warning of warnings) {
     const key = `${warning.advisory?.id}:${warning.package?.name}:${warning.package?.version}:${kind}`;
     if (!(now instanceof Date) || !Number.isFinite(now.getTime()) || now.toISOString().slice(0,10) > nativeAdvisoryReview.reviewBy) throw new Error('Tracked native advisory review expired; reassess the compatible upstream upgrade and Linux acceptance.');
-    if (!trackedWarnings.has(key)) throw new Error(`Unreviewed native advisory: ${key}`);
+    if (trackedWarnings.has(key)) continue;
+    if (!lockedOnlyWarnings.has(key)) throw new Error(`Unreviewed native advisory: ${key}`);
+    if (isCompiled(warning.package.name, warning.package.version) !== false) throw new Error(`Locked-only native advisory is now compiled: ${key}`);
   }
   return Object.values(report.warnings).flat().length;
+}
+// True when any target, feature set or edge kind builds the crate; throws when
+// cargo tree cannot answer, so the caller never treats a failure as "unused".
+export function compiledInNativeBuild(name, version) {
+  const spec = `${name}@${version}`;
+  const run = spawnSync('cargo', ['tree', '--locked', '--manifest-path', 'src-tauri/Cargo.toml', '--target', 'all', '--all-features', '--edges', 'normal,build,dev', '--prefix', 'none', '--invert', spec], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  if (run.error || run.status !== 0) throw new Error(`Could not prove ${spec} is not compiled (cargo tree exit ${run.status ?? run.signal}).${run.error ? ` ${run.error.message}` : ''}${run.stderr?.trim() ? `\n${run.stderr.trim()}` : ''}`);
+  return run.stdout.trim().length > 0;
 }
 // Fails once the review date is at most `days` days away (UTC dates).
 export function reviewExpiryWarning(now = new Date(), days = 7) {
@@ -46,7 +61,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (flag > 0 && !Number.isInteger(warnDays)) throw new Error('--fail-days-before-expiry needs a whole number of days.');
     if (run.error || !report) throw new Error(`Native registry audit failed.${run.error ? ` ${run.error.message}` : ''}${run.stderr ? `\n${run.stderr.trim()}` : ''}`);
     if (run.status !== 0) throw new Error(`Native registry audit failed (exit ${run.status ?? run.signal}).${run.stderr?.trim() ? `\n${run.stderr.trim()}` : ''}`);
-    console.log(`Native audit: no vulnerabilities; ${validateNativeAudit(report)} specifically tracked upstream warnings.`);
+    console.log(`Native audit: no vulnerabilities; ${validateNativeAudit(report, new Date(), compiledInNativeBuild)} specifically tracked upstream warnings.`);
     const warning = warnDays === null ? null : reviewExpiryWarning(new Date(), warnDays);
     if (warning) throw new Error(warning);
   } catch (error) {

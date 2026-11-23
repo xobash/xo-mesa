@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteMeta, VaultFile } from "../types";
 import { buildApplyPlan, type ProposedOp } from "./deepResearch";
 import { applyChangeSet, resolveApplyPlan, sendResearchPrompt } from "./deepResearchRun";
+import { toVaultFile } from "./vaultPaths";
 import { invoke } from "@tauri-apps/api/core";
 
 // --- Mocks -------------------------------------------------------------------
@@ -9,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 // helpers with an in-memory fs so the transactional apply/rollback runs for
 // real (no mocks of the logic under test — only of the fs boundary).
 const memfs = new Map<string, string>();
+const writtenFiles: VaultFile[] = [];
 const nativeHost = vi.hoisted(() => ({ enabled: false }));
 
 function absFor(rel: string): string {
@@ -21,6 +23,7 @@ vi.mock("./vault", async () => {
     ...actual,
     get IN_TAURI() { return nativeHost.enabled; },
     writeNote: async (file: VaultFile, content: string, expectedCurrentContent?: string) => {
+      writtenFiles.push(file);
       if (expectedCurrentContent !== undefined && memfs.get(file.path) !== expectedCurrentContent) {
         throw new Error("current bytes changed before verified write");
       }
@@ -67,6 +70,7 @@ function note(relPath: string): NoteMeta {
 beforeEach(() => {
   nativeHost.enabled = false;
   memfs.clear();
+  writtenFiles.length = 0;
   vi.mocked(invoke).mockClear();
   vi.mocked(invoke).mockResolvedValue(undefined as never);
 });
@@ -220,6 +224,18 @@ describe("applyChangeSet", () => {
     const out = await applyChangeSet({ root: "/vault", plan });
     expect(out.ok).toBe(false);
     expect(memfs.get(absFor("a.md"))).toBe("# A\nchanged after review");
+  });
+
+  it("writes to the same file identity the vault scan built, for a Windows root and a dot-named file", async () => {
+    for (const [root, relPath] of [["C:\\Vault", "Notes/a.md"], ["/vault", "Notes/.txt"]] as const) {
+      const scanned = toVaultFile(root, relPath);
+      memfs.set(scanned.path, "before");
+      const plan = { ok: true as const, rollback: [], steps: [{ kind: "update" as const, relPath, title: "A", content: "after", expectedBytes: "before", originalContent: "before" }] };
+      const out = await applyChangeSet({ root, plan });
+      expect(out.ok).toBe(true);
+      expect(writtenFiles.at(-1)).toEqual(scanned);
+      expect(memfs.get(scanned.path)).toBe("after");
+    }
   });
 
   it("rechecks create targets from disk so a late collision is preserved", async () => {

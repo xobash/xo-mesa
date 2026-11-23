@@ -1,3 +1,4 @@
+import { unsavedEditsLabel } from "./binaryEdits";
 export interface CloseRequest { preventDefault(): void }
 export interface CloseWindow {
   onCloseRequested(callback: (event: CloseRequest) => Promise<void>): Promise<() => void>;
@@ -73,7 +74,7 @@ export function pendingEditGuard(state: () => PendingEditState) {
     flush: async (): Promise<void> => {
       await state().flushSave();
       const pdfs = state().dirtyBinaryPaths;
-      if (pdfs.length) throw new Error(`Save the PDF edits in ${pdfs.join(", ")} first`);
+      if (pdfs.length) throw new Error(`Save the ${unsavedEditsLabel(pdfs)} in ${pdfs.join(", ")} first`);
     },
     pending: (): boolean => state().textSaveState.pending > 0 || state().dirtyBinaryPaths.length > 0,
   };

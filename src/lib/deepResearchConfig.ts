@@ -1,4 +1,6 @@
-/** Startup-safe Deep Research limits, depth presets and UTF-8 byte helpers. Keep this module free of heavy imports. */
+/** Startup-safe Deep Research limits, depth presets and UTF-8 byte helpers. Keep this module free of heavy
+imports. */
+import { clamp } from "./clamp";
 
 export interface DeepResearchLimits {
   /** Max notes whose content is injected into the research context. */
@@ -66,7 +68,7 @@ export const DEPTH_LIMITS = {
 
 /** Clamp a depth to the allowed ranges. */
 export function clampDepth(depth: ResearchDepth): ResearchDepth {
-  const c = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(v)));
+  const c = (v: number, lo: number, hi: number) => clamp(Math.round(v), lo, hi);
   return {
     rounds: c(depth.rounds, DEPTH_LIMITS.rounds.min, DEPTH_LIMITS.rounds.max),
     subQuestions: c(depth.subQuestions, DEPTH_LIMITS.subQuestions.min, DEPTH_LIMITS.subQuestions.max),

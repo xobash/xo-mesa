@@ -45,10 +45,10 @@ ensure_git() {
       fail "Finish the macOS Command Line Tools install, then rerun the Mesa install command."
       ;;
     Linux)
-      if command -v apt >/dev/null 2>&1; then
-        info "Git is missing. Installing it with apt (needs sudo)..."
-        sudo apt update
-        sudo apt install -y git
+      if command -v apt-get >/dev/null 2>&1; then
+        info "Git is missing. Installing it with apt-get (needs sudo)..."
+        sudo apt-get update
+        sudo apt-get install -y git
       elif command -v pacman >/dev/null 2>&1; then
         info "Git is missing. Installing it with pacman (needs sudo)..."
         sudo pacman -S --needed --noconfirm git
@@ -56,7 +56,7 @@ ensure_git() {
         info "Git is missing. Installing it with dnf (needs sudo)..."
         sudo dnf install -y git
       else
-        fail "Git is required, and Mesa could not detect apt, pacman, or dnf to install it automatically."
+        fail "Git is required, and Mesa could not detect apt-get, pacman, or dnf to install it automatically."
       fi
       ;;
     *)

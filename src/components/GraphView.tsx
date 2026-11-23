@@ -1,18 +1,9 @@
 import { prefersReducedMotion, onReducedMotionChange } from "../lib/motion";
 import { useEffect, useRef, useState } from "react";
-import {
-  forceManyBody,
-  forceLink,
-  forceCenter,
-  forceCollide,
-  forceX,
-  forceY,
-  type ForceCollide,
-  type Simulation,
-} from "d3-force";
-import type { GraphNode, GraphLink } from "../types";
+import type { ForceLink, Simulation } from "d3-force";
+import type { GraphNode, GraphLink, NoteMeta } from "../types";
 import { useAppStore, getStore } from "../store";
-import { buildGraph, buildNeighbors } from "../lib/graph";
+import { createGraphBuilder, buildNeighbors, graphFileSnapshot, sameGraphFiles, sameGraphNotes, sameGraphTopology, type GraphFileSnapshot, type GraphTopology } from "../lib/graph";
 import {
   decayActivity,
   activeRecords,
@@ -20,40 +11,49 @@ import {
 } from "../lib/activity";
 import { urlForPath } from "../lib/vault";
 
-import { GraphHitIndex, clamp, graphLinkNodeId, nearestNodeLinear, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "../lib/graphGeometry";
+import { clamp } from "../lib/clamp";
+import { GraphHitIndex, graphLinkNodeId, nearestNodeLinear, nodeDrawScale, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "../lib/graphGeometry";
 import { readGraphColors, type GraphColors } from "./graphColors";
-import { OVERLAP_GAP, drawGraph, type GraphBounds, type GraphDrawRefs, type GraphLinkEndpoints, type Transform } from "./graphDraw";
+import { LazyLinkIndex, linkAdjacency, neighborsOf } from "./graphLinkIndex";
+import { LinkLayer, isWebKitCanvas } from "./graphLinkLayer";
+import { nextTask } from "./nextTask";
+import { GlLinkRenderer } from "./graphLinkGl";
+import { OVERLAP_GAP, clampZoom, drawGraph, isZooming, type GraphBounds, type GraphDisplay, type GraphDrawRefs, type GraphLinkEndpoints, type Transform } from "./graphDraw";
 import { GraphActivityCards, updateActivityCards, updateGraphHover, type ActivityCard, type GraphCardRefs, type GraphHoverCard } from "./GraphActivityCards";
 import { useGraphPointer, type DragPerf, type DragState } from "./useGraphPointer";
 import { GearIcon, GraphRangeRow, GraphSettingRow, GraphSettingSection, TimelapseIcon } from "./GraphSettingsControls";
-import { createGraphSimulation, graphPhysicsTransferables, graphSimulationTier, snapshotGraphPhysics, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
-import { DOUBLE_TICK_BELOW, GOLDEN_ANGLE, THUMB_CACHE_MAX, WORKER_DRAG_MIN_NODES, WORKER_SETTLE_MIN_NODES, ambientFrameMs, dragVelocityCap } from "./graphViewTuning";
+import { GRAPH_OVERLAP_ALPHA, GRAPH_SETTLED_ALPHA, applyGraphForces, reheatGraphSimulation, createGraphSimulation, graphPhysicsTransferables, seedGraphNodes, seededRandom, snapshotGraphPhysics, warmGraphSimulation, finishGraphWarmup, replayLinkCount, replayLinkOrder, type GraphPhysicsRequest, type GraphPhysicsResponse } from "../lib/graphPhysics";
+import { DEFAULT_SETTINGS } from "../lib/settings";
+import { markMesaPerf } from "../lib/mesaPerf";
+import { cachedGraphLayout, graphLayoutKey, persistedGraphLayout, rememberGraphLayout } from "../lib/graphLayoutCache";
+import { THUMB_CACHE_MAX, WORKER_DRAG_MIN_NODES, WORKER_SETTLE_MIN_NODES, WORKER_WARM_MIN_NODES, HEAVY_STEP_MS, ambientFrameMs } from "./graphViewTuning";
+
+/** "Restore display defaults" covers these; filters are not display settings. */
+const GRAPH_DISPLAY_KEYS = [
+  "graphArrows", "graphTextFade", "graphNodeSize", "graphLinkThickness", "graphLivingMotion",
+  "graphCenterForce", "graphRepelForce", "graphLinkForce", "graphLinkDistance",
+] as const;
 
 export function GraphView() {
   const notes = useAppStore((s) => s.notes);
   const indexingTextFiles = useAppStore((s) => s.indexingTextFiles);
   const files = useAppStore((s) => s.files);
   const theme = useAppStore((s) => s.theme);
-  const hardwareAccel = useAppStore((s) => s.settings.hardwareAccel);
   const animations = useAppStore((s) => s.settings.animations);
   const graphShowTags = useAppStore((s) => s.settings.graphShowTags);
   const graphExistingFilesOnly = useAppStore((s) => s.settings.graphExistingFilesOnly);
   const graphShowOrphans = useAppStore((s) => s.settings.graphShowOrphans);
   const graphShowAttachments = useAppStore((s) => s.settings.graphShowAttachments);
-  const graphArrows = useAppStore((s) => s.settings.graphArrows ?? false);
-  const graphTextFadeThreshold = useAppStore(
-    (s) => s.settings.graphTextFadeThreshold ?? 0.42
-  );
-  const graphNodeSize = useAppStore((s) => s.settings.graphNodeSize ?? 1);
-  const graphLinkThickness = useAppStore(
-    (s) => s.settings.graphLinkThickness ?? 1
-  );
-  const graphCenterForce = useAppStore((s) => s.settings.graphCenterForce ?? 0.5);
-  const graphRepelForce = useAppStore((s) => s.settings.graphRepelForce ?? 10);
-  const graphLinkForce = useAppStore((s) => s.settings.graphLinkForce ?? 1);
-  const graphLinkDistance = useAppStore(
-    (s) => s.settings.graphLinkDistance ?? 250
-  );
+  const graphShowAllFiles = useAppStore((s) => s.settings.graphShowAllFiles);
+  const graphArrows = useAppStore((s) => s.settings.graphArrows);
+  const graphTextFade = useAppStore((s) => s.settings.graphTextFade);
+  const graphNodeSize = useAppStore((s) => s.settings.graphNodeSize);
+  const graphLinkThickness = useAppStore((s) => s.settings.graphLinkThickness);
+  const graphCenterForce = useAppStore((s) => s.settings.graphCenterForce);
+  const graphRepelForce = useAppStore((s) => s.settings.graphRepelForce);
+  const graphLinkForce = useAppStore((s) => s.settings.graphLinkForce);
+  const graphLinkDistance = useAppStore((s) => s.settings.graphLinkDistance);
+  const graphLivingMotion = useAppStore((s) => s.settings.graphLivingMotion);
   const setSetting = useAppStore((s) => s.setSetting);
   const [shownCount, setShownCount] = useState(0);
   const [canvasUnavailable, setCanvasUnavailable] = useState(false);
@@ -64,6 +64,8 @@ export function GraphView() {
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // Heavy graphs draw plain links with WebGL on this canvas, under `canvasRef`.
+  const glCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   const simRef = useRef<Simulation<GraphNode, GraphLink> | null>(null);
@@ -79,7 +81,19 @@ export function GraphView() {
     nodes: GraphNode[];
     index: Map<GraphNode, number>;
     pending: GraphPhysicsResponse | null;
-  }>({ worker: null, failed: false, active: false, session: 0, nodes: [], index: new Map(), pending: null });
+    /** The session is a timelapse replay (never idles; replay batches admit nodes). */
+    replay: boolean;
+  }>({ worker: null, failed: false, active: false, session: 0, nodes: [], index: new Map(), pending: null, replay: false });
+  // Replay links in admission order (visible links are a prefix) and the
+  // lookups grown batch by batch instead of rebuilt.
+  const replayRef = useRef<{ links: GraphLink[]; admitAt: Int32Array; linkCount: number; adjacency: Map<string, number[]>; neighbors: Map<string, Set<string>>; byId: Map<string, GraphNode> }>(
+    { links: [], admitAt: new Int32Array(0), linkCount: 0, adjacency: new Map(), neighbors: new Map(), byId: new Map() });
+  // An open warm-up running in the worker: nothing paints until it returns.
+  const warmRef = useRef<{ session: number; sim: Simulation<GraphNode, GraphLink>; nodes: GraphNode[]; links: GraphLink[]; layoutKey: string } | null>(null);
+  const warmSessionRef = useRef(0);
+  const [warmingCount, setWarmingCount] = useState(0);
+  // Bumped when a stepped heavy build has resolved every note.
+  const [prepareTick, setPrepareTick] = useState(0);
   const nodesRef = useRef<GraphNode[]>([]);
   const forceNodesRef = useRef<GraphNode[]>([]);
   const linksRef = useRef<GraphLink[]>([]);
@@ -91,18 +105,17 @@ export function GraphView() {
   const timelineStartRef = useRef(0);
   const timelineDurationRef = useRef(0);
   const replayCameraRef = useRef(false);
-  const replayOriginRef = useRef({ x: 0, y: 0 });
   const replayCameraAtRef = useRef(0);
   const replayFrameRef = useRef<Transform | null>(null);
-  const graphSigRef = useRef("");
-  // Cached once per notes-change so the per-frame label pass never re-sorts.
-  const degreeSortedRef = useRef<GraphNode[]>([]);
+  const topologyRef = useRef<GraphTopology | null>(null);
+  // Reuses each unchanged note's resolved links between builds.
+  const buildGraphRef = useRef(createGraphBuilder());
   const nodeByIdRef = useRef<Map<string, GraphNode>>(new Map());
-  // Pre-computed adjacency: for each node id, the indices of links that touch
-  // it.  Used by placePreviewCard so it doesn't scan all links.
-  const adjacencyRef = useRef<Map<string, number[]>>(new Map());
-  // Undirected neighbor sets for the Obsidian-style hover focus.
-  const neighborsRef = useRef<Map<string, Set<string>>>(new Map());
+  // For each node id, the indices of links that touch it (hover cards, focus
+  // and activity links), and undirected neighbour sets for the hover focus.
+  // Both derive from the shown links on first use.
+  const [adjacencyRef] = useState(() => new LazyLinkIndex(() => linksRef.current, linkAdjacency, new Map<string, number[]>()));
+  const [neighborsRef] = useState(() => new LazyLinkIndex(() => linksRef.current, (links) => buildNeighbors(links as GraphLink[]), new Map<string, Set<string>>()));
   // Hover focus animation: `id` is the node whose neighborhood is highlighted,
   // `k` eases 0→1 on hover and 1→0 on leave so the dim/undim glides instead of
   // snapping. `id` is kept during fade-out so the highlight releases in place.
@@ -123,6 +136,10 @@ export function GraphView() {
   const hitIndexSizeRef = useRef(1);
   const transformRef = useRef<Transform>({ x: 0, y: 0, k: 1 });
   const targetKRef = useRef(1); // for smooth wheel zoom
+  // Screen point the eased zoom holds still (the cursor when zooming in).
+  const zoomAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  // Pan inertia after a background drag is released, in CSS px per ms.
+  const panVelocityRef = useRef({ x: 0, y: 0, at: 0 });
   const sizeRef = useRef({ w: 800, h: 600 });
   const fitPendingRef = useRef(true);
   const imgCache = useRef<Map<string, { img: HTMLImageElement; frame: number }>>(new Map());
@@ -134,9 +151,10 @@ export function GraphView() {
     lastY: 0,
     moved: false,
   });
-  const hoverRef = useRef<{ id: string | null; since: number }>({
+  const hoverRef = useRef<{ id: string | null; since: number; preview: boolean }>({
     id: null,
     since: 0,
+    preview: false,
   });
   const shownIdRef = useRef<string | null>(null);
   // Toolbar controls sit above the canvas. While the pointer is over them,
@@ -144,23 +162,27 @@ export function GraphView() {
   const graphControlsHoverRef = useRef(false);
   const colorsRef = useRef<GraphColors>(readGraphColors());
   const themeDirtyRef = useRef(true);
-  const graphDisplayRef = useRef({
-    arrows: false,
-    textFadeThreshold: 0.42,
-    nodeSize: 1,
-    linkThickness: 1,
-  });
+  const graphDisplayRef = useRef<GraphDisplay>({ arrows: false, textFade: 0, nodeSize: 1, linkThickness: 1, living: false });
   const timelapseRef = useRef(false);
   graphDisplayRef.current = {
     arrows: graphArrows,
-    textFadeThreshold: graphTextFadeThreshold,
+    textFade: graphTextFade,
     nodeSize: graphNodeSize,
     linkThickness: graphLinkThickness,
+    living: graphLivingMotion,
   };
   timelapseRef.current = timelapseOn;
+  const forceSettings = { center: graphCenterForce, repel: graphRepelForce, linkForce: graphLinkForce, linkDistance: graphLinkDistance };
+  // Force values the simulation currently holds; a retune runs only when they change.
+  const appliedForcesRef = useRef(forceSettings);
 
+  /** Zoom-independent world radius: layout, collision and bounds use it. */
   const graphNodeRadius = (n: GraphNode) =>
     nodeRadius(n, graphDisplayRef.current.nodeSize);
+  /** Draw-size factor at the current zoom (nodes grow in world units when zoomed out). */
+  const drawScale = () => nodeDrawScale(transformRef.current.k, window.devicePixelRatio || 1);
+  /** World radius as drawn at the current zoom. */
+  const graphDrawRadius = (n: GraphNode) => graphNodeRadius(n) * drawScale();
 
   const [hover, setHover] = useState<GraphHoverCard | null>(null);
   const clearGraphHover = () => {
@@ -192,16 +214,12 @@ export function GraphView() {
   const motionUntilRef = useRef(0);
   const lastImpulseAtRef = useRef(0);
   const fastDrawUntilRef = useRef(0);
-  // Last timestamp each node had live activity. Used to fade the steady
-  // "open file" highlight back in smoothly after a typing burst ends, instead
-  // of snapping it on the moment flicker decays below threshold.
-  const recentActivityRef = useRef<Map<string, number>>(new Map());
   const lastRectRef = useRef<DOMRectReadOnly | null>(null);
   const lastWindowPosRef = useRef<{ x: number; y: number } | null>(null);
   const { onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onPointerLeave, endDrag } = useGraphPointer({
     wrapRef, transformRef, dragRef, pointerRef, simRef, physicsRef, dragPerfRef,
     needsRedrawRef, motionUntilRef, fastDrawUntilRef, replayCameraRef,
-    fitPendingRef, resumeRef, forceNodesRef,
+    fitPendingRef, resumeRef, forceNodesRef, panVelocityRef,
     nodeAtScreen, kickGraph, startDragPhysics, postPhysics,
   });
 
@@ -221,37 +239,20 @@ export function GraphView() {
     forceNodesRef.current = visibleNodes;
     linksRef.current = visibleLinks;
     setShownCount(visibleNodes.length);
-    degreeSortedRef.current = [...visibleNodes].sort((a, b) => b.degree - a.degree);
     nodeByIdRef.current = new Map(visibleNodes.map((n) => [n.id, n]));
-
-    const adjacency = new Map<string, number[]>();
-    for (let i = 0; i < visibleLinks.length; i++) {
-      const l = visibleLinks[i];
-      const source = graphLinkNodeId(l.source);
-      const target = graphLinkNodeId(l.target);
-      const sourceLinks = adjacency.get(source) ?? [];
-      sourceLinks.push(i);
-      adjacency.set(source, sourceLinks);
-      const targetLinks = adjacency.get(target) ?? [];
-      targetLinks.push(i);
-      adjacency.set(target, targetLinks);
-    }
-    adjacencyRef.current = adjacency;
-    neighborsRef.current = buildNeighbors(visibleLinks);
+    // Adjacency and neighbours rebuild from `linksRef` on first use.
 
     reserveLinkEndpoints(visibleLinks.length);
 
     const sim = simRef.current;
     if (sim) {
-      const linkForce = sim.force("link") as ReturnType<
-        typeof forceLink<GraphNode, GraphLink>
-      > | null;
+      const linkForce = sim.force("link") as ForceLink<GraphNode, GraphLink> | null;
       // d3 reinitializes every force in nodes(). Remove old links first:
       // their indices belong to the previous node array.
       linkForce?.links([]);
       sim.nodes(visibleNodes);
       linkForce?.links(visibleLinks);
-      if (reheat) sim.alpha(Math.max(sim.alpha(), 0.2)).stop();
+      if (reheat) reheatGraphSimulation(sim).stop();
     }
     layoutSettledRef.current = false;
     needsRedrawRef.current = true;
@@ -294,18 +295,19 @@ export function GraphView() {
     const t = transformRef.current;
     const gx = (sx - t.x) / t.k;
     const gy = (sy - t.y) / t.k;
-    // Every node is interactive, including the orphan halo. Hit targets use
-    // layout x/y and keep at least ~9 screen px at any zoom.
+    // Every node is interactive. Hit targets use layout x/y and the radius as
+    // drawn at this zoom, and keep at least ~9 screen px at any zoom.
     const nodes = nodesRef.current;
+    const scale = drawScale();
     const frozen = layoutSettledRef.current && !physicsRef.current.active && !dragRef.current.node;
-    if (!frozen) return nearestNodeLinear(nodes, gx, gy, t.k, graphNodeRadius);
+    if (!frozen) return nearestNodeLinear(nodes, gx, gy, t.k, graphNodeRadius, scale);
     let index = hitIndexRef.current;
     if (!index || index.nodes !== nodes || hitIndexSizeRef.current !== graphDisplayRef.current.nodeSize) {
       index = new GraphHitIndex(nodes, graphNodeRadius);
       hitIndexRef.current = index;
       hitIndexSizeRef.current = graphDisplayRef.current.nodeSize;
     }
-    return index.nearest(gx, gy, t.k);
+    return index.nearest(gx, gy, t.k, scale);
   }
 
   function graphBounds(nodes: GraphNode[]): GraphBounds {
@@ -323,14 +325,8 @@ export function GraphView() {
       maxY = Math.max(maxY, n.y + r);
       valid = true;
     }
-    if (!valid) {
-      return {
-        cx: sizeRef.current.w / 2,
-        cy: sizeRef.current.h / 2,
-        radius: 0,
-        valid: false,
-      };
-    }
+    // The world origin is the layout centre.
+    if (!valid) return { cx: 0, cy: 0, radius: 0, valid: false };
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     return {
@@ -339,33 +335,6 @@ export function GraphView() {
       radius: Math.max(maxX - cx, cx - minX, maxY - cy, cy - minY),
       valid: true,
     };
-  }
-
-  function seedForceNodes(nodes: GraphNode[]): void {
-    if (nodes.length === 0) return;
-    const { w, h } = sizeRef.current;
-    const cx = w / 2;
-    const cy = h / 2;
-    // Seed compactly near the center; the force sim (charge + links + collide)
-    // then relaxes into Obsidian-like clusters. A compact seed lets the sim
-    // settle fast without biasing toward any rigid ring structure.
-    // Degree-0 nodes start in a loose outer band and then follow the same
-    // repulsion, centering, collision, and drag rules as linked nodes.
-    const base = 40 + Math.sqrt(nodes.length) * 8;
-    for (let i = 0; i < nodes.length; i++) {
-      const n = nodes[i];
-      const angle = phaseFromId(n.id) + i * GOLDEN_ANGLE;
-      const radius =
-        n.degree === 0
-          ? base * 2 + Math.random() * base
-          : base + Math.random() * 60;
-      n.x = cx + Math.cos(angle) * radius;
-      n.y = cy + Math.sin(angle) * radius;
-      n.vx = 0;
-      n.vy = 0;
-      n.fx = null;
-      n.fy = null;
-    }
   }
 
   /**
@@ -399,8 +368,10 @@ export function GraphView() {
     return img;
   }
 
+  /** Living motion only: a render-layer impulse from panning or moving the window. */
   function kickGraph(dx: number, dy: number, strength = 1): void {
-    if (!getStore().settings.animations) return;
+    const settings = getStore().settings;
+    if (!settings.animations || !settings.graphLivingMotion) return;
     const dist = Math.hypot(dx, dy);
     if (dist < 0.6) return;
     const now = performance.now();
@@ -413,17 +384,13 @@ export function GraphView() {
     const k = Math.max(0.35, transformRef.current.k);
     const vx = clamp((dx / k) * 0.12 * strength, -10, 10);
     const vy = clamp((dy / k) * 0.12 * strength, -10, 10);
-    const cx = sizeRef.current.w / 2;
-    const cy = sizeRef.current.h / 2;
     const stride = nodes.length > 1800 ? 4 : nodes.length > 1000 ? 2 : 1;
     for (let i = 0; i < nodes.length; i += stride) {
       const n = nodes[i];
       if (n.x == null || n.y == null) continue;
       const phase = n.renderPhase ?? phaseFromId(n.id);
       n.renderPhase = phase;
-      const dxn = n.x - cx;
-      const dyn = n.y - cy;
-      const radial = 1 / Math.max(140, Math.hypot(dxn, dyn));
+      const radial = 1 / Math.max(140, Math.hypot(n.x, n.y));
       const jitter = 0.58 + 0.32 * Math.sin(phase);
       n.renderKickVx = (n.renderKickVx ?? 0) + vx * jitter - dy * radial * 1.1 * strength;
       n.renderKickVy = (n.renderKickVy ?? 0) + vy * jitter + dx * radial * 1.1 * strength;
@@ -434,18 +401,137 @@ export function GraphView() {
     resumeRef.current();
   }
 
-  function clampNodeVelocities(dragging: GraphNode | null): void {
-    const nodes = forceNodesRef.current;
-    if (!nodes.length) return;
-    // During drag, a hub's neighbors follow the link force with a modest
-    // velocity cap; overlap resolution stays suspended until drag ends.
-    const baseCap = dragVelocityCap(nodes.length);
-    for (const n of nodes) {
-      if (n === dragging) continue;
-      // Same cap for every node — no hub boost. Calm, uniform follow.
-      if (n.vx != null) n.vx = clamp(n.vx, -baseCap, baseCap);
-      if (n.vy != null) n.vy = clamp(n.vy, -baseCap, baseCap);
+  /** Lay out a new graph's open warm-up in the worker; false when no worker can take it. */
+  function startWorkerWarmup(sim: Simulation<GraphNode, GraphLink>, nodes: GraphNode[], links: GraphLink[], layoutKey: string, session: number): boolean {
+    const worker = physicsWorker();
+    if (!worker) return false;
+    const init = snapshotGraphPhysics(sim, { grab: null });
+    warmRef.current = { session, sim, nodes, links, layoutKey };
+    // Nothing draws or hit-tests until the warmed layout is adopted.
+    nodesRef.current = [];
+    forceNodesRef.current = [];
+    linksRef.current = [];
+    setWarmingCount(nodes.length);
+    worker.postMessage({ type: "warm", session, init, count: nodes.length } satisfies GraphPhysicsRequest, graphPhysicsTransferables(init));
+    // A layout saved earlier for the same graph wins the race with the worker.
+    void persistedGraphLayout(layoutKey, nodes.length).then((state) => { if (state) adoptWarmup(session, state); });
+    return true;
+  }
+
+  /** End any heavy open in progress: its pending steps and its worker warm-up. */
+  function cancelWarmup(): void {
+    warmSessionRef.current += 1;
+    if (!warmRef.current && warmingCount === 0) return;
+    warmRef.current = null;
+    setWarmingCount(0);
+  }
+
+  /**
+   * Open a large graph in steps so the pane paints between them: the layout
+   * cache or seeding first, then the simulation and the worker warm-up. Each
+   * step returns at once if the open was cancelled or replaced. Measured at
+   * 10,302 nodes: one 135 ms block became steps of at most 65 ms.
+   */
+  function beginHeavyOpen(nodes: GraphNode[], links: GraphLink[], settings: typeof appliedForcesRef.current): void {
+    const session = warmSessionRef.current;
+    nodesRef.current = [];
+    forceNodesRef.current = [];
+    linksRef.current = [];
+    setWarmingCount(nodes.length);
+    const live = () => warmSessionRef.current === session && !simRef.current;
+    const settle = (sim: Simulation<GraphNode, GraphLink>, layoutKey: string) => {
+      warmRef.current = { session, sim, nodes, links, layoutKey };
+      adoptWarmup(session, null);
+    };
+    const later = (run: () => void) => nextTask(() => { if (live()) run(); });
+    markMesaPerf("graph-open-step", { step: "built", nodes: nodes.length });
+    later(() => {
+      const layoutKey = graphLayoutKey(nodes, links, settings);
+      const cached = cachedGraphLayout(layoutKey, nodes.length);
+      if (cached) {
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          n.x = cached[i * 4]; n.y = cached[i * 4 + 1]; n.vx = cached[i * 4 + 2]; n.vy = cached[i * 4 + 3];
+        }
+        later(() => {
+          const sim = createGraphSimulation<GraphNode, GraphLink>(nodes, links, settings);
+          appliedForcesRef.current = settings;
+          finishGraphWarmup(sim, nodes.length);
+          settle(sim, layoutKey);
+        });
+        return;
+      }
+      later(() => {
+        seedGraphNodes(nodes, new Map(), neighborsOf(new Set(nodes.map((n) => n.id)), links), seededRandom(nodes.length));
+        markMesaPerf("graph-open-step", { step: "seeded" });
+        later(() => {
+          const sim = createGraphSimulation<GraphNode, GraphLink>(nodes, links, settings);
+          appliedForcesRef.current = settings;
+          if (startWorkerWarmup(sim, nodes, links, layoutKey, session)) {
+            markMesaPerf("graph-open-step", { step: "warm-posted" });
+            return;
+          }
+          warmGraphSimulation(sim, nodes.length);
+          settle(sim, layoutKey);
+        });
+      });
+    });
+  }
+
+  /**
+   * Take a warmed layout (`state` from the worker, or null when the main
+   * thread already warmed `sim`) and show the graph exactly as a main-thread
+   * open would. Reads refs and the store only: the worker handler keeps it.
+   */
+  function adoptWarmup(session: number, state: Float64Array | null): void {
+    const warm = warmRef.current;
+    if (!warm || warm.session !== session) return;
+    warmRef.current = null;
+    const { sim, nodes, links } = warm;
+    if (state) {
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i];
+        n.x = state[i * 4]; n.y = state[i * 4 + 1]; n.vx = state[i * 4 + 2]; n.vy = state[i * 4 + 3];
+      }
+      finishGraphWarmup(sim, nodes.length);
     }
+    rememberGraphLayout(warm.layoutKey, nodes);
+    nodesRef.current = nodes;
+    forceNodesRef.current = nodes;
+    linksRef.current = links;
+    hitIndexRef.current = null;
+    layoutSettledRef.current = false;
+    completeOpen(sim, nodes);
+    // A force slider moved while the worker warmed: retune now.
+    const s = getStore().settings;
+    const next = { center: s.graphCenterForce, repel: s.graphRepelForce, linkForce: s.graphLinkForce, linkDistance: s.graphLinkDistance };
+    const applied = appliedForcesRef.current;
+    if (applied.center !== next.center || applied.repel !== next.repel || applied.linkForce !== next.linkForce || applied.linkDistance !== next.linkDistance) {
+      appliedForcesRef.current = next;
+      applyGraphForces(sim, next);
+      reheatGraphSimulation(sim).alphaTarget(0).stop();
+    }
+    setWarmingCount(0);
+    needsRedrawRef.current = true;
+    resumeRef.current();
+  }
+
+  /** The end of every open: finite positions, the visible tail, a pending fit. */
+  function completeOpen(sim: Simulation<GraphNode, GraphLink>, nodes: GraphNode[]): void {
+    // Safety: if the force layout ever produced a non-finite position, reset
+    // it so the node still renders (otherwise it would silently vanish).
+    for (const n of nodes) {
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+        const a = phaseFromId(n.id);
+        n.x = Math.cos(a) * 120;
+        n.y = Math.sin(a) * 120;
+        n.vx = 0;
+        n.vy = 0;
+      }
+    }
+    motionUntilRef.current = performance.now() + 2400;
+    simRef.current = sim;
+    fitPendingRef.current = true;
   }
 
   function physicsWorker(): Worker | null {
@@ -458,6 +544,11 @@ export function GraphView() {
     try {
       const worker = new Worker(new URL("../lib/graphPhysics.worker.ts", import.meta.url), { type: "module" });
       worker.onmessage = (event: MessageEvent<GraphPhysicsResponse>) => {
+        if (event.data.type === "warmed") {
+          markMesaPerf("graph-warmup", { nodes: event.data.state.length / 4, ms: event.data.ms ?? null, helpers: event.data.helpers ?? 0 });
+          adoptWarmup(event.data.session, event.data.state);
+          return;
+        }
         const current = physicsRef.current;
         if (!current.active || event.data.session !== current.session) return;
         current.pending = event.data;
@@ -471,6 +562,12 @@ export function GraphView() {
         stopDragPhysics();
         worker.terminate();
         current.worker = null;
+        // A warm-up the worker never returned finishes on the main thread.
+        const warm = warmRef.current;
+        if (warm) {
+          warmGraphSimulation(warm.sim, warm.nodes.length);
+          adoptWarmup(warm.session, null);
+        }
       };
       p.worker = worker;
     } catch {
@@ -483,7 +580,9 @@ export function GraphView() {
     const { nodes } = physicsRef.current;
     const grabbed = dragRef.current.node;
     const state = message.state;
-    for (let i = 0; i < nodes.length; i++) {
+    // A replay state covers only the admitted prefix of `nodes`.
+    const count = Math.min(nodes.length, state.length / 4);
+    for (let i = 0; i < count; i++) {
       const n = nodes[i];
       // The grabbed node already sits at the pointer; the worker trails it.
       if (n !== grabbed) {
@@ -520,6 +619,7 @@ export function GraphView() {
     if (p.pending) copyPhysicsState(p.pending);
     p.pending = null;
     p.active = false;
+    p.replay = false;
     p.worker?.postMessage({ type: "stop", session: p.session } satisfies GraphPhysicsRequest);
   }
 
@@ -531,7 +631,7 @@ export function GraphView() {
    * Move a large graph's drag physics, or a heavy graph's settle (`node`
    * null), off the UI thread; a grab re-uses a running session.
    */
-  function startDragPhysics(node: GraphNode | null, collideIterations: number | undefined): void {
+  function startDragPhysics(node: GraphNode | null): void {
     const p = physicsRef.current;
     const sim = simRef.current;
     if (!sim || timelapseRef.current) return;
@@ -546,11 +646,7 @@ export function GraphView() {
     if (nodes.length < (node ? WORKER_DRAG_MIN_NODES : WORKER_SETTLE_MIN_NODES)) return;
     const worker = physicsWorker();
     if (!worker) return;
-    const collide = sim.force("collide") as ForceCollide<GraphNode> | null | undefined;
     const init = snapshotGraphPhysics(sim, {
-      collideIterations: collideIterations ?? collide?.iterations() ?? 1,
-      velocityCap: dragVelocityCap(forceNodesRef.current.length),
-      doubleTickBelow: DOUBLE_TICK_BELOW,
       grab: node,
       overlap: {
         gap: OVERLAP_GAP,
@@ -568,11 +664,15 @@ export function GraphView() {
 
   /** Hand a heavy graph's settle to the worker. Returns true when the worker owns physics. */
   function startSettlePhysics(): boolean {
-    startDragPhysics(null, undefined);
+    startDragPhysics(null);
     return physicsRef.current.active;
   }
 
   useEffect(() => () => {
+    // Pending heavy-open steps stop; they must not start a new worker, and a
+    // saved layout that loads after unmount must find no warm-up to adopt.
+    warmSessionRef.current += 1;
+    warmRef.current = null;
     physicsRef.current.worker?.terminate();
     physicsRef.current.worker = null;
     physicsRef.current.active = false;
@@ -580,7 +680,8 @@ export function GraphView() {
 
   // Center + scale so the whole graph fits the viewport.
   function fitView(): boolean {
-    // Frame the whole graph — connected cluster plus the orphan halo.
+    // Frame the whole graph. A small graph opens at Obsidian's default zoom
+    // (one device pixel per world unit) instead of being blown up.
     const nodes = nodesRef.current;
     const { w, h } = sizeRef.current;
     if (nodes.length === 0 || w < 10) return false;
@@ -589,8 +690,11 @@ export function GraphView() {
     const gw = Math.max(1, bounds.radius * 2);
     const gh = Math.max(1, bounds.radius * 2);
     const pad = 48;
-    const k = Math.min(1.8, Math.max(0.03, Math.min((w - pad) / gw, (h - pad) / gh)));
+    const dpr = window.devicePixelRatio || 1;
+    const k = clampZoom(Math.min(1 / dpr, (w - pad) / gw, (h - pad) / gh), dpr);
     const t = transformRef.current;
+    zoomAnchorRef.current = null;
+    panVelocityRef.current = { x: 0, y: 0, at: 0 };
     t.k = k;
     targetKRef.current = k;
     t.x = w / 2 - bounds.cx * k;
@@ -606,8 +710,21 @@ export function GraphView() {
   // no text files has nothing to wait for.
   const awaitingNotes = useAppStore((s) => s.notesIndexPending);
 
+  // Inputs of the current build. A save republishes `files` with a new size
+  // and mtime and `notes` with a new record for the saved note; when neither
+  // changes what the graph reads, nothing rebuilds, no grab is released and
+  // no replay ends (`sameGraphFiles`, `sameGraphNotes`).
+  const builtFromRef = useRef<{ notes: Record<string, NoteMeta>; filters: string; files: GraphFileSnapshot } | null>(null);
+
   // ---- build / update the graph when notes change ------------------------
   useEffect(() => {
+    const filters = [graphShowTags, graphExistingFilesOnly, graphShowOrphans, graphShowAttachments, graphShowAllFiles].join();
+    const built = builtFromRef.current;
+    if (!awaitingNotes && built && built.filters === filters && sameGraphNotes(built.notes, notes) && sameGraphFiles(built.files, files)) {
+      built.notes = notes;
+      return;
+    }
+    builtFromRef.current = awaitingNotes ? null : { notes, filters, files: graphFileSnapshot(files) };
     // A filter or metadata refresh replaces node objects. Release any grab
     // before replacing them so it cannot pin a stale node or keep alpha hot.
     if (dragRef.current.node || dragRef.current.panning) endDrag(false);
@@ -616,6 +733,7 @@ export function GraphView() {
       // Drop any previous vault's graph and simulation so the first build of
       // this vault takes the fresh-simulation path and paints settled. Clear
       // every derived lookup too, so no previous label or hover can paint.
+      cancelWarmup();
       simRef.current?.stop();
       simRef.current = null;
       nodesRef.current = [];
@@ -629,26 +747,56 @@ export function GraphView() {
       timelineNeighborsRef.current = new Map();
       timelineOrderRef.current = [];
       timelineVisibleCountRef.current = 0;
-      degreeSortedRef.current = [];
       nodeByIdRef.current = new Map();
       adjacencyRef.current = new Map();
       neighborsRef.current = new Map();
       linkEndpointsRef.current = { sx: new Float32Array(0), sy: new Float32Array(0), tx: new Float32Array(0), ty: new Float32Array(0), sId: [], tId: [] };
       focusRef.current = { id: null, k: 0 };
       hitIndexRef.current = null;
-      graphSigRef.current = "";
+      topologyRef.current = null;
       clearGraphHover();
       setShownCount(0);
       needsRedrawRef.current = true;
       resumeRef.current();
       return;
     }
-    const { nodes, links } = buildGraph(notes, files, {
+    const buildOptions = {
       showTags: graphShowTags,
       existingOnly: graphExistingFilesOnly,
       showOrphans: graphShowOrphans,
       showAttachments: graphShowAttachments,
-    });
+      showAllFiles: graphShowAllFiles,
+    };
+    // A heavy first build resolves its notes in short timer steps, then this
+    // effect runs again and only assembles (`prepareTick`). Measured at
+    // 20,000 notes: one 150 ms build became steps of about 16 ms.
+    const noteCount = Object.keys(notes).length;
+    // Helper workers load while the main thread prepares a heavy open.
+    if (!simRef.current && noteCount >= WORKER_WARM_MIN_NODES) physicsWorker()?.postMessage({ type: "helpers", count: noteCount } satisfies GraphPhysicsRequest);
+    if (!simRef.current && noteCount >= WORKER_WARM_MIN_NODES && physicsWorker() &&
+      !buildGraphRef.current.prepare(notes, files, buildOptions, performance.now() + HEAVY_STEP_MS)) {
+      cancelWarmup();
+      builtFromRef.current = null;
+      const session = warmSessionRef.current;
+      nodesRef.current = [];
+      forceNodesRef.current = [];
+      linksRef.current = [];
+      setWarmingCount(noteCount);
+      markMesaPerf("graph-open-step", { step: "prepare-start", notes: noteCount });
+      const step = () => {
+        if (warmSessionRef.current !== session || simRef.current) return;
+        if (buildGraphRef.current.prepare(notes, files, buildOptions, performance.now() + HEAVY_STEP_MS)) {
+          markMesaPerf("graph-open-step", { step: "prepared" });
+          setPrepareTick((t) => t + 1);
+        }
+        else nextTask(step);
+      };
+      nextTask(step);
+      needsRedrawRef.current = true;
+      resumeRef.current();
+      return;
+    }
+    const { nodes, links, topology } = buildGraphRef.current(notes, files, buildOptions);
     // A filter or vault change starts a fresh replay timeline. The complete
     // graph remains the source of truth; the timelapse only changes which
     // already-built nodes are admitted to the live force simulation.
@@ -657,205 +805,146 @@ export function GraphView() {
     timelineVisibleCountRef.current = nodes.length;
     timelineNodesRef.current = nodes;
     timelineLinksRef.current = links;
-    timelineNeighborsRef.current = buildNeighbors(links);
-    timelineOrderRef.current = [...nodes].sort((a, b) => {
-      const timeDelta = timelineSortValue(a) - timelineSortValue(b);
-      return timeDelta || a.id.localeCompare(b.id);
-    });
+    // The replay order and its neighbour map are built when a replay starts.
+    timelineOrderRef.current = [];
     setTimelapseOn(false);
-    const graphSig = [
-      nodes.map((n) => n.id).sort().join("\u001f"),
-      links
-        .map((l) => {
-          const s = typeof l.source === "string" ? l.source : l.source.id;
-          const t = typeof l.target === "string" ? l.target : l.target.id;
-          return `${s}->${t}`;
-        })
-        .sort()
-        .join("\u001f"),
-    ].join("\u001e");
-    const topologyChanged = graphSig !== graphSigRef.current;
-    graphSigRef.current = graphSig;
+    const topologyChanged = !sameGraphTopology(topologyRef.current, topology);
+    topologyRef.current = topology;
     setShownCount(nodes.length);
     const prev = new Map(nodesRef.current.map((n) => [n.id, n]));
-    const { w, h } = sizeRef.current;
+    // Kept nodes hold their place; new nodes are seeded next to their placed
+    // neighbours, or in a ring outside the placed graph.
+    const kept = new Map<string, GraphNode>();
+    const fresh: GraphNode[] = [];
     for (const n of nodes) {
       const p = prev.get(n.id);
-      if (p) {
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
         n.x = p.x;
         n.y = p.y;
         n.vx = topologyChanged ? p.vx ?? 0 : 0;
         n.vy = topologyChanged ? p.vy ?? 0 : 0;
-        n.renderPhase = p.renderPhase ?? phaseFromId(n.id);
+        kept.set(n.id, n);
       } else {
-        const a = Math.random() * Math.PI * 2;
-        const r = 80 + Math.sqrt(nodes.length) * 14 + Math.random() * 90;
-        n.x = w / 2 + Math.cos(a) * r;
-        n.y = h / 2 + Math.sin(a) * r;
-        n.renderPhase = phaseFromId(n.id);
+        fresh.push(n);
       }
+      n.renderPhase = p?.renderPhase ?? phaseFromId(n.id);
+    }
+    // A rebuild during a heavy open starts that open again with this data.
+    cancelWarmup();
+    if (!simRef.current && nodes.length >= WORKER_WARM_MIN_NODES && physicsWorker()) {
+      nodeByIdRef.current = new Map(nodes.map((n) => [n.id, n]));
+      reserveLinkEndpoints(links.length);
+      layoutSettledRef.current = false;
+      hitIndexRef.current = null;
+      beginHeavyOpen(nodes, links, forceSettings);
+      needsRedrawRef.current = true;
+      resumeRef.current();
+      return;
+    }
+    if (fresh.length > 0) {
+      // Seeding reads only the new nodes' neighbours.
+      seedGraphNodes(fresh, kept, neighborsOf(new Set(fresh.map((n) => n.id)), links), seededRandom(nodes.length));
     }
     nodesRef.current = nodes;
-    // Every node (notes, tags, phantoms and attachments) joins one force
-    // simulation, so all of them can be dragged. Barnes-Hut charge and
-    // settling to rest keep multi-thousand-node vaults responsive.
-    const forceNodes = nodes;
-    forceNodesRef.current = forceNodes;
-
-    const newForceNodes = forceNodes.filter((n) => !prev.has(n.id));
-    if (newForceNodes.length > 0) seedForceNodes(newForceNodes);
+    // Every node (notes, tags, unresolved links and attachments) joins one
+    // force simulation, so all of them can be dragged.
+    forceNodesRef.current = nodes;
     linksRef.current = links;
-    degreeSortedRef.current = [...nodes].sort((a, b) => b.degree - a.degree);
     nodeByIdRef.current = new Map(nodes.map((n) => [n.id, n]));
 
-    // Pre-compute adjacency list for placePreviewCard (avoids O(m) scan per card).
-    const adj = new Map<string, number[]>();
-    for (let i = 0; i < links.length; i++) {
-      const l = links[i];
-      const sId = typeof l.source === "string" ? l.source : l.source.id;
-      const tId = typeof l.target === "string" ? l.target : l.target.id;
-      let a1 = adj.get(sId);
-      if (!a1) { a1 = []; adj.set(sId, a1); }
-      a1.push(i);
-      let a2 = adj.get(tId);
-      if (!a2) { a2 = []; adj.set(tId, a2); }
-      a2.push(i);
-    }
-    adjacencyRef.current = adj;
-    // Same links, never mutated: share the timeline map instead of rebuilding it.
-    neighborsRef.current = timelineNeighborsRef.current;
+    // Adjacency and neighbours rebuild from `linksRef` on first use.
 
     reserveLinkEndpoints(links.length);
-
-    needsRedrawRef.current = true;
-    resumeRef.current();
+    layoutSettledRef.current = false;
+    hitIndexRef.current = null;
 
     let sim = simRef.current;
     if (!sim) {
-      // Size tiers weaken charge, widen its range and decay faster for large
-      // graphs so they settle sooner (see graphSimulationTier).
-      const tier = graphSimulationTier(forceNodes.length);
-      sim = createGraphSimulation<GraphNode, GraphLink>(forceNodes, links, {
-        w,
-        h,
-        radius: (node: unknown) => graphNodeRadius(node as GraphNode),
-        repel: graphRepelForce,
-        center: graphCenterForce,
-        linkForce: graphLinkForce,
-        linkDistance: graphLinkDistance,
-      });
-      // Tiny prewarm only: enough to avoid an initial singular pile-up without
-      // blocking first paint for seconds on larger vaults.
-      for (let i = 0; i < tier.warmTicks; i++) sim.tick();
-      // Safety: if the force layout ever produced a non-finite position, reset
-      // it so the node still renders (otherwise it would silently vanish).
-      for (const n of nodes) {
-        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
-          const a = Math.random() * Math.PI * 2;
-          n.x = w / 2 + Math.cos(a) * 120;
-          n.y = h / 2 + Math.sin(a) * 120;
-          n.vx = 0;
-          n.vy = 0;
+      sim = createGraphSimulation<GraphNode, GraphLink>(nodes, links, forceSettings);
+      appliedForcesRef.current = forceSettings;
+      // The graph is laid out before its first painted frame, and only a
+      // low-energy tail remains visible. A large graph warms in the worker
+      // and paints nothing until the same layout returns.
+      // The same graph warms to the same layout: reuse it when this window
+      // already laid it out.
+      const layoutKey = graphLayoutKey(nodes, links, forceSettings);
+      const cached = cachedGraphLayout(layoutKey, nodes.length);
+      if (cached) {
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          n.x = cached[i * 4]; n.y = cached[i * 4 + 1]; n.vx = cached[i * 4 + 2]; n.vy = cached[i * 4 + 3];
         }
+        finishGraphWarmup(sim, nodes.length);
+      } else {
+        warmGraphSimulation(sim, nodes.length);
+        rememberGraphLayout(layoutKey, nodes);
       }
-      sim.alpha(tier.openAlpha);
-      motionUntilRef.current = performance.now() + 2400;
-      simRef.current = sim;
-      fitPendingRef.current = true;
-      resumeRef.current();
+      completeOpen(sim, nodes);
     } else {
-      const lf = sim.force("link") as ReturnType<
-        typeof forceLink<GraphNode, GraphLink>
-      >;
+      const lf = sim.force("link") as ForceLink<GraphNode, GraphLink>;
       lf.links([]);
-      sim.nodes(forceNodes);
+      sim.nodes(nodes);
       lf.links(links);
-      sim.alpha(topologyChanged ? 0.22 : 0).stop();
-      needsRedrawRef.current = true;
-      resumeRef.current();
+      // A topology change reheats, as Obsidian does on new graph data. A
+      // content-only refresh never adds energy and never cuts a settle short.
+      if (topologyChanged) reheatGraphSimulation(sim);
+      sim.stop();
     }
+    needsRedrawRef.current = true;
+    resumeRef.current();
   // eslint-disable-next-line react-hooks/exhaustive-deps -- the next effect retunes force settings without rebuilding nodes
   }, [
     notes,
     files,
     awaitingNotes,
+    prepareTick,
     graphShowTags,
     graphExistingFilesOnly,
     graphShowOrphans,
     graphShowAttachments,
+    graphShowAllFiles,
   ]);
 
-  // Retune the current force graph in place when a graph setting changes.
+  // Retune the current force graph in place when a force slider changes.
   // Rebuilding and synchronously warming a large vault for every range-input
   // event can starve the native webview while the user drags a slider. Keeping
   // the existing simulation preserves positions and makes the controls safe
   // to scrub continuously.
   useEffect(() => {
     const sim = simRef.current;
+    const applied = appliedForcesRef.current;
+    const next = { center: graphCenterForce, repel: graphRepelForce, linkForce: graphLinkForce, linkDistance: graphLinkDistance };
     if (!sim) return;
+    // Mounting, or a rebuild that created the simulation with these values, is not a retune.
+    if (applied.center === next.center && applied.repel === next.repel &&
+        applied.linkForce === next.linkForce && applied.linkDistance === next.linkDistance) return;
+    appliedForcesRef.current = next;
     stopDragPhysics();
-    const count = timelineNodesRef.current.length;
-    const big = count > 300;
-    const huge = count > 800;
-    const chargeStrength = (huge ? -12 : big ? -18 : -24) * graphRepelForce;
-    const chargeDistMax = huge ? 1400 : big ? 1100 : 900;
-    const centerStrength = clamp(graphCenterForce, 0, 1) * 0.1;
-    const pullStrength = centerStrength * 0.4;
-    const charge = sim.force("charge") as ReturnType<
-      typeof forceManyBody<GraphNode>
-    > | null;
-    charge?.strength(chargeStrength).distanceMax(chargeDistMax);
-    const link = sim.force("link") as ReturnType<
-      typeof forceLink<GraphNode, GraphLink>
-    > | null;
-    link
-      ?.distance((l) => {
-        const source = l.source as GraphNode | string;
-        const target = l.target as GraphNode | string;
-        const sourceRadius = typeof source === "object" ? graphNodeRadius(source) : 6;
-        const targetRadius = typeof target === "object" ? graphNodeRadius(target) : 6;
-        return sourceRadius + targetRadius + graphLinkDistance / 10;
-      })
-      .strength((l) => {
-        const source = l.source as GraphNode | string;
-        const target = l.target as GraphNode | string;
-        const sourceDegree = typeof source === "object" ? source.degree ?? 1 : 1;
-        const targetDegree = typeof target === "object" ? target.degree ?? 1 : 1;
-        return clamp(
-          (1 / Math.max(1, Math.min(sourceDegree, targetDegree))) * graphLinkForce,
-          0,
-          2
-        );
-      });
-    const center = sim.force("center") as ReturnType<
-      typeof forceCenter
-    > | null;
-    center?.strength(centerStrength);
-    const xForce = sim.force("x") as ReturnType<typeof forceX<GraphNode>> | null;
-    const yForce = sim.force("y") as ReturnType<typeof forceY<GraphNode>> | null;
-    xForce?.strength(pullStrength);
-    yForce?.strength(pullStrength);
-    const collide = sim.force("collide") as ReturnType<
-      typeof forceCollide<GraphNode>
-    > | null;
-    collide?.radius((node) => graphNodeRadius(node) + 6);
-    sim.alpha(Math.max(sim.alpha(), count > 0 ? 0.12 : 0)).alphaTarget(0).stop();
+    applyGraphForces(sim, next);
+    reheatGraphSimulation(sim).alphaTarget(0).stop();
     layoutSettledRef.current = false;
     needsRedrawRef.current = true;
     resumeRef.current();
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- stopDragPhysics only reads refs; graph settings drive this effect
-  }, [
-    graphNodeSize,
-    graphCenterForce,
-    graphRepelForce,
-    graphLinkForce,
-    graphLinkDistance,
-  ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- stopDragPhysics only reads refs; force settings drive this effect
+  }, [graphCenterForce, graphRepelForce, graphLinkForce, graphLinkDistance]);
+
+  // Node size changes drawing, hit targets and the idle overlap cleanup; it
+  // is not a force, so it never reheats the simulation.
+  // A heavy settle in the worker holds the old radii: hand it back so the
+  // next frame restarts it with the new ones (a held grab keeps its session).
+  useEffect(() => {
+    if (!dragRef.current.node && !physicsRef.current.replay) stopDragPhysics();
+    layoutSettledRef.current = false;
+    hitIndexRef.current = null;
+    needsRedrawRef.current = true;
+    resumeRef.current();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- stopDragPhysics only reads refs; node size drives this effect
+  }, [graphNodeSize]);
 
   useEffect(() => {
     needsRedrawRef.current = true;
     resumeRef.current();
-  }, [graphArrows, graphTextFadeThreshold, graphLinkThickness]);
+  }, [graphArrows, graphTextFade, graphLinkThickness, graphLivingMotion]);
 
   // ---- size the canvas to its container ----------------------------------
   useEffect(() => {
@@ -970,17 +1059,18 @@ export function GraphView() {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       replayCameraRef.current = false;
-      const t = transformRef.current;
-      const factor = Math.exp(-e.deltaY * 0.0012);
-      targetKRef.current = Math.min(4, Math.max(0.03, targetKRef.current * factor));
-      // anchor the zoom on the cursor immediately for responsiveness
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const k2 = t.k + (targetKRef.current - t.k) * 0.35;
-      t.x = x - (x - t.x) * (k2 / t.k);
-      t.y = y - (y - t.y) * (k2 / t.k);
-      t.k = k2;
+      panVelocityRef.current = { x: 0, y: 0, at: 0 };
+      // Obsidian's curve: one wheel notch (120 px) zooms by a factor of 1.5.
+      const delta = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+      const target = clampZoom(targetKRef.current * Math.pow(1.5, -delta / 120), window.devicePixelRatio || 1);
+      targetKRef.current = target;
+      // Zooming in holds the point under the cursor; zooming out holds the view centre.
+      if (target < transformRef.current.k) {
+        zoomAnchorRef.current = null;
+      } else {
+        const rect = canvas.getBoundingClientRect();
+        zoomAnchorRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      }
       motionUntilRef.current = performance.now() + 2400;
       fastDrawUntilRef.current = performance.now() + 280;
       needsRedrawRef.current = true;
@@ -992,10 +1082,88 @@ export function GraphView() {
 
   function stopTimelapse(): void {
     timelapseRef.current = false;
+    // End a worker replay with its latest state before the full graph returns.
+    if (physicsRef.current.replay) stopDragPhysics();
     timelineVisibleCountRef.current = timelineNodesRef.current.length;
     publishVisibleGraph(timelineNodesRef.current, timelineLinksRef.current);
     setTimelapseOn(false);
     motionUntilRef.current = performance.now() + 1800;
+  }
+
+  /** Begin a replay: admission-ordered links, and the worker for a heavy graph. */
+  function startReplay(order: GraphNode[]): void {
+    const { links, admitAt } = replayLinkOrder(order, timelineLinksRef.current);
+    replayRef.current = { links, admitAt, linkCount: 0, adjacency: new Map(), neighbors: new Map(), byId: new Map() };
+    stopDragPhysics();
+    timelineVisibleCountRef.current = 0;
+    const worker = order.length >= WORKER_SETTLE_MIN_NODES ? physicsWorker() : null;
+    if (worker) {
+      const p = physicsRef.current;
+      const rank = new Map(order.map((n, i) => [n.id, i]));
+      const pairs = new Int32Array(links.length * 2);
+      links.forEach((l, i) => { pairs[i * 2] = rank.get(graphLinkNodeId(l.source))!; pairs[i * 2 + 1] = rank.get(graphLinkNodeId(l.target))!; });
+      p.session += 1;
+      p.active = true;
+      p.replay = true;
+      p.nodes = order;
+      p.index = new Map(order.map((n, i) => [n, i]));
+      p.pending = null;
+      worker.postMessage({ type: "replay", session: p.session, ids: order.map((n) => n.id), links: pairs, admitAt, settings: appliedForcesRef.current } satisfies GraphPhysicsRequest, [pairs.buffer, admitAt.buffer.slice(0)]);
+      // `admitAt` stays here for prefix counts; the worker got a copy.
+    }
+    publishReplayBatch(0);
+  }
+
+  /**
+   * Show the first `count` replay nodes. Lookups grow by the new links only;
+   * the worker (heavy graphs) or the main simulation admits the batch.
+   */
+  function publishReplayBatch(count: number): void {
+    const order = timelineOrderRef.current;
+    const r = replayRef.current;
+    const previous = timelineVisibleCountRef.current;
+    timelineVisibleCountRef.current = count;
+    const visible = order.slice(0, count);
+    for (let i = previous; i < count; i++) r.byId.set(order[i].id, order[i]);
+    const linkCount = replayLinkCount(r.admitAt, count);
+    const join = (a: string, b: string) => { let set = r.neighbors.get(a); if (!set) r.neighbors.set(a, (set = new Set())); set.add(b); };
+    for (let i = r.linkCount; i < linkCount; i++) {
+      const source = graphLinkNodeId(r.links[i].source), target = graphLinkNodeId(r.links[i].target);
+      for (const id of [source, target]) { let list = r.adjacency.get(id); if (!list) r.adjacency.set(id, (list = [])); list.push(i); }
+      join(source, target); join(target, source);
+    }
+    r.linkCount = linkCount;
+    const visibleLinks = r.links.slice(0, linkCount);
+    nodesRef.current = visible;
+    forceNodesRef.current = visible;
+    linksRef.current = visibleLinks;
+    nodeByIdRef.current = r.byId;
+    adjacencyRef.current = r.adjacency;
+    neighborsRef.current = r.neighbors;
+    setShownCount(count);
+    reserveLinkEndpoints(linkCount);
+    const p = physicsRef.current;
+    if (p.replay && p.active) {
+      const seeds = new Float64Array((count - previous) * 4);
+      for (let i = previous, k = 0; i < count; i++, k++) {
+        const n = order[i];
+        seeds[k * 4] = n.x ?? 0; seeds[k * 4 + 1] = n.y ?? 0; seeds[k * 4 + 2] = n.vx ?? 0; seeds[k * 4 + 3] = n.vy ?? 0;
+      }
+      p.worker?.postMessage({ type: "admit", session: p.session, count, seeds } satisfies GraphPhysicsRequest, [seeds.buffer]);
+    } else {
+      const sim = simRef.current;
+      if (sim) {
+        const linkForce = sim.force("link") as ForceLink<GraphNode, GraphLink> | null;
+        linkForce?.links([]);
+        sim.nodes(visible);
+        linkForce?.links(visibleLinks);
+        if (count > 0) reheatGraphSimulation(sim).stop();
+      }
+    }
+    layoutSettledRef.current = false;
+    hitIndexRef.current = null;
+    needsRedrawRef.current = true;
+    resumeRef.current();
   }
 
   function advanceTimelapse(now: number): boolean {
@@ -1014,27 +1182,15 @@ export function GraphView() {
     // spending a minute on one dot at a time.
     const targetCount = Math.max(1, Math.ceil(progress * order.length));
     if (targetCount > timelineVisibleCountRef.current) {
-      const admitted = new Map(nodesRef.current.map((node) => [node.id, node]));
-      const neighbors = timelineNeighborsRef.current;
-      for (const node of order.slice(timelineVisibleCountRef.current, targetCount)) {
-        const linked = [...(neighbors.get(node.id) ?? [])]
-          .map((id) => admitted.get(id)).filter((n): n is GraphNode => !!n);
-        const cx = linked.length ? linked.reduce((sum, n) => sum + n.x!, 0) / linked.length : replayOriginRef.current.x;
-        const cy = linked.length ? linked.reduce((sum, n) => sum + n.y!, 0) / linked.length : replayOriginRef.current.y;
-        const angle = phaseFromId(node.id);
-        const radius = linked.length ? graphNodeRadius(node) + 16 : 12 * Math.sqrt(admitted.size + 1);
-        node.x = cx + Math.cos(angle) * radius;
-        node.y = cy + Math.sin(angle) * radius;
-        node.vx = node.vy = 0;
-        node.fx = node.fy = null;
-        admitted.set(node.id, node);
-      }
-      timelineVisibleCountRef.current = targetCount;
-      publishVisibleGraph(
-        order.slice(0, targetCount),
-        timelineLinksRef.current,
-        true
+      // Each batch is seeded like new graph data: next to its admitted
+      // neighbours, or in a ring outside the admitted graph.
+      seedGraphNodes(
+        order.slice(timelineVisibleCountRef.current, targetCount),
+        replayRef.current.byId,
+        timelineNeighborsRef.current,
+        seededRandom(targetCount)
       );
+      publishReplayBatch(targetCount);
     }
     if (progress >= 1) {
       stopTimelapse();
@@ -1069,22 +1225,26 @@ export function GraphView() {
     let raf = 0;
 
     // Built once per loop lifetime so a frame passes them without allocating.
+    const linkLayer = new LinkLayer();
+    const linkGl = new GlLinkRenderer(() => glCanvasRef.current);
+    const webkitCanvas = isWebKitCanvas(navigator.userAgent);
     const drawRefs: GraphDrawRefs = {
-      canvasRef, ctxRef, sizeRef, transformRef, targetKRef, fastDrawUntilRef,
-      dragRef, pointerRef, needsRedrawRef, nodesRef, forceNodesRef, linksRef,
-      hoverRef, colorsRef, graphDisplayRef, focusRef, neighborsRef,
-      motionUntilRef, recentActivityRef, linkEndpointsRef, adjacencyRef,
-      nodeByIdRef, degreeSortedRef,
+      canvasRef, ctxRef, sizeRef, transformRef, targetKRef, zoomAnchorRef,
+      fastDrawUntilRef, dragRef, needsRedrawRef, nodesRef, forceNodesRef,
+      linksRef, hoverRef, colorsRef, graphDisplayRef, focusRef, neighborsRef,
+      motionUntilRef, linkEndpointsRef, adjacencyRef, nodeByIdRef,
       nodeRadius: graphNodeRadius,
       graphBounds,
       getImage,
+      linkLayer,
+      linkGl,
     };
     const cardRefs: GraphCardRefs = {
       transformRef, sizeRef, adjacencyRef, linksRef, nodeByIdRef,
       graphControlsHoverRef, dragRef, hoverRef, shownIdRef, pointerRef,
       activityRef, lastActAtRef, activitySigRef, activityHoldUntilRef,
       activityClearTimerRef,
-      nodeRadius: graphNodeRadius,
+      nodeRadius: graphDrawRadius,
       nodeAtScreen,
       clearGraphHover,
       setHover,
@@ -1099,15 +1259,17 @@ export function GraphView() {
         getStore().activePath
       );
     let lastInputAt = performance.now();
+    let lastStateAt = -Infinity;
     const frame = () => {
       const now = performance.now();
       const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
+      const livingOn = animationsOn && graphDisplayRef.current.living;
       const currentWindowPos = {
         x: window.screenX ?? 0,
         y: window.screenY ?? 0,
       };
       const prevWindowPos = lastWindowPosRef.current;
-      if (prevWindowPos && animationsOn) {
+      if (prevWindowPos && livingOn) {
         kickGraph(
           currentWindowPos.x - prevWindowPos.x,
           currentWindowPos.y - prevWindowPos.y,
@@ -1125,19 +1287,34 @@ export function GraphView() {
         needsRedrawRef.current = true;
       }
       decayActivity(now);
-      // Ease the hover-focus dim toward its target (1 while a node is
-      // hovered, 0 otherwise). ~0.16/frame ≈ a 150ms glide at 60fps.
+      // Ease the highlight toward its target (1 while a node is hovered or
+      // grabbed, 0 otherwise), 10% per frame as Obsidian fades.
       {
         const f = focusRef.current;
-        if (hoverRef.current.id) f.id = hoverRef.current.id;
-        const target = hoverRef.current.id ? 1 : 0;
+        const highlightId = dragRef.current.node?.id ?? hoverRef.current.id;
+        if (highlightId) f.id = highlightId;
+        const target = highlightId ? 1 : 0;
         const dk = target - f.k;
         if (Math.abs(dk) > 0.004) {
-          f.k += dk * 0.16;
+          f.k += dk * 0.1;
           needsRedrawRef.current = true;
         } else if (f.k !== target) {
           f.k = target;
           if (target === 0) f.id = null;
+          needsRedrawRef.current = true;
+        }
+      }
+      // Pan inertia: a released background drag coasts and decays 10% per frame.
+      {
+        const v = panVelocityRef.current;
+        if (!dragRef.current.panning && (v.x !== 0 || v.y !== 0)) {
+          const dt = Math.min(34, now - v.at);
+          v.at = now;
+          transformRef.current.x += v.x * dt;
+          transformRef.current.y += v.y * dt;
+          v.x *= 0.9;
+          v.y *= 0.9;
+          if (Math.abs(v.x) < 0.005 && Math.abs(v.y) < 0.005) v.x = v.y = 0;
           needsRedrawRef.current = true;
         }
       }
@@ -1151,8 +1328,8 @@ export function GraphView() {
           if (bounds.valid) {
             const { w, h } = sizeRef.current;
             // Only zoom out as the replay grows; keep the early nodes small.
-            const k = Math.min(t.k, Math.max(0.03,
-              Math.min(w - 96, h - 96) / Math.max(1, bounds.radius * 2)));
+            const k = Math.min(t.k, clampZoom(
+              Math.min(w - 96, h - 96) / Math.max(1, bounds.radius * 2), window.devicePixelRatio || 1));
             replayFrameRef.current = { k, x: w / 2 - bounds.cx * k, y: h / 2 - bounds.cy * k };
           }
         }
@@ -1164,43 +1341,42 @@ export function GraphView() {
           targetKRef.current = t.k;
           needsRedrawRef.current = true;
         }
-        if (!timelapseRef.current && sim && sim.alpha() <= 0.004) replayCameraRef.current = false;
+        if (!timelapseRef.current && sim && sim.alpha() <= GRAPH_SETTLED_ALPHA) replayCameraRef.current = false;
       }
       const isMovingNode = isNodeDragging && dragRef.current.moved;
       const activeItems = activeRecords(0.02);
-      const zooming = Math.abs(targetKRef.current - transformRef.current.k) > 0.0005;
-      const moving =
-        isMovingNode ||
-        now < motionUntilRef.current ||
-        (sim ? sim.alpha() > 0.004 : false) ||
-        zooming;
+      const zooming = isZooming(transformRef.current.k, targetKRef.current);
+      const hot = sim ? sim.alpha() > GRAPH_SETTLED_ALPHA : false;
+      const moving = isMovingNode || now < motionUntilRef.current || hot || zooming;
       const frameMs = ambientFrameMs(nodesRef.current.length, moving, activeItems.length > 0);
       const dueLivingFrame =
-        animationsOn &&
+        livingOn &&
         nodesRef.current.length > 0 &&
         now - lastDrawAtRef.current >= frameMs;
 
       // Tick the sim if it still has energy or we're dragging a node. While
       // the worker owns physics, take its newest state instead.
-      if (physicsRef.current.active) {
+      // A slow link draw (WebKit, heavy graphs) takes worker states less
+      // often, so nodes and links stay together and frames keep their rate.
+      const statePaced = now - lastStateAt < linkLayer.stateInterval(webkitCanvas);
+      if (physicsRef.current.active && statePaced) {
+        // Keep the newest state pending until the next allowed frame.
+      } else if (physicsRef.current.active) {
         const applied = applyDragPhysics();
+        if (applied) lastStateAt = now;
         if (applied) {
           needsRedrawRef.current = true;
           // The worker ran the same idle overlap cleanup; skip a main-thread pass.
           layoutSettledRef.current = applied === "settled";
           hitIndexRef.current = null;
         }
-      } else if (sim && sim.alpha() > 0.004 && !isNodeDragging && startSettlePhysics()) {
+      } else if (sim && hot && !isNodeDragging && startSettlePhysics()) {
         // A heavy graph's settle now runs in the worker; its first state arrives next frame.
         needsRedrawRef.current = true;
         layoutSettledRef.current = false;
-      } else if (sim && (sim.alpha() > 0.004 || isMovingNode)) {
-        const ticks =
-          nodesRef.current.length < DOUBLE_TICK_BELOW && sim.alpha() > 0.06 && !isNodeDragging ? 2 : 1;
-        for (let i = 0; i < ticks; i++) {
-          sim.tick();
-          if (isMovingNode) clampNodeVelocities(dragRef.current.node);
-        }
+      } else if (sim && (hot || isMovingNode)) {
+        // One tick per frame, as Obsidian's worker steps once per display frame.
+        sim.tick();
         needsRedrawRef.current = true;
         // The sim moved layout x/y — re-arm the idle overlap resolver so it
         // re-settles and re-freezes at the new rest positions.
@@ -1209,7 +1385,7 @@ export function GraphView() {
       if (zooming) needsRedrawRef.current = true;
 
       // Run the positional overlap resolver only at idle; forceCollide owns moving and dragged nodes.
-      const settling = isNodeDragging || physicsRef.current.active || (sim ? sim.alpha() > 0.02 : false);
+      const settling = isNodeDragging || physicsRef.current.active || (sim ? sim.alpha() > GRAPH_OVERLAP_ALPHA : false);
       if (!settling && !layoutSettledRef.current && forceNodesRef.current.length > 0) {
         if (resolveOverlaps(forceNodesRef.current, graphNodeRadius, OVERLAP_GAP, 2)) {
           needsRedrawRef.current = true;
@@ -1235,8 +1411,8 @@ export function GraphView() {
         dueLivingFrame ||
         activeItems.length > 0;
 
-      // Ambient motion is not a dirty-flag side effect. When animations are on,
-      // the canvas redraws at the living cadence even after d3 is fully settled.
+      // Living motion is not a dirty-flag side effect. When it is on, the
+      // canvas redraws at the living cadence even after d3 is fully settled.
       if (shouldDraw) {
         const drawStart = performance.now();
         draw(now, activeItems);
@@ -1293,18 +1469,21 @@ export function GraphView() {
         needsRedrawRef.current = true;
       }
       running = false;
-      const animationsOn = getStore().settings.animations && !reducedMotionRef.current;
-      const zooming = Math.abs(targetKRef.current - transformRef.current.k) > 0.0005;
-      const focusTarget = hoverRef.current.id ? 1 : 0;
-      const urgent = needsRedrawRef.current ||
-        (simRef.current?.alpha() ?? 0) > 0.004 || zooming ||
+      const livingOn = getStore().settings.animations && !reducedMotionRef.current && graphDisplayRef.current.living;
+      const zooming = isZooming(transformRef.current.k, targetKRef.current);
+      const focusTarget = hoverRef.current.id || dragRef.current.node ? 1 : 0;
+      const coasting = panVelocityRef.current.x !== 0 || panVelocityRef.current.y !== 0;
+      const urgent = needsRedrawRef.current || coasting ||
+        (simRef.current?.alpha() ?? 0) > GRAPH_SETTLED_ALPHA || zooming ||
         dragRef.current.node || dragRef.current.panning || activeRecords(0.02).length ||
         activityRef.current.some(item => item.visible) ||
-        focusRef.current.k !== focusTarget || (hoverRef.current.id && shownIdRef.current !== hoverRef.current.id) || !layoutSettledRef.current ||
+        focusRef.current.k !== focusTarget || (hoverRef.current.preview && hoverRef.current.id && shownIdRef.current !== hoverRef.current.id) || !layoutSettledRef.current ||
         replayCameraRef.current || fitPendingRef.current || timelapseRef.current ||
         physicsRef.current.active;
-      if ((animationsOn && nodesRef.current.length > 0) || urgent) {
-        const quiet = !document.hasFocus() || performance.now() - lastInputAt >= 15_000;
+      const quiet = !document.hasFocus() || performance.now() - lastInputAt >= 15_000;
+      // The CSS backdrop pauses with the living frames (`.graph-wrap.quiet`).
+      wrapRef.current?.classList.toggle("quiet", quiet);
+      if ((livingOn && nodesRef.current.length > 0) || urgent) {
         if (urgent || !quiet) raf = requestAnimationFrame(loop);
       }
     };
@@ -1322,7 +1501,7 @@ export function GraphView() {
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-mode"] });
     const stopActivity = onActivityChange(resume);
     const stopSettings = useAppStore.subscribe((state, previous) => {
-      if (state.settings.animations !== previous.settings.animations || state.activePath !== previous.activePath) resume();
+      if (state.settings.animations !== previous.settings.animations || state.settings.graphLivingMotion !== previous.settings.graphLivingMotion || state.activePath !== previous.activePath) resume();
     });
     const stopMotion = onReducedMotionChange(reduce => {
       reducedMotionRef.current = reduce;
@@ -1345,6 +1524,8 @@ export function GraphView() {
     resume();
     return () => {
       alive = false;
+      linkLayer.release();
+      linkGl.release();
       resumeRef.current = () => {};
       themeObserver.disconnect();
       stopActivity(); stopSettings(); stopMotion(); observer?.disconnect();
@@ -1366,8 +1547,7 @@ export function GraphView() {
     <div
       className={
         "graph-wrap" +
-        (hardwareAccel ? " accel" : "") +
-        (animations ? " live" : "")
+        (animations && graphLivingMotion ? " living" : "")
       }
       ref={wrapRef}
       onPointerDown={onPointerDown}
@@ -1376,9 +1556,11 @@ export function GraphView() {
       onPointerCancel={onPointerCancel}
       onPointerLeave={onPointerLeave}
     >
+      <canvas ref={glCanvasRef} className="graph-links-gl" aria-hidden="true" />
       <canvas ref={canvasRef} className="graph-canvas" />
       {canvasUnavailable && <div className="graph-index-status" role="status">Graph drawing is unavailable in this webview.</div>}
       {drawingFailed && <div className="graph-index-status" role="status">Graph drawing was interrupted. Resize the pane or reopen the graph to retry.</div>}
+      {warmingCount > 0 && <div className="graph-index-status" role="status">{`Laying out ${warmingCount.toLocaleString()} nodes…`}</div>}
       {indexingTextFiles > 0 && <div className="graph-index-status" role="status">{awaitingNotes ? `Indexing ${indexingTextFiles} text files before the graph is drawn…` : `Indexing ${indexingTextFiles} text files; graph may grow.`}</div>}
       <GraphActivityCards hover={hover} activity={activity} />
       <div
@@ -1409,10 +1591,14 @@ export function GraphView() {
               stopTimelapse();
               return;
             }
-            const order = timelineOrderRef.current;
+            const order = [...timelineNodesRef.current].sort((a, b) => {
+              const timeDelta = timelineSortValue(a) - timelineSortValue(b);
+              return timeDelta || a.id.localeCompare(b.id);
+            });
             if (order.length === 0) return;
+            timelineOrderRef.current = order;
+            timelineNeighborsRef.current = buildNeighbors(timelineLinksRef.current);
             timelapseRef.current = true;
-            timelineVisibleCountRef.current = 0;
             timelineStartRef.current = performance.now();
             timelineDurationRef.current = clamp(
               3200 + order.length * 1.4,
@@ -1421,11 +1607,9 @@ export function GraphView() {
             );
             endDrag(false);
             clearGraphHover();
-            const bounds = graphBounds(timelineNodesRef.current);
-            replayOriginRef.current = { x: bounds.cx, y: bounds.cy };
             replayFrameRef.current = null;
             replayCameraRef.current = true;
-            publishVisibleGraph([], timelineLinksRef.current, false);
+            startReplay(order);
             setTimelapseOn(true);
             motionUntilRef.current = performance.now() + 1800;
             needsRedrawRef.current = true;
@@ -1469,7 +1653,8 @@ export function GraphView() {
                 />
                 <GraphSettingRow
                   label="Attachments"
-                  on={graphShowAttachments}
+                  on={graphShowAttachments || graphShowAllFiles}
+                  disabled={graphShowAllFiles}
                   onChange={(v) => setSetting("graphShowAttachments", v)}
                 />
                 <GraphSettingRow
@@ -1479,8 +1664,14 @@ export function GraphView() {
                 />
                 <GraphSettingRow
                   label="Orphans"
-                  on={graphShowOrphans}
+                  on={graphShowOrphans || graphShowAllFiles}
+                  disabled={graphShowAllFiles}
                   onChange={(v) => setSetting("graphShowOrphans", v)}
+                />
+                <GraphSettingRow
+                  label="All files"
+                  on={graphShowAllFiles}
+                  onChange={(v) => setSetting("graphShowAllFiles", v)}
                 />
               </GraphSettingSection>
               <GraphSettingSection title="Display">
@@ -1491,18 +1682,18 @@ export function GraphView() {
                 />
                 <GraphRangeRow
                   label="Text fade threshold"
-                  value={graphTextFadeThreshold}
-                  min={0}
-                  max={0.9}
-                  step={0.01}
-                  formatValue={(v) => v.toFixed(2)}
-                  onChange={(v) => setSetting("graphTextFadeThreshold", v)}
+                  value={graphTextFade}
+                  min={-3}
+                  max={3}
+                  step={0.1}
+                  formatValue={(v) => v.toFixed(1)}
+                  onChange={(v) => setSetting("graphTextFade", v)}
                 />
                 <GraphRangeRow
                   label="Node size"
                   value={graphNodeSize}
-                  min={0.6}
-                  max={2}
+                  min={0.1}
+                  max={5}
                   step={0.05}
                   formatValue={(v) => v.toFixed(2)}
                   onChange={(v) => setSetting("graphNodeSize", v)}
@@ -1510,11 +1701,16 @@ export function GraphView() {
                 <GraphRangeRow
                   label="Link thickness"
                   value={graphLinkThickness}
-                  min={0.5}
-                  max={2.5}
+                  min={0.1}
+                  max={5}
                   step={0.05}
                   formatValue={(v) => v.toFixed(2)}
                   onChange={(v) => setSetting("graphLinkThickness", v)}
+                />
+                <GraphSettingRow
+                  label="Living motion"
+                  on={graphLivingMotion}
+                  onChange={(v) => setSetting("graphLivingMotion", v)}
                 />
               </GraphSettingSection>
               <GraphSettingSection title="Forces">
@@ -1539,18 +1735,18 @@ export function GraphView() {
                 <GraphRangeRow
                   label="Link force"
                   value={graphLinkForce}
-                  min={0.1}
-                  max={2}
-                  step={0.05}
+                  min={0}
+                  max={1}
+                  step={0.01}
                   formatValue={(v) => v.toFixed(2)}
                   onChange={(v) => setSetting("graphLinkForce", v)}
                 />
                 <GraphRangeRow
                   label="Link distance"
                   value={graphLinkDistance}
-                  min={50}
+                  min={30}
                   max={500}
-                  step={10}
+                  step={1}
                   onChange={(v) => setSetting("graphLinkDistance", v)}
                 />
               </GraphSettingSection>
@@ -1558,14 +1754,7 @@ export function GraphView() {
                 type="button"
                 className="graph-settings-reset"
                 onClick={() => {
-                  setSetting("graphArrows", false);
-                  setSetting("graphTextFadeThreshold", 0.42);
-                  setSetting("graphNodeSize", 1);
-                  setSetting("graphLinkThickness", 1);
-                  setSetting("graphCenterForce", 0.5);
-                  setSetting("graphRepelForce", 10);
-                  setSetting("graphLinkForce", 1);
-                  setSetting("graphLinkDistance", 250);
+                  for (const key of GRAPH_DISPLAY_KEYS) setSetting(key, DEFAULT_SETTINGS[key]);
                 }}
               >
                 Restore display defaults

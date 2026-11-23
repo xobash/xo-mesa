@@ -7,11 +7,14 @@ import { panelContent } from "./workspaceViews";
 /** A panel rendered standalone in its own OS window (?panel=…). */
 export function PanelWindow({
   kind,
-  graphWindowBootstrapped,
+  bootstrap,
 }: {
   kind: RightPanel;
-  /** The graph window started from a main-window snapshot and refreshes from disk shortly after. */
-  graphWindowBootstrapped: boolean;
+  /**
+   * True when the window shows a main-window snapshot (graph only); it then
+   * refreshes from disk in place shortly after. False opens the vault now.
+   */
+  bootstrap: Promise<boolean>;
 }) {
   const routeParams = useMemo(() => new URLSearchParams(location.search), []);
   const vaultPath = useAppStore((s) => s.vaultPath);
@@ -27,21 +30,29 @@ export function PanelWindow({
   }, [vaultPath, sel, selectFile]);
   useEffect(() => {
     let dispose: (() => void) | undefined;
+    let alive = true;
     void installNativeDragDock({
       kind: "panel",
       view: kind,
       relPath: activePath ?? sel,
     })
-      .then((cleanup) => (dispose = cleanup))
+      .then((cleanup) => { if (alive) dispose = cleanup; else cleanup(); })
       .catch((error) => console.warn("[mesa] native panel docking unavailable:", error));
-    return () => dispose?.();
+    return () => { alive = false; dispose?.(); };
   }, [kind, activePath, sel]);
   useEffect(() => {
-    if (!graphWindowBootstrapped || !requestedVault) return;
-    const refresh = () => void openVault(requestedVault);
-    const id = window.setTimeout(refresh, 1200);
-    return () => window.clearTimeout(id);
-  }, [graphWindowBootstrapped, requestedVault, openVault]);
+    if (!requestedVault) return;
+    let alive = true;
+    let timer: number | undefined;
+    void bootstrap.catch(() => false).then((shown) => {
+      if (!alive) return;
+      // Without a snapshot nothing else opens this window's vault.
+      if (!shown) { void openVault(requestedVault); return; }
+      // Attach the watcher and verify the snapshot without blanking the graph.
+      timer = window.setTimeout(() => void openVault(requestedVault, { keepShown: true }), 1200);
+    });
+    return () => { alive = false; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [bootstrap, requestedVault, openVault]);
 
   // Graph fills the native window. Drag its OS title bar over Mesa to dock it.
   if (kind === "graph") {

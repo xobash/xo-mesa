@@ -28,29 +28,6 @@ export function findPdfHeader(bytes: Uint8Array, limit = 4096): number {
   return -1;
 }
 
-/**
- * Best-effort guess at what a non-PDF file actually is, from its magic bytes —
- * so the error can say "this looks like an HTML page" rather than just "bad PDF".
- */
-export function sniffFileType(bytes: Uint8Array): string {
-  const h = bytes.subarray(0, 16);
-  const is = (sig: number[]) => sig.every((b, i) => h[i] === b);
-  const text = new TextDecoder("latin1").decode(h).trim();
-  if (is([0x25, 0x50, 0x44, 0x46])) return "a PDF";
-  if (is([0x50, 0x4b, 0x03, 0x04]) || is([0x50, 0x4b, 0x05, 0x06]))
-    return "a ZIP or Office file (.docx/.xlsx/.zip)";
-  if (is([0x89, 0x50, 0x4e, 0x47])) return "a PNG image";
-  if (is([0xff, 0xd8, 0xff])) return "a JPEG image";
-  if (is([0x47, 0x49, 0x46, 0x38])) return "a GIF image";
-  if (is([0x1f, 0x8b])) return "a gzip archive";
-  if (is([0x25, 0x21])) return "a PostScript file";
-  if (/^(<!doctype html|<html|<head|<!--)/i.test(text)) return "an HTML page";
-  if (/^<\?xml/i.test(text)) return "an XML file";
-  if (/^[[{]/.test(text)) return "JSON or text";
-  if (bytes.length === 0) return "an empty file";
-  return "an unrecognized / possibly corrupted file";
-}
-
 /** Tag Mesa header rejection before byte-based parsing. A failed URL task must be destroyed separately
  * before its worker can be retained; callers never create this tag. */
 const NOT_A_PDF = "__mesaNotAPdf";

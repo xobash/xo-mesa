@@ -36,9 +36,9 @@ export function applyTemplate(
   vars: { date: string; time: string; title: string }
 ): string {
   return tpl
-    .replace(/\{\{\s*date\s*\}\}/gi, vars.date)
-    .replace(/\{\{\s*time\s*\}\}/gi, vars.time)
-    .replace(/\{\{\s*title\s*\}\}/gi, vars.title);
+    .replace(/\{\{\s*date\s*\}\}/gi, () => vars.date)
+    .replace(/\{\{\s*time\s*\}\}/gi, () => vars.time)
+    .replace(/\{\{\s*title\s*\}\}/gi, () => vars.title);
 }
 
 /**

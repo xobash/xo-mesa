@@ -93,3 +93,8 @@ more than four million characters and never present truncated HTML as complete.
 Existing HTML, frame, archive, viewer and reader test suites cover local assets,
 CSS, fonts, SVG references, consent cancellation/revocation, size refusal and
 broker rewriting.
+
+EPUB chapters use the same offline frame document and `sandbox=""` srcDoc frame,
+without the online-resource or script options. Only images, fonts and
+stylesheets from inside the book are inlined; see the fallback viewer in
+[Document architecture](document-architecture.md#fallback-viewer).

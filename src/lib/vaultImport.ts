@@ -2,7 +2,8 @@ import { readFile, stat } from "@tauri-apps/plugin-fs";
 import type { VaultFile } from "../types";
 import { bytesEqual, persistVerifiedBytes } from "./verifiedWrite";
 import { safeBaseName } from "./fsnames";
-import { IN_TAURI, VAULT_FS, ensureDir, isDemo, isIndexableVaultRelPath, safeExists, uniqueRel } from "./vault";
+import { IN_TAURI, VAULT_FS, ensureDir, isDemo, safeExists, uniqueRel } from "./vaultFs";
+import { isIndexableVaultRelPath } from "./vaultWalk";
 import { baseName, extOf, joinPath, parentDir, toVaultFile } from "./vaultPaths";
 
 // Drag-and-drop import into the vault through verified, missing-target writes.
@@ -75,7 +76,7 @@ export async function importDroppedPaths(
         // Check the size before reading: the whole file is held in memory.
         const metadata = await stat(norm);
         if (metadata.size > MAX_DROPPED_FILE_BYTES) {
-          throw new Error(`${base} exceeds the ${MAX_DROPPED_FILE_BYTES / 1024 / 1024} MB import limit.`);
+          throw new Error(`${base} exceeds the ${MAX_DROPPED_FILE_BYTES / 1024 / 1024} MiB import limit.`);
         }
         const data = await readFile(norm);
         throwIfImportAborted(options.signal);
@@ -136,7 +137,7 @@ async function importZip(
   const { inspectZipForImport, unzipForImport, ZIP_IMPORT_LIMITS } = await import("./zipCodec");
   const archiveMetadata = await stat(srcPath);
   if (archiveMetadata.size > ZIP_IMPORT_LIMITS.maxArchiveBytes) {
-    throw new Error(`ZIP archive exceeds the ${ZIP_IMPORT_LIMITS.maxArchiveBytes / 1024 / 1024} MB import limit.`);
+    throw new Error(`ZIP archive exceeds the ${ZIP_IMPORT_LIMITS.maxArchiveBytes / 1024 / 1024} MiB import limit.`);
   }
   const data = await readFile(srcPath);
   const folder = base.replace(/\.zip$/i, "");

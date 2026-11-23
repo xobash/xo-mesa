@@ -8,13 +8,13 @@ interface Point extends SimulationNodeDatum { i: number; r: number; degree: numb
 const LAYOUT_TICKS = 300;
 const PAD = 14;
 
-/** Same node size as the real graph (`graphGeometry.nodeRadius`). */
+/** A compact degree-scaled size of its own; the real graph uses `graphGeometry.nodeRadius`. */
 const radius = (degree: number) => Math.min(24, 2.4 + 1.75 * Math.sqrt(degree));
 
 /**
- * The real graph's default forces (link distance from node sizes plus the
- * default 250 setting, degree-scaled link strength, repel 10, centre 0.5),
- * run to rest once instead of animating.
+ * A compact force layout of its own (short links from node sizes,
+ * degree-scaled link strength, repel 240, weak centring), run to rest once
+ * instead of animating. It is not the real graph's force model.
  */
 export function layoutMiniGraph(graph: MiniGraphData): Point[] {
   const points: Point[] = graph.nodes.map((n, i) => ({ i, r: radius(n.degree), degree: n.degree }));

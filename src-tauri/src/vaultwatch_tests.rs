@@ -87,6 +87,10 @@ fn is_indexable_matches_the_frontend_predicate() {
     let at_cap = vec!["d"; crate::vault_names::MAX_REL_SEGMENTS - 1].join("/");
     assert!(is_indexable_rel(&format!("{at_cap}/a.md")));
     assert!(!is_indexable_rel(&format!("{at_cap}/e/a.md")));
+    // Dropped — Explorer's own files, like the scan and the frontend.
+    assert!(!is_indexable_rel("desktop.ini"));
+    assert!(!is_indexable_rel("notes/Thumbs.db"));
+    assert!(!is_indexable_rel("$RECYCLE.BIN/S-1-5/x.md"));
 }
 
 #[test]

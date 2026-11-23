@@ -3,6 +3,7 @@ import { useAppStore } from "../store";
 import { type SyncProgress } from "../lib/syncUi";
 import { buildTroubleshootingPackage, formatLogLine } from "../lib/syncDiagnostics";
 import { IN_TAURI } from "../lib/vault";
+import { copyText } from "../lib/clipboard";
 
 export function progressLabel(p: SyncProgress | null): string {
   if (!p) return "Contacting device…";
@@ -66,16 +67,21 @@ export function SyncConsole() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [log.length]);
 
+  // "Copied" appears only after the clipboard accepted the text.
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(""), 1400);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
   if (!busy && log.length === 0) return null;
 
-  const copyText = (text: string, kind: "package" | "log") => {
-    void navigator.clipboard?.writeText(text);
-    setCopied(kind);
-    setTimeout(() => setCopied(""), 1400);
+  const copyAs = (text: string, kind: "package" | "log") => {
+    void copyText(text).then((ok) => setCopied(ok ? kind : ""));
   };
 
   const copyLog = () => {
-    copyText(log.map(formatLogLine).join("\n"), "log");
+    copyAs(log.map(formatLogLine).join("\n"), "log");
   };
 
   const copyPackage = async () => {
@@ -122,7 +128,7 @@ export function SyncConsole() {
         ...settings.peers.map((p) => p.token || ""),
       ],
     });
-    copyText(pkg, "package");
+    copyAs(pkg, "package");
   };
 
   const pct =

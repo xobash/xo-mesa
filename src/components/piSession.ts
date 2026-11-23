@@ -80,6 +80,11 @@ const SHARED_PI_THEME = {
   brightWhite: "#ffffff",
 } as const;
 
+/** Keystrokes to a session that just exited are refused natively; drop them quietly. */
+function writeToPty(sessionId: string, input: string): void {
+  invoke("terminal_write", { sessionId, input }).catch(() => undefined);
+}
+
 export const SHARED_PI_SESSION: SharedPiSessionState = {
   sessionId: null,
   vaultPath: null,
@@ -346,7 +351,7 @@ async function createSharedPiTerminal(): Promise<Terminal> {
       event.preventDefault();
       if (event.repeat) return false;
       const id = SHARED_PI_SESSION.sessionId;
-      if (id) void invoke("terminal_write", { sessionId: id, input: "\u001b[Z" });
+      if (id) writeToPty(id, "\u001b[Z");
       return false;
     }
     return true;
@@ -354,7 +359,7 @@ async function createSharedPiTerminal(): Promise<Terminal> {
   term.onData((input) => {
     const id = SHARED_PI_SESSION.sessionId;
     if (!id) return;
-    void invoke("terminal_write", { sessionId: id, input });
+    writeToPty(id, input);
   });
   // Serialize grid changes through the resize queue; native resize ownership rejects obsolete surfaces.
   term.onResize(({ cols, rows }) => {

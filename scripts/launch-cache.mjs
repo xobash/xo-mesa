@@ -7,16 +7,21 @@ const root = resolve(import.meta.dirname, "..");
 const stampPath = join(root, "src-tauri", "target", "mesa-launch-cache.json");
 const mode = process.argv[2];
 
+// Explicit stack, no recursion: folder depth is user-sized. digest() sorts.
 function filesUnder(path, files) {
   if (!existsSync(path)) return;
-  for (const item of readdirSync(path, { withFileTypes: true })) {
-    if (item.isSymbolicLink()) continue;
-    const full = join(path, item.name);
-    if (item.isDirectory()) {
-      if (item.name === "target" || item.name === "gen" || item.name === "node_modules") continue;
-      filesUnder(full, files);
-    } else if (item.isFile()) {
-      files.push(full);
+  const pending = [path];
+  while (pending.length) {
+    const folder = pending.pop();
+    for (const item of readdirSync(folder, { withFileTypes: true })) {
+      if (item.isSymbolicLink()) continue;
+      const full = join(folder, item.name);
+      if (item.isDirectory()) {
+        if (item.name === "target" || item.name === "gen" || item.name === "node_modules") continue;
+        pending.push(full);
+      } else if (item.isFile()) {
+        files.push(full);
+      }
     }
   }
 }

@@ -1,4 +1,5 @@
 import { vaultStorageId } from "./vaultStorage";
+import { openIdbWithTimeout } from "./idbOpen";
 
 export interface TextRevision {
   id: string;
@@ -119,33 +120,12 @@ function compareNewestFirst(a: TextRevision, b: TextRevision): number {
  * profiles without IndexedDB.
  */
 function revisionDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    if (typeof indexedDB === "undefined") {
-      reject(new Error("revision history storage unavailable"));
-      return;
-    }
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
-    let settled = false;
-    const timer = setTimeout(() => {
-      settled = true;
-      reject(new Error("revision history storage timed out"));
-    }, 2_000);
-    request.onupgradeneeded = () => {
-      const store = request.result.objectStoreNames.contains(DATABASE_STORE)
-        ? request.transaction!.objectStore(DATABASE_STORE)
-        : request.result.createObjectStore(DATABASE_STORE, { keyPath: "id" });
-      if (!store.indexNames.contains("by-file")) store.createIndex("by-file", ["root", "relPath"]);
-    };
-    request.onblocked = () => { if (!settled) { settled = true; clearTimeout(timer); reject(new Error("revision history storage is blocked")); } };
-    request.onerror = () => { if (!settled) { settled = true; clearTimeout(timer); reject(request.error); } };
-    request.onsuccess = () => {
-      clearTimeout(timer);
-      if (settled) { request.result.close(); return; }
-      settled = true;
-      request.result.onversionchange = () => request.result.close();
-      resolve(request.result);
-    };
-  });
+  return openIdbWithTimeout(DATABASE_NAME, DATABASE_VERSION, (db, upgrade) => {
+    const store = db.objectStoreNames.contains(DATABASE_STORE)
+      ? upgrade.objectStore(DATABASE_STORE)
+      : db.createObjectStore(DATABASE_STORE, { keyPath: "id" });
+    if (!store.indexNames.contains("by-file")) store.createIndex("by-file", ["root", "relPath"]);
+  }, "revision history storage");
 }
 
 function sameRevision(left: TextRevision, right: TextRevision): boolean {

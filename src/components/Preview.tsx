@@ -2,7 +2,7 @@ import { useAppStore } from "../store";
 import { MarkdownView } from "./MarkdownView";
 import { Backlinks } from "./Backlinks";
 import { HtmlView } from "./LazyHtmlView";
-import { RtfView } from "./RtfView";
+import { RtfView } from "./LazyRtfView";
 import { fileKind } from "../lib/vault";
 
 export function Preview() {

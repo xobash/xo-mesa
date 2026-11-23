@@ -1,4 +1,4 @@
-/** Language-agnostic token scanner and delimited-data parser for the code viewer. */
+/** Language-agnostic token scanner for the code viewer and editor. */
 
 type TokType = "plain" | "comment" | "string" | "number" | "keyword";
 export interface Token {
@@ -6,7 +6,7 @@ export interface Token {
   value: string;
 }
 
-interface LangSpec {
+export interface LangSpec {
   /** Line-comment markers. Alphabetic markers (e.g. `rem`) only match at line start. */
   line: string[];
   /** Block comment [open, close], if any. */
@@ -61,6 +61,11 @@ const EXT_LANG: Record<string, string> = {
   log: "text", txt: "text", text: "text",
 };
 
+/** Token rules for a language key ("text" when unknown). */
+export function langSpec(lang: string): LangSpec {
+  return LANGS[lang] ?? LANGS.text;
+}
+
 /** Map a file extension to a highlighter language key (defaults to "text"). */
 export function langForExt(ext: string): string {
   return EXT_LANG[ext.toLowerCase()] ?? "text";
@@ -71,7 +76,7 @@ const isDigit = (c: string) => c >= "0" && c <= "9";
 
 /** Tokenise source into a flat list of typed tokens (newlines kept in values). */
 export function tokenize(src: string, lang: string): Token[] {
-  const spec = LANGS[lang] ?? LANGS.text;
+  const spec = langSpec(lang);
   const out: Token[] = [];
   let plain = "";
   const flush = () => {
@@ -173,68 +178,4 @@ export function tokenize(src: string, lang: string): Token[] {
   }
   flush();
   return out;
-}
-
-/**
- * Parse delimited data (CSV/TSV) into rows of fields, honouring quoted fields
- * with embedded delimiters/newlines and "" escaped quotes (RFC 4180-ish).
- */
-export function parseDelimited(text: string, delim = ","): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let inQuotes = false;
-  let i = 0;
-  const n = text.length;
-  const pushField = () => {
-    row.push(field);
-    field = "";
-  };
-  const pushRow = () => {
-    pushField();
-    rows.push(row);
-    row = [];
-  };
-  while (i < n) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') {
-          field += '"';
-          i += 2;
-          continue;
-        }
-        inQuotes = false;
-        i++;
-        continue;
-      }
-      field += c;
-      i++;
-      continue;
-    }
-    if (c === '"') {
-      inQuotes = true;
-      i++;
-      continue;
-    }
-    if (c === delim) {
-      pushField();
-      i++;
-      continue;
-    }
-    if (c === "\r") {
-      i++;
-      continue;
-    }
-    if (c === "\n") {
-      pushRow();
-      i++;
-      continue;
-    }
-    field += c;
-    i++;
-  }
-  // trailing field/row (ignore a final empty line)
-  if (field !== "" || row.length > 0) pushRow();
-  return rows;
 }

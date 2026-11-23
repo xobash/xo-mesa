@@ -9,11 +9,23 @@ export function phaseFromId(id: string): number {
   return ((h >>> 0) / 0xffffffff) * Math.PI * 2;
 }
 
-// Node size scales with the number of links (in + out), mirroring Obsidian:
-// "the more nodes that reference it, the bigger it gets". sqrt keeps hubs
-// prominent without exploding, and degree-0 notes stay small dots.
-export function nodeRadius(n: GraphNode, size = 1): number {
-  return Math.min(24 * size, (2.4 + 1.75 * Math.sqrt(n.degree)) * size);
+/**
+ * Node radius in world units, as in Obsidian: it grows with the square root
+ * of the link count (in + out), between 8 and 30 at size 1. Layout, collision
+ * and bounds use this zoom-independent value.
+ */
+export function nodeRadius(n: Pick<GraphNode, "degree">, size = 1): number {
+  return size * Math.max(8, Math.min(3 * Math.sqrt(n.degree + 1), 30));
+}
+
+/**
+ * Draw-size factor for nodes and labels at a zoom level. Nodes grow in world
+ * units as the view zooms out (sqrt(1 / scale)), so they shrink on screen
+ * more slowly than the layout. `k` is CSS px per world unit; the scale is
+ * measured in device px, as Obsidian measures it.
+ */
+export function nodeDrawScale(k: number, dpr: number): number {
+  return 1 / Math.sqrt(Math.max(1e-6, k * dpr));
 }
 
 export function graphLinkNodeId(node: string | GraphNode): string {
@@ -126,9 +138,12 @@ export function resolveOverlaps<T extends OverlapNode>(
   return moved;
 }
 
+/** World slack around a drawn node before the pointer leaves it. */
+const HIT_SLACK = 2;
+
 /** Hit radius in world units: the drawn radius plus slack, never under 9 screen px. */
-function hitRadius(n: GraphNode, radiusOf: (n: GraphNode) => number, k: number): number {
-  return Math.max(radiusOf(n) + 6, 9 / k);
+function hitRadius(n: GraphNode, radiusOf: (n: GraphNode) => number, k: number, drawScale: number): number {
+  return Math.max(radiusOf(n) * drawScale + HIT_SLACK, 9 / k);
 }
 
 /**
@@ -140,14 +155,15 @@ export function nearestNodeLinear(
   gx: number,
   gy: number,
   k: number,
-  radiusOf: (n: GraphNode) => number
+  radiusOf: (n: GraphNode) => number,
+  drawScale = 1
 ): GraphNode | null {
   let nearest: GraphNode | null = null;
   let nearestDistance = Infinity;
   for (let i = nodes.length - 1; i >= 0; i--) {
     const n = nodes[i];
     if (n.x == null || n.y == null) continue;
-    const r = hitRadius(n, radiusOf, k);
+    const r = hitRadius(n, radiusOf, k, drawScale);
     const dx = gx - n.x;
     const dy = gy - n.y;
     const distance = dx * dx + dy * dy;
@@ -161,8 +177,10 @@ export function nearestNodeLinear(
 
 /**
  * Uniform grid over layout positions for hover and click hit-tests. Build it
- * from frozen layout x/y; render offsets never move hit targets. Results match
- * `nearestNodeLinear` for the positions captured at construction.
+ * from frozen layout x/y; render offsets never move hit targets. `radiusOf`
+ * is the zoom-independent world radius; each query passes the current draw
+ * scale. Results match `nearestNodeLinear` for the positions captured at
+ * construction.
  */
 export class GraphHitIndex {
   readonly nodes: readonly GraphNode[];
@@ -177,7 +195,7 @@ export class GraphHitIndex {
     let maxRadius = 0;
     for (const n of nodes) maxRadius = Math.max(maxRadius, radiusOf(n));
     this.maxRadius = maxRadius;
-    this.cell = Math.max(16, 2 * (maxRadius + 6));
+    this.cell = Math.max(16, 2 * (maxRadius + HIT_SLACK));
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
       if (n.x == null || n.y == null || !Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
@@ -188,12 +206,12 @@ export class GraphHitIndex {
     }
   }
 
-  nearest(gx: number, gy: number, k: number): GraphNode | null {
-    const reach = Math.max(this.maxRadius + 6, 9 / k);
+  nearest(gx: number, gy: number, k: number, drawScale = 1): GraphNode | null {
+    const reach = Math.max(this.maxRadius * drawScale + HIT_SLACK, 9 / k);
     const x0 = Math.floor((gx - reach) / this.cell), x1 = Math.floor((gx + reach) / this.cell);
     const y0 = Math.floor((gy - reach) / this.cell), y1 = Math.floor((gy + reach) / this.cell);
     // A far-zoom query spanning more cells than there are nodes is cheaper as a scan.
-    if ((x1 - x0 + 1) * (y1 - y0 + 1) > this.nodes.length) return nearestNodeLinear(this.nodes, gx, gy, k, this.radiusOf);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > this.nodes.length) return nearestNodeLinear(this.nodes, gx, gy, k, this.radiusOf, drawScale);
     let best = -1;
     let bestDistance = Infinity;
     for (let cx = x0; cx <= x1; cx++) {
@@ -202,7 +220,7 @@ export class GraphHitIndex {
         if (!bucket) continue;
         for (const i of bucket) {
           const n = this.nodes[i];
-          const r = hitRadius(n, this.radiusOf, k);
+          const r = hitRadius(n, this.radiusOf, k, drawScale);
           const dx = gx - n.x!;
           const dy = gy - n.y!;
           const distance = dx * dx + dy * dy;
@@ -216,9 +234,6 @@ export class GraphHitIndex {
     return best < 0 ? null : this.nodes[best];
   }
 }
-
-export const clamp = (v: number, lo: number, hi: number) =>
-  Math.max(lo, Math.min(v, hi));
 
 export function rectContains(
   r: { x: number; y: number; w: number; h: number },

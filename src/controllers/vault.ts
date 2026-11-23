@@ -48,6 +48,22 @@ interface Dependencies extends VaultPort {
   setupActivityBridge: () => Promise<void>; ensureSyncEventBridge: () => Promise<void>;
   stopListening: () => Promise<boolean>; startListening: (root: string) => Promise<void>;
 }
+/**
+ * Files scanned at open that have since left the catalog (renamed or
+ * deleted). Only these are dropped from a late index publish: a file not yet
+ * catalogued, such as an import still reading, keeps its entries.
+ */
+function goneSince(scanned: readonly VaultFile[], now: readonly VaultFile[]): Set<string> {
+  const present = new Set(now.map((f) => f.relPath));
+  return new Set(scanned.filter((f) => !present.has(f.relPath)).map((f) => f.relPath));
+}
+
+/** `record` without the `gone` entries (in place; returns it). */
+function withoutGone<T>(record: Record<string, T>, gone: ReadonlySet<string>): Record<string, T> {
+  for (const rel of gone) delete record[rel];
+  return record;
+}
+
 export function createVaultController({ get, set, textSaves, resetDocuments, stopResearch, setupActivityBridge, ensureSyncEventBridge, stopListening, startListening }: Dependencies) {
   // A path is not a lifecycle identity: reopening the same vault must cancel
   // the previous open's scan and background metadata/search work too.
@@ -94,7 +110,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
   }
 
   const actions: Pick<AppState, "openVault"> = {
-    openVault: async (path) => {
+    openVault: async (path, options) => {
       const picked = path ?? (await pickVault());
       if (!picked) return;
       // Canonicalize here so *every* entry point (startup restore, ?vault=
@@ -160,6 +176,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         return;
       }
       if (!requestIsCurrent()) return;
+      // A torn-out graph window refreshes the vault it already shows from a
+      // snapshot: keep those notes and the selection on screen, never blank.
+      const shownNotes = options?.keepShown && get().vaultPath === root ? get().notes : null;
       const openGeneration = ++vaultOpenGeneration;
       const isCurrentOpen = () => vaultOpenGeneration === openGeneration && requestIsCurrent();
       try {
@@ -200,7 +219,9 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
 
         // Wait for fallback metadata only when the active sidebar sort needs it;
         // otherwise load it after the initial paint.
-        const needsMetadataNow = SORT_MODES_NEEDING_METADATA.has(
+        // A shown graph keeps its file times, so a refresh scans them up front
+        // and the unchanged catalog does not rebuild the graph.
+        const needsMetadataNow = shownNotes !== null || SORT_MODES_NEEDING_METADATA.has(
           get().settings.sortMode
         );
         // Reuse scan-discovered recovery artifacts; null requires recovery to walk the vault itself.
@@ -271,8 +292,15 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
         try {
           await textSaves.flushAll();
         } catch {
-          // This open superseded the previous vault's index pass.
-          if (isCurrentOpen()) set({ loading: false, notesIndexPending: false });
+          // This open stopped the current vault's watcher and superseded its
+          // index pass: restore the watcher, as every other failed switch does,
+          // and say when indexing did not finish.
+          if (isCurrentOpen()) {
+            const unfinished = get().indexingTextFiles > 0;
+            set({ loading: false, notesIndexPending: false, ...(unfinished ? { status: "A pending save failed, so the vault switch stopped. Indexing is incomplete until this vault is reopened." } : {}) });
+            const activeRoot = get().vaultPath;
+            if (activeRoot && !unwatch) await setupWatcher(activeRoot).catch(() => { });
+          }
           return;
         }
         if (!isCurrentOpen()) {
@@ -302,10 +330,10 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           currentRecentVaultId: recentState?.last ?? get().currentRecentVaultId,
           calendarEvents,
           files,
-          notes: {},
+          notes: shownNotes ?? {},
           contentCache: {},
           openTabs: [],
-          activePath: null,
+          activePath: shownNotes ? get().activePath : null,
           docSplit: { ...get().docSplit, other: null },
           content: "",
           activeContentState: "ready",
@@ -314,8 +342,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           skippedTextFiles: 0,
           failedTextFiles: 0,
           unreadableTextReasons: {},
-          indexingTextFiles: textFileCount,
-          notesIndexPending: textFileCount > 0,
+          indexingTextFiles: shownNotes ? 0 : textFileCount,
+          notesIndexPending: !shownNotes && textFileCount > 0,
           loading: false,
           status: `${files.length} files found. Indexing text…${recentWarning}${storageWarning ? ` ${storageWarning}` : ""}`,
         });
@@ -332,7 +360,7 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           markdownFiles: files.filter((f) => f.isMarkdown).length,
         });
 
-        const first = files.find((f) => f.isMarkdown);
+        const first = shownNotes ? undefined : files.find((f) => f.isMarkdown);
         if (first) await get().selectFile(first.relPath);
         if (!isCurrentOpen()) return;
 
@@ -345,7 +373,8 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
           try {
             // A reopened vault shows its stored index at once; verification
             // below then patches only documents whose bytes changed.
-            let provisional: { notes: Record<string, NoteMeta> } | null = null;
+            // Shown notes act as the provisional index: verification patches them.
+            let provisional: { notes: Record<string, NoteMeta> } | null = shownNotes ? { notes: shownNotes } : null;
             const indexed = await loadIndexedNotes({
               onCached: (cached) => {
                 if (!isCurrentOpen()) return;
@@ -353,10 +382,16 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
                 const cache = forkContentCache(cached.cache);
                 // The selected document and any watcher refresh own their bytes.
                 for (const { rel } of documentEntries(current.contentCache)) cache[rel] = current.contentCache[rel];
+                if (shownNotes) {
+                  set({ contentCache: cache });
+                  return;
+                }
                 provisional = { notes: cached.notes };
+                // A note renamed or deleted since the open must not return.
+                const gone = goneSince(files, current.files);
                 set({
-                  contentCache: cache,
-                  notes: { ...cached.notes, ...current.notes },
+                  contentCache: withoutGone(cache, gone),
+                  notes: withoutGone({ ...cached.notes, ...current.notes }, gone),
                   indexingTextFiles: cached.missing,
                   notesIndexPending: false,
                   status: `${Object.keys(cached.notes).length} documents loaded from the local index. Checking for changes…`,
@@ -377,13 +412,46 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             });
             if (!isCurrentOpen()) return;
             const current = get();
+            if (shownNotes) {
+              // A torn-out window's snapshot may be partial (its source was
+              // still indexing) or stale: take the fresh index, keep only notes
+              // edited or refreshed here since the snapshot, and drop notes whose
+              // files are gone.
+              const present = new Set(current.files.map((f) => f.relPath));
+              const notes: Record<string, NoteMeta> = {};
+              for (const [rel, note] of Object.entries(indexed.notes)) {
+                if (!present.has(rel)) continue;
+                const live = current.notes[rel];
+                notes[rel] = live && live !== shownNotes[rel] ? live : note;
+              }
+              for (const [rel, live] of Object.entries(current.notes)) {
+                if (!(rel in notes) && live !== shownNotes[rel] && present.has(rel)) notes[rel] = live;
+              }
+              const unreadable: Record<string, UnreadableTextReason> = {};
+              for (const rel of indexed.skipped) unreadable[rel] = "skipped";
+              for (const rel of indexed.offline ?? []) unreadable[rel] = "offline";
+              for (const rel of indexed.failed) unreadable[rel] = "failed";
+              set({
+                notes,
+                indexingTextFiles: 0,
+                notesIndexPending: false,
+                unindexedTextFiles: Object.keys(unreadable).length,
+                skippedTextFiles: indexed.skipped.length,
+                failedTextFiles: indexed.failed.length,
+                unreadableTextReasons: unreadable,
+                status: `${Object.keys(notes).length} documents indexed`,
+              });
+              return;
+            }
             const shown = (provisional as { notes: Record<string, NoteMeta> } | null)?.notes;
             if (shown) {
               // Patch only re-read documents, unless an edit or watcher refresh
               // replaced that document after the stored index was shown.
               const changes: Record<string, string> = {};
               const changedNotes: Record<string, NoteMeta> = {};
+              const gone = goneSince(files, current.files);
               for (const [rel, text] of indexed.changed) {
+                if (gone.has(rel)) continue; // renamed or deleted meanwhile
                 if (rel in shown && current.notes[rel] !== shown[rel]) continue;
                 if (!(rel in shown) && rel in current.notes) continue;
                 changes[rel] = text;
@@ -418,9 +486,11 @@ export function createVaultController({ get, set, textSaves, resetDocuments, sto
             for (const rel of indexed.skipped) if (!(rel in mergedCache)) unreadableTextReasons[rel] = "skipped";
             for (const rel of indexed.offline ?? []) if (!(rel in mergedCache)) unreadableTextReasons[rel] = "offline";
             for (const rel of indexed.failed) if (!(rel in mergedCache)) unreadableTextReasons[rel] = "failed";
+            // A note renamed or deleted while indexing ran must not return.
+            const gone = goneSince(files, current.files);
             set({
-              contentCache: mergedCache,
-              notes: { ...indexed.notes, ...current.notes },
+              contentCache: withoutGone(mergedCache, gone),
+              notes: withoutGone({ ...indexed.notes, ...current.notes }, gone),
               indexingTextFiles: 0,
               notesIndexPending: false,
               unindexedTextFiles: Object.keys(unreadableTextReasons).length,

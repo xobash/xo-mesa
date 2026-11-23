@@ -28,6 +28,7 @@ import { PiFloatingWindow } from "./PiFloatingWindow";
 import { BrowserHarness } from "./BrowserHarness";
 import { DeepResearchPanel } from "./DeepResearchPanel";
 import { DeepResearchPhaseChip } from "./DeepResearchPhaseChip";
+import { clamp } from "../lib/clamp";
 
 let nextAgentSurfaceHostId = 0;
 
@@ -291,7 +292,7 @@ export function AgentSurface({
       if (!rs) return;
       e.preventDefault();
       const dx = (e.clientX - rs.startX) * rs.sign;
-      setBrowserWidth(Math.max(320, Math.min(900, rs.startW + dx)));
+      setBrowserWidth(clamp(rs.startW + dx, 320, 900));
     };
     const onUp = () => {
       browserResizeRef.current = null;
@@ -317,7 +318,7 @@ export function AgentSurface({
       if (!rs) return;
       e.preventDefault();
       const dx = (e.clientX - rs.startX) * rs.sign;
-      setResearchWingWidth(Math.max(380, Math.min(960, rs.startW + dx)));
+      setResearchWingWidth(clamp(rs.startW + dx, 380, 960));
     };
     const onUp = () => {
       researchResizeRef.current = null;
@@ -337,8 +338,8 @@ export function AgentSurface({
   };
   const detachResearch = (rect: DOMRect, dx = 0, dy = 0) => {
     void useAppStore.getState().openResearchWindow({
-      x: Math.round(Math.max(4, Math.min(rect.left + dx, Math.max(4, window.innerWidth - 80)))),
-      y: Math.round(Math.max(56, Math.min(rect.top + dy, Math.max(56, window.innerHeight - 96)))),
+      x: Math.round(clamp(rect.left + dx, 4, Math.max(4, window.innerWidth - 80))),
+      y: Math.round(clamp(rect.top + dy, 56, Math.max(56, window.innerHeight - 96))),
       width: Math.round(rect.width),
       height: Math.round(rect.height),
     });

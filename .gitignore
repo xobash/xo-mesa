@@ -1,10 +1,8 @@
 # Dependencies
 node_modules/
-.pnpm-store/
 
 # Build output
 dist/
-dist-ssr/
 build/
 src-tauri/target/
 src-tauri/gen/
@@ -29,8 +27,6 @@ id_rsa*
 # Logs / test output
 *.log
 coverage/
-test-results/
-playwright-report/
 tmp/
 
 # Local editor / OS state

@@ -203,7 +203,7 @@ pub(crate) fn require_sync_key(key: &str) -> Result<(), String> {
     }
 }
 
-/// Serialize manifest scans so concurrent requests share the two-worker budget.
+/// Serialize manifest scans so concurrent requests share the server worker budget.
 fn manifest_lock() -> &'static Mutex<()> {
     static S: OnceLock<Mutex<()>> = OnceLock::new();
     S.get_or_init(|| Mutex::new(()))
@@ -862,10 +862,12 @@ async fn deliver_journal_with(
 
 #[tauri::command]
 pub async fn sync_retire_peer(
+    window: tauri::Window,
     app: tauri::AppHandle,
     root: String,
     fingerprints: Vec<String>,
 ) -> Result<(), String> {
+    crate::require_main(window.label())?;
     let root = crate::vaultscope::require_approved(&app, &root)?;
     run_blocking(move || {
         sync_core::retire_journal_peers(&root, &fingerprints).map_err(|error| error.to_string())
@@ -878,10 +880,12 @@ pub async fn sync_retire_peer(
 /// "Open shared vault" probe; `sync_run` fetches its own manifest.
 #[tauri::command]
 pub async fn sync_fetch_manifest(
+    window: tauri::Window,
     base: String,
     token: String,
     pin: Option<String>,
 ) -> Result<ManifestResult, String> {
+    crate::require_main(window.label())?;
     let token = crate::secrets::resolve_async(token).await?;
     require_sync_key(&token)?;
     let (client, credential, fingerprint) =
@@ -903,7 +907,7 @@ pub async fn sync_fetch_manifest(
 #[serde(rename_all = "camelCase")]
 pub struct SyncFailureItem {
     pub rel: String,
-    /// "pull" | "push" | "conflict" | "scan"
+    /// Matches `SyncFailure.op` in `src/lib/sync.ts`.
     pub op: String,
     pub error: String,
 }
@@ -1172,25 +1176,13 @@ fn open_upload_handle(mut file: std::fs::File) -> std::io::Result<(std::fs::File
     if file.metadata()?.len() > max_bytes {
         return Err(transfer_limit_error(max_bytes));
     }
-    let mut hash = sync_core::ContentHasher::new();
-    let mut buffer = [0u8; TRANSFER_CHUNK_BYTES];
-    let mut n = 0u64;
-    loop {
-        let count = match file.read(&mut buffer) {
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            result => result?,
-        };
-        if count == 0 {
-            break;
-        }
-        n += count as u64;
-        if n > max_bytes {
-            return Err(transfer_limit_error(max_bytes));
-        }
-        hash.update(&buffer[..count]);
+    // One byte past the limit shows a file that grew after the size check.
+    let (n, digest) = sync_core::hash_reader((&file).take(max_bytes.saturating_add(1)))?;
+    if n > max_bytes {
+        return Err(transfer_limit_error(max_bytes));
     }
     file.rewind()?;
-    Ok((file, n, hash.hex()))
+    Ok((file, n, crate::hex::encode(&digest)))
 }
 
 async fn run_job_once(
@@ -1372,8 +1364,11 @@ async fn store_peer_base(
 }
 
 /// Run one native sync with fresh manifests, journal reconciliation, bounded transfers, and final verification.
+// Tauri passes each IPC argument as its own parameter.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn sync_run(
+    window: tauri::Window,
     app: tauri::AppHandle,
     root: String,
     base: String,
@@ -1382,6 +1377,7 @@ pub async fn sync_run(
     retry: Option<Vec<String>>,
     peer_name: Option<String>,
 ) -> Result<SyncReport, String> {
+    crate::require_main(window.label())?;
     let token = crate::secrets::resolve_async(token).await?;
     require_sync_key(&token)?;
     let root = crate::vaultscope::require_approved(&app, &root)?;

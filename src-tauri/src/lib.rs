@@ -15,6 +15,7 @@ mod terminal;
 mod tray;
 mod vaultmove;
 mod vaultops;
+mod vaultrange;
 mod vaultread;
 mod vaultscan;
 mod vaultscope;
@@ -26,12 +27,18 @@ mod webview_settings;
 // Self-contained helpers compiled under `sync_core` (see its module list).
 use sync_core::{hex, vault_names};
 
-pub(crate) fn require_main(label: &str) -> Result<(), String> {
+/// Refuse every caller but the main window with `refusal`, which names
+/// "the main workspace": `src/controllers/vault.ts` matches that phrase.
+pub(crate) fn require_main_for(label: &str, refusal: &str) -> Result<(), String> {
     if label == "main" {
         Ok(())
     } else {
-        Err("This operation belongs to the main workspace".into())
+        Err(refusal.into())
     }
+}
+pub(crate) const MAIN_ONLY: &str = "This operation belongs to the main workspace";
+pub(crate) fn require_main(label: &str) -> Result<(), String> {
+    require_main_for(label, MAIN_ONLY)
 }
 /// The main window and its document and panel windows.
 fn is_document_surface(label: &str) -> bool {
@@ -75,20 +82,33 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 }
 
 #[tauri::command]
-fn quit_guard_arm(state: tauri::State<'_, QuitGuard>) {
+fn quit_guard_arm(window: tauri::Window, state: tauri::State<'_, QuitGuard>) -> Result<(), String> {
+    crate::require_main(window.label())?;
     state.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 #[tauri::command]
-fn quit_guard_disarm(state: tauri::State<'_, QuitGuard>) {
+fn quit_guard_disarm(
+    window: tauri::Window,
+    state: tauri::State<'_, QuitGuard>,
+) -> Result<(), String> {
+    crate::require_main(window.label())?;
     state.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 #[tauri::command]
-fn quit_after_save(app: tauri::AppHandle, state: tauri::State<'_, QuitGuard>) {
+fn quit_after_save(
+    window: tauri::Window,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, QuitGuard>,
+) -> Result<(), String> {
+    crate::require_main(window.label())?;
     state.0.store(false, std::sync::atomic::Ordering::SeqCst);
     // Deliver the invoke response before asking the event loop to exit.
     std::thread::spawn(move || app.exit(0));
+    Ok(())
 }
 
 /// Top-level navigation is limited to the app's own origin. Mesa renders
@@ -367,6 +387,7 @@ pub fn run() {
             vaultscan::vault_scan,
             vaultread::vault_read_text,
             vaultread::vault_read_bytes,
+            vaultrange::vault_read_range,
             vaultread::vault_text_fingerprints,
             vaultmove::vault_rename_no_replace,
             vaultmove::vault_purge_recovery,
@@ -502,6 +523,24 @@ mod navigation_tests {
         assert!(super::grant_pdf_blob("agent-test", url.into(), true).is_err());
     }
 
+    /// RUSTSEC-2026-0592: `Url::origin()` recursed once per nested `blob:`,
+    /// so the renderer-supplied preview URL could overflow the stack and
+    /// abort Mesa. A small stack makes the overflow deterministic.
+    #[test]
+    fn deeply_nested_blob_preview_urls_are_refused_without_overflow() {
+        let url = format!(
+            "{}http://tauri.localhost/00000000-0000-0000-0000-000000000000",
+            "blob:".repeat(10_000)
+        );
+        let refused = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || super::grant_pdf_blob("doc-nested", url, true).is_err())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(refused);
+    }
+
     #[test]
     fn only_app_origins_may_be_navigated_to() {
         for url in [
@@ -552,6 +591,37 @@ mod authority_tests {
         assert!(super::require_agent_surface("agent-one").is_ok());
         assert!(super::require_agent_surface("doc-one").is_err());
     }
+
+    /// Every main-only command refuses other windows with its own message,
+    /// and each message keeps the phrase `src/controllers/vault.ts` matches.
+    #[test]
+    fn each_main_only_check_refuses_secondary_labels_with_its_message() {
+        for refusal in [
+            super::MAIN_ONLY,
+            crate::vaultops::RECOVERY_MAIN_ONLY,
+            crate::secrets::CREDENTIALS_MAIN_ONLY,
+            crate::activity::RESEARCH_REPLY_MAIN_ONLY,
+            crate::vaultmove::PURGE_MAIN_ONLY,
+            crate::vaulttransaction::RESEARCH_APPLY_MAIN_ONLY,
+            crate::vaultwrite::RECOVERY_COPY_MAIN_ONLY,
+        ] {
+            assert!(refusal.contains("main workspace"), "{refusal}");
+            assert!(super::require_main_for("main", refusal).is_ok());
+            for label in [
+                "doc-one",
+                "panel-one",
+                "agent-one",
+                "research-1",
+                "tray",
+                "",
+            ] {
+                assert_eq!(
+                    super::require_main_for(label, refusal),
+                    Err(refusal.to_string())
+                );
+            }
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -562,7 +632,6 @@ mod app_menu_tests {
             .expect("mock app builds")
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn linux_menubar_holds_only_the_guarded_quit() {
         let menu = app().menu().expect("Linux keeps a Quit menu");

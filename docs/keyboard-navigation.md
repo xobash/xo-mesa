@@ -19,16 +19,21 @@ surfaces.
 
 ## Window Navigation
 
-- `h` moves focus left: right stack -> center -> sidebar.
-- `l` moves focus right: sidebar -> center -> right stack.
-- In the right stack, `j` and `k` move focus down/up between stacked panes.
+The workspace shows at most two panes: the center and one side pane.
+
+- `h` moves focus left: side pane -> center -> sidebar. From the center, `h`
+  opens a closed sidebar.
+- `l` moves focus right: sidebar -> center -> side pane.
+- While the side pane has focus, `j` and `k` keep focus there and do not
+  change the open file.
 - `Ctrl-W` or `Cmd-W` starts a window command:
-  - `h/j/k/l` changes focused region or focused right-stack pane.
-  - `Shift-H` moves the focused right-stack pane into the center.
-  - `Shift-L` moves the center pane into the right stack.
-  - `Shift-J` / `Shift-K` reorders the focused right-stack pane.
-  - `q` or `c` closes the focused center/right view.
-  - `f` flips the side stack between the left and right of the center.
+  - `h/l` changes the focused region, without opening a closed sidebar.
+  - `Shift-H` moves the side pane's view into the center; the center view
+    takes the side pane.
+  - `Shift-L` moves the center view into the side pane; the side pane's view
+    takes the center.
+  - `q` or `c` closes the focused center or side view.
+  - `f` flips the side pane between the left and right of the center.
 - On a focused floating-window title bar, Arrow keys move the window and
   Shift+Arrow resizes it. Geometry remains contained in the visible viewport.
 - On a focused Pi or Deep Research transfer bar, `Ctrl/Cmd+Shift+Enter` tears

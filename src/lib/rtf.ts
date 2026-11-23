@@ -5,6 +5,8 @@
  * (Windows-1252), and \uN unicode with its \ucN-counted fallback skipped.
  * Good enough to *read* an .rtf inside Mesa; it doesn't preserve styling.
  */
+import { cp1252Char } from "./cp1252";
+
 const DESTINATIONS = new Set([
   "fonttbl",
   "colortbl",
@@ -30,14 +32,6 @@ const DESTINATIONS = new Set([
   "fldinst",
   "xmlnstbl",
 ]);
-
-/** Windows-1252 characters for bytes 0x80-0x9F; undefined bytes keep their code. */
-const CP1252_80_9F = "\u20ac\u0081\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u008d\u017d\u008f" +
-  "\u0090\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u009d\u017e\u0178";
-
-function ansiChar(code: number): string {
-  return code >= 0x80 && code <= 0x9f ? CP1252_80_9F[code - 0x80] : String.fromCharCode(code);
-}
 
 export function rtfToText(rtf: string): string {
   if (typeof rtf !== "string") return "";
@@ -95,7 +89,7 @@ export function rtfToText(rtf: string): string {
     if (next === "'") {
       const code = parseInt(rtf.substr(i + 2, 2), 16);
       if (skipFallback > 0) skipFallback--;
-      else if (!ignoring() && !isNaN(code)) out += ansiChar(code);
+      else if (!ignoring() && !isNaN(code)) out += cp1252Char(code);
       i += 4;
       continue;
     }

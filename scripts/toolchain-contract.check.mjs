@@ -94,3 +94,22 @@ test('every workflow action is pinned to a reviewed commit SHA', () => {
   // The v3 annotated tag object of attest-build-provenance is not a commit.
   assert.deepEqual(unreviewedPins(['actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661', 'actions/checkout@v7', 'github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee'], table), ['actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661', 'actions/checkout@v7']);
 });
+test('npm run typecheck covers every TypeScript file in scripts/', () => {
+  // A script outside every tsconfig include escapes `npm run typecheck`.
+  const included = new Set(['tsconfig.json', 'tsconfig.node.json'].flatMap(file => JSON.parse(read(file)).include));
+  const scripts = readdirSync('scripts').filter(name => /\.(?:c|m)?tsx?$/.test(name)).map(name => `scripts/${name}`);
+  assert.ok(scripts.includes('scripts/document-fuzz.entry.ts'));
+  assert.deepEqual(scripts.filter(file => !included.has(file) && !included.has('scripts')), []);
+});
+test('the minimatch override keeps every locked copy above the globparts advisory', () => {
+  // GHSA-g3hv-75wg-m249 affects minimatch >=7.0.0 <11.0.1, every 10.x included.
+  // eslint and typescript-eslint still ask for ^10.2, so without the override
+  // the lock resolves 10.x and `npm audit --audit-level=moderate` fails CI.
+  const lock = JSON.parse(read('package-lock.json'));
+  const copies = Object.entries(lock.packages).filter(([path]) => /(?:^|\/)node_modules\/minimatch$/.test(path));
+  assert.ok(copies.length > 0);
+  for (const [path, { version }] of copies) {
+    const [major, minor, patch] = version.split('.').map(Number);
+    assert.ok(major > 11 || (major === 11 && (minor > 0 || patch >= 1)), `${path} ${version}`);
+  }
+});

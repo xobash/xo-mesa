@@ -20,12 +20,9 @@ fn temporary() -> &'static Mutex<BTreeMap<String, String>> {
     static STORE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
     STORE.get_or_init(Default::default)
 }
+pub(crate) const CREDENTIALS_MAIN_ONLY: &str = "sync credentials belong to the main workspace";
 fn main_window_label_only(label: &str) -> Result<(), String> {
-    if label == "main" {
-        Ok(())
-    } else {
-        Err("sync credentials belong to the main workspace".into())
-    }
+    crate::require_main_for(label, CREDENTIALS_MAIN_ONLY)
 }
 /// One credential-store operation surface, so the record layout is testable
 /// against a store with the Windows size limit.

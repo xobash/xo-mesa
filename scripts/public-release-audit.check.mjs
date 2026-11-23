@@ -202,6 +202,8 @@ it('rejects a package command whose script was omitted from publication', () => 
   assert.match(missing.stderr, /script verify requires missing scripts\/verify.mjs/);
   const present = auditFixture({ files: { ...files, 'scripts/verify.mjs': '' } });
   assert.equal(present.status, 0, present.stderr);
+  const installed = auditFixture({ files: { 'package.json': JSON.stringify({ scripts: { build: 'node --max-old-space-size=4096 node_modules/vite/bin/vite.js build' } }) } });
+  assert.equal(installed.status, 0, installed.stderr);
 });
 
 it('rejects private bytes retained only in reachable history',()=>{

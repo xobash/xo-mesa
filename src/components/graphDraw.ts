@@ -1,20 +1,49 @@
 import type { GraphNode, GraphLink } from "../types";
 import type { activeRecords } from "../lib/activity";
-import { clamp, incidentLinkIndices, phaseFromId } from "../lib/graphGeometry";
+import { clamp } from "../lib/clamp";
+import { incidentLinkIndices, nodeDrawScale, phaseFromId } from "../lib/graphGeometry";
 import { nodeFill, type GraphColors } from "./graphColors";
+import { LINK_LAYER_MIN_LINKS, type LinkLayer } from "./graphLinkLayer";
+import type { GlLinkRenderer } from "./graphLinkGl";
+import { NodePositions, linkIndex } from "./graphLinkGeometry";
 
-// How many of the highest-degree nodes always get a title label (the rest
-// show only on hover/active). degreeSortedRef is pre-sorted by degree desc.
-const LABEL_TOP_N = 10;
-// World-space gap enforced by resolveOverlaps() every frame. Both forceCollide
-// and the ambient breathing budget key off it: breathing amplitude is clamped
-// below OVERLAP_GAP/2 so two nodes drifting toward each other can never
-// visually cross, giving a hard no-overlap guarantee that coexists with living
-// motion. Constant (not zoom-dependent) so layout is stable under zoom.
+// World-space gap enforced by resolveOverlaps() at idle. The living-motion
+// breathing budget keys off it: its amplitude is clamped below OVERLAP_GAP/2
+// so two nodes drifting toward each other can never visually cross.
 export const OVERLAP_GAP = 8;
 // Thumbnails decode only for visible nodes at least this many screen px in
 // radius; smaller ones draw as dots.
 const THUMB_MIN_SCREEN_RADIUS = 4;
+// Obsidian's zoom limits, in device px per world unit. Fit and wheel share them.
+export const ZOOM_MIN_SCALE = 1 / 128;
+export const ZOOM_MAX_SCALE = 8;
+// Opacity of everything outside a highlighted node's neighbourhood.
+const DIM_ALPHA = 0.2;
+// Labels wrap at this world width and are drawn for at most this many nodes.
+const LABEL_WRAP_WIDTH = 300;
+const LABEL_MAX = 600;
+const LABEL_FONT_PX = 16;
+const LABEL_LINE_HEIGHT = 1.2;
+const LABEL_FONT = `${LABEL_FONT_PX}px -apple-system, system-ui, sans-serif`;
+
+/** Clamp a zoom level (CSS px per world unit) to the shared limits. */
+export function clampZoom(k: number, dpr: number): number {
+  return clamp(k, ZOOM_MIN_SCALE / dpr, ZOOM_MAX_SCALE / dpr);
+}
+
+/** True while the eased zoom is still more than 1% away from its target. */
+export function isZooming(k: number, target: number): boolean {
+  return (k > target ? k / target : target / k) - 1 >= 0.01;
+}
+
+/**
+ * Label opacity for a zoom level: labels are fully visible at 1 device px per
+ * world unit, gone at half that, and the text-fade setting shifts the range
+ * by powers of two (Obsidian's rule).
+ */
+export function labelZoomAlpha(scale: number, textFade: number): number {
+  return clamp(Math.log2(scale) + 1 - textFade, 0, 1);
+}
 
 /** A mutable holder; React refs satisfy it. */
 interface Ref<T> {
@@ -43,9 +72,12 @@ export interface GraphLinkEndpoints {
 
 export interface GraphDisplay {
   arrows: boolean;
-  textFadeThreshold: number;
+  /** -3..3; higher values need more zoom before labels appear. */
+  textFade: number;
   nodeSize: number;
   linkThickness: number;
+  /** Opt-in ambient motion: drift, breathing, twinkle and bloom. */
+  living: boolean;
 }
 
 /**
@@ -58,9 +90,10 @@ export interface GraphDrawRefs {
   sizeRef: Ref<{ w: number; h: number }>;
   transformRef: Ref<Transform>;
   targetKRef: Ref<number>;
+  /** Screen point the eased zoom holds still; null zooms about the view centre. */
+  zoomAnchorRef: Ref<{ x: number; y: number } | null>;
   fastDrawUntilRef: Ref<number>;
   dragRef: Ref<{ node: GraphNode | null; panning: boolean }>;
-  pointerRef: Ref<{ x: number; y: number }>;
   needsRedrawRef: Ref<boolean>;
   nodesRef: Ref<GraphNode[]>;
   forceNodesRef: Ref<GraphNode[]>;
@@ -71,20 +104,114 @@ export interface GraphDrawRefs {
   focusRef: Ref<{ id: string | null; k: number }>;
   neighborsRef: Ref<Map<string, Set<string>>>;
   motionUntilRef: Ref<number>;
-  recentActivityRef: Ref<Map<string, number>>;
   linkEndpointsRef: Ref<GraphLinkEndpoints>;
   adjacencyRef: Ref<Map<string, number[]>>;
   nodeByIdRef: Ref<Map<string, GraphNode>>;
-  degreeSortedRef: Ref<GraphNode[]>;
+  /** Zoom-independent world radius (layout size). */
   nodeRadius: (n: GraphNode) => number;
   graphBounds: (nodes: GraphNode[]) => GraphBounds;
   getImage: (path: string, frame: number) => HTMLImageElement | null;
+  /** Cached plain-link bitmap for heavy graphs; absent draws every link directly. */
+  linkLayer?: LinkLayer;
+  /** WebGL plain links for heavy graphs, behind the 2D canvas; the layer is the fallback. */
+  linkGl?: GlLinkRenderer;
+}
+
+
+interface LabelLayout {
+  title: string;
+  limit: number;
+  lines: string[];
+}
+/** Wrapped label lines per node; node objects are replaced on every rebuild. */
+const labelCache = new WeakMap<GraphNode, LabelLayout>();
+const LABEL_MAX_LINES = 4;
+
+/** Greedy word wrap at `limit` px of the label font. `ctx.font` must be LABEL_FONT. */
+function labelLines(ctx: CanvasRenderingContext2D, n: GraphNode, limit: number): string[] {
+  const hit = labelCache.get(n);
+  if (hit && hit.title === n.title && hit.limit === limit) return hit.lines;
+  const lines: string[] = [];
+  let line = "";
+  for (const word of n.title.split(/\s+/)) {
+    if (!word) continue;
+    const next = line ? `${line} ${word}` : word;
+    if (line && lines.length < LABEL_MAX_LINES - 1 && ctx.measureText(next).width > limit) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  }
+  if (line || lines.length === 0) lines.push(line || n.title);
+  labelCache.set(n, { title: n.title, limit, lines });
+  return lines;
+}
+
+/** Node render positions copied once per frame for the link pass. */
+const positions = new NodePositions();
+/** Per-node flags of highlighted and active nodes, reused between frames. */
+let specialNodes = new Uint8Array(0);
+
+/** Nodes inside the viewport this frame, reused between frames. */
+const visibleNodes: GraphNode[] = [];
+
+/**
+ * Write each node's render position and radius. Without living motion these
+ * are the layout position and the zoom-scaled radius. Living motion adds
+ * render-only offsets that never feed back into the simulation.
+ */
+function updateRenderState(
+  refs: GraphDrawRefs,
+  nodes: GraphNode[],
+  lnow: number,
+  drawScale: number,
+  living: boolean,
+  livingPx: number,
+  pulseAmp: number
+): void {
+  const dragged = refs.dragRef.current.node;
+  const halfWidth = Math.max(240, refs.sizeRef.current.w * 0.42);
+  for (const n of nodes) {
+    const x = n.x ?? 0;
+    const y = n.y ?? 0;
+    const r = refs.nodeRadius(n) * drawScale;
+    // The grabbed node tracks the pointer 1:1, with no ambient offset.
+    if (!living || n === dragged || !Number.isFinite(x) || !Number.isFinite(y)) {
+      n.renderX = x;
+      n.renderY = y;
+      n.renderRadius = r;
+      continue;
+    }
+    const phase = n.renderPhase ?? phaseFromId(n.id);
+    n.renderPhase = phase;
+    const kvx = (n.renderKickVx ?? 0) * 0.82;
+    const kvy = (n.renderKickVy ?? 0) * 0.82;
+    const kx = ((n.renderKickX ?? 0) + kvx) * 0.84;
+    const ky = ((n.renderKickY ?? 0) + kvy) * 0.84;
+    n.renderKickVx = Math.abs(kvx) < 0.01 ? 0 : kvx;
+    n.renderKickVy = Math.abs(kvy) < 0.01 ? 0 : kvy;
+    n.renderKickX = Math.abs(kx) < 0.01 ? 0 : kx;
+    n.renderKickY = Math.abs(ky) < 0.01 ? 0 : ky;
+    const a = lnow * 0.42 + phase;
+    const b = lnow * 0.27 + phase * 1.37;
+    // The world origin is the layout centre.
+    const len = Math.hypot(x, y);
+    const radial = Math.min(1.8, len / halfWidth);
+    const breathe = Math.sin(lnow * 0.36 + phase * 0.18) * livingPx * 0.55 * radial;
+    const invLen = 1 / Math.max(1, len);
+    const mingle = Math.sin(lnow * 0.21 + phase * 0.51) * livingPx * 0.28;
+    n.renderX = x + (Math.sin(a) + Math.sin(b) * 0.35) * livingPx * 1.35 + mingle * 0.5 + x * invLen * breathe + kx;
+    n.renderY = y + (Math.cos(a * 0.82) + Math.sin(b * 0.7) * 0.32) * livingPx * 1.35 + mingle * -0.28 + y * invLen * breathe + ky;
+    // Radius pulse (period ~3.5 s). Non-positional, so it cannot cause overlap.
+    n.renderRadius = r * (1 + Math.sin(lnow * 1.8 + phase) * pulseAmp);
+  }
 }
 
 /**
- * Draw one graph frame: render-only ambient offsets, bloom, links, arrows,
- * nodes and labels, viewport-culled. Never ticks or reheats the simulation;
- * it only eases the wheel zoom and sets `needsRedrawRef` while zooming.
+ * Draw one graph frame: links, arrows, nodes and labels, viewport-culled, in
+ * Obsidian's default style. Never ticks or reheats the simulation; it only
+ * eases the wheel zoom and sets `needsRedrawRef` while zooming.
  */
 export function drawGraph(
   refs: GraphDrawRefs,
@@ -100,333 +227,252 @@ export function drawGraph(
   const t = refs.transformRef.current;
   const dpr = window.devicePixelRatio || 1;
   const lnow = now / 1000;
+  const display = refs.graphDisplayRef.current;
+  const living = animationsOn && display.living;
+  const zooming = isZooming(t.k, refs.targetKRef.current);
   const fastDraw =
     now < refs.fastDrawUntilRef.current ||
     refs.dragRef.current.panning ||
     !!refs.dragRef.current.node ||
-    Math.abs(refs.targetKRef.current - t.k) > 0.0005;
+    zooming;
 
-  // ease zoom toward its target for buttery wheel response
-  if (Math.abs(refs.targetKRef.current - t.k) > 0.0005) {
-    const cx = refs.pointerRef.current.x || w / 2;
-    const cy = refs.pointerRef.current.y || h / 2;
-    const k2 = t.k + (refs.targetKRef.current - t.k) * 0.2;
+  // Ease the zoom 15% of the way to its target each frame, holding the anchor still.
+  if (zooming) {
+    const anchor = refs.zoomAnchorRef.current;
+    const cx = anchor ? anchor.x : w / 2;
+    const cy = anchor ? anchor.y : h / 2;
+    const k2 = t.k + (refs.targetKRef.current - t.k) * 0.15;
     t.x = cx - (cx - t.x) * (k2 / t.k);
     t.y = cy - (cy - t.y) * (k2 / t.k);
     t.k = k2;
     refs.needsRedrawRef.current = true;
   }
 
+  // Obsidian measures zoom in device px per world unit.
+  const scale = t.k * dpr;
+  const drawScale = nodeDrawScale(t.k, dpr);
+  const devicePx = 1 / scale; // one device pixel, in world units
+
+  const nodes = refs.nodesRef.current;
+  const links = refs.linksRef.current;
+  const c = refs.colorsRef.current;
+
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality =
-    refs.nodesRef.current.length > 1500
-      ? "low"
-      : refs.nodesRef.current.length > 700
-      ? "medium"
-      : "high";
+  ctx.imageSmoothingQuality = nodes.length > 1500 ? "low" : nodes.length > 700 ? "medium" : "high";
   ctx.translate(t.x, t.y);
   ctx.scale(t.k, t.k);
-  if (animationsOn && refs.nodesRef.current.length > 0) {
-    // Sparse, slow orbital drift — closer to Obsidian's near-still graph
-    // than a visibly swimming graph. World-space so it scales with zoom.
+  if (living && nodes.length > 0) {
+    // Sparse, slow orbital drift. World-space so it scales with zoom.
     const driftPhase = lnow * 0.15;
     ctx.translate(
-      Math.sin(driftPhase) * 0.8 / Math.max(0.7, t.k),
-      Math.cos(driftPhase * 0.87) * 0.55 / Math.max(0.7, t.k)
+      (Math.sin(driftPhase) * 0.8) / Math.max(0.7, t.k),
+      (Math.cos(driftPhase * 0.87) * 0.55) / Math.max(0.7, t.k)
     );
   }
 
-  const nodes = refs.nodesRef.current;
-  const forceNodes = refs.forceNodesRef.current;
-  const links = refs.linksRef.current;
-  const hoverId = refs.hoverRef.current.id;
-  // The node currently being dragged (if any). Its incident links are
-  // highlighted in Batch 2 so the dragged cluster's edges read clearly
-  // while dragging — same idea as hover/active, but a brighter, steadier
-  // style so it stays legible against the moving cluster.
-  const dragNode = refs.dragRef.current.node;
-  const dragId = dragNode?.id ?? null;
-  const c = refs.colorsRef.current;
-  const display = refs.graphDisplayRef.current;
-  // ---- Obsidian-style hover focus -----------------------------------
-  // While a node is hovered, its neighborhood stays at full strength and
-  // everything else dims; the transition is eased in the loop (refs.focusRef.k)
-  // so it fades in/out instead of flashing. During drag the whole graph is
-  // in motion, so focus is released to keep the picture calm.
+  // ---- Highlight: the grabbed node, else the hovered node -----------------
+  // Its neighbourhood stays at full strength and everything else fades to
+  // DIM_ALPHA; the transition is eased in the frame loop (focusRef.k).
+  const dragId = refs.dragRef.current.node?.id ?? null;
   const focus = refs.focusRef.current;
-  const focusK = focus.k * focus.k * (3 - 2 * focus.k); // smoothstep
-  const focusId = focusK > 0.02 && !dragId ? focus.id : null;
+  const focusK = focus.k;
+  const focusId = dragId ?? (focusK > 0.004 ? focus.id : null);
   const focusSet = focusId ? refs.neighborsRef.current.get(focusId) : undefined;
-  // Obsidian keeps the rest of the graph readable while a hovered
-  // neighborhood is emphasized. Do not fade the surrounding topology so
-  // deeply that the fitted graph becomes hard to inspect or drag.
-  const dimK = 1 - 0.38 * focusK;
+  const dimK = focusId ? 1 - (1 - DIM_ALPHA) * focusK : 1;
+
+  // ---- Living motion amplitudes (zero unless the user opted in) -----------
   const tail = clamp((refs.motionUntilRef.current - now) / 4600, 0, 1);
-  const tailEase = tail * tail * (3 - 2 * tail);
-  const lifeBoost = 1 + tailEase * 0.3;
-  // Ambient motion changes render coordinates only. Cap offsets at half the scaled overlap gap.
-  const livingScale = animationsOn
-    ? nodes.length > 1200
-      ? 1.2
-      : 1.7
-    : 0;
-  // Screen-space breathing amplitude, clamped so two adjacent nodes (layout
-  // gap = OVERLAP_GAP world) breathing toward each other can never touch.
-  const livingScreenPx = Math.min(
-    livingScale * lifeBoost,
-    (OVERLAP_GAP * t.k) / 2 - 0.5
-  );
-  const livingPx = livingScreenPx / Math.max(0.2, t.k);
-  // Radius twinkle/pulse is the primary visible living signal — large enough
-  // to read as the node gently growing/shrinking, but never so large it
-  // makes small nodes vanish. Non-positional, so it cannot cause overlap.
-  const pulseAmp = animationsOn
-    ? nodes.length > 1200
-      ? 0.2
-      : nodes.length > 700
-      ? 0.26
-      : 0.32
-    : 0;
-  const twinkleAmp = animationsOn
-    ? nodes.length > 1200
-      ? 0.26
-      : nodes.length > 700
-      ? 0.34
-      : 0.40
-    : 0;
+  const lifeBoost = 1 + tail * tail * (3 - 2 * tail) * 0.3;
+  const livingScale = living ? (nodes.length > 1200 ? 1.2 : 1.7) : 0;
+  // Screen-space breathing amplitude, clamped so two adjacent nodes breathing
+  // toward each other can never touch.
+  const livingPx = clamp(livingScale * lifeBoost, 0, (OVERLAP_GAP * t.k) / 2 - 0.5) / Math.max(0.2, t.k);
+  const pulseAmp = living ? (nodes.length > 1200 ? 0.2 : nodes.length > 700 ? 0.26 : 0.32) : 0;
+  const twinkleAmp = living ? (nodes.length > 1200 ? 0.26 : nodes.length > 700 ? 0.34 : 0.4) : 0;
 
-  // ---- Build activity cache once per frame (not per-node/per-link) ----
-  // Collect active node ids into a Map for O(1) lookup in the hot loops.
+  // Active node ids, collected once per frame for O(1) lookup in the hot loops.
   const actMap = new Map<string, { intensity: number; rate: number }>();
-  for (const { id, rec } of activeItems) {
-    actMap.set(id, { intensity: rec.intensity, rate: rec.rate });
-  }
+  for (const { id, rec } of activeItems) actMap.set(id, { intensity: rec.intensity, rate: rec.rate });
 
-  // Track when each node last had live activity, so the steady "open file"
-  // highlight can fade back in smoothly after a typing burst instead of
-  // snapping on the moment flicker decays below threshold. Prune stale
-  // entries so the map can't grow unbounded over a long session.
-  const recentAct = refs.recentActivityRef.current;
-  for (const { id, rec } of activeItems) {
-    if (rec.intensity > 0.001) recentAct.set(id, now);
-  }
-  if (recentAct.size > 64) {
-    for (const [id, t] of recentAct) {
-      if (now - t > 2000) recentAct.delete(id);
-    }
-  }
-  // Smooth fade-in of the active-file highlight after activity ends.
-  // While the file is being edited this is ~0 (and Batch 2 skips active
-  // links anyway because the node is in actMap); once flicker decays the
-  // steady highlight ramps 0->1 over ACTIVE_FADE_MS so it eases back in.
-  const ACTIVE_FADE_MS = 600;
-  let activeFade = 1;
-  if (active) {
-    const last = recentAct.get(active) ?? 0;
-    const since = now - last;
-    const f = since >= ACTIVE_FADE_MS ? 1 : since / ACTIVE_FADE_MS;
-    activeFade = f * f * (3 - 2 * f); // smoothstep
-  }
+  updateRenderState(refs, nodes, lnow, drawScale, living, livingPx, pulseAmp);
 
-  // ---- Render-layer liveness ----------------------------------------
-  // Covers cluster + halo: every node gets the same gentle render-only
-  // breathing/twinkle. The offsets below are render-only and never feed
-  // back into the simulation.
-  const dragged = refs.dragRef.current.node;
-  for (const n of nodes) {
-    const x = n.x ?? 0;
-    const y = n.y ?? 0;
-    const phase = n.renderPhase ?? phaseFromId(n.id);
-    n.renderPhase = phase;
-    const r = refs.nodeRadius(n);
-    const kvx = (n.renderKickVx ?? 0) * 0.82;
-    const kvy = (n.renderKickVy ?? 0) * 0.82;
-    const kx = ((n.renderKickX ?? 0) + kvx) * 0.84;
-    const ky = ((n.renderKickY ?? 0) + kvy) * 0.84;
-    n.renderKickVx = Math.abs(kvx) < 0.01 ? 0 : kvx;
-    n.renderKickVy = Math.abs(kvy) < 0.01 ? 0 : kvy;
-    n.renderKickX = Math.abs(kx) < 0.01 ? 0 : kx;
-    n.renderKickY = Math.abs(ky) < 0.01 ? 0 : ky;
-    // The dragged node is pinned to the cursor via fx/fy. Render it exactly
-    // at its layout position with no ambient wobble or radius pulse, so it
-    // tracks the pointer 1:1 instead of squirming under it — Obsidian pins
-    // the grabbed node. Ambient motion stays on every other node.
-    if (
-      n === dragged ||
-      !animationsOn ||
-      !Number.isFinite(x) ||
-      !Number.isFinite(y)
-    ) {
-      n.renderX = x;
-      n.renderY = y;
-      n.renderRadius = r;
-      continue;
-    }
-    const a = lnow * 0.42 + phase;
-    const b = lnow * 0.27 + phase * 1.37;
-    const cx = x - refs.sizeRef.current.w / 2;
-    const cy = y - refs.sizeRef.current.h / 2;
-    // Distance from viewport center, reused for both the radial breathe
-    // scale and the inward-unit-vector — one hypot per node per frame, not
-    // two (identical value; ~20% off this loop's cost at stress scale).
-    const len = Math.hypot(cx, cy);
-    const radial = Math.min(
-      1.8,
-      len / Math.max(240, refs.sizeRef.current.w * 0.42)
-    );
-    const breathe =
-      Math.sin(lnow * 0.36 + phase * 0.18) * livingPx * 0.55 * radial;
-    const invLen = 1 / Math.max(1, len);
-    const mingle = Math.sin(lnow * 0.21 + phase * 0.51) * livingPx * 0.28;
-    n.renderX =
-      x +
-      (Math.sin(a) + Math.sin(b) * 0.35) * livingPx * 1.35 +
-      mingle * 0.5 +
-      cx * invLen * breathe +
-      kx;
-    n.renderY =
-      y +
-      (Math.cos(a * 0.82) + Math.sin(b * 0.7) * 0.32) * livingPx * 1.35 +
-      mingle * -0.28 +
-      cy * invLen * breathe +
-      ky;
-    // Radius pulse: slow enough to read as a gentle swell, fast enough to
-    // actually see (period ~3.5s). Non-positional so it can't cause overlap.
-    n.renderRadius = r * (1 + Math.sin(lnow * 1.8 + phase) * pulseAmp);
-  }
-
-  // ---- Viewport culling bounds (in graph/world space) ----------------
+  // ---- Viewport culling bounds (world space) ------------------------------
   const margin = 60 / t.k;
   const vx0 = -t.x / t.k - margin;
   const vy0 = -t.y / t.k - margin;
   const vx1 = (w - t.x) / t.k + margin;
   const vy1 = (h - t.y) / t.k + margin;
 
-  // A soft breathing bloom behind the main cluster so the graph reads as
-  // a living field even when the force sim has settled. Stronger than before
-  // so it is actually visible, but kept soft (low alpha) and slow so it
-  // never reads as a busy glow. Pulses on a long breath + a slow radius
-  // swell so the halo itself feels alive.
-  const forceBounds = refs.graphBounds(forceNodes);
-  if (animationsOn && forceBounds.valid) {
-    // Darker, softer, slower halo — a quiet bloom instead of cluster glow.
-    const bloomPulse = 0.7 + 0.22 * Math.sin(lnow * 0.26 + forceBounds.radius * 0.01);
-    const bloomRadius =
-      forceBounds.radius + Math.min(w, h) * 0.2 + Math.sin(lnow * 0.18) * 14;
-    const bloom = ctx.createRadialGradient(
-      forceBounds.cx,
-      forceBounds.cy,
-      Math.max(24, forceBounds.radius * 0.12),
-      forceBounds.cx,
-      forceBounds.cy,
-      bloomRadius
-    );
-    bloom.addColorStop(
-      0,
-      `rgba(${c.flickerRgb},${(0.045 * c.bloomAlpha * bloomPulse).toFixed(3)})`
-    );
-    bloom.addColorStop(
-      0.45,
-      `rgba(${c.flickerRgb},${(0.018 * c.bloomAlpha * bloomPulse).toFixed(3)})`
-    );
-    bloom.addColorStop(1, `rgba(${c.flickerRgb},0)`);
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = bloom;
-    ctx.beginPath();
-    ctx.arc(forceBounds.cx, forceBounds.cy, bloomRadius, 0, Math.PI * 2);
-    ctx.fill();
+  if (living) {
+    // A dark, soft bloom behind the graph. Part of living motion only.
+    const bounds = refs.graphBounds(refs.forceNodesRef.current);
+    if (bounds.valid) {
+      const bloomPulse = 0.7 + 0.22 * Math.sin(lnow * 0.26 + bounds.radius * 0.01);
+      const bloomRadius = bounds.radius + (Math.min(w, h) * 0.2 + Math.sin(lnow * 0.18) * 14) / t.k;
+      const bloom = ctx.createRadialGradient(bounds.cx, bounds.cy, Math.max(24, bounds.radius * 0.12), bounds.cx, bounds.cy, bloomRadius);
+      bloom.addColorStop(0, `rgba(${c.flickerRgb},${(0.045 * c.bloomAlpha * bloomPulse).toFixed(3)})`);
+      bloom.addColorStop(0.45, `rgba(${c.flickerRgb},${(0.018 * c.bloomAlpha * bloomPulse).toFixed(3)})`);
+      bloom.addColorStop(1, `rgba(${c.flickerRgb},0)`);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = bloom;
+      ctx.beginPath();
+      ctx.arc(bounds.cx, bounds.cy, bloomRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
-  // ---- LINKS: batched by style to minimise canvas state changes ------
-  // Collect into three batches: active-flicker, hot (hover/active), normal.
-  ctx.lineCap = "round";
+  // ---- LINKS --------------------------------------------------------------
+  // Each line runs between the two circle edges, one device pixel wide at
+  // thickness 1. Endpoints are NaN for a link too short to show.
+  ctx.lineCap = "butt";
   const le = refs.linkEndpointsRef.current;
   const lc = links.length;
+  // Heavy graphs draw plain links with WebGL, or else through a cached 2D
+  // layer; links of the highlighted or active nodes draw on top in 2D.
+  const heavy = lc >= LINK_LAYER_MIN_LINKS && !living;
+  const gl = heavy && display.linkThickness === 1 && refs.linkGl?.ready() ? refs.linkGl : null;
+  const layer = !gl && heavy && refs.linkLayer ? refs.linkLayer : null;
+  if (refs.linkLayer) refs.linkLayer.active = layer !== null;
+  const index = linkIndex(links, nodes);
+  le.sId = index.sId;
+  le.tId = index.tId;
+  // A grabbed or hovered node's own links are drawn in 2D, so it alone moving changes nothing below.
+  const linksMoved = positions.load(nodes, focusId, refs.nodeRadius);
+  const geometryChanged = (layer ? layer.linksChanged(links) : false) || linksMoved || (!layer && !gl);
+  const px = positions.x, py = positions.y, pr = positions.r;
+  const endpoint = (i: number): void => {
+    const si = index.s[i], ti = index.t[i];
+    let sx: number, sy: number, tx: number, ty: number, rs: number, rt: number;
+    if (si >= 0 && ti >= 0) {
+      sx = px[si]; sy = py[si]; tx = px[ti]; ty = py[ti]; rs = pr[si]; rt = pr[ti];
+    } else {
+      // An endpoint outside `nodes` (never during normal drawing): read the objects.
+      const s = links[i].source as GraphNode, tg = links[i].target as GraphNode;
+      sx = s.renderX ?? s.x ?? 0; sy = s.renderY ?? s.y ?? 0; tx = tg.renderX ?? tg.x ?? 0; ty = tg.renderY ?? tg.y ?? 0;
+      rs = s.renderRadius ?? 0; rt = tg.renderRadius ?? 0;
+    }
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (!(len > rs + rt)) {
+      le.sx[i] = NaN;
+      return;
+    }
+    le.sx[i] = sx + (dx / len) * rs;
+    le.sy[i] = sy + (dy / len) * rs;
+    le.tx[i] = tx - (dx / len) * rt;
+    le.ty[i] = ty - (dy / len) * rt;
+  };
+  const partial = gl !== null && !display.arrows;
+  if (partial) {
+    // The GPU trims plain links itself; only highlighted and active links draw in 2D.
+    const adjacency = refs.adjacencyRef.current;
+    if (focusId != null) for (const i of adjacency.get(focusId) ?? []) endpoint(i);
+    if (actMap.size) for (const i of incidentLinkIndices(adjacency, actMap.keys())) endpoint(i);
+  } else {
+    for (let i = 0; i < lc; i++) endpoint(i);
+  }
+  const lineWidth = display.linkThickness * devicePx;
 
-  // Update the flat endpoint arrays from the current node positions.
-  for (let i = 0; i < lc; i++) {
-    const l = links[i];
-    const s = l.source as GraphNode;
-    const tg = l.target as GraphNode;
-    le.sx[i] = s.renderX ?? s.x ?? 0;
-    le.sy[i] = s.renderY ?? s.y ?? 0;
-    le.tx[i] = tg.renderX ?? tg.x ?? 0;
-    le.ty[i] = tg.renderY ?? tg.y ?? 0;
-    le.sId[i] = s.id;
-    le.tId[i] = tg.id;
+  // Batch 1: every link without activity or highlight, in one stroke. Under a
+  // highlight this whole batch is outside the neighbourhood, so it dims at once.
+  // Returns whether any link was culled outside the view.
+  const strokePlainLinks = (target: CanvasRenderingContext2D, alpha: number): boolean => {
+    let culled = false;
+    target.beginPath();
+    target.strokeStyle = c.link;
+    target.lineWidth = lineWidth;
+    target.globalAlpha = alpha;
+    for (let i = 0; i < lc; i++) {
+      const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
+      if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
+      if ((sx < vx0 && tx < vx0) || (sx > vx1 && tx > vx1) || (sy < vy0 && ty < vy0) || (sy > vy1 && ty > vy1)) {
+        culled = true;
+        continue;
+      }
+      const sId = le.sId[i], tId = le.tId[i];
+      if (actMap.size && (actMap.has(sId) || actMap.has(tId))) continue; // batch 3
+      if (focusId != null && (sId === focusId || tId === focusId)) continue; // batch 2
+      target.moveTo(sx, sy);
+      target.lineTo(tx, ty);
+    }
+    target.stroke();
+    target.globalAlpha = 1;
+    return culled;
+  };
+  let layered = false;
+  if (gl) {
+    // Links of the highlighted and active nodes draw in 2D: mark those nodes.
+    const someSpecial = focusId != null || actMap.size > 0;
+    let skipNodes: Uint8Array | null = null;
+    if (someSpecial) {
+      skipNodes = specialNodes.length >= nodes.length ? specialNodes.fill(0, 0, nodes.length) : (specialNodes = new Uint8Array(nodes.length));
+      for (const id of [focusId, ...actMap.keys()]) {
+        const node = id == null ? undefined : refs.nodeByIdRef.current.get(id);
+        const at = node ? index.nodeAt(node) : -1;
+        if (at >= 0) skipNodes[at] = 1;
+      }
+    }
+    layered = gl.draw(canvas, {
+      s: index.s, t: index.t, count: lc, x: positions.x, y: positions.y, base: positions.base, nodeCount: nodes.length, drawScale,
+      skipNodes,
+      skipKey: `${focusId ?? ""}|${actMap.size ? [...actMap.keys()].sort().join("\u0000") : ""}`,
+      moved: positions.placesChanged,
+      linksChanged: gl.linksChanged(links),
+      k: t.k, panX: t.x, panY: t.y, dpr, color: c.link, alpha: dimK,
+    });
+  } else {
+    refs.linkGl?.clear();
+  }
+  if (layer) {
+    const activeKey = actMap.size ? [...actMap.keys()].sort().join("\u0000") : "";
+    // Line width scales with zoom, so the style key leaves it out; zoom is checked apart.
+    const frame = { key: [dpr, w, h, display.linkThickness, c.link, focusId ?? "", activeKey].join("|"), k: t.k, tx: t.x, ty: t.y, dpr, alpha: dimK };
+    // A zoom ease shows the newest layer scaled for up to 50 ms between sharp draws.
+    layered = zooming && layer.drawScaled(ctx, frame, now, 50);
+    if (!layered && geometryChanged) layer.invalidate();
+    layered = layered || layer.draw(ctx, frame, (target) => {
+      target.setTransform(dpr * t.k, 0, 0, dpr * t.k, dpr * t.x, dpr * t.y);
+      target.lineCap = "butt";
+      return strokePlainLinks(target, 1);
+    }, now);
+  }
+  if (!layered) {
+    layer?.invalidate();
+    // WebGL failed after a partial endpoint pass: compute every link now.
+    if (partial) for (let i = 0; i < lc; i++) endpoint(i);
+    strokePlainLinks(ctx, dimK);
   }
 
-  // Batch 1: normal links (no activity, not hot) — single stroke style.
-  // Under hover focus every link in this batch is by definition outside
-  // the hovered neighborhood (incident links are "hot" → batch 2), so the
-  // whole batch dims with one globalAlpha — zero extra per-link cost.
-  ctx.beginPath();
-  ctx.strokeStyle = c.link;
-  ctx.lineWidth = (0.7 * display.linkThickness) / t.k;
-  ctx.globalAlpha = focusId ? dimK : 1;
-  for (let i = 0; i < lc; i++) {
-    const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
-    if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
-    // Viewport cull: skip links entirely outside the visible bounds.
-    if ((sx < vx0 && tx < vx0) || (sx > vx1 && tx > vx1)) continue;
-    if ((sy < vy0 && ty < vy0) || (sy > vy1 && ty > vy1)) continue;
-    const sId = le.sId[i], tId = le.tId[i];
-    const sa = actMap.get(sId);
-    const ta = actMap.get(tId);
-    if (sa || ta) continue; // active links drawn in batch 3
-    const hot =
-      (active != null && (sId === active || tId === active)) ||
-      (hoverId != null && (sId === hoverId || tId === hoverId)) ||
-      (dragId != null && (sId === dragId || tId === dragId));
-    if (hot) continue; // hot links drawn in batch 2
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(tx, ty);
-  }
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-
-  // Highlight hovered, active, and dragged links separately from activity flicker; ease hover and active fades.
-  const hotColor = `rgba(${c.flickerRgb},${(0.14 + 0.3 * focusK).toFixed(3)})`;
-  const activeColor = `rgba(${c.flickerRgb},${(0.22 * activeFade).toFixed(3)})`;
-  const dragColor = `rgba(${c.flickerRgb},0.22)`;
-  // Batches 2 and 3 visit only links incident to their nodes, in link order.
+  // Batch 2: links of the highlighted node, cross-faded to the accent colour.
   const adjacency = refs.adjacencyRef.current;
-  for (const i of incidentLinkIndices(adjacency, [active, hoverId, dragId])) {
-    const sId = le.sId[i], tId = le.tId[i];
-    if (actMap.has(sId) || actMap.has(tId)) continue;
-    const touchActive =
-      active != null && (sId === active || tId === active);
-    const touchHover =
-      hoverId != null && (sId === hoverId || tId === hoverId);
-    const touchDrag =
-      dragId != null && (sId === dragId || tId === dragId);
-    if (!touchActive && !touchHover && !touchDrag) continue;
-    const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
-    if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
-    ctx.beginPath();
-    // Drag takes precedence (brightest), then active, then hover.
-    ctx.strokeStyle = touchDrag
-      ? dragColor
-      : touchActive
-      ? activeColor
-      : hotColor;
-    ctx.lineWidth =
-      ((touchDrag ? 1.05 : touchActive ? 1 : 0.9 + 0.4 * focusK) *
-        display.linkThickness) /
-      t.k;
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(tx, ty);
-    ctx.stroke();
+  if (focusId != null) {
+    const strokeIncident = (style: string, alpha: number) => {
+      if (alpha <= 0.004) return;
+      ctx.beginPath();
+      ctx.strokeStyle = style;
+      ctx.globalAlpha = alpha;
+      for (const i of adjacency.get(focusId) ?? []) {
+        if (actMap.size && (actMap.has(le.sId[i]) || actMap.has(le.tId[i]))) continue;
+        const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
+        if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(tx, ty);
+      }
+      ctx.stroke();
+    };
+    const accent = dragId ? 1 : focusK;
+    strokeIncident(c.link, 1 - accent);
+    strokeIncident(c.linkActive, accent);
+    ctx.globalAlpha = 1;
   }
 
-  // Batch 3: active (flickering) links — each needs its own style so
-  // can't be fully batched, but we skip viewport-culled ones.
+  // Batch 3: links of files with live activity flicker, each with its own style.
   for (const i of actMap.size ? incidentLinkIndices(adjacency, actMap.keys()) : []) {
-    const sId = le.sId[i], tId = le.tId[i];
-    const sa = actMap.get(sId);
-    const ta = actMap.get(tId);
+    const sa = actMap.get(le.sId[i]);
+    const ta = actMap.get(le.tId[i]);
     if (!sa && !ta) continue;
     const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
     if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
@@ -437,80 +483,71 @@ export function drawGraph(
     const amp = Math.min(1, linkAct);
     const rate = Math.max(sa?.rate ?? 0, ta?.rate ?? 0);
     const flick = 0.55 + 0.45 * Math.sin(lnow * (3 + rate * 1.4));
-    ctx.strokeStyle = `rgba(${c.flickerRgb},${(0.06 + 0.18 * amp * flick).toFixed(3)})`;
-    ctx.lineWidth = ((0.6 + 0.6 * amp) * display.linkThickness) / t.k;
+    ctx.strokeStyle = `rgba(${c.flickerRgb},${(0.12 + 0.36 * amp * flick).toFixed(3)})`;
+    ctx.lineWidth = lineWidth * (1 + amp);
     ctx.beginPath();
     ctx.moveTo(sx, sy);
     ctx.lineTo(tx, ty);
     ctx.stroke();
   }
 
-  // Obsidian keeps direction hidden at fit zoom and reveals small arrows
-  // only when the user zooms into the graph.
-  if (display.arrows && t.k > 1.05) {
-    ctx.fillStyle = c.link;
-    ctx.globalAlpha = focusId ? dimK : 1;
+  // Arrows fade in between 0.3 and 0.8 device px per world unit.
+  const arrowAlpha = display.arrows ? 0.5 * clamp(2 * (scale - 0.3), 0, 1) : 0;
+  if (arrowAlpha > 0.001) {
+    const size = 2 * Math.sqrt(display.linkThickness) * devicePx;
+    ctx.fillStyle = c.label;
     for (let i = 0; i < lc; i++) {
       const sx = le.sx[i], sy = le.sy[i], tx = le.tx[i], ty = le.ty[i];
-      const dx = tx - sx;
-      const dy = ty - sy;
-      const len = Math.hypot(dx, dy);
-      if (!Number.isFinite(len) || len < 1) continue;
+      if (!isFinite(sx) || !isFinite(sy) || !isFinite(tx) || !isFinite(ty)) continue;
       if ((sx < vx0 && tx < vx0) || (sx > vx1 && tx > vx1)) continue;
       if ((sy < vy0 && ty < vy0) || (sy > vy1 && ty > vy1)) continue;
-      const targetNode = refs.nodeByIdRef.current.get(le.tId[i]);
-      const targetRadius = targetNode ? refs.nodeRadius(targetNode) : 6;
-      const ex = tx - (dx / len) * (targetRadius + 2);
-      const ey = ty - (dy / len) * (targetRadius + 2);
-      const size = 4.5 / t.k;
+      const dx = tx - sx;
+      const dy = ty - sy;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (!(len > lineWidth)) continue;
       const ux = dx / len;
       const uy = dy / len;
-      const px = -uy;
-      const py = ux;
+      const incident = focusId != null && (le.sId[i] === focusId || le.tId[i] === focusId);
+      ctx.globalAlpha = arrowAlpha * (incident ? 1 : dimK);
+      // Tip one device pixel short of the target circle; barbs 4 long, 2 wide, notched at 3.
+      const ex = tx - ux * devicePx;
+      const ey = ty - uy * devicePx;
       ctx.beginPath();
       ctx.moveTo(ex, ey);
-      ctx.lineTo(
-        ex - ux * size + px * size * 0.62,
-        ey - uy * size + py * size * 0.62
-      );
-      ctx.lineTo(
-        ex - ux * size - px * size * 0.62,
-        ey - uy * size - py * size * 0.62
-      );
+      ctx.lineTo(ex - ux * 4 * size + uy * 2 * size, ey - uy * 4 * size - ux * 2 * size);
+      ctx.lineTo(ex - ux * 3 * size, ey - uy * 3 * size);
+      ctx.lineTo(ex - ux * 4 * size - uy * 2 * size, ey - uy * 4 * size + ux * 2 * size);
       ctx.closePath();
       ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
-  // ---- NODES: viewport-culled, no per-node save/restore for non-image ----
-  // All nodes draw the same way — the connected cluster and the orphan halo.
+  // ---- NODES --------------------------------------------------------------
+  visibleNodes.length = 0;
+  const glowPx = 1 / t.k; // one CSS pixel, in world units
   for (const n of nodes) {
     if (n.x == null || n.y == null) continue;
     if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
-    // Viewport cull: skip nodes entirely outside the visible bounds.
-    const r = n.renderRadius ?? refs.nodeRadius(n);
+    const r = n.renderRadius ?? refs.nodeRadius(n) * drawScale;
     const rx = n.renderX ?? n.x;
     const ry = n.renderY ?? n.y;
-    if (rx == null || ry == null) continue;
     if (rx < vx0 - r || rx > vx1 + r || ry < vy0 - r || ry > vy1 + r) continue;
+    visibleNodes.push(n);
 
     const act = actMap.get(n.id);
     const isActive = n.id === active;
-    const isHover = n.id === hoverId;
+    const isFocus = n.id === focusId;
 
-    // smooth keystroke flicker (sum of sines, no random shimmer).
-    // Subtle by design: a soft blip per edit that fades with the activity
-    // decay. Kept clearly above the hover/ambient tint so agent telemetry
-    // is still the most visible thing on the graph, but not glaring.
+    // Activity flicker: a soft blip per edit that fades with the activity
+    // decay (sum of sines, no random shimmer). Constant size on screen.
     if (act && act.intensity > 0.01) {
       const amp = Math.min(1, act.intensity);
-      const ws = (now / 1000) * (3 + act.rate * 1.4);
+      const ws = lnow * (3 + act.rate * 1.4);
       const flick = 0.55 + 0.3 * Math.sin(ws) + 0.12 * Math.sin(ws * 1.7);
-      const glowR = r + (3 + amp * 6) * flick;
-      const alpha = 0.1 * amp * flick;
+      const glowR = r + (4 + amp * 10) * flick * glowPx;
       const g = ctx.createRadialGradient(rx, ry, r * 0.4, rx, ry, glowR);
-      g.addColorStop(0, `rgba(${c.flickerRgb},${alpha.toFixed(3)})`);
+      g.addColorStop(0, `rgba(${c.flickerRgb},${(0.3 * amp * flick).toFixed(3)})`);
       g.addColorStop(1, `rgba(${c.flickerRgb},0)`);
       ctx.fillStyle = g;
       ctx.beginPath();
@@ -518,31 +555,16 @@ export function drawGraph(
       ctx.fill();
     }
 
-    // steady soft halo on the active node. Fades in with `activeFade`
-    // after a typing burst so it never snaps back on.
-    if (isActive && activeFade > 0.01) {
-      const halo = ctx.createRadialGradient(rx, ry, r, rx, ry, r + 11);
-      halo.addColorStop(0, `rgba(${c.flickerRgb},${(0.14 * activeFade).toFixed(3)})`);
-      halo.addColorStop(1, `rgba(${c.flickerRgb},0)`);
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(rx, ry, r + 14, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    const img = !fastDraw && n.thumbPath && r * t.k >= THUMB_MIN_SCREEN_RADIUS ? refs.getImage(n.thumbPath, now) : null;
-    // Clip image thumbnails to circles. Keep grabbed nodes steady while other nodes twinkle.
     const twinkle =
-      animationsOn && !act && !isActive && n !== refs.dragRef.current.node
-        ? 1 + Math.sin(lnow * 2.4 + (n.renderPhase ?? 0) * 2.7) * twinkleAmp
+      twinkleAmp > 0 && !act && !isActive && !isFocus
+        ? clamp(1 + Math.sin(lnow * 2.4 + (n.renderPhase ?? 0) * 2.7) * twinkleAmp, 0.52, 1)
         : 1;
-
-    // Hover focus: nodes outside the hovered neighborhood recede.
-    let nodeAlpha = Math.max(0.52, Math.min(1, twinkle));
-    if (focusId && n.id !== focusId && !focusSet?.has(n.id) && !act && !isActive) {
-      nodeAlpha *= dimK;
-    }
+    // Unresolved links draw at half strength; nodes outside a highlighted
+    // neighbourhood recede.
+    let nodeAlpha = twinkle * (n.kind === "phantom" ? 0.5 : 1);
+    if (focusId && !isFocus && !focusSet?.has(n.id) && !act) nodeAlpha *= dimK;
     ctx.globalAlpha = nodeAlpha;
+    const img = !fastDraw && n.thumbPath && r * t.k >= THUMB_MIN_SCREEN_RADIUS ? refs.getImage(n.thumbPath, now) : null;
     if (img && img.complete && img.naturalWidth > 0) {
       ctx.save();
       ctx.beginPath();
@@ -560,115 +582,63 @@ export function drawGraph(
       ctx.beginPath();
       ctx.arc(rx, ry, r, 0, Math.PI * 2);
       ctx.closePath();
-      ctx.fillStyle = isActive ? c.nodeActive : nodeFill(n, c);
+      // The highlighted node and the open file take the accent fill.
+      ctx.fillStyle = isFocus || isActive ? c.nodeActive : nodeFill(n, c);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
 
-    if (isHover) {
+    if (isFocus) {
+      // Accent ring, at least one device pixel wide.
+      const ringWidth = Math.max(drawScale, devicePx);
+      ctx.globalAlpha = dragId ? 1 : focusK;
       ctx.beginPath();
-      ctx.arc(rx, ry, r + 3, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(${c.flickerRgb},0.35)`;
-      ctx.lineWidth = 1.2 / t.k;
+      ctx.arc(rx, ry, r + ringWidth / 2, 0, Math.PI * 2);
+      ctx.strokeStyle = c.nodeActive;
+      ctx.lineWidth = ringWidth;
       ctx.stroke();
+      ctx.globalAlpha = 1;
     }
   }
 
-  // --- labels: screen-space pass, Obsidian-style "text fade" ------------
-  // Text smoothly fades out as you zoom out — past LABEL_FADE_LO the graph
-  // shows only nodes, no text. Zoom in and labels fade in, de-overlapped so
-  // they never pile into a glob. Hovered/active notes are always labelled.
-  const LABEL_FADE_LO = clamp(display.textFadeThreshold, 0, 0.9);
-  const LABEL_FADE_HI = Math.min(0.98, LABEL_FADE_LO + 0.4);
-  const zoomAlpha = Math.max(
-    0,
-    Math.min(1, (t.k - LABEL_FADE_LO) / (LABEL_FADE_HI - LABEL_FADE_LO))
-  );
-  const anyForced = hoverId != null || active != null;
-  if (!fastDraw && (zoomAlpha > 0.02 || anyForced || focusK > 0.05)) {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // identity → constant-size text
-    ctx.font = "12px -apple-system, system-ui, sans-serif";
+  // ---- LABELS -------------------------------------------------------------
+  // Every visible node has a label below it. Opacity follows the zoom level;
+  // the highlighted node's label is always shown, at a constant size when
+  // zoomed out, and shifted down 15 device pixels.
+  const textAlpha = labelZoomAlpha(scale, display.textFade);
+  const focusNode = focusId ? refs.nodeByIdRef.current.get(focusId) : undefined;
+  if (textAlpha > 0.001 || focusNode) {
+    ctx.font = LABEL_FONT;
     ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.lineJoin = "round"; // round halo so text never gets spiky
-    ctx.miterLimit = 2;
-    const taken: { x0: number; y0: number; x1: number; y1: number }[] = [];
-    const done = new Set<string>();
-    let drawn = 0;
-
-    const place = (n: GraphNode, forced: boolean, alphaIn?: number): void => {
-      if (drawn >= 120 || done.has(n.id)) return;
-      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return;
-      const alpha = alphaIn ?? (forced ? 1 : zoomAlpha);
-      if (alpha < 0.03) return;
-      const sx = (n.renderX ?? n.x!) * t.k + t.x;
-      const sy = (n.renderY ?? n.y!) * t.k + t.y;
-      if (sx < -60 || sy < -20 || sx > w + 60 || sy > h + 20) return;
-      const sr = (n.renderRadius ?? refs.nodeRadius(n)) * t.k;
-      const tw = ctx.measureText(n.title).width;
-      const lx = sx;
-      const ly = sy + sr + 9;
-      const box = {
-        x0: lx - tw / 2 - 3,
-        y0: ly - 8,
-        x1: lx + tw / 2 + 3,
-        y1: ly + 8,
-      };
-      if (!forced) {
-        for (const o of taken) {
-          if (
-            box.x0 < o.x1 &&
-            box.x1 > o.x0 &&
-            box.y0 < o.y1 &&
-            box.y1 > o.y0
-          )
-            return;
-        }
-      }
-      taken.push(box);
-      done.add(n.id);
+    ctx.textBaseline = "top";
+    ctx.fillStyle = c.label;
+    const drawLabel = (n: GraphNode, alpha: number, highlighted: boolean): void => {
+      const size = refs.nodeRadius(n);
+      const fontWorld = 14 + size / 4;
+      const fontPx = highlighted && scale < 1 ? fontWorld / dpr : fontWorld * drawScale * t.k;
+      if (fontPx < 2 && !highlighted) return;
+      const sx = (n.renderX ?? n.x ?? 0) * t.k + t.x;
+      const sy = ((n.renderY ?? n.y ?? 0) + (size + 5) * drawScale) * t.k + t.y + (highlighted ? (15 * focusK) / dpr : 0);
+      const f = fontPx / LABEL_FONT_PX;
+      const lines = labelLines(ctx, n, (LABEL_WRAP_WIDTH / fontWorld) * LABEL_FONT_PX);
       ctx.globalAlpha = alpha;
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = c.labelHalo;
-      ctx.strokeText(n.title, lx, ly);
-      ctx.fillStyle = forced ? c.nodeActive : c.label;
-      ctx.fillText(n.title, lx, ly);
-      drawn++;
+      ctx.setTransform(dpr * f, 0, 0, dpr * f, sx * dpr, sy * dpr);
+      for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], 0, i * LABEL_FONT_PX * LABEL_LINE_HEIGHT);
     };
-
-    // hovered + active are always labelled, then the top-N highest-degree
-    // nodes (from the cached degree-desc order — no per-frame sort).
-    const byId = refs.nodeByIdRef.current;
-    if (hoverId) {
-      const n = byId.get(hoverId);
-      if (n) place(n, true);
-    }
-    if (active && active !== hoverId) {
-      const n = byId.get(active);
-      if (n) place(n, true);
-    }
-    // Hover focus: the hovered node's neighbors get labels that fade in
-    // with the focus ease (Obsidian labels the highlighted neighborhood).
-    // Overlap-avoided (not forced) so a hub hover can't pile text.
-    if (focusId && focusSet) {
-      let labelled = 0;
-      for (const nid of focusSet) {
-        if (labelled >= 24 || drawn >= 120) break;
-        const nb = byId.get(nid);
-        if (!nb) continue;
-        place(nb, false, Math.max(zoomAlpha, focusK));
-        labelled++;
+    if (textAlpha > 0.001) {
+      const count = Math.min(visibleNodes.length, LABEL_MAX);
+      for (let i = 0; i < count; i++) {
+        const n = visibleNodes[i];
+        if (n === focusNode) continue;
+        const near = !focusId || focusSet?.has(n.id);
+        drawLabel(n, textAlpha * (near ? 1 : dimK), false);
       }
     }
-    const topN = Math.min(LABEL_TOP_N, refs.degreeSortedRef.current.length);
-    for (let i = 0; i < topN; i++) {
-      if (drawn >= 120) break;
-      const n = refs.degreeSortedRef.current[i];
-      // Non-neighbor top-N labels recede along with their nodes.
-      const dimmed =
-        focusId && n.id !== focusId && !focusSet?.has(n.id);
-      place(n, false, dimmed ? zoomAlpha * dimK : undefined);
+    if (focusNode && Number.isFinite(focusNode.x) && Number.isFinite(focusNode.y)) {
+      drawLabel(focusNode, dragId ? 1 : Math.max(textAlpha, focusK), true);
     }
     ctx.globalAlpha = 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
+  visibleNodes.length = 0;
 }

@@ -71,3 +71,39 @@ it("preserves the BOM in saved bytes and the exact expected disk hash", async ()
     expect(await isValidUtf8Text(file, "caf\uFFFD")).toBe(true);
   } finally { vi.unstubAllGlobals(); vi.resetModules(); }
 });
+
+it("keeps the BOM and CRLF bytes when a code or sniffed file is saved", async () => {
+  vi.resetModules();
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+  try {
+    const { writeNote, rememberSniffedText, clearSniffedText } = await import("./vault");
+    const disk = new TextEncoder().encode("\uFEFF{\r\n  \"a\": 1\r\n}\r\n");
+    for (const file of [
+      { path: "/vault/data.json", relPath: "data.json", name: "data", ext: "json", isMarkdown: false },
+      { path: "/vault/.editorconfig", relPath: ".editorconfig", name: ".editorconfig", ext: "", isMarkdown: false },
+    ]) {
+      invoke.mockReset();
+      invoke.mockImplementation(async (command: string) => command === "vault_read_bytes" ? disk.slice(0, 3).buffer : undefined);
+      if (file.ext === "") rememberSniffedText(file.path);
+      await writeNote(file, "{\r\n  \"a\": 2\r\n}\r\n", "{\r\n  \"a\": 1\r\n}\r\n");
+      const [, candidate] = invoke.mock.calls.find(call => call[0] === "vault_write_atomic") as unknown as [string, Uint8Array];
+      expect(candidate).toEqual(new TextEncoder().encode("\uFEFF{\r\n  \"a\": 2\r\n}\r\n"));
+    }
+    clearSniffedText();
+  } finally { vi.unstubAllGlobals(); vi.resetModules(); }
+});
+
+it("sniffs an unknown file from a bounded prefix, never the whole file", async () => {
+  vi.resetModules();
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+  try {
+    const { sniffVaultText, TEXT_SNIFF_BYTES } = await import("./vault");
+    const file = { path: "/vault/notes.org", relPath: "notes.org", name: "notes", ext: "org", isMarkdown: false };
+    invoke.mockReset();
+    invoke.mockResolvedValue(new TextEncoder().encode("* heading\n").buffer);
+    expect(await sniffVaultText(file)).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("vault_read_bytes", { path: file.path, maxBytes: TEXT_SNIFF_BYTES, requireComplete: false });
+    invoke.mockResolvedValue(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00]).buffer);
+    expect(await sniffVaultText(file)).toBe(false);
+  } finally { vi.unstubAllGlobals(); vi.resetModules(); }
+});

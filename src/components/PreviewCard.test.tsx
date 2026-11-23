@@ -36,6 +36,7 @@ vi.mock("../store", () => ({
     }),
 }));
 
+vi.mock("../lib/vaultByteRead", () => ({ readVaultBytes: vi.fn(async () => new Uint8Array()) }));
 vi.mock("@tauri-apps/plugin-fs", () => ({
   readTextFile: mocks.readTextFile,
 }));
@@ -43,7 +44,8 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 vi.mock("../lib/vault", () => ({
   fileKind: (ext: string) => (ext === "html" ? "html" : "text"),
   IN_TAURI: false,
-  isTextExt: (ext: string) => ["html", "md", "txt"].includes(ext),
+  isOpenableTextFile: (file: { ext: string; isMarkdown?: boolean }) =>
+    !!file.isMarkdown || ["html", "md", "txt", "rtf"].includes(file.ext),
   urlForPath: (path: string) => `asset://localhost${path}`,
 }));
 
@@ -145,6 +147,17 @@ describe("PreviewCard content loading", () => {
     expect(srcDoc).not.toContain("<script");
     expect(srcDoc).not.toContain("onclick=");
     expect(frame?.getAttribute("sandbox")).toBe("");
+  });
+
+  it("points to opening a file it cannot peek instead of calling it unsupported", async () => {
+    // Every file type now opens in Mesa; "No preview available" read as
+    // "Mesa cannot open this" over a .docx in the native app.
+    const rel = "Report.docx";
+    mocks.state.files = [{ relPath: rel, path: "/vault/Report.docx", name: "Report", ext: "docx", isMarkdown: false }];
+    await mountPreview(rel);
+    expect(host.textContent).toContain("Click to open this .docx file in Mesa.");
+    expect(host.textContent).not.toContain("No preview available");
+    expect(mocks.ensurePeek).not.toHaveBeenCalled();
   });
 
   it("keeps ordinary text previews on the byte-capped peek path", async () => {

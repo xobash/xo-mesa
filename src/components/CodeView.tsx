@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAppStore } from "../store";
-import { langForExt, tokenize, parseDelimited } from "../lib/highlight";
+import { langForExt, tokenize } from "../lib/highlight";
+import { detectDelimiter, parseDelimitedRows as parseDelimited } from "../lib/delimitedTable";
 import {
   CODE_ROW_HEIGHT,
   buildCodeLineIndex,
@@ -43,6 +44,10 @@ export function CodeView({ rel }: { rel: string }) {
 
   const ext = (file?.ext ?? "").toLowerCase();
   const isTable = ext === "csv" || ext === "tsv";
+  const delim = useMemo(
+    () => (isTable && text != null ? detectDelimiter(text, ext === "tsv" ? "\t" : ",") : ","),
+    [isTable, text, ext]
+  );
   const lineIndex = useMemo(
     () => (text != null ? buildCodeLineIndex(text) : null),
     [text]
@@ -53,9 +58,9 @@ export function CodeView({ rel }: { rel: string }) {
   const rows = useMemo(
     () =>
       isTable && text != null && !large
-        ? parseDelimited(text, ext === "tsv" ? "\t" : ",")
+        ? parseDelimited(text, delim)
         : null,
-    [isTable, text, ext, large]
+    [isTable, text, delim, large]
   );
   const tokens = useMemo(
     () =>
@@ -108,7 +113,7 @@ export function CodeView({ rel }: { rel: string }) {
       visibleLines.push({ index: i, value: codeLineAt(text, i, lineIndex) });
     }
     const header = isTable
-      ? parseDelimited(codeLineAt(text, 0, lineIndex), ext === "tsv" ? "\t" : ",")[0] ?? []
+      ? parseDelimited(codeLineAt(text, 0, lineIndex), delim)[0] ?? []
       : [];
 
     return (
@@ -142,7 +147,7 @@ export function CodeView({ rel }: { rel: string }) {
                     .filter((line) => line.index > 0)
                     .map((line) => {
                       const parsed =
-                        parseDelimited(line.value, ext === "tsv" ? "\t" : ",")[0] ?? [];
+                        parseDelimited(line.value, delim)[0] ?? [];
                       return (
                         <tr key={line.index} style={{ height: CODE_ROW_HEIGHT }}>
                           <td className="code-rownum">{line.index}</td>

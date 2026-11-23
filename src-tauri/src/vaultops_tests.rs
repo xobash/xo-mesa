@@ -174,3 +174,25 @@ fn recovery_listing_handles_a_tree_at_the_depth_cap() {
             .collect::<Vec<_>>()
     );
 }
+
+/// A single-child chain in the trash is followed only to the depth cap, so the
+/// listed item stays restorable instead of naming a path restore refuses.
+#[test]
+fn recovery_listing_stops_a_single_child_chain_at_the_depth_cap() {
+    let root = std::env::temp_dir().join(format!("mesa-recovery-chain-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let chain = vec!["d"; crate::vault_names::MAX_REL_SEGMENTS + 5].join("/");
+    let deep = root.join(".mesa-trash/123").join(&chain);
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("gone.md"), b"x").unwrap();
+    let listed = list_recovery(&root);
+    let _ = fs::remove_dir_all(&root);
+    let listed = listed.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(
+        !crate::vault_names::rel_too_deep(&listed[0].trash_rel_path),
+        "{} segments",
+        listed[0].trash_rel_path.split('/').count()
+    );
+    assert!(listed[0].is_directory);
+}

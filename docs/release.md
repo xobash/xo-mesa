@@ -62,7 +62,8 @@ Unsigned CI bundles remain development artifacts.
 Before publishing, run or confirm the same commands as the required CI jobs:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
+npm rebuild esbuild
 npm run typecheck
 npm run lint
 npm run test:coverage
@@ -77,7 +78,6 @@ npm run test:index
 npm run test:activity-api
 npm run test:markdown
 npm run test:notices
-npm run build
 npm run audit:public
 npm run audit:independent
 npm audit --audit-level=moderate
@@ -87,6 +87,10 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D w
 node scripts/native-advisory-check.mjs
 node scripts/third-party-notices.mjs --check-native
 ```
+
+`npm run test:notices` includes the production build: it runs the
+Dockerfile's own `npm run build` on exactly the image's `COPY` inputs, so CI
+builds the bundle once.
 
 The GitHub Actions matrix must also pass for frontend, Rust advisory, Rust on
 Linux/macOS/Windows, and desktop bundles on Linux/macOS/Windows. The frontend
@@ -330,7 +334,7 @@ reuses an unchanged local release build on later starts.
 macOS and Linux:
 
 ```bash
-( set -e; p=$(mktemp); trap 'rm -f "$p"' EXIT; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.sh -o "$p"; if command -v shasum >/dev/null; then printf 'a40f7799e2697ec7fc0bd0af99147bb4c18d7082e2eca198f3aeec7a6ae9c04a  %s\n' "$p" | shasum -a 256 -c -; else printf 'a40f7799e2697ec7fc0bd0af99147bb4c18d7082e2eca198f3aeec7a6ae9c04a  %s\n' "$p" | sha256sum -c -; fi; bash "$p" )
+( set -e; p=$(mktemp); trap 'rm -f "$p"' EXIT; curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/xobash/xo-mesa/v0.1.0/install.sh -o "$p"; if command -v shasum >/dev/null; then printf 'e2e4ce3925d158a89279026ac40b64e5fe0fdca12678fe175e72606c601e47d7  %s\n' "$p" | shasum -a 256 -c -; else printf 'e2e4ce3925d158a89279026ac40b64e5fe0fdca12678fe175e72606c601e47d7  %s\n' "$p" | sha256sum -c -; fi; bash "$p" )
 ```
 
 Windows 10 and Windows 11:
@@ -389,9 +393,13 @@ of the source toolchain trust. Development checkouts are a separate path.
 `node scripts/native-advisory-check.mjs` runs the current registry-backed Cargo
 audit. It rejects vulnerabilities and every unreviewed warning. Only the exact
 legacy GTK and `zbus` 5 warning/package/version combinations documented in
-`docs/security.md` are tracked. They were last reviewed on 2026-10-22 against
-`cargo audit --json`: no vulnerabilities, and the five warnings are
-informational (unmaintained or unsound) in Linux-only GTK and D-Bus chains.
+`docs/security.md` are tracked, plus locked-only crates: Cargo locks every
+optional dependency, so the check admits such a warning only while
+`cargo tree` (all targets, features and edge kinds) finds no build that uses
+the crate, and fails when that proof fails. They were last reviewed on
+2026-11-22 against `cargo audit --json`: no vulnerabilities, and the six
+warnings are informational (unmaintained or unsound): five in Linux-only GTK
+and D-Bus chains and one, `chrono`, locked but never compiled.
 The exception expires after 2026-12-21; the weekly `advisory-review` workflow
 fails seven days earlier. A version or advisory change requires review;
 removal needs the supported upstream GTK and D-Bus binding transitions and

@@ -16,6 +16,22 @@ describe('settings upgrade and failure behavior', () => {
     expect(normalizeSettings({ syncAutoMinutes: -1 }).syncAutoMinutes).toBe(0);
   });
   it('preserves every valid current setting', () => { expect(normalizeSettings(DEFAULT_SETTINGS)).toEqual(DEFAULT_SETTINGS); });
+  it('starts the graph at Obsidian defaults and resets graph settings saved in older units once', () => {
+    expect(DEFAULT_SETTINGS).toMatchObject({
+      graphShowTags: false, graphShowAttachments: false, graphShowAllFiles: false, graphExistingFilesOnly: false, graphShowOrphans: true,
+      graphArrows: false, graphTextFade: 0, graphNodeSize: 1, graphLinkThickness: 1,
+      graphRepelForce: 10, graphLinkForce: 1, graphLinkDistance: 250, graphLivingMotion: false,
+    });
+    expect(DEFAULT_SETTINGS.graphCenterForce).toBeCloseTo(0.518713248970312, 12);
+    // Saved before the unit change: every graph value restarts at the default; other settings stay.
+    const old = normalizeSettings({ hoverDelayMs: 900, graphShowAttachments: true, graphExistingFilesOnly: true, graphTextFadeThreshold: 0.42, graphCenterForce: 0.5, graphRepelForce: 18, graphNodeSize: 2 });
+    expect(old.hoverDelayMs).toBe(900);
+    expect(Object.entries(old).filter(([key]) => key.startsWith('graph'))).toEqual(Object.entries(DEFAULT_SETTINGS).filter(([key]) => key.startsWith('graph')));
+    // Saved in the current units: values survive a reload, limited to each slider's range.
+    const current = normalizeSettings({ ...DEFAULT_SETTINGS, graphShowAttachments: true, graphShowAllFiles: true, graphRepelForce: 18, graphNodeSize: 99, graphTextFade: -7, graphLinkDistance: 5, graphLivingMotion: true });
+    expect(current).toMatchObject({ graphShowAttachments: true, graphShowAllFiles: true, graphRepelForce: 18, graphNodeSize: 5, graphTextFade: -3, graphLinkDistance: 30, graphLivingMotion: true });
+    expect(normalizeSettings(current)).toEqual(current);
+  });
   it('loads a saved multi-pane layout as a split view', () => {
     const settings = normalizeSettings({ centerView: 'doc', rightStack: ['doc', 'agent', 'preview', 'graph'] });
     expect(settings.rightStack).toEqual(['agent']);
@@ -42,6 +58,22 @@ describe('settings upgrade and failure behavior', () => {
     const source = storage(JSON.stringify({ ...DEFAULT_SETTINGS, syncDeviceName: 'Stable Name', future: { enabled: true } }));
     for (let i = 0; i < 25; i++) { const loaded = loadSettings(source); expect(loaded.settings.syncDeviceName).toBe('Stable Name'); expect(persistSettings({ ...loaded.settings, sidebarOpen: i % 2 === 0 }, source)).toBe(''); }
     expect(JSON.parse(source.getItem(SETTINGS_KEY)!).future).toEqual({ enabled: true });
+  });
+  it('a second window saving one setting never reverts a setting the first window changed', () => {
+    const source = storage(JSON.stringify({ ...DEFAULT_SETTINGS, syncDeviceName: 'Stable Name' }));
+    const main = loadSettings(source).settings, graphWindow = loadSettings(source).settings;
+    expect(persistSettings({ ...main, sidebarOpen: !main.sidebarOpen }, source, main)).toBe('');
+    // The graph window still holds the old sidebarOpen; it changes only node size.
+    expect(persistSettings({ ...graphWindow, graphNodeSize: 2 }, source, graphWindow)).toBe('');
+    const saved = loadSettings(source).settings;
+    expect(saved.sidebarOpen).toBe(!main.sidebarOpen);
+    expect(saved.graphNodeSize).toBe(2);
+  });
+  it('writes every setting when the stored value predates the graph settings version', () => {
+    const source = storage(JSON.stringify({ ...DEFAULT_SETTINGS, syncDeviceName: 'Stable Name', graphSettingsVersion: 1, graphNodeSize: 3 }));
+    const loaded = loadSettings(source).settings;
+    expect(persistSettings({ ...loaded, sidebarOpen: !loaded.sidebarOpen }, source, loaded)).toBe('');
+    expect(JSON.parse(source.getItem(SETTINGS_KEY)!)).toMatchObject({ graphSettingsVersion: DEFAULT_SETTINGS.graphSettingsVersion, graphNodeSize: loaded.graphNodeSize });
   });
   it('removes obsolete Mesa-side provider credentials while retaining unrelated future fields', () => {
     const source = storage(JSON.stringify({

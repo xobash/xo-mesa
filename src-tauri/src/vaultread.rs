@@ -157,45 +157,14 @@ fn read_all(
     .collect()
 }
 
-/// Open a regular file without following a final link or blocking on a FIFO
-/// or device; the type check uses the opened handle, so a swap cannot slip in.
-fn open_regular(path: &Path) -> io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options.open(path)?;
-    let meta = file.metadata()?;
-    // Cloud placeholders (OneDrive Files On-Demand) read as files; links do not.
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::MetadataExt;
-        !crate::sync_core::platform_fs::handle_is_in_place(&file, meta.file_attributes())?
-    };
-    #[cfg(not(windows))]
-    let reparse = false;
-    if !meta.is_file() || reparse {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a file"));
-    }
-    Ok(file)
-}
-
 fn read_file(path: &Path, max_text_file_bytes: u64) -> io::Result<ReadResult> {
     use std::io::Read;
-    if crate::sync_core::platform_fs::path_is_not_downloaded(path) {
+    if online_only(path) {
         return Ok(ReadResult::Offline);
     }
     // Regular files only, matching `vault_scan`'s `is_file` rule: a directory
     // or a device node named in `rels` must read as a failure, not hang.
-    let file = open_regular(path)?;
+    let file = crate::sync_core::open_regular_no_follow(path)?;
     let len = file.metadata()?.len();
     if len > max_text_file_bytes {
         return Ok(ReadResult::Skipped);
@@ -300,17 +269,34 @@ pub async fn vault_read_bytes(
     .map_err(|e| e.to_string())?
 }
 
-/// Hidden entries (`.git`, `.env`, recovery folders) are not renderer-readable
-/// vault documents, as spelled or after OS resolution.
-fn read_bounded(
+/// Refusal for an online-only cloud file (OneDrive Files On-Demand). Reading
+/// it would download it, so bytes and range reads refuse before opening.
+/// `src/lib/vaultByteRead.ts` recognises the `online-only:` prefix.
+pub(crate) const ONLINE_ONLY_READ: &str = "online-only: This file is stored only in the cloud. Download it to this device (for example, choose Always keep on this device), then open it again.";
+
+fn online_only(path: &Path) -> bool {
+    #[cfg(test)]
+    if tests::online_only_fake(path) {
+        return true;
+    }
+    crate::sync_core::platform_fs::path_is_not_downloaded(path)
+}
+
+/// Open `rel` as a visible, regular, downloaded vault file without following
+/// links and hand the handle to `use_file`. Hidden entries (`.git`, `.env`,
+/// recovery folders) are not renderer-readable vault documents, as spelled or
+/// after OS resolution. The one Windows parent guard lives until `use_file`
+/// returns.
+pub(crate) fn with_visible_file<T>(
     root: &Path,
     rel: &str,
-    max_bytes: usize,
-    require_complete: bool,
-) -> Result<Vec<u8>, String> {
-    use std::io::Read;
+    use_file: impl FnOnce(std::fs::File) -> Result<T, String>,
+) -> Result<T, String> {
     if !crate::vaultscope::resolves_visible(root, rel) {
         return Err("path is not a visible vault file".into());
+    }
+    if online_only(&root.join(rel)) {
+        return Err(ONLINE_ONLY_READ.into());
     }
     #[cfg(unix)]
     let file = crate::sync_core::RootedTarget::resolve(root, rel, false)
@@ -321,18 +307,33 @@ fn read_bounded(
     let _guard = crate::sync_core::WindowsParentGuard::acquire(&root.join(rel), false)
         .map_err(|e| e.to_string())?;
     #[cfg(windows)]
-    let file = crate::sync_core::open_file_no_follow(&root.join(rel)).map_err(|e| e.to_string())?;
-    let limit = max_bytes + usize::from(require_complete);
-    // Capacity hint only; a failed stat keeps the growing buffer.
-    let expected = file.metadata().map_or(0, |m| m.len()).min(limit as u64);
-    let mut bytes = Vec::with_capacity(expected as usize);
-    file.take(limit as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > max_bytes {
-        return Err("File exceeds the inline review limit. Open each copy to review it.".into());
-    }
-    Ok(bytes)
+    let file =
+        crate::sync_core::open_regular_no_follow(&root.join(rel)).map_err(|e| e.to_string())?;
+    use_file(file)
+}
+
+fn read_bounded(
+    root: &Path,
+    rel: &str,
+    max_bytes: usize,
+    require_complete: bool,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    with_visible_file(root, rel, |file| {
+        let limit = max_bytes + usize::from(require_complete);
+        // Capacity hint only; a failed stat keeps the growing buffer.
+        let expected = file.metadata().map_or(0, |m| m.len()).min(limit as u64);
+        let mut bytes = Vec::with_capacity(expected as usize);
+        file.take(limit as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > max_bytes {
+            return Err(
+                "File exceeds the inline review limit. Open each copy to review it.".into(),
+            );
+        }
+        Ok(bytes)
+    })
 }
 
 #[cfg(test)]
@@ -375,34 +376,25 @@ fn fingerprint_all(
 }
 
 fn fingerprint_file(canonical_root: &Path, rel: &str) -> Option<String> {
-    use sha2::{Digest, Sha256};
     use std::io::Read;
     let path = safe_join(canonical_root, rel)?.canonicalize().ok()?;
     // An online-only cloud file is a miss: hashing would download it.
-    if !visible_under(canonical_root, &path)
-        || crate::sync_core::platform_fs::path_is_not_downloaded(&path)
+    if !visible_under(canonical_root, &path) || online_only(&path) {
+        return None;
+    }
+    let file = crate::sync_core::open_regular_no_follow(&path).ok()?;
+    let before = file.metadata().ok()?;
+    // One byte past the stated length shows growth without reading on.
+    let (size, digest) =
+        crate::sync_core::hash_reader((&file).take(before.len().saturating_add(1))).ok()?;
+    let after = file.metadata().ok()?;
+    if size != before.len()
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
     {
         return None;
     }
-    let mut file = open_regular(&path).ok()?;
-    let before = file.metadata().ok()?;
-    let mut remaining = before.len();
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 65536];
-    while remaining > 0 {
-        let take = remaining.min(buffer.len() as u64) as usize;
-        let count = file.read(&mut buffer[..take]).ok()?;
-        if count == 0 {
-            return None;
-        }
-        remaining -= count as u64;
-        hasher.update(&buffer[..count]);
-    }
-    let after = file.metadata().ok()?;
-    if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
-        return None;
-    }
-    Some(format!("{:x}", hasher.finalize()))
+    Some(crate::hex::encode(&digest))
 }
 
 #[cfg(test)]

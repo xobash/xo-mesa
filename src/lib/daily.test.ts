@@ -197,3 +197,10 @@ describe("templatePaths", () => {
     expect(templatePaths(files, "")).toEqual([]);
   });
 });
+
+// A note title is user text; `$&`, `$$` and `` $` `` in it were read as
+// replacement patterns and inserted the matched text or the template's start.
+it("inserts a title with dollar signs literally", () => {
+  const title = "Save $$ and $& and $` and $'";
+  expect(applyTemplate("# {{title}}", { date: "d", time: "t", title })).toBe(`# ${title}`);
+});

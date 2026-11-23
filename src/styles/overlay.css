@@ -731,7 +731,6 @@
   justify-content: space-between;
   gap: 12px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
 }
 .ov-help-foot {
   border-top: 1px solid var(--border);
@@ -742,6 +741,9 @@
   font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+.ov-help-head {
+  border-bottom: 1px solid var(--border);
 }
 .ov-help-head h2 {
   margin: 2px 0 0;

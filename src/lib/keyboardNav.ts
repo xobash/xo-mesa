@@ -62,7 +62,7 @@ export function edgePath(files: VaultFile[], edge: "first" | "last"): string | n
 
 export function moveKeyboardFocus(
   focus: KeyboardFocus,
-  key: "h" | "j" | "k" | "l",
+  key: "h" | "l",
   rightCount: number,
   sidebarOpen: boolean
 ): KeyboardFocus {
@@ -76,14 +76,8 @@ export function moveKeyboardFocus(
     if (focus.region === "center" && rightCount > 0) {
       return { region: "right", rightIndex: Math.min(focus.rightIndex, rightCount - 1) };
     }
-    return focus;
   }
-  if (focus.region !== "right" || rightCount <= 0) return focus;
-  const next = key === "j" ? focus.rightIndex + 1 : focus.rightIndex - 1;
-  return {
-    region: "right",
-    rightIndex: Math.max(0, Math.min(rightCount - 1, next)),
-  };
+  return focus;
 }
 
 export function clampKeyboardFocus(

@@ -64,16 +64,16 @@ test('browser Docker COPY inputs build with no Rust toolchain or source tree', (
     }
   }
   symlinkSync(resolve('node_modules'), join(browser, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
-  for (const args of [
-    ['scripts/third-party-notices.mjs', '--check'],
-    ['scripts/docker-context.check.mjs'],
-    ['node_modules/vite/bin/vite.js', 'build'],
-    ['scripts/bundle-boundaries.check.mjs'],
-  ]) {
-    const result = spawnSync(process.execPath, args, {cwd:browser, encoding:'utf8', timeout:60000,
-      env:{...process.env, CARGO:join(directory, 'cargo-must-not-be-called')}});
-    assert.equal(result.status, 0, result.stderr);
-  }
+  // Run the image's own build script, never a copy of its steps: a copy
+  // dropped the Vite heap flag from `npm run build` and ran out of memory.
+  // An empty NODE_OPTIONS keeps a caller's larger heap from hiding that.
+  const scripts = [...dockerfile.matchAll(/^RUN npm run (\S+)\s*$/gm)].map(match => match[1]);
+  assert.deepEqual(scripts, ['build']);
+  const npm = process.env.npm_execpath;
+  assert.ok(npm, 'run through npm so the image build uses the same npm');
+  const result = spawnSync(process.execPath, [npm, 'run', scripts[0]], {cwd:browser, encoding:'utf8', timeout:240000,
+    env:{...process.env, NODE_OPTIONS:'', CARGO:join(directory, 'cargo-must-not-be-called')}});
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test('production Docker context check rejects widened script, connection and frame policies', () => {
@@ -93,4 +93,22 @@ test('production Docker context check rejects widened script, connection and fra
   writeFileSync(config, original);
   const result = spawnSync(process.execPath, ['scripts/docker-context.check.mjs'], { cwd: browser, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('bundle boundary check walks a 2000-chunk static chain on a small stack and still finds lazy code at its end', () => {
+  const root = join(directory, 'boundaries'), assets = join(root, 'dist', 'assets'); mkdirSync(assets, {recursive:true});
+  const script = readFileSync(resolve('scripts/bundle-boundaries.check.mjs'), 'utf8');
+  const lazy = [...script.slice(script.indexOf('expectedLazyPrefixes = ['), script.indexOf('];')).matchAll(/"([^"]+-)"/g)].map(match => match[1]);
+  assert.ok(lazy.includes('GraphView-'));
+  for (const prefix of lazy) writeFileSync(join(assets, `${prefix}x.js`), 'export {};\n');
+  writeFileSync(join(assets, 'KaTeX_Main-Regular-x.woff2'), '');
+  writeFileSync(join(root, 'dist', 'index.html'), '<script type="module" crossorigin src="/assets/index-x.js"></script>');
+  writeFileSync(join(assets, 'index-x.js'), 'import "./chain-1.js";\n');
+  const end = tail => { for (let index = 1; index <= 2000; index += 1) writeFileSync(join(assets, `chain-${index}.js`), index < 2000 ? `import "./chain-${index + 1}.js";\n` : tail); };
+  // 80 KB is enough for Node itself but not for one JS frame per chunk.
+  const run = () => spawnSync(process.execPath, ['--stack-size=80', resolve('scripts/bundle-boundaries.check.mjs')], {cwd:root, encoding:'utf8'});
+  end('export {};\n');
+  const passed = run(); assert.equal(passed.status, 0, passed.stderr); assert.match(passed.stdout, /2001 initial modules/);
+  end('import "./GraphView-x.js";\n');
+  const failed = run(); assert.notEqual(failed.status, 0); assert.match(failed.stderr, /statically reachable from the entry: GraphView-x\.js/);
 });

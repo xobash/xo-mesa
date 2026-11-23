@@ -4,32 +4,11 @@ import { previewEnter, previewLeave } from "./previewTriggers";
 import { startFileDrag } from "./fileDrag";
 import { hueFor } from "../lib/hue";
 import { type TreeNode } from "./fileTreeModel";
+import { copyText } from "../lib/clipboard";
 
-export async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    /* fall through to the legacy path */
-  }
-
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "true");
-  ta.style.position = "fixed";
-  ta.style.left = "-9999px";
-  ta.style.top = "0";
-  document.body.appendChild(ta);
-  ta.select();
-  let ok = false;
-  try {
-    ok = document.execCommand("copy");
-  } catch {
-    ok = false;
-  }
-  document.body.removeChild(ta);
+/** Copies a path and says so in the status bar when no clipboard path accepted it. */
+export async function copyWithStatus(text: string): Promise<boolean> {
+  const ok = await copyText(text);
   if (!ok) useAppStore.setState({ status: "Could not copy to the clipboard." });
   return ok;
 }
@@ -130,7 +109,7 @@ export const TreeRow = memo(function TreeRow({
           e.preventDefault();
           e.stopPropagation();
           if (e.altKey) {
-            await copyText(file.path);
+            await copyWithStatus(file.path);
             return;
           }
           onContext(rel, "file", node.name, e.clientX, e.clientY, e.currentTarget);

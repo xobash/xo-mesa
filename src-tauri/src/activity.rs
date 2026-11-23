@@ -131,6 +131,8 @@ fn research_replies() -> &'static ResearchReplies {
     REPLIES.get_or_init(ResearchReplies::default)
 }
 
+pub(crate) const RESEARCH_REPLY_MAIN_ONLY: &str =
+    "only the main workspace may validate Deep Research";
 /// Only the main store validates research.
 #[tauri::command]
 pub fn deep_research_respond(
@@ -140,9 +142,7 @@ pub fn deep_research_respond(
     status: ResearchDecision,
     message: String,
 ) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("only the main workspace may validate Deep Research".into());
-    }
+    crate::require_main_for(window.label(), RESEARCH_REPLY_MAIN_ONLY)?;
     research_replies().respond(&run_id, &request_id, ResearchReply { status, message })
 }
 

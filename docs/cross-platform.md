@@ -18,23 +18,9 @@ WebView2 and macOS 13.3+ while still compiling away JavaScript syntax that an
 older supported webview would not parse. Do not use Vite's `esnext` target for
 desktop bundles; it is a moving build-host promise, not a Mesa support matrix.
 
-The native acceptance matrix defines the machine/runtime checks required before
-claiming release support. This table is a requirement, not a completed result:
-
-| Matrix target | Runtime floor | Acceptance role |
-| --- | --- | --- |
-| Windows 11 current WebView2 | Evergreen WebView2 111+ | Current Windows release confidence |
-| Windows 10 oldest WebView2 | Evergreen WebView2 111+ | Oldest Windows runtime checks |
-| macOS current WKWebView | Current Safari/WKWebView | Current macOS release confidence |
-| macOS 13.3 oldest WKWebView | Safari/WKWebView 16.4 | Oldest macOS runtime checks |
-| Linux current WebKitGTK smoke | WebKitGTK 4.1 | Lower-priority build and launch smoke |
-
-Generate and check records with:
-
-```bash
-npm run acceptance:native-template > native-acceptance.local.md
-npm run acceptance:native-check -- native-acceptance.local.md
-```
+The machine and runtime checks required before claiming release support, and
+the commands that generate and check records, are in
+[Native Acceptance](native-acceptance.md#support-matrix).
 
 Priority order for first-class support: **Windows first, Linux last** (macOS is
 the current dev platform and already works).
@@ -125,11 +111,13 @@ external inputs, so builds are not bit-for-bit reproducible.
 
 ## CI build matrix
 
-`.github/workflows/build.yml` runs on every push/PR:
+`.github/workflows/build.yml` runs on pushes to `main` and `verification/**`,
+on pull requests and on manual dispatch:
 
 1. **frontend** — on Linux: typecheck, lint, tests with coverage floors, asset,
    toolchain, document, capability, release, bootstrap, index, activity-API,
-   Markdown and notice checks, the web `build`, the public and independent
+   Markdown and notice checks (the notice check also runs the web `build` from
+   the Docker image's inputs), the public and independent
    privacy audits, and `npm audit` (the full list is in `CONTRIBUTING.md`).
 2. **rust** — `cargo fmt --check`, `cargo test` and `cargo clippy -D warnings` on `ubuntu-latest`,
    `windows-latest`, and `macos-latest`. Windows is in the matrix because the
@@ -170,8 +158,8 @@ Both packaged formats enforce `bundle.windows.minimumWebview2Version` at
 for the shared NSIS/MSI option. Configuration and build checks do not replace
 installation tests on Windows or signing verification of release artifacts.
 
-To cut a release, add a tag and have `tauri-action` attach the bundles to a
-GitHub Release (set `tagName`/`releaseName` in the action `with:` block).
+Releases are published only by the signed-tag pipeline; see
+[Protected release pipeline](release.md#protected-release-pipeline).
 
 ## Docker
 
@@ -445,46 +433,14 @@ The bootstrap check executes the actual macOS/Linux wrapper with isolated fake
 Git/launch commands; it validates control flow and preservation, not clean-machine
 package installation. Windows bootstrap execution still requires Windows.
 
-Use `npm run acceptance:native-template > native-acceptance.local.md` to create
-the local acceptance record for a real desktop run. The generated file is
-gitignored by the `*.local.md` rule because it may name machines, vaults,
-install paths, and OS prompts. Run
-`npm run acceptance:native-check -- native-acceptance.local.md` before using a
-record as release evidence; the checker requires every row to have a result and
-evidence and rejects passed rows backed only by CI, browser, unit-test,
-source-contract, or another-OS evidence.
+Native desktop runs follow [Native Acceptance](native-acceptance.md): the
+required workflows, the evidence boundary, and the record template and checker.
 
 For browser interaction, start `npm run dev` and visit `/scripts/acceptance.html`.
 This development-only fixture creates two synthetic demo notes. Compare them in
 Sync, combine their text, save, and open the original, retained previous version,
 and conflict copy. Check Keep both, Tab/Escape, narrow layout, and console errors.
 Reload resets the two test-note contents. The fixture never opens a personal vault.
-
-A release acceptance record must distinguish browser checks from these native
-checks on **both macOS and Windows**:
-
-| Workflow | Required observation |
-| --- | --- |
-| One-command setup and rerun | Installs missing prerequisites, launches, preserves existing files and settings |
-| Interrupted setup/upgrade | Clear failure; rerunning the same command completes without losing local work |
-| Edit, rapid tab changes, quit | Every changed note reopens with the final saved bytes |
-| Drive disconnect/reconnect | Failed saves retain edits; failed opens retain the prior workspace; retry succeeds |
-| Sleep/wake and network loss | No duplicate discovery listeners; incomplete sync stays visible and retryable |
-| Two-device sync baseline | A real Mac/Windows or oldest/current-platform pair pairs, transfers both directions, restarts, and reruns with no duplicate or missing files |
-| Offline third-device sync | A previously paired third device misses changes while offline, returns later, and converges without duplicate, missing, or overwritten files |
-| Two-device sync interruption | During real transfer, network loss, peer restart, app quit, sleep/wake, and retry preserve completed files and leave incomplete work visible |
-| Sync simultaneous edits | Two devices edit the same text file before syncing; both source versions survive and the conflict review save preserves the reviewed baseline and retained original |
-| Sync delete, restore, and rename | Deletes, recovery restores, renames, and rename-plus-edit races preserve user bytes and retract stale local journal intent when restored bytes return |
-| Sync certificate change | A peer certificate change stops sync before file data moves, explains the trust problem, and requires deliberate re-trust |
-| Interrupted sync journal | A killed or interrupted Mesa instance leaves a journal/report state that retries cleanly without deleting restored files or replaying stale intents |
-| Window/keyboard interactions | Native drag/dock, shortcuts, focus, scaling and PDF gestures work on the actual OS |
-| Assistive technology and scaling | Keyboard-only use, VoiceOver/Narrator, high DPI, and small displays can reach save, sync, recovery, history, navigation, and PDF controls without overlap or trapped focus |
-| Interruption and return flows | After failed save, failed sync, modal close/reopen, app restart, and vault reopen, the same actionable next step remains visible until resolved |
-| Long session | Repeated document and sync use does not grow resources without bound |
-
-Do not mark a row passed from a source assertion, browser fixture or another OS's
-build. Signing/notarization and OS permission prompts are separate release checks.
-See `docs/native-acceptance.md` for the evidence boundary and record format.
 
 ## Blocking native commands
 

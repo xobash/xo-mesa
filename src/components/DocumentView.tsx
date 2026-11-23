@@ -1,18 +1,15 @@
-import { VaultImage } from "./VaultImage";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { watch } from "@tauri-apps/plugin-fs";
 import type { VaultFile } from "../types";
 import {
   extOf,
-  fileKind,
   isEditableTextExt,
-  isTextualVaultFile,
+  isOpenableTextFile,
   resolveTextVaultLink,
   readNoteResult,
   scanVault,
   stripExt,
-  urlForPath,
   IN_TAURI,
 } from "../lib/vault";
 import { installCloseGuard } from "../lib/closeGuard";
@@ -22,19 +19,12 @@ import { installNativeDragDock } from "../lib/windowDock";
 import { MarkdownView } from "./MarkdownView";
 import { Modal } from "./Modal";
 import { CodeView } from "./CodeView";
-import { HtmlView } from "./LazyHtmlView";
-import { RtfView } from "./RtfView";
+import { FileKindView } from "./FileKindView";
+import { useDocumentKind } from "./useDocumentKind";
 import { useAppStore, getStore, type ThemeId } from "../store";
 import { isThemeId } from "../lib/persistedUi";
 import { useApplyTheme } from "./useApplyTheme";
 import { markMesaPerf } from "../lib/mesaPerf";
-import { rtfToText } from "../lib/rtf";
-
-// Standalone windows share the same PDF surface as the main workspace without
-// pulling pdf.js/pdf-lib into the entry chunk used by every document window.
-const LazyPdfView = lazy(() =>
-  import("./PdfView").then((module) => ({ default: module.PdfView }))
-);
 
 export const DOCUMENT_CATALOG_REQUEST_EVENT = "mesa://document-catalog-request";
 export const DOCUMENT_CATALOG_EVENT = "mesa://document-catalog";
@@ -55,7 +45,6 @@ export function DocumentView() {
   const [rel, setRel] = useState(initial);
   const [files, setFiles] = useState<VaultFile[]>([]);
   const [content, setContent] = useState("");
-  const [title, setTitle] = useState(initial);
   const [fileRevision, setFileRevision] = useState(0);
   const [closeIssue, setCloseIssue] = useState("");
   const [viewIssue, setViewIssue] = useState("");
@@ -136,6 +125,7 @@ export function DocumentView() {
       mtime: fileRevision || undefined,
     };
   }, [fileIndex, files, rel, vault, fileRevision]);
+  const detachedKind = useDocumentKind(selectedFile);
 
   useEffect(() => {
     if (!IN_TAURI) return;
@@ -163,7 +153,6 @@ export function DocumentView() {
 
   useEffect(() => {
     let alive = true;
-    setTitle(selectedFile.name);
     document.title = selectedFile.name;
     if (IN_TAURI) {
       void import("@tauri-apps/api/window")
@@ -172,7 +161,8 @@ export function DocumentView() {
         })
         .catch((error) => console.warn("[mesa] document window title update failed:", error));
     }
-    if (!isTextualVaultFile(selectedFile) || selectedFile.ext === "html" || selectedFile.ext === "htm") {
+    // Only text kinds render from this text; every other kind reads its own bytes.
+    if (detachedKind !== "text") {
       setContent("");
       return () => {
         alive = false;
@@ -188,7 +178,7 @@ export function DocumentView() {
     return () => {
       alive = false;
     };
-  }, [selectedFile]);
+  }, [selectedFile, detachedKind]);
 
   useEffect(() => {
     if (!IN_TAURI || !rel) return;
@@ -205,8 +195,7 @@ export function DocumentView() {
     if (hit) setRel(hit.relPath);
   };
 
-  const kind = fileKind(selectedFile.ext);
-  const src = urlForPath(selectedFile.path);
+  const kind = detachedKind;
   useEffect(() => {
     markMesaPerf("detached-document-visible", {
       kind,
@@ -218,18 +207,9 @@ export function DocumentView() {
       {closeIssue && <div className="doc-window-issue" role="alert">{closeIssue}</div>}
       {viewIssue && <div className="doc-window-issue" role="alert">{viewIssue}</div>}
       <div className="doc-window-body">
-        {kind === "image" ? (
-          <VaultImage className="doc-media" src={src} alt={title} />
-        ) : kind === "video" ? (
-          <video className="doc-media" src={src} controls />
-        ) : kind === "pdf" ? (
-          <Suspense fallback={<div className="editor-empty">Loading PDF editor…</div>}>
-            <LazyPdfView rel={rel} file={selectedFile} onDirtyChange={onPdfDirtyChange} />
-          </Suspense>
-        ) : kind === "html" ? (
-          <HtmlView rel={rel} file={selectedFile} />
-        ) : selectedFile.ext.toLowerCase() === "rtf" ? (
-          <pre className="rtf-text">{rtfToText(content)}</pre>
+        {kind !== "text" ? (
+          // Detached windows are view-only except PDFs, whose edits block close.
+          <FileKindView rel={rel} file={selectedFile} onDirtyChange={onPdfDirtyChange} />
         ) : isEditableTextExt(selectedFile.ext) ? (
           <MarkdownView source={content} files={files} onWikiClick={onWiki} />
         ) : (
@@ -248,7 +228,7 @@ export function DocPopoutModal() {
   const ensureContent = useAppStore((s) => s.ensureContent);
   const setPopoutDoc = useAppStore((s) => s.setPopoutDoc);
   const file = rel ? fileFor(rel) : undefined;
-  const kind = file ? fileKind(file.ext) : "text";
+  const kind = useDocumentKind(file);
   const needsMarkdownContent = Boolean(file?.isMarkdown || !file);
 
   const [content, setContent] = useState("");
@@ -284,20 +264,10 @@ export function DocPopoutModal() {
       </header>
       <div className="doc-window-body">
         {contentIssue && <div className="doc-window-issue" role="alert">{contentIssue}</div>}
-        {kind === "image" && file ? (
-          <VaultImage className="doc-media" src={urlForPath(file.path)} alt={file.name} />
-        ) : kind === "video" && file ? (
-          <video className="doc-media" src={urlForPath(file.path)} controls />
-        ) : kind === "pdf" && file ? (
-          <Suspense fallback={<div className="editor-empty">Loading PDF editor…</div>}>
-            <LazyPdfView rel={rel} file={file} />
-          </Suspense>
-        ) : kind === "html" ? (
-          <HtmlView rel={rel} />
-        ) : kind === "rtf" ? (
-          <RtfView rel={rel} />
+        {file && kind !== "text" ? (
+          <FileKindView rel={rel} file={file} />
         ) : file &&
-          isTextualVaultFile(file) &&
+          isOpenableTextFile(file) &&
           !file.isMarkdown &&
           !isEditableTextExt(file.ext) ? (
           <CodeView rel={rel} />

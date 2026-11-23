@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 // The real wrapper executes against isolated fake Git/launcher commands. No installs or network.
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, renameSync, symlinkSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -13,6 +13,13 @@ const foreignFingerprint = ['SHA256', 'heOwUFRozvdEk4SCyDUZHIS3van9fJdZ+aTvrWbRO
 const sshGood = (principal, fingerprint) => ['Good "git" signature for', principal, 'with ED25519', 'key', fingerprint].join(' ');
 const pinnedSignature = sshGood('xobash@users.noreply.github.com', pinnedFingerprint);
 afterEach(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }); });
+// Run a bash script file, never `bash -c`: fixture paths stay positional
+// arguments and never become shell command text.
+function bashScript(body, args, options) {
+  const dir = mkdtempSync(join(tmpdir(), 'mesa-bash-script-')); folders.push(dir);
+  const script = join(dir, 'driver.sh'); writeFileSync(script, body);
+  return spawnSync('/bin/bash', [script, ...args], options);
+}
 function fixture(existing = true) {
   const root = mkdtempSync(join(tmpdir(), 'mesa-installer-test-')); folders.push(root);
   const bin = join(root, 'bin'), install = join(root, 'folder with spaces'); mkdirSync(bin);
@@ -64,6 +71,20 @@ describe('one-command installer behavior', { skip: process.platform === 'win32' 
       }
     }
   });
+  it('installs missing Git on Debian-family Linux through apt-get, never the interactive apt', () => {
+    const f = fixture(); const bin = join(f.root, 'bin'), system = join(f.root, 'system'); mkdirSync(system);
+    // Git appears only after `apt-get install -y git`; PATH holds stubs and the few system tools the wrapper needs.
+    renameSync(join(bin, 'git'), join(f.root, 'pending-git'));
+    for (const tool of ['basename', 'bash', 'cat', 'mkdir', 'mktemp', 'mv', 'rm']) symlinkSync(['/bin', '/usr/bin'].map(dir => join(dir, tool)).find(existsSync), join(system, tool));
+    writeFileSync(join(bin, 'uname'), '#!/bin/bash\nprintf "Linux\\n"\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'sudo'), '#!/bin/bash\nprintf "sudo %s\\n" "$*" >> "$TEST_LOG"\n"$@"\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'apt'), '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'apt-get'), `#!/bin/bash\nif [[ "$*" == "install -y git" ]]; then mv "${join(f.root, 'pending-git')}" "${join(bin, 'git')}"; fi\n`, { mode: 0o755 });
+    const result = f.run(0, { PATH: `${bin}:${system}` });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(f.log(), /^sudo apt-get update\nsudo apt-get install -y git\n/);
+    assert.match(f.log(), /launched/);
+  });
   it('refuses an occupied non-checkout folder', () => {
     const f = fixture(false); assert.notEqual(f.run().status, 0); assert.equal(f.log(), '');
     assert.equal(readFileSync(join(f.install, 'user-note.md'), 'utf8'), 'keep me');
@@ -103,7 +124,7 @@ describe('pinned POSIX Node bootstrap', { skip: process.platform === 'win32' }, 
     const fakeDigest = createHash('sha256').update(readFileSync(archive)).digest('hex');
     writeFileSync(join(root, 'reviewed.sh'), script.replace(reviewedDigest, fakeDigest));
     writeFileSync(join(root, 'mismatch.sh'), script);
-    const run = (variant, overrides = {}) => spawnSync('/bin/bash', ['-c', 'set -euo pipefail; source "$1"; source "$2"; mesa_ensure_node 22.22.3; node -v', 'node-bootstrap', resolve('scripts/bootstrap-download.sh'), join(root, `${variant}.sh`)], { env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TEST_LOG: log, TEST_ARCHIVE: archive, ...overrides }, encoding: 'utf8' });
+    const run = (variant, overrides = {}) => bashScript('set -euo pipefail; source "$1"; source "$2"; mesa_ensure_node 22.22.3; node -v\n', [resolve('scripts/bootstrap-download.sh'), join(root, `${variant}.sh`)], { env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TEST_LOG: log, TEST_ARCHIVE: archive, ...overrides }, encoding: 'utf8' });
     const calls = () => { try { return readFileSync(log, 'utf8'); } catch { return ''; } };
     return { root, bin, home, run, calls, destination: join(home, '.local/share/mesa/toolchains/node-v22.22.3-linux-x64') };
   }
@@ -155,7 +176,7 @@ describe('pinned POSIX Rust bootstrap', { skip: process.platform === 'win32' }, 
       writeFileSync(join(bin, 'cargo'), `#!/bin/bash\nprintf "cargo ${version}\\n"\n`, { mode: 0o755 });
       writeFileSync(join(bin, 'rustc'), `#!/bin/bash\nprintf "rustc ${version} (system)\\n"\n`, { mode: 0o755 });
     };
-    const run = () => spawnSync('/bin/bash', ['-c', 'set -euo pipefail; source "$1"; source "$2"; mesa_ensure_rust 1.96.0; rustc --version', 'rust-bootstrap', resolve('scripts/bootstrap-download.sh'), join(root, 'reviewed.sh')], { env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TEST_LOG: log, TEST_INSTALLER: installer }, encoding: 'utf8' });
+    const run = () => bashScript('set -euo pipefail; source "$1"; source "$2"; mesa_ensure_rust 1.96.0; rustc --version\n', [resolve('scripts/bootstrap-download.sh'), join(root, 'reviewed.sh')], { env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, TEST_LOG: log, TEST_INSTALLER: installer }, encoding: 'utf8' });
     const calls = () => { try { return readFileSync(log, 'utf8'); } catch { return ''; } };
     return { bin, system, run, calls };
   }
@@ -175,6 +196,13 @@ describe('pinned POSIX Rust bootstrap', { skip: process.platform === 'win32' }, 
     writeFileSync(join(managed.bin, 'rustup'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
     const proxied = managed.run();
     assert.equal(proxied.status, 0, proxied.stderr); assert.equal(managed.calls(), '');
+  });
+  it('maps every 64-bit ARM Linux name the Node bootstrap accepts to the reviewed Rust target', () => {
+    for (const machine of ['aarch64', 'arm64']) {
+      const result = bashScript(`uname() { if [[ "$1" == "-m" ]]; then printf '${machine}\\n'; else printf 'Linux\\n'; fi; }; source "$1"; mesa_rustup_target\n`, [resolve('scripts/posix-rust.sh')], { encoding: 'utf8' });
+      assert.equal(result.status, 0, machine);
+      assert.match(result.stdout, /^aarch64-unknown-linux-gnu [0-9a-f]{64}$/, machine);
+    }
   });
   it('installs pinned rustup when no Rust is present', () => {
     const f = rustFixture(); const result = f.run();

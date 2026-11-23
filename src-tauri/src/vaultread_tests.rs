@@ -422,3 +422,45 @@ fn duplicate_rels_each_get_their_own_slot() {
     let got = round_trip(&v.0, &["a.md", "a.md"]);
     assert_eq!(got, vec![Some(b"same".to_vec()), Some(b"same".to_vec())]);
 }
+
+thread_local! {
+    /// Paths this test thread treats as online-only cloud placeholders.
+    /// `path_is_not_downloaded` is Windows-only, so tests fake its answer.
+    static ONLINE_ONLY: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(super) fn online_only_fake(path: &Path) -> bool {
+    ONLINE_ONLY.with(|paths| paths.borrow().iter().any(|fake| fake == path))
+}
+
+#[test]
+fn bytes_and_range_reads_refuse_an_online_only_file_without_opening_it() {
+    let v = TempVault::new("online-only");
+    v.file("cloud.pdf", b"%PDF-placeholder");
+    v.file("local.pdf", b"%PDF-local");
+    ONLINE_ONLY.with(|paths| paths.borrow_mut().push(v.0.join("cloud.pdf")));
+    let mut opened = false;
+    let refused = with_visible_file(&v.0, "cloud.pdf", |_| {
+        opened = true;
+        Ok(())
+    });
+    assert_eq!(refused, Err(ONLINE_ONLY_READ.to_string()));
+    assert!(!opened, "an online-only file must not be opened");
+    assert!(ONLINE_ONLY_READ.starts_with("online-only:"));
+    assert_eq!(
+        read_bounded(&v.0, "cloud.pdf", 1024, true),
+        Err(ONLINE_ONLY_READ.to_string())
+    );
+    let canonical = fs::canonicalize(&v.0).unwrap();
+    ONLINE_ONLY.with(|paths| paths.borrow_mut().push(canonical.join("cloud.pdf")));
+    assert_eq!(
+        crate::vaultrange::read_range(&canonical, "cloud.pdf", 0, 16),
+        Err(ONLINE_ONLY_READ.to_string())
+    );
+    // A downloaded file still reads.
+    assert_eq!(
+        read_bounded(&v.0, "local.pdf", 1024, true).unwrap(),
+        b"%PDF-local"
+    );
+    ONLINE_ONLY.with(|paths| paths.borrow_mut().clear());
+}

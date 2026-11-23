@@ -44,10 +44,10 @@ describe('indexed document working set', () => {
     resetVaultTaskMemo();
     const cache = indexedContentCache([['a', encodeDocument('- [ ] task a')], ['b', encodeDocument('- [x] task b')]], 1);
     const notes = { a: { title: 'A' }, b: { title: 'B' } };
-    const tasks = collectVaultTasks(notes, cache, 'a');
+    const tasks = collectVaultTasks(notes, cache);
     expect(tasks).toHaveLength(2);
     const next = forkContentCache(cache, { a: '- [x] task a' });
-    expect(collectVaultTasks(notes, next, 'a').every(t => t.checked)).toBe(true);
+    expect(collectVaultTasks(notes, next).every(t => t.checked)).toBe(true);
     expect(workingSetStats(cache).decodedChars).toBe(0);
   });
 });

@@ -40,6 +40,11 @@ describe("ZIP import preflight", () => {
     expect(() => inspectZipForImport(centralDirectory([{ name: "../escape.md" }]))).toThrow("unsafe path");
   });
 
+  it("rejects drive-letter names that would land outside the destination on Windows", () => {
+    expect(() => inspectZipForImport(centralDirectory([{ name: "C:/Windows/evil.dll" }]))).toThrow("unsafe path");
+    expect(() => inspectZipForImport(centralDirectory([{ name: "C:evil.dll" }]))).toThrow("unsafe path");
+  });
+
   it("rejects a declared expansion bomb before decompression", () => {
     expect(() => inspectZipForImport(centralDirectory([{
       name: "huge.md", expanded: ZIP_IMPORT_LIMITS.maxEntryBytes + 1,

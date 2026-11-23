@@ -43,6 +43,17 @@ const baseSettings: Settings = {
   graphExistingFilesOnly: true,
   graphShowOrphans: true,
   graphShowAttachments: false,
+  graphShowAllFiles: false,
+  graphArrows: false,
+  graphTextFade: 0,
+  graphNodeSize: 1,
+  graphLinkThickness: 1,
+  graphCenterForce: 0.5,
+  graphRepelForce: 10,
+  graphLinkForce: 1,
+  graphLinkDistance: 250,
+  graphLivingMotion: false,
+  graphSettingsVersion: 2,
   centerView: "doc",
   rightStack: ["preview"],
   dockSide: "right",
@@ -112,11 +123,7 @@ describe("keyboard navigation", () => {
     });
   });
 
-  it("moves and clamps focus inside the right stack with j/k", () => {
-    expect(moveKeyboardFocus({ region: "right", rightIndex: 0 }, "j", 3, true)).toEqual({
-      region: "right",
-      rightIndex: 1,
-    });
+  it("clamps focus to the side pane, or back to the center when there is none", () => {
     expect(clampKeyboardFocus({ region: "right", rightIndex: 9 }, 2)).toEqual({
       region: "right",
       rightIndex: 1,

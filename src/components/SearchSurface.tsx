@@ -19,6 +19,7 @@ import {
 import { markMesaPerf } from "../lib/mesaPerf";
 import { PreviewCard } from "./PreviewCard";
 import { describeUnindexedReasons } from "../lib/indexDisclosure";
+import { nextTask } from "./nextTask";
 
 /** Wall time one scan slice may take. Comfortably inside a frame, so typing and
  *  scrolling keep their budget while the pass runs. */
@@ -59,21 +60,6 @@ function writeSavedSearches(searches: string[]): void {
   if (typeof localStorage === "undefined") throw new Error("Local storage unavailable");
   localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(searches.slice(0, MAX_SAVED_SEARCHES)));
 }
-
-/** Yield through MessageChannel between slices without requiring a paint or
- * waiting for nested timer clamping. */
-const yieldToBrowser: (run: () => void) => void =
-  typeof MessageChannel === "undefined"
-    ? (run) => setTimeout(run, 0)
-    : (() => {
-        const channel = new MessageChannel();
-        const queue: Array<() => void> = [];
-        channel.port1.onmessage = () => queue.shift()?.();
-        return (run: () => void) => {
-          queue.push(run);
-          channel.port2.postMessage(null);
-        };
-      })();
 
 const SearchResultItem = memo(function SearchResultItem({
   result,
@@ -233,7 +219,7 @@ export function SearchSurface({
         );
         return;
       }
-      yieldToBrowser(step);
+      nextTask(step);
     };
     if (!indexedSearch.current) indexedSearch.current = acquireSharedIndexSearch(cache, vaultPath ?? "demo");
     const executor = indexedSearch.current;

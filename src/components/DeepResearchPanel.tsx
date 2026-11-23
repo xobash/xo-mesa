@@ -19,7 +19,8 @@ import {
 } from "../lib/deepResearchDiagnostics";
 import { currentPiSessionId } from "../lib/deepResearchRun";
 import { invoke } from "@tauri-apps/api/core";
-import { busy, activeRunStarted, KIND_ICON, SCOPE_INFO, num, copyText, saveKitToDisk } from "./deepResearchPanelHelpers";
+import { busy, activeRunStarted, KIND_ICON, SCOPE_INFO, num, saveKitToDisk } from "./deepResearchPanelHelpers";
+import { copyText } from "../lib/clipboard";
 import { ResearchActivityGraph } from "./ResearchActivityGraph";
 
 /** Shared Deep Research UI backed by one store run, with progress, evidence, and proposal review. */

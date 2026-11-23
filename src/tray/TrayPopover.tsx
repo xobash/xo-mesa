@@ -69,7 +69,8 @@ export function TrayPopover() {
     void listen<TrayPopoverState>(STATE_EVENT, ({ payload }) => {
       // Ignore replies to a query the user has already changed.
       if (payload.query === queryRef.current) setState(payload);
-    }).then((stop) => { if (disposed) stop(); else { off = stop; request(queryRef.current); } });
+    }).then((stop) => { if (disposed) stop(); else { off = stop; request(queryRef.current); } })
+      .catch((error) => console.warn("[mesa] tray state listener unavailable:", error));
     const timer = setInterval(() => request(queryRef.current), REFRESH_MS);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") act({ action: "close" }); };
     window.addEventListener("keydown", onKey);

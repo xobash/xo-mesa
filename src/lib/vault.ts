@@ -4,27 +4,26 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   readTextFile,
   readFile,
-  writeFile as pluginWriteFile,
-  remove as pluginRemove,
-  rename as pluginRename,
-  mkdir as pluginMkdir,
-  exists,
   stat,
   // plugin-dialog owns the plain `open` name above.
   open as openFsFile,
 } from "@tauri-apps/plugin-fs";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { VaultFile } from "../types";
-import { persistVerifiedBytes, type VerifiedWriteFs } from "./verifiedWrite";
+import { persistVerifiedBytes } from "./verifiedWrite";
 import { isMesaWriteArtifactName, type FoundArtifact } from "./writeRecovery";
 // Re-exported because `recoverWriteArtifacts` now takes a pre-discovered list:
 // `store.ts` holds one between `scanVault` and the recovery call.
 export type { FoundArtifact };
 import { forEachConcurrent } from "./concurrency";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "./textCachePlan";
-import { bytesToHex } from "./hex";
 import { baseName, extOf, joinPath, parentDir, stripExt, toVaultFile } from "./vaultPaths";
 import { DEMO, DEMO_ROOT, SPARK_SVG, demoFiles, demoRead, demoWrite } from "./vaultDemo";
+import { IN_TAURI, VAULT_FS, ensureDir, isDemo, sha256Hex } from "./vaultFs";
+export {
+  IN_TAURI, VAULT_FS, authorizeWriteArtifacts, ensureDir, flushVaultFile, guardedRename, isDemo, nativeVaultWriteAtomic,
+  safeExists, sha256Hex, uniqueRel,
+} from "./vaultFs";
 export { baseName, extOf, parentDir, stripExt, toVaultFile } from "./vaultPaths";
 export { DEMO_ROOT } from "./vaultDemo";
 export { importDroppedPaths, MAX_DROPPED_FILE_BYTES, type DroppedImportOptions, type DroppedImportResult } from "./vaultImport";
@@ -34,8 +33,9 @@ export {
   type RecoveryEntry, type WriteRecoveryResult,
 } from "./vaultRecovery";
 export {
-  fileKind, flushableNoteText, isEditableTextExt, isImageExt, isTextExt, isTextualVaultFile, needsCachedTextRefresh,
-  resolveTextVaultLink, type FileKind,
+  clearSniffedText, documentKind, fileKind, flushableNoteText, isEditableTextExt, isImageExt, isOpenableTextFile, isSpreadsheetExt, isWordExt,
+  isTextExt, isTextualVaultFile, looksLikeUtf8Text, moveSniffedText, needsCachedTextRefresh, needsTextSniff, rememberSniffedText,
+  resolveTextVaultLink, TEXT_SNIFF_BYTES, type FileKind,
 } from "./vaultFileKinds";
 export { canonicalRoot, isLikelyRemoteVaultPath, normalizeVaultRelPath, stripVerbatimPrefix } from "./vaultPathNormalize";
 export {
@@ -43,89 +43,11 @@ export {
   WALK_BATCH,
 } from "./vaultWalk";
 export { decodePeekBytes, decodeTextChunkOutcomes, type TextReadOutcome } from "./vaultTextFrame";
-import { isTextualVaultFile } from "./vaultFileKinds";
+import { isOpenableTextFile, looksLikeUtf8Text, TEXT_SNIFF_BYTES } from "./vaultFileKinds";
 import { canonicalRoot, isLikelyRemoteVaultPath } from "./vaultPathNormalize";
 import { loadVaultMetadata, walk } from "./vaultWalk";
 import { decodePeekBytes, decodeTextChunkOutcomes, type TextReadOutcome } from "./vaultTextFrame";
-
-/** Are we running inside the Tauri shell (vs. a plain browser preview)? */
-export const IN_TAURI =
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-const writeFile: typeof pluginWriteFile = async (path, data, options) => {
-  if (IN_TAURI) throw new Error("Direct vault writes are disabled; use a verified save.");
-  return pluginWriteFile(path, data, options);
-};
-const remove: typeof pluginRemove = async (path, options) => {
-  if (IN_TAURI) throw new Error("Direct removal is disabled; use native recovery.");
-  return pluginRemove(path, options);
-};
-const rename: typeof pluginRename = async (from, to, options) => {
-  if (IN_TAURI) throw new Error("Direct moves are disabled; use native recovery.");
-  return pluginRename(from, to, options);
-};
-const mkdir: typeof pluginMkdir = async (path, options) => {
-  if (IN_TAURI) return invoke("vault_create_directory", { path });
-  return pluginMkdir(path, options);
-};
-
-/** The native command owns the whole verified transaction. The plugin-fs
- *  callbacks remain for browser and compatibility paths. */
-export const VAULT_FS: VerifiedWriteFs = {
-  readFile, writeFile, remove, exists, rename,
-  authorizeArtifacts: authorizeWriteArtifacts,
-  flush: flushVaultFile,
-  atomicWrite: IN_TAURI ? nativeVaultWriteAtomic : undefined,
-};
-
-/** Lowercase hex SHA-256 of exactly these bytes. WebCrypto copies the view's
- *  bytes when called, so a caller may release or reuse the buffer afterwards. */
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const data = bytes.buffer instanceof ArrayBuffer ? (bytes as Uint8Array<ArrayBuffer>) : bytes.slice();
-  return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", data)));
-}
-
-/** Hash an expected disk baseline without sending a second large file over IPC. */
-export async function nativeVaultWriteAtomic(
-  path: string,
-  data: Uint8Array,
-  expectedCurrentBytes?: Uint8Array | null
-): Promise<void> {
-  if (expectedCurrentBytes === undefined) {
-    expectedCurrentBytes = await exists(path) ? await readFile(path) : null;
-  }
-  const expected = expectedCurrentBytes === null
-    ? { kind: "missing" }
-    : {
-        kind: "hash",
-        sha256: await sha256Hex(expectedCurrentBytes),
-        size: expectedCurrentBytes.length,
-      };
-  // Bytes are the raw IPC body; a nested Uint8Array would be sent as a JSON
-  // number array several times the file's size.
-  const pathHex = bytesToHex(new TextEncoder().encode(path));
-  await invoke("vault_write_atomic", data, {
-    headers: { "x-mesa-path": pathHex, "x-mesa-expected": JSON.stringify(expected) },
-  });
-}
-
-/** Guarded primitives for the split vault modules (import, recovery). */
-export { rename as guardedRename };
-
-/** Flush one approved vault file and its parent after verified staging or commit. */
-export async function flushVaultFile(path: string): Promise<void> {
-  if (IN_TAURI) await invoke("vault_flush_file", { path });
-}
-
-/** Grant only generated, dot-prefixed write artifacts inside an approved vault. */
-export async function authorizeWriteArtifacts(paths: string[]): Promise<void> {
-  if (!IN_TAURI || paths.length === 0) return;
-  await invoke("vault_authorize_artifacts", { paths });
-}
-
-export function isDemo(pathOrRoot: string): boolean {
-  return !IN_TAURI || pathOrRoot.startsWith(DEMO_ROOT);
-}
+import { readVaultBytes } from "./vaultByteRead";
 
 // --- public API -----------------------------------------------------------
 
@@ -278,8 +200,7 @@ export async function readReviewText(file: VaultFile, maxBytes = 1024 * 1024): P
     return text;
   }
   if (IN_TAURI) {
-    const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: true });
-    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+    return new TextDecoder("utf-8", { fatal: true }).decode(await readVaultBytes(file.path, maxBytes, true));
   }
   return readBoundedText(await openFsFile(file.path, { read: true }), maxBytes);
 }
@@ -288,7 +209,7 @@ export async function readReviewText(file: VaultFile, maxBytes = 1024 * 1024): P
 export async function isValidUtf8Text(file: VaultFile, text: string): Promise<boolean> {
   if (!text.includes("\uFFFD") || isDemo(file.path)) return true;
   const bytes = IN_TAURI
-    ? new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: true }))
+    ? await readVaultBytes(file.path, MAX_TEXT_CACHE_FILE_BYTES, true)
     : await readFile(file.path);
   try { new TextDecoder("utf-8", { fatal: true }).decode(bytes); return true; }
   catch { return false; }
@@ -379,38 +300,52 @@ export async function readVaultTextOutcomes(
   return out;
 }
 
+/** Up to `maxBytes` from the start of a file; never reads the rest. */
+async function readPrefixBytes(path: string, maxBytes: number): Promise<Uint8Array> {
+  if (IN_TAURI) return readVaultBytes(path, maxBytes, false);
+  const fh = await openFsFile(path, { read: true });
+  try {
+    const buf = new Uint8Array(maxBytes);
+    let filled = 0;
+    // read() may return fewer bytes than requested — loop until full or EOF.
+    while (filled < maxBytes) {
+      const n = await fh.read(buf.subarray(filled));
+      if (n == null || n <= 0) break;
+      filled += n;
+    }
+    return buf.subarray(0, filled);
+  } finally {
+    await fh.close();
+  }
+}
+
 /** Bound hover reads when streaming is available; compatibility may read the whole file.
  * Peeks must never become editable save baselines. */
 export async function peekNote(file: VaultFile, maxBytes = 16384): Promise<string> {
   if (isDemo(file.path)) return demoRead(file.relPath);
   try {
-    if (IN_TAURI) return decodePeekBytes(new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes, requireComplete: false })));
-    const fh = await openFsFile(file.path, { read: true });
-    try {
-      const buf = new Uint8Array(maxBytes);
-      let filled = 0;
-      // read() may return fewer bytes than requested — loop until full or EOF.
-      while (filled < maxBytes) {
-        const n = await fh.read(buf.subarray(filled));
-        if (n == null || n <= 0) break;
-        filled += n;
-      }
-      return decodePeekBytes(buf.subarray(0, filled));
-    } finally {
-      await fh.close();
-    }
+    return decodePeekBytes(await readPrefixBytes(file.path, maxBytes));
   } catch {
     return readNote(file);
   }
 }
 
-/** Write text only for files accepted by isTextualVaultFile; binary formats use byte-oriented writes. */
+/** Open-time check of an unknown-extension file: a bounded prefix that is valid
+ *  UTF-8 with no NUL byte is text. Throws when the prefix cannot be read. */
+export async function sniffVaultText(file: VaultFile): Promise<boolean> {
+  const bytes = isDemo(file.path)
+    ? new TextEncoder().encode(demoRead(file.relPath))
+    : await readPrefixBytes(file.path, TEXT_SNIFF_BYTES);
+  return looksLikeUtf8Text(bytes.subarray(0, TEXT_SNIFF_BYTES), bytes.length < TEXT_SNIFF_BYTES);
+}
+
+/** Write text only for files accepted by isOpenableTextFile; binary formats use byte-oriented writes. */
 export async function writeNote(
   file: VaultFile,
   content: string,
   expectedCurrentContent?: string
 ): Promise<void> {
-  if (!isTextualVaultFile(file)) {
+  if (!isOpenableTextFile(file)) {
     throw new Error(
       `Refusing to write text over "${file.relPath}" — Mesa only edits text files as text, and writing this one would corrupt it.`
     );
@@ -422,9 +357,7 @@ export async function writeNote(
   const encoder = new TextEncoder();
   let prefix = "";
   if (IN_TAURI && expectedCurrentContent !== undefined) {
-    const head = new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", {
-      path: file.path, maxBytes: 3, requireComplete: false,
-    }));
+    const head = await readVaultBytes(file.path, 3, false);
     if (head.length === 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) prefix = "\uFEFF";
   }
   const encode = (text: string) => encoder.encode(prefix && !text.startsWith(prefix) ? prefix + text : text);
@@ -502,7 +435,7 @@ export async function writeVaultBinaryFile(
 export async function createFolder(root: string, relPath: string): Promise<void> {
   const clean = relPath.replace(/^\/+|\/+$/g, "");
   if (!clean || isDemo(root)) return;
-  await mkdir(joinPath(root, clean), { recursive: true });
+  await ensureDir(joinPath(root, clean));
 }
 
 /** Duplicate any vault file (text or binary) to a new relPath. */
@@ -550,32 +483,6 @@ export async function renameVaultFile(
   });
   return toVaultFile(root, destRel);
 }
-export async function ensureDir(absDir: string): Promise<void> {
-  await mkdir(absDir, { recursive: true });
-}
-export async function safeExists(abs: string): Promise<boolean> {
-  try {
-    return await exists(abs);
-  } catch {
-    return false;
-  }
-}
-export async function uniqueRel(root: string, rel: string): Promise<string> {
-  let candidate = rel;
-  let n = 1;
-  while (await safeExists(joinPath(root, candidate))) {
-    const slash = rel.lastIndexOf("/");
-    const dot = rel.lastIndexOf(".");
-    if (dot > slash) {
-      candidate = `${rel.slice(0, dot)} (${n})${rel.slice(dot)}`;
-    } else {
-      candidate = `${rel} (${n})`;
-    }
-    n++;
-  }
-  return candidate;
-}
-
 /** Resolve an absolute file path to a URL the webview can load (images, etc). */
 export function urlForPath(absPath: string): string {
   if (isDemo(absPath)) return SPARK_SVG;

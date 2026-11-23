@@ -332,11 +332,15 @@ export interface AppState {
   openAgentWindow: (placement?: DetachedWindowPlacement) => Promise<boolean>;
   /** Open the shared Deep Research view in a separate Mesa native window. */
   openResearchWindow: (placement?: DetachedWindowPlacement) => Promise<boolean>;
-  openVault: (path?: string) => Promise<void>;
+  /** `keepShown` refreshes the open vault without clearing its notes or selection. */
+  openVault: (path?: string, options?: { keepShown?: boolean }) => Promise<void>;
   registerVaultFile: (relPath: string) => Promise<void>;
   removeRecentVault: (id: string) => Promise<void>;
   selectFile: (relPath: string) => Promise<void>;
   setBinaryDirty: (relPath: string, dirty: boolean) => void;
+  /** After a byte-level save of a text-cached file (RTF), record the saved text
+   *  so the watcher treats Mesa's own write as unchanged. */
+  adoptSavedBytes: (relPath: string, bytes: Uint8Array, savedPath: string) => void;
   /** Resolves true when no listed path (or path under a listed folder; null = all)
    *  has unsaved PDF edits, or when the user confirms discarding them. */
   confirmDiscardBinaryEdits: (relPaths: readonly string[] | null, action: string) => Promise<boolean>;

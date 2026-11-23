@@ -41,6 +41,9 @@ function notice(name, version, license, files, base, fallback) {
 // Packages whose manifest omits `license` but ship a license file. Each entry is
 // pinned to one version and checked against that file's text.
 const NPM_LICENSE_OVERRIDES = { 'khroma@2.1.0': { license: 'MIT', file: 'license', text: 'The MIT License (MIT)' } };
+// Packages that declare an SPDX license but publish no license file. Each
+// entry is reviewed; the notice then names the identifier and says so.
+const NPM_SPDX_ONLY = new Set(['@nodable/entities@3.1.0']);
 function npmLicense(dir, name, version, declared) {
   if (declared) return declared;
   const override = NPM_LICENSE_OVERRIDES[`${name}@${version}`];
@@ -57,7 +60,7 @@ function npmNotices() {
     const pkg = JSON.parse(readFileSync(join(dir, 'package.json')));
     if (pkg.version !== meta.version) throw new Error(`Installed version differs from lock: ${path}`);
     const files = licenseFiles(dir, pkg.name === 'pdfjs-dist' ? ['cmaps', 'standard_fonts'] : []);
-    return notice(pkg.name, meta.version, npmLicense(dir, pkg.name, meta.version, meta.license ?? pkg.license), files, dir, false);
+    return notice(pkg.name, meta.version, npmLicense(dir, pkg.name, meta.version, meta.license ?? pkg.license), files, dir, NPM_SPDX_ONLY.has(`${pkg.name}@${meta.version}`));
   }).join('');
 }
 function cargoMetadata(triple) {

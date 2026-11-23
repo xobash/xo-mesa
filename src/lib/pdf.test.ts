@@ -22,8 +22,8 @@ import {
   markNotAPdf,
   pdfBytesEqual,
   sanitizePdfBytes,
-  sniffFileType,
 } from "./pdfBytes";
+import { sniffFileType } from "./fileSniff";
 
 /** Page geometry as a PDF reader sees it, for checking edit results. */
 async function readPdfPages(bytes: Uint8Array) {

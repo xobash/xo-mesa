@@ -1,14 +1,33 @@
 import { expect, it } from "vitest";
 import type { GraphNode } from "../types";
-import { GraphHitIndex, incidentLinkIndices, nearestNodeLinear, nodeRadius, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { GraphHitIndex, incidentLinkIndices, nearestNodeLinear, nodeDrawScale, nodeRadius, resolveOverlaps, timelineSortValue } from "./graphGeometry";
 
 it("separates idle nodes while keeping a pinned node fixed", () => {
   const fixed = { id: "fixed", degree: 0, x: 0, y: 0, fx: 0, fy: 0 } as GraphNode;
   const moving = { id: "moving", degree: 9, x: 0, y: 0 } as GraphNode;
   expect(resolveOverlaps([fixed, moving], nodeRadius, 8, 2)).toBe(true);
   expect([fixed.x, fixed.y]).toEqual([0, 0]);
-  expect(Math.hypot(moving.x!, moving.y!)).toBeGreaterThanOrEqual(nodeRadius(fixed) + nodeRadius(moving) + 16);
+  expect(Math.hypot(moving.x!, moving.y!)).toBeGreaterThanOrEqual(nodeRadius(fixed) + nodeRadius(moving) + 16 - 1e-9);
   expect(timelineSortValue(moving)).toBe(Infinity);
+});
+
+it("sizes nodes as Obsidian does: by link count between 8 and 30, growing in world units when zoomed out", () => {
+  const size = (degree: number, multiplier?: number) => nodeRadius({ degree }, multiplier);
+  expect([size(0), size(1), size(6)]).toEqual([8, 8, 8]);
+  expect(size(15)).toBe(12);
+  expect(size(99)).toBe(30);
+  expect(size(5000)).toBe(30);
+  expect(size(15, 2)).toBe(24);
+  expect(size(0, 0.5)).toBe(4);
+  // One device pixel per world unit draws at layout size; a quarter of that doubles it.
+  expect(nodeDrawScale(1, 1)).toBe(1);
+  expect(nodeDrawScale(0.5, 2)).toBe(1);
+  expect(nodeDrawScale(0.25, 1)).toBe(2);
+  // A grabbed target follows the drawn size: 40 world units from a degree-0 node misses at layout size, hits when drawn 8x larger.
+  const node = { id: "n", degree: 0, x: 0, y: 0 } as GraphNode;
+  expect(nearestNodeLinear([node], 40, 0, 1, nodeRadius)).toBeNull();
+  expect(nearestNodeLinear([node], 40, 0, 1, nodeRadius, 8)).toBe(node);
+  expect(new GraphHitIndex([node], nodeRadius).nearest(40, 0, 1, 8)).toBe(node);
 });
 
 it("hit-tests with the grid exactly like the linear scan at every zoom", () => {
@@ -25,13 +44,17 @@ it("hit-tests with the grid exactly like the linear scan at every zoom", () => {
       const gx = q % 3 ? target.x! + (random() - 0.5) * 40 / k : random() * 4400 - 2200;
       const gy = q % 3 ? target.y! + (random() - 0.5) * 40 / k : random() * 3400 - 1700;
       expect(index.nearest(gx, gy, k)).toBe(nearestNodeLinear(nodes, gx, gy, k, radius));
+      // Zoomed out, nodes draw larger in world units; both paths use the same drawn radius.
+      const drawn = nodeDrawScale(k, 2);
+      expect(index.nearest(gx, gy, k, drawn)).toBe(nearestNodeLinear(nodes, gx, gy, k, radius, drawn));
     }
   }
   // Coincident nodes: the later one draws on top and wins in both.
   expect(index.nearest(10, 10, 1)?.id).toBe("same-b");
   expect(nearestNodeLinear(nodes, 10, 10, 1, radius)?.id).toBe("same-b");
   expect(index.nearest(1e6, 1e6, 1)).toBeNull();
-});
+  // Exhaustive linear-scan comparison: needs more than the default timeout under coverage.
+}, 30000);
 
 it("resolves overlaps with numeric grid keys and skips non-finite positions", () => {
   const a = { id: "a", degree: 0, x: 0, y: 0 } as GraphNode;

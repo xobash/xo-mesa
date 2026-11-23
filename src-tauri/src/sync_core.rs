@@ -102,12 +102,17 @@ impl Drop for WindowsParentGuard {
     }
 }
 
-pub fn open_file_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+/// Open a regular file for reading without following a final link or
+/// blocking on a FIFO or device; the type is checked on the opened handle, so
+/// a swap between check and open cannot slip in. Windows: cloud placeholders
+/// pass, links do not; no ancestor is pinned, so a path-based caller holds a
+/// `WindowsParentGuard` for as long as it needs the parents stable.
+/// A non-file fails with `InvalidData`.
+pub fn open_regular_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-        let _parents = WindowsParentGuard::acquire(path, false)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
@@ -116,7 +121,7 @@ pub fn open_file_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
         if !metadata.is_file()
             || !platform_fs::handle_is_in_place(&file, metadata.file_attributes())?
         {
-            return Err(invalid_data("sync input is not a regular file"));
+            return Err(invalid_data("input is not a regular file"));
         }
         Ok(file)
     }
@@ -128,7 +133,7 @@ pub fn open_file_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)?;
         if !file.metadata()?.is_file() {
-            return Err(invalid_data("sync input is not a regular file"));
+            return Err(invalid_data("input is not a regular file"));
         }
         Ok(file)
     }
@@ -136,6 +141,13 @@ pub fn open_file_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     {
         std::fs::File::open(path)
     }
+}
+
+/// `open_regular_no_follow` with every Windows ancestor pinned for the open.
+pub fn open_file_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    let _parents = WindowsParentGuard::acquire(path, false)?;
+    open_regular_no_follow(path)
 }
 
 pub fn now_ms() -> u64 {
@@ -162,13 +174,55 @@ impl ContentHasher {
     pub fn update(&mut self, bytes: &[u8]) {
         self.0.update(bytes);
     }
+    pub fn digest(&self) -> [u8; 32] {
+        self.0.clone().finalize().into()
+    }
     pub fn hex(&self) -> String {
-        format!("{:x}", self.0.clone().finalize())
+        hex::encode(&self.digest())
     }
 }
 
-/// Hash a file by streaming 64 KiB chunks — never loads the file into memory.
-/// Returns (size, hash).
+/// Chunk size of the streaming hasher; files are never loaded whole.
+const HASH_CHUNK_BYTES: usize = 64 * 1024;
+
+/// The one streaming SHA-256 over an already-open reader: (bytes read, digest).
+/// Reads to end of input; bound it with `Read::take` when the caller needs a
+/// limit. With `cancelled`, returns `None` at the next chunk boundary after
+/// the flag is set.
+pub fn hash_reader_until(
+    mut reader: impl Read,
+    cancelled: Option<&AtomicBool>,
+) -> Option<std::io::Result<(u64, [u8; 32])>> {
+    let mut hasher = ContentHasher::new();
+    let mut buffer = [0u8; HASH_CHUNK_BYTES];
+    let mut size: u64 = 0;
+    loop {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return None;
+        }
+        let n = match reader.read(&mut buffer) {
+            Ok(n) => n,
+            Err(error) => return Some(Err(error)),
+        };
+        if n == 0 {
+            return Some(Ok((size, hasher.digest())));
+        }
+        size += n as u64;
+        hasher.update(&buffer[..n]);
+    }
+}
+
+/// `hash_reader_until` without cancellation.
+pub fn hash_reader(reader: impl Read) -> std::io::Result<(u64, [u8; 32])> {
+    hash_reader_until(reader, None).unwrap_or_else(|| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "hash cancelled",
+        ))
+    })
+}
+
+/// Hash a file by streaming it through `hash_reader`. Returns (size, hash).
 pub fn hash_file_streaming(path: &Path) -> std::io::Result<(u64, String)> {
     hash_file_streaming_until(path, None).unwrap_or_else(|| {
         Err(std::io::Error::new(
@@ -179,7 +233,7 @@ pub fn hash_file_streaming(path: &Path) -> std::io::Result<(u64, String)> {
 }
 
 /// Stream a file without allocating it whole. When cancellation is supplied,
-/// return `None` at the next 64 KiB boundary so sync can return control without
+/// return `None` at the next chunk boundary so sync can return control without
 /// publishing a partial manifest.
 fn hash_file_streaming_until(
     path: &Path,
@@ -206,27 +260,11 @@ fn hash_rooted_file_until(
 }
 
 fn hash_open_file_until(
-    mut file: std::fs::File,
+    file: std::fs::File,
     cancelled: Option<&AtomicBool>,
 ) -> Option<std::io::Result<(u64, String)>> {
-    let mut hasher = ContentHasher::new();
-    let mut buf = [0u8; 64 * 1024];
-    let mut size: u64 = 0;
-    loop {
-        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-            return None;
-        }
-        let n = match file.read(&mut buf) {
-            Ok(n) => n,
-            Err(error) => return Some(Err(error)),
-        };
-        if n == 0 {
-            break;
-        }
-        size += n as u64;
-        hasher.update(&buf[..n]);
-    }
-    Some(Ok((size, hasher.hex())))
+    hash_reader_until(file, cancelled)
+        .map(|result| result.map(|(size, digest)| (size, hex::encode(&digest))))
 }
 
 // === Vault walking =======================================================
@@ -322,15 +360,7 @@ fn list_vault_files_with_errors_until(
     let mut names = Vec::new();
     #[cfg(unix)]
     let completed = match RootedTarget::open_root_dir(root) {
-        Ok(root_dir) => walk_rooted(
-            root,
-            &root_dir,
-            "",
-            &mut out,
-            &mut names,
-            &mut errors,
-            cancelled,
-        ),
+        Ok(root_dir) => walk_rooted(root, root_dir, &mut out, &mut names, &mut errors, cancelled),
         Err(error) => {
             errors.push((".".to_string(), format!("open vault root failed: {error}")));
             true
@@ -524,11 +554,46 @@ fn walk(
     true
 }
 
+/// One open folder of the Unix walk and the names it still has to visit.
+#[cfg(unix)]
+struct RootedFrame {
+    dir: std::fs::File,
+    prefix: String,
+    children: std::vec::IntoIter<String>,
+}
+
+/// Lists `dir`; a failed listing is reported in `errors` and the folder left out.
+#[cfg(unix)]
+fn rooted_frame(
+    dir: std::fs::File,
+    prefix: String,
+    errors: &mut Vec<(String, String)>,
+) -> Option<RootedFrame> {
+    match RootedTarget::list_dir_names(&dir) {
+        Ok(children) => Some(RootedFrame {
+            dir,
+            prefix,
+            children: children.into_iter(),
+        }),
+        Err(error) => {
+            let rel = if prefix.is_empty() {
+                ".".to_string()
+            } else {
+                prefix
+            };
+            errors.push((rel, format!("read directory failed: {error}")));
+            None
+        }
+    }
+}
+
+/// Depth-first walk on an explicit stack of open folders, never recursion, in
+/// the same order as a nested walk. The stack holds at most `MAX_REL_SEGMENTS`
+/// folders.
 #[cfg(unix)]
 fn walk_rooted(
     root: &Path,
-    dir: &std::fs::File,
-    prefix: &str,
+    root_dir: std::fs::File,
     out: &mut Vec<VaultPath>,
     names: &mut Vec<String>,
     errors: &mut Vec<(String, String)>,
@@ -538,31 +603,25 @@ fn walk_rooted(
     if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
         return false;
     }
-    let children = match RootedTarget::list_dir_names(dir) {
-        Ok(children) => children,
-        Err(error) => {
-            errors.push((
-                if prefix.is_empty() {
-                    ".".to_string()
-                } else {
-                    prefix.to_string()
-                },
-                format!("read directory failed: {error}"),
-            ));
-            return true;
-        }
-    };
-    for name in children {
+    let mut stack: Vec<RootedFrame> = Vec::new();
+    if let Some(frame) = rooted_frame(root_dir, String::new(), errors) {
+        stack.push(frame);
+    }
+    while let Some(frame) = stack.last_mut() {
+        let Some(name) = frame.children.next() else {
+            stack.pop();
+            continue;
+        };
         if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return false;
         }
         if ignored_name(&name) {
             continue;
         }
-        let rel = if prefix.is_empty() {
+        let rel = if frame.prefix.is_empty() {
             name.clone()
         } else {
-            format!("{prefix}/{name}")
+            format!("{}/{name}", frame.prefix)
         };
         if peer_reserved_name(&name) {
             errors.push((rel, PEER_RESERVED_NAME_ERROR.to_string()));
@@ -592,7 +651,7 @@ fn walk_rooted(
         // SAFETY: dir stays open, cname is NUL-terminated, and stat is writable for this call.
         if unsafe {
             libc::fstatat(
-                dir.as_raw_fd(),
+                frame.dir.as_raw_fd(),
                 cname.as_ptr(),
                 &mut stat,
                 libc::AT_SYMLINK_NOFOLLOW,
@@ -611,7 +670,7 @@ fn walk_rooted(
                 // SAFETY: dir stays open and cname is NUL-terminated; O_NOFOLLOW rejects symlink directories.
                 let raw = unsafe {
                     libc::openat(
-                        dir.as_raw_fd(),
+                        frame.dir.as_raw_fd(),
                         cname.as_ptr(),
                         libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
                     )
@@ -625,8 +684,11 @@ fn walk_rooted(
                 }
                 // SAFETY: openat returned a nonnegative descriptor that has not been transferred or closed.
                 let child = unsafe { std::fs::File::from_raw_fd(raw) };
-                if !walk_rooted(root, &child, &rel, out, names, errors, cancelled) {
+                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
                     return false;
+                }
+                if let Some(next) = rooted_frame(child, rel, errors) {
+                    stack.push(next);
                 }
             }
             libc::S_IFREG => out.push((rel.clone(), root.join(rel))),

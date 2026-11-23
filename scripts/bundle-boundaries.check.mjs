@@ -16,12 +16,17 @@ const expectedLazyPrefixes = [
   "Editor-",
   "GraphView-",
   "HtmlView-",
+  "LegacyOfficeView-",
   "markdownMath-",
   "markdownMermaid-",
+  "OpenDocumentView-",
   "Overlay-",
   "SearchPanel-",
   "SettingsModal-",
+  "SpreadsheetView-",
   "SyncModal-",
+  "wordEngine-",
+  "WordView-",
 ];
 for (const prefix of expectedLazyPrefixes) {
   if (!assetNames.some((name) => name.startsWith(prefix) && name.endsWith(".js"))) {
@@ -32,16 +37,17 @@ for (const prefix of expectedLazyPrefixes) {
 const entry = resolve(dist, entryMatch[1].replace(/^\//, ""));
 const visited = new Set();
 const staticImports = /(?:^|[;\n])\s*import(?!\s*\()[^;\n]*?["']([^"']+)["']/g;
-function visit(file) {
-  if (visited.has(file)) return;
+// Explicit stack, no recursion: chunk chains are build-sized. Children are
+// pushed in reverse so the walk keeps depth-first source order.
+const pending = [entry];
+while (pending.length) {
+  const file = pending.pop();
+  if (visited.has(file)) continue;
   visited.add(file);
   const source = readFileSync(file, "utf8");
-  for (const match of source.matchAll(staticImports)) {
-    if (!match[1].startsWith(".")) continue;
-    visit(resolve(dirname(file), match[1]));
-  }
+  const imports = [...source.matchAll(staticImports)].map((match) => match[1]).filter((path) => path.startsWith("."));
+  for (let index = imports.length - 1; index >= 0; index -= 1) pending.push(resolve(dirname(file), imports[index]));
 }
-visit(entry);
 
 const forbiddenInitialPrefixes = [
   ...expectedLazyPrefixes,

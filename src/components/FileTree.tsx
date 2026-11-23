@@ -22,7 +22,7 @@ import {
   windowedRowIndices,
 } from "../lib/treeWindow";
 import { buildTree, annotateAggregates, makeNodeCompare, childSorter, type FlatRow, flattenRows } from "./fileTreeModel";
-import { copyText, TreeRow } from "./FileTreeRow";
+import { copyWithStatus, TreeRow } from "./FileTreeRow";
 
 /** Stable stand-in subscribed when note metadata cannot affect the tree. */
 const EMPTY_NOTES: Record<string, NoteMeta> = {};
@@ -425,7 +425,7 @@ export const FileTree = memo(function FileTree() {
                 role="menuitem"
                 className="context-item"
                 onClick={() => {
-                  void copyText(menu.rel);
+                  void copyWithStatus(menu.rel);
                   setMenu(null);
                 }}
               >
@@ -491,7 +491,7 @@ export const FileTree = memo(function FileTree() {
                 role="menuitem"
                 className="context-item"
                 onClick={() => {
-                  void copyText(absPath(menu.rel));
+                  void copyWithStatus(absPath(menu.rel));
                   setMenu(null);
                 }}
               >

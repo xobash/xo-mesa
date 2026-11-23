@@ -46,6 +46,7 @@
     "allow-vault-create-directory",
     "fs:deny-default",
     "allow-vault-read-bytes",
+    "allow-vault-read-range",
     "allow-vault-list-recovery",
     "allow-vault-storage-id",
     "allow-workspace-open-surface",

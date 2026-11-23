@@ -4,10 +4,8 @@ import type { VaultFile } from "../types";
 import { parseWriteArtifactName } from "./verifiedWrite";
 import { isMesaWriteArtifactName, planWriteRecovery, type FoundArtifact } from "./writeRecovery";
 import { forEachConcurrent } from "./concurrency";
-import {
-  IN_TAURI, SKIPPED_DIRS, WALK_BATCH, guardedRename, authorizeWriteArtifacts, ensureDir, isDemo,
-  isWindowsShellName, safeExists, uniqueRel,
-} from "./vault";
+import { IN_TAURI, guardedRename, authorizeWriteArtifacts, ensureDir, isDemo, safeExists, uniqueRel } from "./vaultFs";
+import { MAX_VAULT_REL_SEGMENTS, SKIPPED_DIRS, WALK_BATCH, isWindowsShellName } from "./vaultWalk";
 import { DEMO, DEMO_ROOT } from "./vaultDemo";
 import { baseName, joinPath, parentDir, toRel, toVaultFile } from "./vaultPaths";
 
@@ -197,64 +195,73 @@ function inferRecoveryOriginalRel(trashRelPath: string): string | null {
   return [...parentParts, restoredName].join("/");
 }
 
+/** Most folders the browser recovery listing reads; the native listing is the product path. */
+const MAX_RECOVERY_WALK_FOLDERS = 10_000;
+
+/** Follow a chain of single visible children, like native `deepest_single_entry`. */
+async function deepestSingleEntry(start: string): Promise<{ abs: string; isDirectory: boolean }> {
+  let current = start;
+  for (let depth = 0; depth < MAX_VAULT_REL_SEGMENTS; depth++) {
+    let entries;
+    try {
+      entries = await readDir(current);
+    } catch {
+      break;
+    }
+    if (entries.length !== 1) break;
+    const only = entries[0];
+    if (!only.name || only.name.startsWith(".") || only.isSymlink) break;
+    const next = joinPath(current, only.name);
+    if (!only.isDirectory) return { abs: next, isDirectory: false };
+    current = next;
+  }
+  return { abs: current, isDirectory: true };
+}
+
 export async function listRecoveryEntries(root: string): Promise<RecoveryEntry[]> {
   if (root.startsWith(DEMO_ROOT)) return [];
   if (IN_TAURI) {
     return invoke<RecoveryEntry[]>("vault_list_recovery", { root });
   }
   const found: RecoveryEntry[] = [];
-  const walkTrash = async (dir: string): Promise<void> => {
+  // Explicit stack of folders, never recursion: vaults can nest deeply.
+  const pending: Array<{ dir: string; inTrash: boolean }> = [{ dir: root, inTrash: false }];
+  for (let visited = 0; pending.length > 0 && visited < MAX_RECOVERY_WALK_FOLDERS; visited++) {
+    const { dir, inTrash } = pending.pop()!;
     let entries;
     try {
       entries = await readDir(dir);
     } catch {
-      return;
+      continue;
     }
     for (const entry of entries) {
       if (!entry.name) continue;
       const abs = joinPath(dir, entry.name);
+      if (!inTrash) {
+        if (!entry.isDirectory) continue;
+        if (entry.name === ".mesa-trash") pending.push({ dir: abs, inTrash: true });
+        else if (!entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name) && !isWindowsShellName(entry.name)) {
+          pending.push({ dir: abs, inTrash: false });
+        }
+        continue;
+      }
       const trashRelPath = toRel(root, abs);
       const originalRelPath = inferRecoveryOriginalRel(trashRelPath);
-      if (entry.isDirectory) {
-        if (originalRelPath) {
-          found.push({
-            trashRelPath,
-            originalRelPath,
-            name: baseName(originalRelPath),
-            isDirectory: true,
-          });
-        } else {
-          await walkTrash(abs);
-        }
-      } else if (entry.isFile) {
-        if (!originalRelPath) continue;
-        found.push({
-          trashRelPath,
-          originalRelPath,
-          name: baseName(originalRelPath),
-          isDirectory: false,
-        });
+      if (entry.isDirectory && !originalRelPath) {
+        pending.push({ dir: abs, inTrash: true });
+        continue;
       }
+      if (!originalRelPath || (!entry.isDirectory && !entry.isFile)) continue;
+      // As native `vault_list_recovery`: a root-trash delete keeps its folders,
+      // so list the deleted entry at the end of a single-child chain.
+      const item = entry.isDirectory && trashRelPath.startsWith(".mesa-trash/")
+        ? await deepestSingleEntry(abs)
+        : { abs, isDirectory: entry.isDirectory };
+      const itemTrashRel = toRel(root, item.abs);
+      const itemOriginal = inferRecoveryOriginalRel(itemTrashRel) ?? originalRelPath;
+      found.push({ trashRelPath: itemTrashRel, originalRelPath: itemOriginal, name: baseName(itemOriginal), isDirectory: item.isDirectory });
     }
-  };
-  const walkVault = async (dir: string): Promise<void> => {
-    let entries;
-    try {
-      entries = await readDir(dir);
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.name || !entry.isDirectory) continue;
-      const abs = joinPath(dir, entry.name);
-      if (entry.name === ".mesa-trash") {
-        await walkTrash(abs);
-      } else if (!entry.name.startsWith(".") && !SKIPPED_DIRS.has(entry.name) && !isWindowsShellName(entry.name)) {
-        await walkVault(abs);
-      }
-    }
-  };
-  await walkVault(root);
+  }
   return found.sort((a, b) => a.originalRelPath.localeCompare(b.originalRelPath));
 }
 

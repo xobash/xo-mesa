@@ -324,3 +324,13 @@ describe('remote media privacy boundary', () => {
     }
   });
 });
+
+it("marks every rendered note image to load lazily", () => {
+  const html = renderMarkdown("![a](images/a.png)\n\n<img src=\"b.png\">");
+  const images = [...new DOMParser().parseFromString(html, "text/html").querySelectorAll("img")];
+  expect(images).toHaveLength(2);
+  for (const image of images) {
+    expect(image.getAttribute("loading")).toBe("lazy");
+    expect(image.getAttribute("decoding")).toBe("async");
+  }
+});

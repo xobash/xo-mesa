@@ -1,6 +1,7 @@
 import { getStore } from "../store";
 import { fileKind, isTextExt } from "../lib/vault";
 import type { PreviewTarget } from "../types";
+import { clamp } from "../lib/clamp";
 
 /**
  * Shared hover-to-preview triggers for any DOM element (sidebar files/folders,
@@ -49,7 +50,7 @@ export function previewEnter(target: PreviewTarget, rect: DOMRect): void {
     const h = window.innerHeight;
     let x = rect.right + 10;
     if (x + CARD_W > w) x = rect.left - CARD_W - 10; // flip to the left side
-    x = Math.max(8, Math.min(x, w - CARD_W - 8));
+    x = clamp(x, 8, w - CARD_W - 8);
     let y = rect.top - 4;
     if (y + CARD_H > h) y = h - CARD_H - 10;
     y = Math.max(8, y);

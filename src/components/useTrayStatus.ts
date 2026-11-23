@@ -20,7 +20,7 @@ function snapshotOf(s: ReturnType<typeof getStore>) {
   return buildTraySnapshot({
     vaultName: s.vaultPath ? s.vaultName : null,
     saveState: s.textSaveState,
-    tasks: s.vaultPath ? collectVaultTasks(s.notes, s.contentCache, (s.settings.tasksFile || "Tasks.md").trim()) : [],
+    tasks: s.vaultPath ? collectVaultTasks(s.notes, s.contentCache) : [],
     today: localISO(),
     researchPhase: s.deepResearch?.phase ?? null,
     syncEnabled: s.settings.syncEnabled,
@@ -141,10 +141,11 @@ export function useTrayStatus(enabled: boolean): void {
     const unsubscribe = useAppStore.subscribe(schedule);
     const unlisteners: (() => void)[] = [];
     const keep = (off: () => void) => { if (disposed) off(); else unlisteners.push(off); };
-    void listen<TrayAction>(TRAY_ACTION_EVENT, ({ payload }) => act(payload)).then(keep);
+    const unavailable = (error: unknown) => console.warn("[mesa] tray bridge unavailable:", error);
+    void listen<TrayAction>(TRAY_ACTION_EVENT, ({ payload }) => act(payload)).then(keep, unavailable);
     void listen<{ query?: string }>(POPOVER_REQUEST_EVENT, ({ payload }) => {
       void emitTo(POPOVER_LABEL, POPOVER_STATE_EVENT, popoverState(payload.query ?? "")).catch(() => {});
-    }).then(keep);
+    }).then(keep, unavailable);
     return () => {
       disposed = true;
       unsubscribe();

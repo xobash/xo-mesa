@@ -33,11 +33,13 @@ fn discovery_state() -> &'static Mutex<Option<DiscoveryState>> {
 // Identity creation and the discovery lock can block: run off the UI thread.
 #[tauri::command(async)]
 pub fn sync_discovery_start(
+    window: tauri::Window,
     app: tauri::AppHandle,
     name: String,
     port: u16,
     listening: bool,
 ) -> Result<(), String> {
+    crate::require_main(window.label())?;
     use std::net::UdpSocket;
 
     let mut guard = discovery_state().lock().map_err(|e| e.to_string())?;
@@ -257,7 +259,8 @@ impl DiscoveryFilter {
 
 // Blocking work: run off the main (UI) thread.
 #[tauri::command(async)]
-pub fn sync_discovery_stop() -> Result<(), String> {
+pub fn sync_discovery_stop(window: tauri::Window) -> Result<(), String> {
+    crate::require_main(window.label())?;
     let mut guard = discovery_state().lock().map_err(|e| e.to_string())?;
     if let Some(mut st) = guard.take() {
         st.running.store(false, Ordering::Relaxed);

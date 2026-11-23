@@ -46,7 +46,8 @@ npm run acceptance:native-template > native-acceptance.local.md
 ```
 
 Fill one record per platform/run. Do not edit the generated row names unless
-the required workflow changes in this file and in `docs/cross-platform.md`.
+the required workflow changes in this file; the release checks hold the same
+names.
 
 Before treating a local record as release evidence, validate that every required
 row has a result and evidence:

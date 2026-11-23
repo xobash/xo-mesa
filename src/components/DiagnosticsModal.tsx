@@ -41,6 +41,7 @@ export function DiagnosticsModal() {
   const [recordingMessage, setRecordingMessage] = useState("");
   const [tick, setTick] = useState(0);
   const [cacheRefresh, setCacheRefresh] = useState(0);
+  const [cacheMessage, setCacheMessage] = useState("");
   const [storage, setStorage] = useState<VaultIndexStorageStats | null>(null);
   const [processTree, setProcessTree] = useState<ProcessTreeRateSample | null>(null);
 
@@ -270,8 +271,9 @@ export function DiagnosticsModal() {
           <h3>Local Cache</h3>
           <div className="diag-timeline">
             <span>{storage ? `${formatBytes(storage.bytes)} of ${formatBytes(storage.budgetBytes)} · ${storage.snapshots} vault snapshot${storage.snapshots === 1 ? "" : "s"}` : "Measuring cache…"}</span>
-            <button className="btn" onClick={() => void clearLocalIndexCache().then(() => setCacheRefresh((n) => n + 1))}>Clear local cache</button>
+            <button className="btn" onClick={() => { setCacheMessage(""); void clearLocalIndexCache().then(() => setCacheRefresh((n) => n + 1), (error: unknown) => setCacheMessage(`Could not clear the local cache: ${error instanceof Error ? error.message : String(error)}`)); }}>Clear local cache</button>
           </div>
+          {cacheMessage && <span className="setting-desc" role="status">{cacheMessage}</span>}
           <span className="setting-desc">Removes disposable indexes only. Your vault files and settings stay untouched.</span>
         </section>
         <section className="diag-section">

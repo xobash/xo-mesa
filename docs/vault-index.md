@@ -7,7 +7,7 @@ No service or network connection is needed.
 
 ## Local storage budget
 
-The index is governed by one 256 MB budget across all remembered vaults, not a
+The index is governed by one 256 MiB budget across all remembered vaults, not a
 separate allowance per vault. After an index save, Mesa removes the oldest
 disposable snapshots until the profile is within that budget. Diagnostics shows
 the current approximate payload and snapshot count. **Clear local cache**
@@ -112,8 +112,9 @@ loading. If an obsolete index schema cannot be removed at startup (blocked or
 timed out), the open continues, the status line reports it, and Mesa retries on
 the next start. Encoding worker errors and timeouts fall back to exact local encoding.
 
-Persistence retains at most four vault roots and at most 128 MiB of estimated
-compressed and metadata payload per snapshot. Documents above 32 Mi characters
+Persistence shares that 256 MiB budget of estimated compressed and metadata
+payload across all remembered vaults; the oldest snapshots go first and the
+newest is always kept. Documents above 32 Mi characters
 are not persisted. Database overhead is additional. Removing a vault from recent
 vaults deletes its index and invalidates pending saves without touching vault files.
 The cache is local but not encrypted by Mesa; protect the application profile as

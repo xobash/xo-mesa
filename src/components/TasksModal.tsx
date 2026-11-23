@@ -18,7 +18,6 @@ export function TasksPanel({ onPick }: { onPick?: () => void }) {
   const notes = useAppStore((s) => s.notes);
   const cache = useAppStore((s) => s.contentCache);
   const selectFile = useAppStore((s) => s.selectFile);
-  const tasksFile = useAppStore((s) => s.settings.tasksFile);
   const addPersonalTask = useAppStore((s) => s.addPersonalTask);
   const updateTask = useAppStore((s) => s.updateTask);
   const indexingTextFiles = useAppStore((s) => s.indexingTextFiles);
@@ -31,8 +30,8 @@ export function TasksPanel({ onPick }: { onPick?: () => void }) {
 
   // The configured file is the creation destination; inline markers own classification.
   const all = useMemo(
-    () => collectVaultTasks(notes, cache, (tasksFile || "Tasks.md").trim()),
-    [notes, cache, tasksFile]
+    () => collectVaultTasks(notes, cache),
+    [notes, cache]
   );
 
   // Clear the draft only after the store confirms the task was added, so a

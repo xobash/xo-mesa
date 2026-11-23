@@ -199,6 +199,7 @@ fn purge_recovery(root: &Path, rel: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+pub(crate) const PURGE_MAIN_ONLY: &str = "only the main workspace may purge recovery";
 #[tauri::command]
 pub async fn vault_purge_recovery(
     app: tauri::AppHandle,
@@ -206,9 +207,7 @@ pub async fn vault_purge_recovery(
     root: String,
     trash_rel_path: String,
 ) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("only the main workspace may purge recovery".into());
-    }
+    crate::require_main_for(window.label(), PURGE_MAIN_ONLY)?;
     tauri::async_runtime::spawn_blocking(move || {
         let root = crate::vaultscope::require_approved(&app, &root)?;
         let _guard = crate::vaultwrite::WRITE_LOCK

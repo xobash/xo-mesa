@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { confirmAction } from "../lib/confirmAction";
 import { prepareReaderResources } from "../lib/browserReader";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
+import { formatBytes } from "../lib/formatBytes";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { CODE_ROW_HEIGHT, buildWrappedRowIndex, visibleCodeLineRange } from "../lib/codeWindow";
 import { stat, readTextFile } from "@tauri-apps/plugin-fs";
@@ -10,6 +11,7 @@ import { useAppStore } from "../store";
 import { IN_TAURI, urlForPath } from "../lib/vault";
 import { readSavedStylesheet } from "../lib/vaultStylesheet";
 import { MAX_SAVED_HTML_ASSET_CHARS, hydrateSavedHtml, savedFromUrl, savedHtmlFrameDocument } from "../lib/html";
+import { readVaultBytes } from "../lib/vaultByteRead";
 
 /** Windowed source: only visible fixed-width rows are laid out, so multi-megabyte or single-line files stay responsive.
  * Copy maps the selection back to source offsets, so wrapped rows add no newlines and select-all copies unmounted rows. */
@@ -115,11 +117,10 @@ export function HtmlView({ rel, file: providedFile }: { rel: string; file?: Vaul
     const read = async () => {
       if (!file) return "";
       const size = file.size ?? (providedFile ? (await stat(file.path)).size : undefined);
-      if (size !== undefined && size > MAX_TEXT_CACHE_FILE_BYTES) throw new Error(`This HTML file is too large to render (${(size / 1024 / 1024).toFixed(1)} MB). Open in system browser.`);
+      if (size !== undefined && size > MAX_TEXT_CACHE_FILE_BYTES) throw new Error(`This HTML file is too large to render (${formatBytes(size)}). Open in system browser.`);
       if (!providedFile) return ensureContent(rel);
       if (IN_TAURI) {
-        const bytes = await invoke<ArrayBuffer>("vault_read_bytes", { path: file.path, maxBytes: MAX_TEXT_CACHE_FILE_BYTES, requireComplete: true });
-        return new TextDecoder().decode(new Uint8Array(bytes));
+        return new TextDecoder().decode(await readVaultBytes(file.path, MAX_TEXT_CACHE_FILE_BYTES, true));
       }
       return readTextFile(file.path);
     };
@@ -136,7 +137,7 @@ export function HtmlView({ rel, file: providedFile }: { rel: string; file?: Vaul
     let token: string | undefined;
     const render = async () => {
       let html = await hydrateSavedHtml(text, file.path, urlForPath, (path) => readSavedStylesheet(path, MAX_SAVED_HTML_ASSET_CHARS), { vaultRoot: root ?? undefined, scripts: false,
-        fonts: { readBytes: async path => new Uint8Array(await invoke<ArrayBuffer>("vault_read_bytes", { path, maxBytes: 2 * 1024 * 1024, requireComplete: true })) } });
+        fonts: { readBytes: path => readVaultBytes(path, 2 * 1024 * 1024, true) } });
       if (!alive) return;
       if (active && IN_TAURI) {
         token = await invoke<string>("browse_resource_session", { token: null });

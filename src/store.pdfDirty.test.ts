@@ -43,3 +43,27 @@ it('continues after the user confirms discarding PDF edits and leaves clean file
   await store().selectFile('Scan.pdf');
   expect(io.confirm).not.toHaveBeenCalled();
 });
+
+it('names RTF and image edits in the discard prompt instead of calling them PDF edits', async () => {
+  useAppStore.setState({ files: [file('Scan.pdf'), file('Note.md'), file('Letter.rtf')], activePath: 'Letter.rtf', openTabs: ['Letter.rtf', 'Note.md'] });
+  store().setBinaryDirty('Scan.pdf', false);
+  store().setBinaryDirty('Letter.rtf', true);
+  io.confirm.mockResolvedValue(false);
+  await store().selectFile('Note.md');
+  expect(io.confirm.mock.calls[0][0]).toContain('Letter.rtf has unsaved RTF edits');
+  expect(io.confirm.mock.calls[0][1]).toMatchObject({ title: 'Discard RTF edits?' });
+  expect(store().activePath).toBe('Letter.rtf');
+});
+
+// Switching the live pane unmounted the editor (dropping its edits) before
+// selectFile asked, so even "Keep editing" lost them.
+it('asks before a split-pane switch moves the live editor away', async () => {
+  useAppStore.setState({ docSplit: { active: 'doc', other: 'Note.md' } });
+  await store().focusDocPane('doc2');
+  expect(io.confirm).toHaveBeenCalledOnce();
+  expect(store().docSplit).toEqual({ active: 'doc', other: 'Note.md' });
+  await store().openToSide('Note.md');
+  expect(io.confirm).toHaveBeenCalledTimes(2);
+  expect(store().docSplit).toEqual({ active: 'doc', other: 'Note.md' });
+  expect(store().activePath).toBe('Scan.pdf');
+});

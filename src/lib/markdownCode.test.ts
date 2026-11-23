@@ -1,6 +1,6 @@
 import MarkdownIt from "markdown-it";
 import { describe, expect, it } from "vitest";
-import { codeLineScanner, inlineCodeSpans, proseText } from "./markdownCode";
+import { atxHeading, codeLineScanner, inlineCodeSpans, proseText } from "./markdownCode";
 import { extractLinks, extractTags } from "./markdownExtract";
 import { parseMarkdown } from "./markdownParser";
 import { parseTasks } from "./taskParsing";
@@ -255,5 +255,43 @@ describe("other text files are not Markdown", () => {
     const text = "    [[Old]]\n```\n[[Old]]\n```\n`[[Old]]` [[Old]]";
     expect(rewriteInboundLinks("notes.txt", text, "Old.md", "New.md", (t) => (t === "Old" ? "Old.md" : null), true, true).text)
       .toBe("    [[New]]\n```\n[[Old]]\n```\n`[[Old]]` [[New]]");
+  });
+});
+
+describe("atxHeading", () => {
+  const legacy = (indent: number) => new RegExp(`^ {0,${indent}}(#{1,6})\\s+(.+?)\\s*#*\\s*$`);
+  it("matches the heading regex it replaced on random short lines", () => {
+    const alphabet = ["#", " ", "\t", "a", "\r", " ", "*"];
+    let seed = 7;
+    const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let round = 0; round < 20000; round++) {
+      let line = "";
+      const length = Math.floor(next() * 12);
+      for (let i = 0; i < length; i++) line += alphabet[Math.floor(next() * alphabet.length)];
+      for (const indent of [0, 3]) {
+        const match = legacy(indent).exec(line);
+        expect(atxHeading(line, indent), JSON.stringify(line)).toEqual(match ? { level: match[1].length, label: match[2] } : null);
+      }
+    }
+  });
+
+  // The regex took seconds on one 2,000-space heading line in the outline.
+  it("scans a long run of spaces in linear time", () => {
+    const line = (n: number) => `# a${" ".repeat(n)}x`;
+    const time = (lines: string[]) => {
+      const start = performance.now();
+      for (const l of lines) atxHeading(l);
+      return performance.now() - start;
+    };
+    const large = [line(80_000)];
+    const small = Array.from({ length: 8 }, () => line(10_000));
+    let largeBest = Infinity;
+    let smallBest = Infinity;
+    for (let rep = 0; rep < 5; rep++) {
+      smallBest = Math.min(smallBest, time(small));
+      largeBest = Math.min(largeBest, time(large));
+    }
+    expect(atxHeading(large[0])).toEqual({ level: 1, label: `a${" ".repeat(80_000)}x` });
+    expect(largeBest / Math.max(smallBest, 0.05)).toBeLessThan(4);
   });
 });
