@@ -189,24 +189,48 @@ fn windows_node_lookup_requires_an_existing_sibling_and_reads_only_a_prefix() {
 /// The template npm's cmd-shim writes for a Node package binary.
 const NPM_SHIM: &str = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n";
 
+/// The template pnpm writes for a global Node package binary.
+const PNPM_SHIM: &str = "@SETLOCAL\r\n@IF NOT DEFINED NODE_PATH (\r\n  @SET \"NODE_PATH=D:\\pnpm\\global\\5\\node_modules\"\r\n) ELSE (\r\n  @SET \"NODE_PATH=%NODE_PATH%;D:\\pnpm\\global\\5\\node_modules\"\r\n)\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\global\\5\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\global\\5\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n)\r\n";
+
+/// The template older npm and yarn releases write.
+const LEGACY_NPM_SHIM: &str = "@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\..\\lib\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n) ELSE (\r\n  @SETLOCAL\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\..\\lib\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n)\r\n";
+
 #[test]
-fn npm_cmd_shims_resolve_to_their_node_entry() {
-    assert_eq!(
-        npm_shim_node_entry(NPM_SHIM).as_deref(),
-        Some(r"node_modules\@scope\pi-agent\dist\cli.js")
-    );
+fn package_manager_cmd_shims_resolve_to_their_node_entry() {
+    for (shim, entry) in [
+        (NPM_SHIM, r"node_modules\@scope\pi-agent\dist\cli.js"),
+        (
+            PNPM_SHIM,
+            r"global\5\node_modules\@scope\pi-agent\dist\cli.js",
+        ),
+        (
+            LEGACY_NPM_SHIM,
+            r"..\lib\node_modules\@scope\pi-agent\dist\cli.js",
+        ),
+        (
+            &NPM_SHIM.replace(r"node_modules\@scope", r"..\pnpm\@scope"),
+            r"..\pnpm\@scope\pi-agent\dist\cli.js",
+        ),
+    ] {
+        assert_eq!(cmd_shim_node_entry(shim).as_deref(), Some(entry), "{shim}");
+    }
     for rejected in [
-        // Escapes the shim folder.
-        NPM_SHIM.replace(r"node_modules\@scope", r"..\elsewhere"),
         // Not a Node program.
         NPM_SHIM.replace("SET \"_prog=node\"", "SET \"_prog=sh\""),
+        LEGACY_NPM_SHIM
+            .replace(r"\node.exe", r"\pi.exe")
+            .replace("node  ", "pi  "),
         // Not a script entry.
         NPM_SHIM.replace("cli.js", "cli.ps1"),
         // An expansion Mesa cannot reproduce.
         NPM_SHIM.replace(r"\dist\", r"\%PI_DIST%\"),
+        // Extra arguments Mesa would drop.
+        PNPM_SHIM.replace("cli.js\" %*", "cli.js\" --flag %*"),
+        // The two Node lines disagree.
+        PNPM_SHIM.replacen("cli.js", "other.js", 1),
         "@echo off\r\n".to_string(),
     ] {
-        assert_eq!(npm_shim_node_entry(&rejected), None, "{rejected}");
+        assert_eq!(cmd_shim_node_entry(&rejected), None, "{rejected}");
     }
 }
 
@@ -214,6 +238,7 @@ fn npm_cmd_shims_resolve_to_their_node_entry() {
 fn cmd_route_is_detected_and_refuses_network_working_folders() {
     let shim = cmd_shim_command(r"C:\Windows\System32\cmd.exe", Path::new(r"C:\npm\pi.cmd"));
     assert!(launches_through_cmd(&shim));
+    assert!(cmd_cwd_refusal(&shim).contains(r"(C:\npm\pi.cmd)"));
     assert!(!launches_through_cmd(&CommandBuilder::new(
         r"C:\nodejs\node.exe"
     )));
@@ -277,7 +302,8 @@ fn launch_extensions_prefer_native_images_and_cmd_shims() {
 #[cfg(target_os = "windows")]
 #[test]
 fn windows_npm_shim_starts_node_directly() {
-    let dir = std::env::temp_dir().join(format!("mesa-pi-test-{}-npm", std::process::id()));
+    let base = std::env::temp_dir().join(format!("mesa-pi-test-{}-npm", std::process::id()));
+    let dir = base.join("bin");
     let entry = dir.join(r"node_modules\@scope\pi-agent\dist");
     fs::create_dir_all(&entry).expect("temp dir");
     fs::write(entry.join("cli.js"), b"console.log(1)\n").expect("entry");
@@ -294,16 +320,28 @@ fn windows_npm_shim_starts_node_directly() {
             .eq_ignore_ascii_case(&shim.to_string_lossy()),
         "{found:?}"
     );
-    let cmd = pi_command(&shim).expect("node command");
-    assert!(!launches_through_cmd(&cmd));
-    assert_eq!(
-        cmd.get_argv(),
-        &[
-            dir.join("node.exe").into_os_string(),
-            entry.join("cli.js").into_os_string()
-        ]
-    );
-    fs::remove_dir_all(dir).expect("cleanup");
+    // Mesa passes the shim's entry as written (`..` kept); Node resolves it.
+    for (template, script) in [
+        (NPM_SHIM, entry.join("cli.js")),
+        (
+            LEGACY_NPM_SHIM,
+            dir.join(r"..\lib\node_modules\@scope\pi-agent\dist\cli.js"),
+        ),
+    ] {
+        fs::create_dir_all(script.parent().expect("entry folder")).expect("entry dir");
+        fs::write(&script, b"console.log(1)\n").expect("entry");
+        fs::write(&shim, template).expect("shim");
+        let cmd = pi_command(&shim).expect("node command");
+        assert!(!launches_through_cmd(&cmd), "{template}");
+        assert_eq!(
+            cmd.get_argv(),
+            &[
+                dir.join("node.exe").into_os_string(),
+                script.into_os_string()
+            ]
+        );
+    }
+    fs::remove_dir_all(base).expect("cleanup");
 }
 
 #[test]

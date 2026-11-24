@@ -143,6 +143,17 @@ pub(super) fn launch_cwd(requested: &str, canonical: &Path, windows: bool) -> Pa
     }
 }
 
+/// Why a cmd.exe launcher cannot start in a network vault, naming the
+/// launcher so the user can see which install Mesa found.
+pub(super) fn cmd_cwd_refusal(cmd: &CommandBuilder) -> String {
+    let shim = cmd
+        .get_argv()
+        .get(4)
+        .map(|shim| shim.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    format!("Pi's launcher ({shim}) runs through cmd.exe, which cannot start in a folder opened by its network (UNC) path, and Mesa does not recognize it as an npm, yarn or pnpm shim it can start with Node directly. Open the vault through a mapped drive letter, or set MESA_PI_BIN to Pi's Node script.")
+}
+
 /// cmd.exe cannot use a UNC or verbatim working directory: it prints "UNC
 /// paths are not supported" and starts in the Windows folder instead.
 pub(super) fn cmd_accepts_cwd(cwd: &Path) -> bool {
@@ -150,40 +161,69 @@ pub(super) fn cmd_accepts_cwd(cwd: &Path) -> bool {
     !(text.starts_with("\\\\") || text.starts_with("//"))
 }
 
-/// The Node entry an npm `cmd-shim` wrapper runs, relative to the shim folder.
-/// Only the standard npm template is recognized: `_prog` is Node and the
-/// entry is a `.js`/`.cjs`/`.mjs` file under `%dp0%` without `..`, so Mesa
-/// can start Node itself instead of going through cmd.exe.
+/// The Node entry a package-manager `.cmd` shim runs, relative to the shim
+/// folder, so Mesa can start Node itself instead of going through cmd.exe
+/// (which cannot start in a network vault). Recognized: npm and yarn
+/// (`"%_prog%"` with `_prog=node`, or the older `"%~dp0\node.exe"` / `node`
+/// pair) and pnpm (`%~dp0\..` entries). Every Node line must name the same
+/// `.js`/`.cjs`/`.mjs` entry under the shim folder variable, followed only by
+/// `%*`; anything else stays on the cmd.exe route.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub(super) fn npm_shim_node_entry(shim: &str) -> Option<String> {
-    let lower = shim.to_ascii_lowercase();
-    if !lower.contains("set \"_prog=node\"") {
-        return None;
+pub(super) fn cmd_shim_node_entry(shim: &str) -> Option<String> {
+    let prog_is_node = shim.to_ascii_lowercase().contains("set \"_prog=node\"");
+    let mut found: Option<String> = None;
+    for line in shim.lines().take(64) {
+        let Some(entry) = shim_line_node_entry(line, prog_is_node) else {
+            continue;
+        };
+        if found.as_ref().is_some_and(|known| *known != entry) {
+            return None;
+        }
+        found = Some(entry);
     }
-    let line = shim
-        .lines()
-        .find(|line| line.contains("\"%_prog%\"") && line.trim_end().ends_with("%*"))?;
-    let after = &line[line.find("\"%_prog%\"")? + "\"%_prog%\"".len()..];
-    let start = after.find("\"%dp0%\\")? + "\"%dp0%\\".len();
-    let rel = &after[start..];
-    let rel = &rel[..rel.find('"')?];
-    let parts: Vec<&str> = rel.split(['\\', '/']).collect();
-    let valid = parts.iter().all(|part| {
-        !part.is_empty()
-            && *part != "."
-            && *part != ".."
-            && !part.contains(['%', ':', '"', '*', '?', '<', '>', '|'])
-    });
-    let lower_rel = rel.to_ascii_lowercase();
-    (valid
-        && [".js", ".cjs", ".mjs"]
-            .iter()
-            .any(|ext| lower_rel.ends_with(ext)))
-    .then(|| parts.join("\\"))
+    found
+}
+
+/// The entry one shim line passes to Node, if the line is
+/// `<node> "<shim dir>\<entry>" %*`.
+fn shim_line_node_entry(line: &str, prog_is_node: bool) -> Option<String> {
+    let call = line.trim_end().strip_suffix("%*")?.trim_end();
+    let quoted = call.strip_suffix('"')?;
+    let open = quoted.rfind('"')?;
+    let rel = ["%~dp0\\", "%dp0%\\"]
+        .iter()
+        .find_map(|base| quoted[open + 1..].strip_prefix(base))?;
+    let program = quoted[..open].trim_end();
+    let lower = program.to_ascii_lowercase();
+    let runs_node = ["\"%~dp0\\node.exe\"", "\"%dp0%\\node.exe\""]
+        .iter()
+        .any(|exe| lower.ends_with(exe))
+        || (prog_is_node && program.ends_with("\"%_prog%\""))
+        || lower
+            .strip_suffix("node")
+            .is_some_and(|before| before.trim().trim_start_matches('@').is_empty());
+    runs_node.then(|| shim_entry_path(rel))?
+}
+
+/// `rel` as a backslash path when every part is a plain name or `..` and it
+/// names a script; `%`, wildcards and drive or stream colons are refused.
+fn shim_entry_path(rel: &str) -> Option<String> {
+    let parts: Vec<&str> = rel
+        .split(['\\', '/'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    let plain = parts
+        .iter()
+        .all(|part| *part != "." && !part.contains(['%', ':', '"', '*', '?', '<', '>', '|']));
+    let lower = rel.to_ascii_lowercase();
+    let script = [".js", ".cjs", ".mjs"]
+        .iter()
+        .any(|ext| lower.ends_with(ext));
+    (plain && script && parts.last().is_some_and(|last| *last != "..")).then(|| parts.join("\\"))
 }
 
 #[cfg(target_os = "windows")]
-pub(super) fn npm_shim_node_command(shim: &Path) -> Option<Result<CommandBuilder, String>> {
+pub(super) fn cmd_shim_node_command(shim: &Path) -> Option<Result<CommandBuilder, String>> {
     let mut text = String::new();
     fs::File::open(shim)
         .ok()?
@@ -191,7 +231,7 @@ pub(super) fn npm_shim_node_command(shim: &Path) -> Option<Result<CommandBuilder
         .read_to_string(&mut text)
         .ok()?;
     let folder = shim.parent()?;
-    let entry = folder.join(npm_shim_node_entry(&text)?);
+    let entry = folder.join(cmd_shim_node_entry(&text)?);
     entry.is_file().then(|| node_command(folder, &entry))
 }
 
@@ -215,9 +255,9 @@ pub(super) fn pi_command(pi: &Path) -> Result<CommandBuilder, String> {
             {
                 return node_script_command(&script);
             }
-            // Start Node directly when the shim is npm's: no cmd.exe, so a
-            // network (UNC) vault can still be Pi's working directory.
-            if let Some(command) = npm_shim_node_command(pi) {
+            // Start Node directly for a package-manager shim: no cmd.exe, so
+            // a network (UNC) vault can still be Pi's working directory.
+            if let Some(command) = cmd_shim_node_command(pi) {
                 return command;
             }
 

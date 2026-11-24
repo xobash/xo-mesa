@@ -372,7 +372,7 @@ pub async fn terminal_start(
     let (mut cmd, program_dir) = terminal_command(program.as_deref())?;
     let cwd = launch_cwd(requested, &root, cfg!(windows));
     if launches_through_cmd(&cmd) && !cmd_accepts_cwd(&cwd) {
-        return Err("Pi's launcher runs through cmd.exe, which cannot start in a folder opened by its network (UNC) path. Open the vault through a mapped drive letter, or set MESA_PI_BIN to Pi's Node script.".into());
+        return Err(cmd_cwd_refusal(&cmd));
     }
     static PROCESS_GATE: Mutex<()> = Mutex::new(());
     let approved_root = root.clone();
