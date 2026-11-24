@@ -425,11 +425,11 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::WindowEvent {
                 label,
-                event: tauri::WindowEvent::Focused(false),
+                event: tauri::WindowEvent::Focused(focused),
                 ..
             } = &event
             {
-                if label == tray::POPOVER_LABEL {
+                if tray::focus_closes_popover(label, *focused) {
                     tray::close_popover(app);
                 }
             }

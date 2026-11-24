@@ -94,6 +94,19 @@ it('resends after a failed native update', async () => {
   expect(sent()).toHaveLength(2);
 });
 
+it('stops sending once native says its menu is fixed, but keeps serving the popover', async () => {
+  io.invoke.mockResolvedValueOnce(false);
+  await render(true);
+  await act(async () => { await Promise.resolve(); });
+  for (let i = 0; i < 5; i++) {
+    change({ vaultName: `Vault ${i}` });
+    await act(async () => { vi.advanceTimersByTime(1000); });
+  }
+  expect(sent()).toHaveLength(1);
+  await act(async () => { popover!({ payload: { query: '' } }); });
+  expect(io.emitTo).toHaveBeenCalledWith('tray', 'mesa://tray-popover-state', expect.objectContaining({ vault: 'Vault 4' }));
+});
+
 it('routes tray actions to the store and stops on unmount', async () => {
   io.state = { ...io.state, files: [{ relPath: 'Tasks.md' }] };
   await render(true);

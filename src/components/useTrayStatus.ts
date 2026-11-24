@@ -72,18 +72,23 @@ export function useTrayStatus(enabled: boolean): void {
         recents = rememberRecent(recents, s.activePath, exists);
       }
     };
+    // False once native says its menu ignores snapshots (Windows' fixed menu).
+    let menuFollows = true;
     const push = () => {
       timer = null;
+      if (!menuFollows) return;
       const s = getStore();
       const snapshot = snapshotOf(s);
       const json = JSON.stringify(snapshot);
       if (json === lastSent || disposed) return;
       lastSent = json;
-      invoke("tray_update", { snapshot }).catch(() => { lastSent = ""; });
+      invoke<boolean | undefined>("tray_update", { snapshot })
+        .then((follows) => { if (follows === false) menuFollows = false; })
+        .catch(() => { lastSent = ""; });
     };
     const schedule = () => {
       trackRecent();
-      if (!timer) timer = setTimeout(push, TRAY_UPDATE_MS);
+      if (!timer && menuFollows) timer = setTimeout(push, TRAY_UPDATE_MS);
     };
     const results = (files: ReturnType<typeof getStore>["files"], query: string) => {
       if (!searchKey || searchKey[0] !== files || searchKey[1] !== query) {

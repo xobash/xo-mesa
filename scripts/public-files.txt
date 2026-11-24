@@ -155,6 +155,7 @@ src-tauri/src/terminal.rs
 src-tauri/src/terminal_stream.rs
 src-tauri/src/terminal_tests.rs
 src-tauri/src/tray.rs
+src-tauri/src/tray_placement.rs
 src-tauri/src/vault_names.rs
 src-tauri/src/vaultmove.rs
 src-tauri/src/vaultmove_tests.rs
@@ -956,6 +957,8 @@ src/tray/TrayPopover.test.tsx
 src/tray/TrayPopover.tsx
 src/tray/icons.tsx
 src/tray/main.tsx
+src/tray/platform.test.ts
+src/tray/platform.ts
 src/tray/tray.css
 src/types.ts
 src/vite-env.d.ts

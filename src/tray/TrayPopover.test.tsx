@@ -84,3 +84,62 @@ it("searches through main, ignores stale replies, and opens the selected hit", a
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); });
   expect(acts()).toEqual([{ action: "note", rel: "Beta.md" }, { action: "close" }]);
 });
+
+it("focuses the search box once main replies, or the first row without a vault", async () => {
+  // Before the first reply the box is disabled, so focus waits for state.
+  expect(document.activeElement).not.toBe(host.querySelector("input"));
+  await send(base);
+  expect(document.activeElement).toBe(host.querySelector("input"));
+  await act(async () => root.unmount());
+  root = createRoot(host);
+  await act(async () => { root.render(<TrayPopover />); });
+  await act(async () => { await Promise.resolve(); });
+  await send({ ...base, vault: null, recents: [] });
+  expect(document.activeElement?.textContent).toContain("Open Pi");
+});
+
+it("walks the menu rows with the arrow keys like a native menu", async () => {
+  await send(base);
+  const key = async (key: string) => {
+    await act(async () => {
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    });
+  };
+  const focused = () => document.activeElement?.textContent ?? "";
+  await key("ArrowDown");
+  expect(focused()).toContain("Alpha");
+  await key("ArrowDown");
+  expect(focused()).toBe("New Note");
+  await key("End");
+  expect(focused()).toBe("Quit Mesa");
+  await key("ArrowDown");
+  expect(focused()).toBe("Quit Mesa");
+  await key("Home");
+  await key("ArrowUp");
+  expect(document.activeElement).toBe(host.querySelector("input"));
+  // Enter on a focused row acts, as a click would.
+  const row = byText("Today's Note")!;
+  row.focus();
+  await act(async () => { row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  expect(acts()).toEqual([{ action: "daily" }]);
+});
+
+it("lets a system backdrop show through only when native reports one", async () => {
+  const mount = async (backdrop: boolean) => {
+    await act(async () => root.unmount());
+    delete document.documentElement.dataset.backdrop;
+    io.invoke.mockImplementation(async (_cmd: string, args: { request?: { action: string } }) => (args?.request?.action === "fit" ? backdrop : undefined));
+    vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+    root = createRoot(host);
+    await act(async () => { root.render(<TrayPopover />); });
+    await act(async () => { await Promise.resolve(); });
+  };
+  await mount(false);
+  expect(acts()).toContainEqual(expect.objectContaining({ action: "fit" }));
+  expect(document.documentElement.dataset.backdrop).toBeUndefined();
+  await mount(true);
+  expect(document.documentElement.dataset.backdrop).toBe("on");
+  vi.unstubAllGlobals();
+  delete document.documentElement.dataset.backdrop;
+});

@@ -13,6 +13,13 @@ const RECENT_ROWS = 4;
 
 type Act = { action: string; rel?: string; id?: string; query?: string; height?: number };
 const act = (request: Act) => { void invoke("tray_popover_act", { request }).catch(() => {}); };
+/** Fits the window; the reply says whether a system backdrop (Windows 11
+ * Acrylic) exists, and only then does the page let it show through. */
+const fitTo = (height: number) => {
+  void invoke<boolean>("tray_popover_act", { request: { action: "fit", height } })
+    .then((backdrop) => { if (backdrop === true) document.documentElement.dataset.backdrop = "on"; })
+    .catch(() => {});
+};
 const request = (query: string) => { void invoke("tray_popover_request", { query }).catch(() => {}); };
 
 /** A menu row: optional round badge (like the Bluetooth device list), title, detail. */
@@ -53,6 +60,10 @@ function FileRows({ files, selected }: { files: TrayPopoverFile[]; selected?: nu
   );
 }
 
+/** The menu rows keyboard focus walks, in order. */
+const rowsOf = (list: HTMLElement | null): HTMLElement[] =>
+  list ? [...list.querySelectorAll<HTMLElement>(".tp-row[role=button]")] : [];
+
 export function TrayPopover() {
   const [state, setState] = useState<TrayPopoverState | null>(null);
   const [query, setQuery] = useState("");
@@ -74,7 +85,6 @@ export function TrayPopover() {
     const timer = setInterval(() => request(queryRef.current), REFRESH_MS);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") act({ action: "close" }); };
     window.addEventListener("keydown", onKey);
-    inputRef.current?.focus();
     return () => { disposed = true; off?.(); clearInterval(timer); window.removeEventListener("keydown", onKey); };
   }, []);
 
@@ -86,13 +96,23 @@ export function TrayPopover() {
     let sent = 0;
     const fit = () => {
       const height = Math.ceil(shell.offsetHeight - list.clientHeight + content.offsetHeight);
-      if (height !== sent) { sent = height; act({ action: "fit", height }); }
+      if (height !== sent) { sent = height; fitTo(height); }
     };
     const observer = new ResizeObserver(fit);
     observer.observe(content);
     fit();
     return () => observer.disconnect();
   }, []);
+
+  // Focus lands once main's first reply enables the menu: the search box, or
+  // the first row when no vault is open.
+  const ready = state !== null;
+  useEffect(() => {
+    if (!ready) return;
+    const input = inputRef.current;
+    if (input && !input.disabled) input.focus();
+    else rowsOf(listRef.current)[0]?.focus();
+  }, [ready]);
 
   useEffect(() => {
     queryRef.current = query;
@@ -102,15 +122,38 @@ export function TrayPopover() {
   }, [query]);
 
   const onSearchKey = useCallback((e: React.KeyboardEvent) => {
+    // Without a query the arrows leave the box for the menu rows (onMenuKey).
+    if (!query.trim()) return;
     const results = state?.query === query ? state.results : [];
     if (e.key === "ArrowDown") { e.preventDefault(); setSelected((i) => Math.min(i + 1, Math.max(0, results.length - 1))); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setSelected((i) => Math.max(0, i - 1)); }
-    else if (e.key === "Enter" && query.trim()) {
+    else if (e.key === "Enter") {
       e.preventDefault();
       const hit = results[selected];
       act(hit ? { action: "note", rel: hit.rel } : { action: "search", query });
     }
   }, [state, query, selected]);
+
+  // Arrow keys walk the rows like a native menu; ArrowUp from the first row
+  // returns to the search box. The search box handles its own result keys.
+  const onMenuKey = useCallback((e: React.KeyboardEvent) => {
+    if (e.defaultPrevented || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const rows = rowsOf(listRef.current);
+    if (!rows.length) return;
+    const input = inputRef.current;
+    const at = rows.indexOf(e.target as HTMLElement);
+    if (e.target === input) {
+      if (e.key !== "ArrowDown") return;
+      rows[0].focus();
+    } else if (at < 0) {
+      return;
+    } else if (e.key === "Home") rows[0].focus();
+    else if (e.key === "End") rows[rows.length - 1].focus();
+    else if (e.key === "ArrowDown") rows[Math.min(at + 1, rows.length - 1)].focus();
+    else if (at > 0) rows[at - 1].focus();
+    else if (input && !input.disabled) input.focus();
+    e.preventDefault();
+  }, []);
 
   const s = state;
   const hasVault = !!s?.vault;
@@ -118,14 +161,14 @@ export function TrayPopover() {
   const canSwitch = !!s && s.vaults.length > 1;
   const refreshSoon = () => setTimeout(() => request(queryRef.current), 250);
   return (
-    <div className="tp" ref={shellRef}>
+    <div className="tp" ref={shellRef} role="dialog" aria-label="Mesa">
       {hasVault && s ? (
         <aside className="tp-side">
           <MiniGraph graph={s.graph} palette={s.palette} onOpen={(rel) => act({ action: "note", rel })} />
           <button type="button" className="tp-graph-open" onClick={() => act({ action: "graph" })}>Open graph</button>
         </aside>
       ) : null}
-      <main className="tp-menu">
+      <main className="tp-menu" onKeyDown={onMenuKey}>
         <header className="tp-head">
           <button type="button" className="tp-head-text" disabled={!canSwitch} aria-expanded={canSwitch ? vaultsOpen : undefined}
             onClick={() => setVaultsOpen((v) => !v)}>
