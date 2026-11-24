@@ -151,7 +151,7 @@ pub(super) fn cmd_cwd_refusal(cmd: &CommandBuilder) -> String {
         .get(4)
         .map(|shim| shim.to_string_lossy().into_owned())
         .unwrap_or_default();
-    format!("Pi's launcher ({shim}) runs through cmd.exe, which cannot start in a folder opened by its network (UNC) path, and Mesa does not recognize it as an npm, yarn or pnpm shim it can start with Node directly. Open the vault through a mapped drive letter, or set MESA_PI_BIN to Pi's Node script.")
+    format!("Pi's launcher ({shim}) runs through cmd.exe, which cannot start in a folder opened by its network (UNC) path, and Mesa does not recognize it as an npm, yarn, pnpm or Pi installer shim it can start with Node directly. Open the vault through a mapped drive letter, or set MESA_PI_BIN to Pi's Node script.")
 }
 
 /// cmd.exe cannot use a UNC or verbatim working directory: it prints "UNC
@@ -165,15 +165,17 @@ pub(super) fn cmd_accepts_cwd(cwd: &Path) -> bool {
 /// folder, so Mesa can start Node itself instead of going through cmd.exe
 /// (which cannot start in a network vault). Recognized: npm and yarn
 /// (`"%_prog%"` with `_prog=node`, or the older `"%~dp0\node.exe"` / `node`
-/// pair) and pnpm (`%~dp0\..` entries). Every Node line must name the same
+/// pair), pnpm (`%~dp0\..` entries) and Pi's own installer (`"%node%"`, see
+/// `cmd_shim_node_var`). Every Node line must name the same
 /// `.js`/`.cjs`/`.mjs` entry under the shim folder variable, followed only by
 /// `%*`; anything else stays on the cmd.exe route.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(super) fn cmd_shim_node_entry(shim: &str) -> Option<String> {
     let prog_is_node = shim.to_ascii_lowercase().contains("set \"_prog=node\"");
+    let node_var = cmd_shim_node_var(shim).is_some();
     let mut found: Option<String> = None;
     for line in shim.lines().take(64) {
-        let Some(entry) = shim_line_node_entry(line, prog_is_node) else {
+        let Some(entry) = shim_line_node_entry(line, prog_is_node, node_var) else {
             continue;
         };
         if found.as_ref().is_some_and(|known| *known != entry) {
@@ -186,11 +188,12 @@ pub(super) fn cmd_shim_node_entry(shim: &str) -> Option<String> {
 
 /// The entry one shim line passes to Node, if the line is
 /// `<node> "<shim dir>\<entry>" %*`.
-fn shim_line_node_entry(line: &str, prog_is_node: bool) -> Option<String> {
+fn shim_line_node_entry(line: &str, prog_is_node: bool, node_var: bool) -> Option<String> {
     let call = line.trim_end().strip_suffix("%*")?.trim_end();
     let quoted = call.strip_suffix('"')?;
     let open = quoted.rfind('"')?;
-    let rel = ["%~dp0\\", "%dp0%\\"]
+    // `%~dp0` already ends in a backslash; Pi's installer writes no other.
+    let rel = ["%~dp0\\", "%dp0%\\", "%~dp0"]
         .iter()
         .find_map(|base| quoted[open + 1..].strip_prefix(base))?;
     let program = quoted[..open].trim_end();
@@ -199,6 +202,7 @@ fn shim_line_node_entry(line: &str, prog_is_node: bool) -> Option<String> {
         .iter()
         .any(|exe| lower.ends_with(exe))
         || (prog_is_node && program.ends_with("\"%_prog%\""))
+        || (node_var && program.trim_start() == "\"%node%\"")
         || lower
             .strip_suffix("node")
             .is_some_and(|before| before.trim().trim_start_matches('@').is_empty());
@@ -208,18 +212,77 @@ fn shim_line_node_entry(line: &str, prog_is_node: bool) -> Option<String> {
 /// `rel` as a backslash path when every part is a plain name or `..` and it
 /// names a script; `%`, wildcards and drive or stream colons are refused.
 fn shim_entry_path(rel: &str) -> Option<String> {
-    let parts: Vec<&str> = rel
-        .split(['\\', '/'])
-        .filter(|part| !part.is_empty())
-        .collect();
-    let plain = parts
-        .iter()
-        .all(|part| *part != "." && !part.contains(['%', ':', '"', '*', '?', '<', '>', '|']));
+    let parts = plain_rel_parts(rel)?;
     let lower = rel.to_ascii_lowercase();
     let script = [".js", ".cjs", ".mjs"]
         .iter()
         .any(|ext| lower.ends_with(ext));
-    (plain && script && parts.last().is_some_and(|last| *last != "..")).then(|| parts.join("\\"))
+    (script && parts.last().is_some_and(|last| *last != "..")).then(|| parts.join("\\"))
+}
+
+/// The parts of `rel` when each is a plain name or `..`.
+fn plain_rel_parts(rel: &str) -> Option<Vec<&str>> {
+    let parts: Vec<&str> = rel
+        .split(['\\', '/'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts
+        .iter()
+        .all(|part| *part != "." && !part.contains(['%', ':', '"', '*', '?', '<', '>', '|']))
+        .then_some(parts)
+}
+
+/// The `node` variable of Pi's installer launcher (`"%node%"`).
+#[derive(Debug, PartialEq)]
+pub(super) struct ShimNodeVar {
+    /// Pi's standalone `node.exe`, relative to `%LOCALAPPDATA%`, which the
+    /// shim prefers when it exists.
+    pub local_app_data: Option<String>,
+}
+
+/// How the shim sets `node`, if every assignment is `SET "node=node"` or
+/// `IF EXIST "%LOCALAPPDATA%\<rel>" SET "node=%LOCALAPPDATA%\<rel>"` with one
+/// plain `<rel>` ending in `\node.exe`. Any other assignment means Mesa
+/// cannot know which program runs, so the shim stays on the cmd.exe route.
+pub(super) fn cmd_shim_node_var(shim: &str) -> Option<ShimNodeVar> {
+    let mut plain = false;
+    let mut local: Option<String> = None;
+    for line in shim.lines().take(64).map(str::trim) {
+        if !line.to_ascii_lowercase().contains("set \"node=") {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("SET \"node=node\"") {
+            plain = true;
+            continue;
+        }
+        let rel = guarded_local_node(line)?;
+        if local.as_ref().is_some_and(|known| *known != rel) {
+            return None;
+        }
+        local = Some(rel);
+    }
+    plain.then_some(ShimNodeVar {
+        local_app_data: local,
+    })
+}
+
+/// `<rel>` from `IF EXIST "%LOCALAPPDATA%\<rel>" SET "node=%LOCALAPPDATA%\<rel>"`.
+fn guarded_local_node(line: &str) -> Option<String> {
+    let rest = strip_prefix_ignore_case(line, "IF EXIST \"%LOCALAPPDATA%\\")?;
+    let (rel, rest) = rest.split_once('"')?;
+    let value = strip_prefix_ignore_case(rest.trim_start(), "SET \"node=%LOCALAPPDATA%\\")?;
+    let parts = plain_rel_parts(rel)?;
+    let node_exe = parts
+        .last()
+        .is_some_and(|last| last.eq_ignore_ascii_case("node.exe"));
+    (value.strip_suffix('"')? == rel && node_exe && !parts.contains(&".."))
+        .then(|| parts.join("\\"))
+}
+
+fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix)
+        .then(|| &text[prefix.len()..])
 }
 
 #[cfg(target_os = "windows")]
@@ -232,7 +295,18 @@ pub(super) fn cmd_shim_node_command(shim: &Path) -> Option<Result<CommandBuilder
         .ok()?;
     let folder = shim.parent()?;
     let entry = folder.join(cmd_shim_node_entry(&text)?);
-    entry.is_file().then(|| node_command(folder, &entry))
+    if !entry.is_file() {
+        return None;
+    }
+    // Pi's installer launcher prefers its standalone Node when present.
+    let local = cmd_shim_node_var(&text)
+        .and_then(|var| var.local_app_data)
+        .and_then(|rel| Some(PathBuf::from(env::var_os("LOCALAPPDATA")?).join(rel)))
+        .filter(|node| node.is_file() && windows_launches_directly(node));
+    Some(match local {
+        Some(node) => Ok(node_builder(&node, &entry)),
+        None => node_command(folder, &entry),
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -451,10 +525,14 @@ pub(super) fn node_script_command(script: &Path) -> Result<CommandBuilder, Strin
 /// Node for `script`, preferring a `node.exe` in `near` as npm shims do.
 #[cfg(target_os = "windows")]
 pub(super) fn node_command(near: &Path, script: &Path) -> Result<CommandBuilder, String> {
-    let node = resolve_node_binary_near(near)?;
+    Ok(node_builder(&resolve_node_binary_near(near)?, script))
+}
+
+#[cfg(target_os = "windows")]
+fn node_builder(node: &Path, script: &Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new(node.to_string_lossy().to_string());
     cmd.arg(script.to_string_lossy().to_string());
-    Ok(cmd)
+    cmd
 }
 
 #[cfg(all(target_os = "windows", test))]

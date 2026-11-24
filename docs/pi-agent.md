@@ -190,9 +190,13 @@ round trip during startup.
 
 On Windows, Mesa prefers a real `PATHEXT` launcher (`.exe`, `.com`, `.cmd`,
 `.bat`) over a same-name extensionless file, because npm installs can ship Unix-style `pi` scripts beside Windows launch shims. If Mesa resolves
-an extensionless Node shebang script it launches it through `node.exe`; if only
-the Windows wrapper exists it launches that wrapper through `cmd.exe`. A
-`node.exe` beside the script is used only when it exists.
+an extensionless Node shebang script it launches it through `node.exe`. It also
+reads the `.cmd` wrappers that npm, yarn, pnpm and Pi's own Windows installer
+write, and starts the Node script they name directly. Pi's installer wrapper
+uses its standalone Node when the installer set one up. Any other wrapper runs
+through `cmd.exe`, which cannot start in a vault opened by its network (UNC)
+path; open such a vault through a mapped drive letter. A `node.exe` beside the
+script is used only when it exists.
 
 Pi's `PATH` starts with Pi's own folder, then the inherited `PATH`, then common
 install folders as fallbacks, so a common folder never shadows the user's tools.

@@ -195,6 +195,60 @@ const PNPM_SHIM: &str = "@SETLOCAL\r\n@IF NOT DEFINED NODE_PATH (\r\n  @SET \"NO
 /// The template older npm and yarn releases write.
 const LEGACY_NPM_SHIM: &str = "@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\..\\lib\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n) ELSE (\r\n  @SETLOCAL\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\..\\lib\\node_modules\\@scope\\pi-agent\\dist\\cli.js\" %*\r\n)\r\n";
 
+/// The launcher Pi's own Windows installer (pi.dev/install.ps1) writes to
+/// `~\.pi\agent\bin\pi.cmd` when Node comes from PATH.
+const PI_MANAGED_SHIM: &str = "@ECHO off\r\nSETLOCAL\r\nSET \"node=node\"\r\n\"%node%\" \"%~dp0pi-launcher.js\" %*\r\nSET \"pi_exit_code=%ERRORLEVEL%\"\r\nIF \"%pi_exit_code%\"==\"9009\" (\r\n  IF \"%node%\"==\"node\" (\r\n    \"%SystemRoot%\\System32\\where.exe\" /Q node\r\n    IF ERRORLEVEL 1 GOTO node_missing\r\n  ) ELSE IF NOT EXIST \"%node%\" GOTO node_missing\r\n)\r\nEXIT /B %pi_exit_code%\r\n:node_missing\r\nECHO Pi could not find Node.js. 1>&2\r\nEXIT /B %pi_exit_code%\r\n";
+
+/// The same launcher when the install used Pi's standalone Node.
+const STANDALONE_LINE: &str = "IF EXIST \"%LOCALAPPDATA%\\pi-node\\current\\node.exe\" SET \"node=%LOCALAPPDATA%\\pi-node\\current\\node.exe\"\r\n";
+
+fn pi_managed_standalone_shim() -> String {
+    PI_MANAGED_SHIM.replacen(
+        "SET \"node=node\"\r\n",
+        &format!("SET \"node=node\"\r\n{STANDALONE_LINE}"),
+        1,
+    )
+}
+
+#[test]
+fn pi_installer_cmd_shim_resolves_to_its_node_launcher() {
+    let standalone = pi_managed_standalone_shim();
+    for shim in [PI_MANAGED_SHIM, standalone.as_str()] {
+        assert_eq!(
+            cmd_shim_node_entry(shim).as_deref(),
+            Some("pi-launcher.js"),
+            "{shim}"
+        );
+    }
+    assert_eq!(
+        cmd_shim_node_var(PI_MANAGED_SHIM).unwrap().local_app_data,
+        None
+    );
+    assert_eq!(
+        cmd_shim_node_var(&standalone)
+            .unwrap()
+            .local_app_data
+            .as_deref(),
+        Some(r"pi-node\current\node.exe")
+    );
+    for rejected in [
+        // `node` is not Node.
+        PI_MANAGED_SHIM.replace("SET \"node=node\"", "SET \"node=sh\""),
+        // A second, unrecognized value for `node`.
+        PI_MANAGED_SHIM.replace("SETLOCAL\r\n", "SETLOCAL\r\nSET \"node=%PI_NODE%\"\r\n"),
+        // The standalone path climbs out of LOCALAPPDATA.
+        standalone.replace(r"\pi-node\", r"\..\pi-node\"),
+        // The guarded path and the value disagree.
+        standalone.replacen(r"\current\", r"\other\", 1),
+        // Not a script entry.
+        PI_MANAGED_SHIM.replace("pi-launcher.js", "pi-launcher.ps1"),
+        // Extra arguments Mesa would drop.
+        PI_MANAGED_SHIM.replace("pi-launcher.js\" %*", "pi-launcher.js\" --flag %*"),
+    ] {
+        assert_eq!(cmd_shim_node_entry(&rejected), None, "{rejected}");
+    }
+}
+
 #[test]
 fn package_manager_cmd_shims_resolve_to_their_node_entry() {
     for (shim, entry) in [
