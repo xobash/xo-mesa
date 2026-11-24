@@ -4,6 +4,7 @@ mod activity;
 mod bearer;
 mod browse;
 mod diagnostics;
+mod graphics;
 mod htmlrun;
 mod recents;
 mod secrets;
@@ -286,6 +287,8 @@ fn with_app_menu<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before any webview or other thread: the engines read it at startup.
+    graphics::apply_at_launch();
     let builder = tauri::Builder::default().plugin(navigation_guard());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -443,7 +446,8 @@ pub fn run() {
             updater::updater_check,
             updater::updater_download,
             updater::updater_cancel,
-            updater::updater_restart
+            updater::updater_restart,
+            graphics::graphics_acceleration
         ])
         .build(tauri::generate_context!())
         .expect("error while running Mesa")

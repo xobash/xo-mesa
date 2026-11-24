@@ -24,6 +24,7 @@
     "allow-updater-download",
     "allow-updater-cancel",
     "allow-updater-restart",
+    "allow-graphics-acceleration",
     "core:window:allow-hide",
     "allow-text-save-copy",
     "allow-vault-apply-research",

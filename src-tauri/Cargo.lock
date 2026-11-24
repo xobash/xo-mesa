@@ -2621,6 +2621,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "dirs 7.0.0",
  "encoding_rs",
  "flate2",
  "futures-util",

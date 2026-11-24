@@ -74,6 +74,7 @@ fn main() {
             "updater_download",
             "updater_cancel",
             "updater_restart",
+            "graphics_acceleration",
         ]),
     ))
     .expect("failed to build Mesa permissions")

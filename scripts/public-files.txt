@@ -131,6 +131,7 @@ src-tauri/src/browse.rs
 src-tauri/src/browse_tests.rs
 src-tauri/src/diagnostics.rs
 src-tauri/src/file_metadata.rs
+src-tauri/src/graphics.rs
 src-tauri/src/hex.rs
 src-tauri/src/htmlrun.rs
 src-tauri/src/lib.rs
@@ -385,6 +386,8 @@ src/components/previewTriggers.ts
 src/components/rtfDom.ts
 src/components/settings/AppearanceGroup.tsx
 src/components/settings/FilesGroup.tsx
+src/components/settings/HardwareAccelerationRow.test.tsx
+src/components/settings/HardwareAccelerationRow.tsx
 src/components/settings/SettingsGroups.tsx
 src/components/settings/UpdatesGroup.tsx
 src/components/settings/WorkspaceGroup.tsx
@@ -576,6 +579,7 @@ src/lib/graphPhysics.worker.ts
 src/lib/graphQuadtree.ts
 src/lib/graphWindowBootstrap.test.ts
 src/lib/graphWindowBootstrap.ts
+src/lib/graphicsAcceleration.ts
 src/lib/hex.ts
 src/lib/hexView.test.ts
 src/lib/hexView.ts

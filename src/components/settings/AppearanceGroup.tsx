@@ -1,7 +1,8 @@
 import { useAppStore, THEMES } from "../../store";
+import { HardwareAccelerationRow } from "./HardwareAccelerationRow";
 import { InterfaceStyleChoice, MoreSettings, SettingRow, SettingToggle } from "../SettingsControls";
 
-/** Theme, interface style and, under More, motion and compositing. */
+/** Theme, interface style, hardware acceleration and, under More, motion and layered overlays. */
 export function AppearanceGroup() {
   const theme = useAppStore((s) => s.theme);
   const setTheme = useAppStore((s) => s.setTheme);
@@ -36,6 +37,7 @@ export function AppearanceGroup() {
       >
         <InterfaceStyleChoice value={uiStyle} onChange={setUiStyle} />
       </SettingRow>
+      <HardwareAccelerationRow />
       <MoreSettings label="More appearance options">
         <SettingRow name="Interface animations" desc="Move and fade interface elements.">
           <SettingToggle label="Interface animations" on={animations} onChange={(v) => setSetting("animations", v)} />
