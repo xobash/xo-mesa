@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
-foreach ($name in @('WINDOWS_CERTIFICATE_BASE64', 'WINDOWS_CERTIFICATE_PASSWORD', 'WINDOWS_SIGNING_THUMBPRINT')) {
+foreach ($name in @('WINDOWS_CERTIFICATE_BASE64', 'WINDOWS_CERTIFICATE_PASSWORD', 'WINDOWS_SIGNING_THUMBPRINT', 'TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD')) {
   if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing protected signing input: $name" }
 }
 $pfx = Join-Path ([IO.Path]::GetTempPath()) ("mesa-signing-" + [guid]::NewGuid().ToString('N') + '.pfx')
@@ -17,17 +17,20 @@ try {
   Remove-Item -LiteralPath $pfx -Force
   $password = $null
   Remove-Item Env:WINDOWS_CERTIFICATE_BASE64, Env:WINDOWS_CERTIFICATE_PASSWORD
-  @{ bundle = @{ windows = @{ certificateThumbprint = $certificate.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = 'https://timestamp.digicert.com'; tsp = $true } } } | ConvertTo-Json -Depth 5 | Set-Content $config
+  # createUpdaterArtifacts signs the NSIS installer for the updater (TAURI_SIGNING_PRIVATE_KEY).
+  @{ bundle = @{ createUpdaterArtifacts = $true; windows = @{ certificateThumbprint = $certificate.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = 'https://timestamp.digicert.com'; tsp = $true } } } | ConvertTo-Json -Depth 5 | Set-Content $config
   & npm run mesa:build -- --bundles msi,nsis --config $config
   if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed' }
   $msi = @(Get-ChildItem "$release/bundle/msi" -Filter '*.msi')
   $nsis = @(Get-ChildItem "$release/bundle/nsis" -Filter '*.exe')
   if ($msi.Count -ne 1 -or $nsis.Count -ne 1) { throw 'Expected exactly one MSI and one NSIS installer' }
+  if (-not (Test-Path -LiteralPath "$($nsis[0].FullName).sig")) { throw 'The NSIS updater signature was not produced' }
   foreach ($file in @($msi[0].FullName, $nsis[0].FullName, (Resolve-Path "$release/mesa.exe").Path)) {
     $signature = Get-AuthenticodeSignature -LiteralPath $file
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $env:WINDOWS_SIGNING_THUMBPRINT -or -not $signature.TimeStamperCertificate) { throw "Invalid signed product: $file" }
   }
 } finally {
   Remove-Item $pfx, $config -Force -ErrorAction SilentlyContinue
+  Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY, Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
   if ($certificate) { Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue }
 }

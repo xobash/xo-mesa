@@ -1,7 +1,9 @@
 # Release Process
 
-Mesa releases are manual, privacy-preserving desktop releases. They do not add
-telemetry, background update checks, or a Mesa-operated service.
+Mesa releases are manual, privacy-preserving desktop releases. They add no
+telemetry or Mesa-operated service. Installed copies update themselves only
+from the signed `latest.json` feed each full release publishes
+([updates](updates.md)).
 
 ## Release Inputs
 
@@ -178,8 +180,9 @@ repository refs before publishing:
    notes, and dispatch Publish verified release.
 6. Review the protected publication request and re-audit the public assets.
 
-Do not ship automatic updates as a substitute for this process. Mesa can offer
-manual, user-initiated update instructions while keeping the app local-first.
+Automatic updates are not a substitute for this process: the update feed is
+built only by the candidate pipeline below and published only with the
+accepted release.
 
 ## Protected release pipeline
 
@@ -200,7 +203,14 @@ Candidate jobs use the reviewed `release` environment and produce:
   plus verification of the bundled app executable against the configured signer;
 - Linux: one AppImage and one Debian package, with SHA-256 checksums and
   authenticated build provenance;
-- source: the source archive and the two lockfile SBOMs described above.
+- source: the source archive and the two lockfile SBOMs described above;
+- updater: `latest.json`, the update feed (see "Update feed" below).
+
+Each platform job also builds its signed updater package with
+`src-tauri/tauri.updater.conf.json` (`createUpdaterArtifacts`): macOS
+`Mesa.app.tar.gz`, Windows the NSIS installer, Linux the AppImage, each with a
+`.sig`. MSI and deb updater signatures are not shipped; those installs only
+report a new version.
 
 Every uploaded package, checksum inventory and candidate manifest has GitHub
 artifact provenance. All products include the locked third-party notices.
@@ -261,6 +271,22 @@ Manually dispatched checks do not satisfy GitHub branch rules.
 Block changes and deletion of `v*` tags and enable immutable releases. Reviewers
 must inspect the exact version, commit, credentials and evidence, not just the
 workflow's green state. Repository administrators retain control of settings.
+
+### Update feed
+
+The updater signing key is separate from the platform code-signing
+identities. Its private half and password exist only as the protected
+`release` environment secrets `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; its public half is
+`plugins.updater.pubkey` in `src-tauri/tauri.conf.json` (one-time steps:
+[updates](updates.md#release-signing-key-owner-one-time)). Until that public key
+is committed, the gate (`node scripts/release-updater.mjs check`) stops every
+candidate, and built apps make no update requests. The `updater` job verifies
+each platform's package against the committed key and its signed version
+against the tag, then writes `latest.json` with no date, notes or other
+fields. Publication re-runs that verification on the downloaded candidate
+(`release-updater.mjs verify`) before anything is uploaded. Rotating the key
+strands installed copies that trust the old one: they need a manual install.
 
 ## Native release attestation
 

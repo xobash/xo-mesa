@@ -794,6 +794,17 @@ pub fn revoke_window(state: &TerminalState, label: &str) {
     }
 }
 
+/// True while any Pi PTY child has not exited. An update restart refuses
+/// then (`updater::updater_restart`); a poisoned lock counts as running.
+pub fn has_running_session(state: &TerminalState) -> bool {
+    let Ok(mut sessions) = state.sessions.lock() else {
+        return true;
+    };
+    sessions
+        .values_mut()
+        .any(|session| !matches!(session.child.try_wait(), Ok(Some(_))))
+}
+
 /// Best-effort PTY teardown from RunEvent::Exit. Recover a poisoned session lock and never block app exit.
 pub fn stop_all_sessions(state: &TerminalState) {
     let mut sessions = state

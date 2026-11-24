@@ -180,12 +180,13 @@ describe("main-window guard", () => {
 
   it("unmount releases every native listener and arms then disarms the quit guard", async () => {
     await mount();
-    await Promise.all([DOCUMENT_CATALOG_REQUEST_EVENT, "mesa://view-request", "mesa://quit-requested", DOCK_WINDOW_EVENT, GLOBAL_AGENT_EVENT].map(waitListening));
+    await Promise.all([DOCUMENT_CATALOG_REQUEST_EVENT, "mesa://view-request", "mesa://quit-requested", DOCK_WINDOW_EVENT, GLOBAL_AGENT_EVENT, "mesa://update-status"].map(waitListening));
     await vi.waitFor(() => expect(h.closeHandlers).toHaveLength(1));
     await vi.waitFor(() => expect(invoked("quit_guard_arm")).toHaveLength(1));
     await act(async () => root.unmount());
     expect(new Set(h.unlistened)).toEqual(new Set([
       DOCUMENT_CATALOG_REQUEST_EVENT, "mesa://view-request", "mesa://quit-requested", DOCK_WINDOW_EVENT, GLOBAL_AGENT_EVENT, "close",
+      "mesa://update-status",
     ]));
     expect(invoked("quit_guard_disarm")).toHaveLength(1);
     root = createRoot(host);

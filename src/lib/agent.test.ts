@@ -26,6 +26,7 @@ const settings: Settings = {
   foldersFirst: true,
   typeFilter: "all",
   hideGeneratedFiles: false,
+  autoUpdate: true,
   dailyFolder: "Daily",
   templatesFolder: "Templates",
   tasksFile: "Tasks.md",

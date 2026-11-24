@@ -64,14 +64,23 @@ it('admits exact package inventories and rejects changed bytes or unapproved ext
   const payload = 'reviewed package';
   const checksum = createHash('sha256').update(payload).digest('hex');
   try {
-    for (const [platform, names] of Object.entries({ macos: ['Mesa.dmg'], windows: ['Mesa.msi', 'Mesa.exe'], linux: ['Mesa.AppImage', 'Mesa.deb'], source: [`Mesa-${tag}-source.tar.gz`, `Mesa-${tag}-sbom-npm.cdx.json`, `Mesa-${tag}-sbom-cargo.cdx.json`] })) {
+    for (const [platform, names] of Object.entries({ macos: ['Mesa.dmg', 'Mesa.app.tar.gz', 'Mesa.app.tar.gz.sig'], windows: ['Mesa.msi', 'Mesa-setup.exe', 'Mesa-setup.exe.sig'], linux: ['Mesa.AppImage', 'Mesa.deb', 'Mesa.AppImage.sig'], source: [`Mesa-${tag}-source.tar.gz`, `Mesa-${tag}-sbom-npm.cdx.json`, `Mesa-${tag}-sbom-cargo.cdx.json`], updater: ['latest.json'] })) {
       writeFileSync(join(dir, `candidate-${platform}.json`), JSON.stringify({ schema: 1, platform, commit: sha, tag }));
       writeFileSync(join(dir, `checksums-${platform}.txt`), names.map(name => `${checksum}  ${name}`).join('\n') + '\n');
       for (const name of names) writeFileSync(join(dir, name), payload);
     }
-    assert.equal(candidateProducts(dir, sha, tag).length, 8);
+    assert.equal(candidateProducts(dir, sha, tag).length, 13);
     rmSync(join(dir, `Mesa-${tag}-sbom-cargo.cdx.json`));
     assert.throws(() => candidateProducts(dir, sha, tag));
+    // A release without its update feed or a package signature is incomplete.
+    writeFileSync(join(dir, `Mesa-${tag}-sbom-cargo.cdx.json`), payload);
+    rmSync(join(dir, 'latest.json'));
+    assert.throws(() => candidateProducts(dir, sha, tag), /checksum|ENOENT/);
+    writeFileSync(join(dir, 'latest.json'), payload);
+    writeFileSync(join(dir, 'checksums-windows.txt'), ['Mesa.msi', 'Mesa-setup.exe'].map(name => `${checksum}  ${name}`).join('\n') + '\n');
+    assert.throws(() => candidateProducts(dir, sha, tag), /product/);
+    writeFileSync(join(dir, 'checksums-windows.txt'), ['Mesa.msi', 'Mesa-setup.exe', 'Mesa-setup.exe.sig'].map(name => `${checksum}  ${name}`).join('\n') + '\n');
+    assert.equal(candidateProducts(dir, sha, tag).length, 13);
     writeFileSync(join(dir, `Mesa-${tag}-sbom-cargo.cdx.json`), payload);
     writeFileSync(join(dir, 'Mesa.dmg'), 'changed');
     assert.throws(() => candidateProducts(dir, sha, tag));
@@ -125,12 +134,15 @@ it('packages Windows products from the target-triple folder that the launcher bu
     mkdirSync(join(bundle, 'nsis'), { recursive: true });
     writeFileSync(join(bundle, 'msi', 'Mesa_0.1.0_x64_en-US.msi'), 'msi bytes');
     writeFileSync(join(bundle, 'nsis', 'Mesa_0.1.0_x64-setup.exe'), 'nsis bytes');
+    writeFileSync(join(bundle, 'nsis', 'Mesa_0.1.0_x64-setup.exe.sig'), 'nsis signature');
+    // MSI installs never update silently; their updater signature is not shipped.
+    writeFileSync(join(bundle, 'msi', 'Mesa_0.1.0_x64_en-US.msi.sig'), 'msi signature');
     const script = fileURLToPath(new URL('./release-products.mjs', import.meta.url));
     const result = spawnSync(process.execPath, [script, 'windows'], { cwd: root, encoding: 'utf8', env: { ...process.env, MESA_RELEASE_SHA: sha, MESA_RELEASE_TAG: tag } });
     assert.equal(result.status, 0, result.stderr);
     const output = join(root, 'output', 'release-windows');
     const listed = readFileSync(join(output, 'checksums-windows.txt'), 'utf8').trim().split('\n').map(line => line.split('  ')[1]);
-    assert.deepEqual(listed.sort(), ['Mesa_0.1.0_x64-setup.exe', 'Mesa_0.1.0_x64_en-US.msi']);
+    assert.deepEqual(listed.sort(), ['Mesa_0.1.0_x64-setup.exe', 'Mesa_0.1.0_x64-setup.exe.sig', 'Mesa_0.1.0_x64_en-US.msi']);
     assert.deepEqual(JSON.parse(readFileSync(join(output, 'candidate-windows.json'), 'utf8')), { schema: 1, platform: 'windows', commit: sha, tag });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -145,12 +157,13 @@ it('packages products nested 300 folders deep on a small stack', { skip: process
     mkdirSync(join(bundle, 'msi'));
     writeFileSync(join(bundle, 'msi', 'Mesa_0.1.0_x64_en-US.msi'), 'msi bytes');
     writeFileSync(join(deep, 'Mesa_0.1.0_x64-setup.exe'), 'nsis bytes');
+    writeFileSync(join(deep, 'Mesa_0.1.0_x64-setup.exe.sig'), 'nsis signature');
     const script = fileURLToPath(new URL('./release-products.mjs', import.meta.url));
     // 80 KB is enough for Node itself but not for one JS frame per folder level.
     const result = spawnSync(process.execPath, ['--stack-size=80', script, 'windows'], { cwd: root, encoding: 'utf8', env: { ...process.env, MESA_RELEASE_SHA: sha, MESA_RELEASE_TAG: tag } });
     assert.equal(result.status, 0, result.stderr);
     const listed = readFileSync(join(root, 'output', 'release-windows', 'checksums-windows.txt'), 'utf8').trim().split('\n').map(line => line.split('  ')[1]);
-    assert.deepEqual(listed.sort(), ['Mesa_0.1.0_x64-setup.exe', 'Mesa_0.1.0_x64_en-US.msi']);
+    assert.deepEqual(listed.sort(), ['Mesa_0.1.0_x64-setup.exe', 'Mesa_0.1.0_x64-setup.exe.sig', 'Mesa_0.1.0_x64_en-US.msi']);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

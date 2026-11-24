@@ -39,6 +39,7 @@ docs/security-controls.md
 docs/security.md
 docs/sync.md
 docs/tasks-kanban.md
+docs/updates.md
 docs/vault-index.md
 docs/vault-safety.md
 eslint.config.mjs
@@ -93,6 +94,8 @@ scripts/release-macos.sh
 scripts/release-notes.mjs
 scripts/release-products.mjs
 scripts/release-source.mjs
+scripts/release-updater.check.mjs
+scripts/release-updater.mjs
 scripts/release-windows.ps1
 scripts/tauri-targets.mjs
 scripts/third-party-notices.check.mjs
@@ -156,6 +159,10 @@ src-tauri/src/terminal_stream.rs
 src-tauri/src/terminal_tests.rs
 src-tauri/src/tray.rs
 src-tauri/src/tray_placement.rs
+src-tauri/src/update_install.rs
+src-tauri/src/update_install_tests.rs
+src-tauri/src/updater.rs
+src-tauri/src/updater_tests.rs
 src-tauri/src/vault_names.rs
 src-tauri/src/vaultmove.rs
 src-tauri/src/vaultmove_tests.rs
@@ -178,6 +185,7 @@ src-tauri/src/vaultwrite_metadata_tests.rs
 src-tauri/src/vaultwrite_tests.rs
 src-tauri/src/webview_settings.rs
 src-tauri/tauri.conf.json
+src-tauri/tauri.updater.conf.json
 src-tauri/tauri.windows.conf.json
 src-tauri/tauri.windows.offline.conf.json
 src/App.rerender.test.tsx
@@ -312,6 +320,8 @@ src/components/TagList.tsx
 src/components/TasksModal.test.tsx
 src/components/TasksModal.tsx
 src/components/TopBar.tsx
+src/components/UpdatesSection.test.tsx
+src/components/UpdatesSection.tsx
 src/components/VaultImage.test.tsx
 src/components/VaultImage.tsx
 src/components/Welcome.tsx
@@ -420,6 +430,7 @@ src/components/workspaceViews.tsx
 src/controllers/calendar.ts
 src/controllers/documents.test.ts
 src/controllers/documents.ts
+src/controllers/editGuard.ts
 src/controllers/fileOps.ts
 src/controllers/persistence.test.ts
 src/controllers/persistence.ts
@@ -431,6 +442,8 @@ src/controllers/settingsFollow.ts
 src/controllers/syncListener.test.ts
 src/controllers/syncPeers.behavior.test.ts
 src/controllers/syncPeers.ts
+src/controllers/updates.test.ts
+src/controllers/updates.ts
 src/controllers/vault.indexReopen.test.ts
 src/controllers/vault.test.ts
 src/controllers/vault.ts
@@ -849,6 +862,8 @@ src/lib/trigramBloom.test.ts
 src/lib/trigramBloom.ts
 src/lib/unlinkedMentions.test.ts
 src/lib/unlinkedMentions.ts
+src/lib/updates.test.ts
+src/lib/updates.ts
 src/lib/vault.test.ts
 src/lib/vault.ts
 src/lib/vaultByteRead.test.ts

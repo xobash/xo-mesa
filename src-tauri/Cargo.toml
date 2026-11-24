@@ -55,10 +55,21 @@ icu_normalizer = { version = "=2.3.0", default-features = false, features = ["co
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2.5"
+# Self-update from the signed GitHub Releases feed (`updater.rs`). No zip
+# (v2 updater bundles are .tar.gz / raw installers) and no system proxy.
+tauri-plugin-updater = { version = "=2.12.0", default-features = false, features = ["rustls-tls"] }
+# Same versions the updater links: validate the configured public key before
+# any network traffic, so a placeholder key fails safe.
+minisign-verify = "0.2"
+base64 = "0.22"
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 # Native exclusive-rename flags used by the sync create-only commit path.
 libc = "0.2"
+# Unpacks a verified macOS update into Mesa's own bundle swap
+# (`update_install.rs`); the same versions the updater plugin links.
+tar = "0.4"
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 # MoveFileExW without MOVEFILE_REPLACE_EXISTING is the Windows no-replace

@@ -105,6 +105,8 @@ export interface Settings {
   typeFilter: string;
   /** Sidebar-only filter for saved web archives and sync conflict copies. */
   hideGeneratedFiles: boolean;
+  /** Launch update check and silent background download (`docs/updates.md`). On by default. */
+  autoUpdate: boolean;
   /** Folder where daily notes live (relative to the vault). */
   dailyFolder: string;
   /** Folder Mesa looks in for note templates. */

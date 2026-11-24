@@ -6,7 +6,8 @@ import type { AppState } from "../store";
 import { IN_TAURI, DEMO_ROOT } from "../lib/vault";
 import { syncSecretsNeededAtStartup } from "../lib/syncSecrets";
 import { loadRecentVaults, resolveRecentVault } from "../lib/persistedUi";
-import { flushBeforeClose, hideOrQuitMain, installCloseGuard, pendingEditGuard, type BlockedClose } from "../lib/closeGuard";
+import { flushBeforeClose, hideOrQuitMain, installCloseGuard, type BlockedClose } from "../lib/closeGuard";
+import { flushAllEdits, hasPendingEdits } from "../controllers/editGuard";
 import { hasToured } from "./Guide";
 import { DOCUMENT_CATALOG_EVENT, DOCUMENT_CATALOG_REQUEST_EVENT } from "./DocumentView";
 import { isAppModifier } from "../lib/hotkeys";
@@ -32,6 +33,7 @@ import { buildAgentContext, contextPrompt } from "../lib/agent";
 import { LatestWinsQueue, SupersededTaskError } from "../lib/latestWinsQueue";
 import { autoSyncBaseDelayMs, nextAutoSyncDelayMs } from "../lib/syncAutoSchedule";
 import { pruneGraphWindowBootstraps } from "../lib/graphWindowBootstrap";
+import { watchUpdates } from "../controllers/updates";
 
 const QUIT_REQUESTED_EVENT = "mesa://quit-requested";
 
@@ -39,8 +41,6 @@ const QUIT_REQUESTED_EVENT = "mesa://quit-requested";
 // (e.g. keyboard navigation through notes). Serialize them and skip queued
 // stale values so Rust's per-turn context can never settle on an older view.
 const PI_CONTEXT_PUBLISH_QUEUE = new LatestWinsQueue<string, void>();
-
-const { flush: flushAllEdits, pending: hasPendingEdits } = pendingEditGuard(getStore);
 
 /**
  * Effects that only the main window runs: catalog and context relays, close
@@ -70,6 +70,7 @@ export function useMainWindowEffects({
   const syncEnabled = useAppStore((s) => s.settings.syncEnabled);
   const syncPeerCount = useAppStore((s) => s.settings.peers.length);
   const syncToken = useAppStore((s) => s.settings.syncToken);
+  const autoUpdate = useAppStore((s) => s.settings.autoUpdate);
   const vimPrefixRef = useRef<"g" | "window" | null>(null);
   const leftShiftDownRef = useRef(false);
 
@@ -255,6 +256,14 @@ export function useMainWindowEffects({
       void invoke("quit_guard_disarm");
     };
   }, [mainWindow, onBlocked]);
+
+  // Updates: follow native status for Settings, and with automatic updates
+  // on, check in the background once the window has settled. The check and
+  // download run natively; nothing here blocks startup or the graph open.
+  useEffect(() => {
+    if (!mainWindow || !IN_TAURI) return;
+    return watchUpdates({ autoCheck: autoUpdate });
+  }, [mainWindow, autoUpdate]);
 
   // Graph-window snapshots that no window consumed (failed window, quit
   // before the timed discard) would stay in IndexedDB forever.

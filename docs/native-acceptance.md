@@ -82,6 +82,7 @@ for diagnosis, but they do not pass native acceptance rows.
 | Interruption and return flows | After failed save, failed sync, modal close/reopen, app restart, and vault reopen, the same actionable next step remains visible until resolved |
 | Long session resources | Repeated document and sync use reaches a stable process-tree memory and CPU plateau |
 | Signing, notarization, and OS prompts | Release build identity, permission prompts, and installer warnings are recorded separately from app behavior |
+| Silent self-update (pending) | From the previous signed release, the launch check downloads the next one with no dialog, toast, password prompt or installer window; Settings shows progress, then ready; nothing changes on disk until quit; quitting with an unsaved edit saves it first, then installs; Restart to update refuses while Pi runs, else installs and relaunches one Mesa; with Automatic updates off, Check now offers Download and install; the next launch is the new version (MSI, deb and an administrator-owned macOS folder only report the version) |
 
 ### Renderer and activity checks within the required workflows
 

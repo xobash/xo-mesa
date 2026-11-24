@@ -12,6 +12,16 @@
   "plugins": {
     "fs": {
       "requireLiteralLeadingDot": true
+    },
+    "updater": {
+      "pubkey": "MESA_UPDATER_PUBLIC_KEY_NOT_SET",
+      "endpoints": [
+        "https://github.com/xobash/xo-mesa/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "quiet"
+      }
     }
   },
   "app": {

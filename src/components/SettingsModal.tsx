@@ -8,6 +8,7 @@ import {
 import { confirmAction } from "../lib/confirmAction";
 import { Modal } from "./Modal";
 import { SettingsGroups } from "./settings/SettingsGroups";
+import { UpdatesSection } from "./UpdatesSection";
 
 const RECOVERY_PAGE_SIZE = 20;
 const REVISION_PAGE_SIZE = 10;
@@ -202,7 +203,7 @@ export function SettingsModal() {
           ×
         </button>
       </header>
-      {section === "settings" && <SettingsGroups />}
+      {section === "settings" && <SettingsGroups updates={<UpdatesSection />} />}
       {section !== "settings" && <div className="settings-body">
         {section === "deleted" && <div className="setting-row recovery-setting-row">
           <div className="setting-meta">

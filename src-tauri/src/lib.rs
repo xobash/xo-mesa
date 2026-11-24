@@ -13,6 +13,8 @@ mod sync_core;
 mod sync_policy;
 mod terminal;
 mod tray;
+mod update_install;
+mod updater;
 mod vaultmove;
 mod vaultops;
 mod vaultrange;
@@ -81,6 +83,15 @@ pub(crate) fn request_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+/// Arm or disarm the save-before-quit guard; returns the previous value.
+/// An update restart disarms it after the renderer's own flush.
+pub(crate) fn set_quit_guard<R: tauri::Runtime>(app: &tauri::AppHandle<R>, armed: bool) -> bool {
+    use tauri::Manager;
+    app.state::<QuitGuard>()
+        .0
+        .swap(armed, std::sync::atomic::Ordering::SeqCst)
+}
+
 #[tauri::command]
 fn quit_guard_arm(window: tauri::Window, state: tauri::State<'_, QuitGuard>) -> Result<(), String> {
     crate::require_main(window.label())?;
@@ -106,8 +117,12 @@ fn quit_after_save(
 ) -> Result<(), String> {
     crate::require_main(window.label())?;
     state.0.store(false, std::sync::atomic::Ordering::SeqCst);
-    // Deliver the invoke response before asking the event loop to exit.
-    std::thread::spawn(move || app.exit(0));
+    // Deliver the invoke response before asking the event loop to exit. Edits
+    // are saved, so a staged Windows update installs quietly here.
+    std::thread::spawn(move || {
+        updater::install_staged_on_quit(&app);
+        app.exit(0);
+    });
     Ok(())
 }
 
@@ -283,6 +298,10 @@ pub fn run() {
     }));
     #[cfg(windows)]
     let builder = builder.plugin(webview_settings::plugin());
+    // Self-update; its renderer commands are granted to no window
+    // (`updater.rs` serves main through Mesa's own commands).
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     with_app_menu(builder)
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -350,6 +369,7 @@ pub fn run() {
         .manage(tray::TrayState::default())
         .manage(tray::TrayPresence::default())
         .manage(vaultwatch::WatchState::default())
+        .manage(updater::UpdaterState::default())
         .invoke_handler(tauri::generate_handler![
             navigation_pdf_preview,
             sync::sync_start,
@@ -418,7 +438,12 @@ pub fn run() {
             tray::tray_update,
             tray::main_close_hides,
             tray::tray_popover_request,
-            tray::tray_popover_act
+            tray::tray_popover_act,
+            updater::updater_status,
+            updater::updater_check,
+            updater::updater_download,
+            updater::updater_cancel,
+            updater::updater_restart
         ])
         .build(tauri::generate_context!())
         .expect("error while running Mesa")

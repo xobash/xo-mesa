@@ -26,6 +26,11 @@ else
   echo "Set either the Apple notarization API key or APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID." >&2
   exit 1
 fi
+# Updater packages are signed with the release-only updater key (docs/updates.md, "Release signing key").
+if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" || -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]]; then
+  echo "Set TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD to sign the updater package." >&2
+  exit 1
+fi
 for command in npm xcrun codesign spctl; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Missing release tool: $command" >&2
@@ -43,7 +48,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm run mesa:build -- --target universal-apple-darwin
+npm run mesa:build -- --target universal-apple-darwin --config src-tauri/tauri.updater.conf.json
 app="src-tauri/target/universal-apple-darwin/release/bundle/macos/Mesa.app"
 if [[ ! -d "$app" ]]; then
   echo "Universal Mesa.app was not produced." >&2
@@ -57,6 +62,10 @@ shopt -s nullglob
 dmgs=("$dmg_dir"/*.dmg)
 if [[ ${#dmgs[@]} -ne 1 ]]; then
   echo "Expected one universal Mesa DMG." >&2
+  exit 1
+fi
+if [[ ! -s "$app.tar.gz" || ! -s "$app.tar.gz.sig" ]]; then
+  echo "The signed Mesa.app.tar.gz updater package was not produced." >&2
   exit 1
 fi
 hdiutil verify "${dmgs[0]}"

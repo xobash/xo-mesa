@@ -887,3 +887,44 @@ fn an_exited_child_is_retired_exactly_once_with_its_code() {
         "Terminal session not found"
     );
 }
+
+/// Update restarts refuse while Pi runs (`updater::updater_restart`).
+#[cfg(unix)]
+#[test]
+fn a_running_pi_session_blocks_an_update_restart_and_an_exited_one_does_not() {
+    let state = TerminalState::default();
+    assert!(!has_running_session(&state), "no session");
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert("done".into(), spawn_test_session("exit 0"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while has_running_session(&state) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        !has_running_session(&state),
+        "an exited child is not running"
+    );
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert("live".into(), spawn_test_session("sleep 30"));
+    assert!(has_running_session(&state));
+    stop_all_sessions(&state);
+    assert!(!has_running_session(&state));
+}
+
+#[test]
+fn an_unreadable_session_table_counts_as_running() {
+    let state = std::sync::Arc::new(TerminalState::default());
+    let poisoner = state.clone();
+    let _ = thread::spawn(move || {
+        let _guard = poisoner.sessions.lock().unwrap();
+        panic!("poison the sessions lock");
+    })
+    .join();
+    assert!(has_running_session(&state));
+}

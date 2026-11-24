@@ -5,7 +5,10 @@ import { releaseTargetDir } from './tauri-targets.mjs';
 const platform = process.argv[2];
 if (!['macos', 'windows', 'linux'].includes(platform)) throw new Error('Specify macos, windows, or linux.');
 const base = `${releaseTargetDir(platform)}/bundle`;
-const extensions = { macos: ['.dmg'], windows: ['.msi', '.exe'], linux: ['.AppImage', '.deb'] }[platform];
+// Installers plus each platform's signed updater package and its `.sig`
+// (scripts/release-updater.mjs builds latest.json from them). MSI and deb
+// updater signatures are left out: those installs never update silently.
+const extensions = { macos: ['.dmg', '.app.tar.gz', '.app.tar.gz.sig'], windows: ['.msi', '.exe', '.exe.sig'], linux: ['.AppImage', '.deb', '.AppImage.sig'] }[platform];
 const products = [];
 // Explicit stack, no recursion. Product order does not matter: counts are per
 // extension and the checksum list is sorted.

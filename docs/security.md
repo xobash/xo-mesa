@@ -3,6 +3,8 @@
 Mesa stores vault files locally. Device sync sends them to configured peers;
 Pi providers receive prompts and tool results; browsing and approved HTML online resources
 can contact websites. Mesa has no telemetry integration or hosted account service.
+Update checks contact only the signed release feed and install only packages
+signed by the release key ([updates](updates.md)).
 
 ## Model version and scope
 

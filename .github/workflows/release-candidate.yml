@@ -49,6 +49,9 @@ jobs:
           MESA_RELEASE_TAG: ${{ inputs.tag }}
           MESA_RELEASE_SHA: ${{ inputs.commit }}
           GH_TOKEN: ${{ github.token }}
+      # Official feed, quiet Windows installs and a real public key (not the
+      # placeholder) before anything is built.
+      - run: node scripts/release-updater.mjs check
   macos:
     needs: gate
     permissions:
@@ -106,6 +109,8 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: bash scripts/release-macos.sh
       - run: node scripts/release-products.mjs macos
         env:
@@ -154,6 +159,8 @@ jobs:
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_THUMBPRINT: ${{ vars.WINDOWS_SIGNING_THUMBPRINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       - run: node scripts/release-products.mjs windows
         env:
           MESA_RELEASE_TAG: ${{ inputs.tag }}
@@ -191,7 +198,17 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm rebuild esbuild
       - run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
-      - run: npm run mesa:build -- --bundles appimage,deb
+      - name: Build with a signed AppImage updater package
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" || -z "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]]; then
+            echo "Missing protected release input: the updater signing key" >&2
+            exit 1
+          fi
+          npm run mesa:build -- --bundles appimage,deb --config src-tauri/tauri.updater.conf.json
       - run: node scripts/release-products.mjs linux
         env:
           MESA_RELEASE_TAG: ${{ inputs.tag }}
@@ -203,6 +220,49 @@ jobs:
         with:
           name: release-linux
           path: output/release-linux/*
+          if-no-files-found: error
+          retention-days: 30
+  # The update feed: every platform's updater package verified against the
+  # committed public key and signed for this version, then latest.json.
+  updater:
+    needs: [gate, macos, windows, linux]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-macos
+          path: output/products
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-windows
+          path: output/products
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-linux
+          path: output/products
+      - run: node scripts/release-updater.mjs build output/products
+        env:
+          MESA_RELEASE_TAG: ${{ inputs.tag }}
+          MESA_RELEASE_SHA: ${{ inputs.commit }}
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: output/release-updater/*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-updater
+          path: output/release-updater/*
           if-no-files-found: error
           retention-days: 30
   source:

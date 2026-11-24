@@ -437,6 +437,91 @@
 .recovery-message {
   margin-top: 6px;
 }
+.update-setting-row {
+  align-items: flex-start;
+}
+.update-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--text-dim);
+}
+.update-status[data-state="error"] {
+  color: var(--danger);
+}
+.update-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.update-icon-ok {
+  color: var(--ok);
+}
+.update-icon-busy {
+  color: var(--accent-text);
+  animation: update-spin 0.9s linear infinite;
+}
+@keyframes update-spin {
+  to { transform: rotate(360deg); }
+}
+.update-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.update-progress {
+  position: relative;
+  flex: 1;
+  min-width: 120px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--surface-control);
+}
+.update-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+.update-progress.indeterminate > span {
+  width: 30%;
+  animation: update-slide 1.2s ease-in-out infinite;
+}
+@keyframes update-slide {
+  from { left: -30%; }
+  to { left: 100%; }
+}
+.update-percent {
+  min-width: 3.5ch;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.update-checked {
+  margin-top: 2px;
+}
+.update-message {
+  margin-top: 6px;
+  color: var(--danger);
+}
+.update-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .update-icon-busy,
+  .update-progress.indeterminate > span {
+    animation: none;
+  }
+  .update-progress > span {
+    transition: none;
+  }
+}
 .recovery-list {
   display: grid;
   gap: 6px;

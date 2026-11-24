@@ -69,6 +69,11 @@ fn main() {
             "main_close_hides",
             "tray_popover_request",
             "tray_popover_act",
+            "updater_status",
+            "updater_check",
+            "updater_download",
+            "updater_cancel",
+            "updater_restart",
         ]),
     ))
     .expect("failed to build Mesa permissions")

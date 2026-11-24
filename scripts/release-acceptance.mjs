@@ -35,8 +35,9 @@ export function validateAcceptance(summary, { commit, tag, products }) {
   }
   return clean;
 }
-// Platform packages plus the source archive and its lockfile SBOMs.
-const formats = { macos: ['.dmg'], windows: ['.msi', '.exe'], linux: ['.AppImage', '.deb'], source: ['-source.tar.gz', '-sbom-npm.cdx.json', '-sbom-cargo.cdx.json'] };
+// Platform packages with their signed updater packages, the source archive
+// and its lockfile SBOMs, and the update feed (scripts/release-updater.mjs).
+const formats = { macos: ['.dmg', '.app.tar.gz', '.app.tar.gz.sig'], windows: ['.msi', '.exe', '.exe.sig'], linux: ['.AppImage', '.deb', '.AppImage.sig'], source: ['-source.tar.gz', '-sbom-npm.cdx.json', '-sbom-cargo.cdx.json'], updater: ['latest.json'] };
 export function candidateProducts(dir, commit, tag) {
   const products = [];
   for (const platform of Object.keys(formats)) {

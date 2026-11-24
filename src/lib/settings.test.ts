@@ -16,6 +16,13 @@ describe('settings upgrade and failure behavior', () => {
     expect(normalizeSettings({ syncAutoMinutes: -1 }).syncAutoMinutes).toBe(0);
   });
   it('preserves every valid current setting', () => { expect(normalizeSettings(DEFAULT_SETTINGS)).toEqual(DEFAULT_SETTINGS); });
+  it('turns automatic updates on by default and keeps a saved opt-out', () => {
+    expect(DEFAULT_SETTINGS.autoUpdate).toBe(true);
+    expect(normalizeSettings({}).autoUpdate).toBe(true);
+    expect(normalizeSettings({ autoUpdate: 'no' }).autoUpdate).toBe(true);
+    const target = storage(); persistSettings({ ...DEFAULT_SETTINGS, autoUpdate: false }, target);
+    expect(loadSettings(target).settings.autoUpdate).toBe(false);
+  });
   it('starts the graph at Obsidian defaults and resets graph settings saved in older units once', () => {
     expect(DEFAULT_SETTINGS).toMatchObject({
       graphShowTags: false, graphShowAttachments: false, graphShowAllFiles: false, graphExistingFilesOnly: false, graphShowOrphans: true,
