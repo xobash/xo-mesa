@@ -25,10 +25,12 @@ function collect(nodes: readonly Node[], selector: string): HTMLElement[] {
   return found.filter((element) => !done.has(element));
 }
 
-/** Mermaid palette for the active Mesa theme; only Paper and light System are light. */
+const LIGHT_THEMES: readonly string[] = ["paper", "glacier"];
+
+/** Mermaid palette for the active Mesa theme; Paper, Glacier and light System are light. */
 export function mermaidTheme(root: HTMLElement = document.documentElement): "dark" | "neutral" {
-  const theme = root.dataset.theme;
-  return theme === "paper" || (theme === "system" && root.dataset.mode !== "dark") ? "neutral" : "dark";
+  const theme = root.dataset.theme ?? "";
+  return LIGHT_THEMES.includes(theme) || (theme === "system" && root.dataset.mode !== "dark") ? "neutral" : "dark";
 }
 
 function showError(block: HTMLElement, message: string) {

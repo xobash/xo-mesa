@@ -1,6 +1,6 @@
 /* ============================================================
-   Themes — nine built-in looks (System, Void, Darkroom, Graphite,
-   Midnight, Ember, Dusk, Fjord, Paper),
+   Themes — twelve built-in looks (System, Void, Darkroom, Graphite,
+   Midnight, Ember, Dusk, Fjord, Grove, Paper, Glacier, Contrast),
    switchable at runtime. System carries its own neutral palette and
    follows the OS via a data-mode attribute (see App.tsx).
    Components only ever reference these semantic variables.
@@ -741,6 +741,220 @@
   --atmos-a: radial-gradient(860px 540px at 82% -10%, rgba(176, 82, 44, 0.03), transparent 70%);
   --atmos-b: radial-gradient(620px 460px at 4% 114%, rgba(93, 124, 140, 0.025), transparent 72%);
   --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Grove — deep forest floor: green-black surfaces, sage focus, honey-gold
+   sparks (fireflies on the graph), sky-blue tags. */
+:root[data-theme="grove"] {
+  --ext-sat: 24%;
+  --ext-light: 68%;
+  --bg: #0c120f;
+  --bg-1: #111915;
+  --bg-2: #18221d;
+  --bg-3: #212d27;
+  --border: rgba(200, 235, 210, 0.085);
+  --text: #d3dcd5;
+  --text-strong: #eef5ef;
+  --text-dim: #93a399;
+  --text-faint: #84948a;
+  --accent: #7fc79a;
+  --accent-text: #7fc79a;
+  --accent-2: #d9b86c;
+  --accent-contrast: #0b130e;
+  --danger: #f08a7a;
+  --danger-contrast: #16171a;
+  --code-bg: #16201b;
+  --radius: 10px;
+  --radius-btn: 10px;
+  --head-weight: 600;
+  --head-tracking: -0.012em;
+  --active-line: rgba(127, 199, 154, 0.045);
+  --selection: rgba(127, 199, 154, 0.2);
+  --pop-shadow: 0 20px 60px rgba(2, 6, 4, 0.66);
+  --display-weight: 500;
+  --display-tracking: -0.02em;
+  --ui-letter: 0.005em;
+  --eyebrow: 0.13em;
+  --eyebrow-color: #84948a;
+  --glass: rgba(14, 21, 17, 0.7);
+  --glass-blur: 20px;
+  --scrim: rgba(2, 6, 4, 0.58);
+  --link-underline: rgba(127, 199, 154, 0.42);
+  --measure: 68ch;
+  --spark-3: #9fc6e0;
+  --syn-heading: #eef5ef;
+  --syn-strong: #eef5ef;
+  --syn-link: #7fc79a;
+  --syn-mark: #56655c;
+  --syn-code: #d9b86c;
+  --syn-tag: #9fc6e0;
+  --syn-attr: #9fb3a5;
+  --syn-keyword: #b6d98a;
+  --syn-number: #e0a47a;
+  --graph-bg: radial-gradient(900px 600px at 50% -16%, #1a2620 0%, #101814 56%, #0a0f0c 100%);
+  --graph-node: #87a491;
+  --graph-node-active: #e3f5e8;
+  --graph-node-isolated: #5b6d61;
+  --graph-link: rgba(200, 235, 210, 0.16);
+  --graph-link-active: rgba(127, 199, 154, 0.55);
+  --graph-flicker-rgb: 217, 184, 108;
+  --graph-label: rgba(238, 245, 239, 0.86);
+  --graph-bloom-alpha: 0.4;
+  --graph-thumb-border: rgba(127, 199, 154, 0.5);
+  --graph-node-tag: #9fc6e0;
+  --graph-node-phantom: #46524b;
+  --graph-node-attachment: #d9b86c;
+  --graph-node-image: #e59ab0;
+  --graph-node-pdf: #e8735f;
+  --graph-node-media: #b49be0;
+  --graph-node-office: #7fa8e6;
+  --graph-node-archive: #a3998a;
+  --atmos-a: radial-gradient(820px 560px at 80% -12%, rgba(127, 199, 154, 0.07), transparent 70%);
+  --atmos-b: radial-gradient(640px 480px at 4% 114%, rgba(217, 184, 108, 0.045), transparent 72%);
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Glacier — cool daylight: blue-white surfaces, slate ink, cobalt focus,
+   deep teal secondary. Paper's cool, crisp counterpart. */
+:root[data-theme="glacier"] {
+  --ext-sat: 32%;
+  --ext-light: 40%;
+  --bg: #eef2f6;
+  --bg-1: #f9fbfd;
+  --bg-2: #f3f6fa;
+  --bg-3: #e2e8f0;
+  --border: #d8dfe8;
+  --text: #1c2430;
+  --text-strong: #0a1019;
+  --text-dim: #4f5b6b;
+  --text-faint: #5c6778;
+  --accent: #2f62d6;
+  --accent-text: #2a58c2;
+  --accent-2: #0f7a8a;
+  --accent-contrast: #ffffff;
+  --danger: #c03a3a;
+  --danger-contrast: #ffffff;
+  --code-bg: #edf1f6;
+  --radius: 10px;
+  --radius-btn: 8px;
+  --head-weight: 600;
+  --head-tracking: -0.015em;
+  --active-line: rgba(30, 60, 110, 0.04);
+  --selection: rgba(47, 98, 214, 0.16);
+  --pop-shadow: 0 1px 2px rgba(20, 40, 70, 0.06), 0 18px 48px rgba(20, 40, 70, 0.14);
+  --display-weight: 600;
+  --display-tracking: -0.02em;
+  --ui-letter: 0;
+  --eyebrow: 0.11em;
+  --eyebrow-color: #5c6778;
+  --glass: rgba(249, 251, 253, 0.78);
+  --glass-blur: 20px;
+  --scrim: rgba(20, 40, 70, 0.22);
+  --link-underline: rgba(47, 98, 214, 0.38);
+  --measure: 70ch;
+  --spark-3: #0f7a8a;
+  --syn-heading: #0a1019;
+  --syn-strong: #0a1019;
+  --syn-link: #2a58c2;
+  --syn-mark: #a6b0bd;
+  --syn-code: #0f7a8a;
+  --syn-tag: #7652b0;
+  --syn-attr: #7a6a3a;
+  --syn-keyword: #1f4bb0;
+  --syn-number: #9a5a12;
+  --graph-bg: radial-gradient(900px 600px at 50% -16%, #fbfdff 0%, #f0f4f8 58%, #e8edf3 100%);
+  --graph-node: #7d8898;
+  --graph-node-active: #2f62d6;
+  --graph-node-isolated: #a5afbd;
+  --graph-link: rgba(20, 40, 70, 0.2);
+  --graph-link-active: rgba(47, 98, 214, 0.5);
+  --graph-flicker-rgb: 47, 98, 214;
+  --graph-label: rgba(16, 24, 36, 0.9);
+  --graph-bloom-alpha: 0.12;
+  --graph-thumb-border: rgba(20, 40, 70, 0.2);
+  --graph-node-tag: #0f7a8a;
+  --graph-node-phantom: #c3cbd6;
+  --graph-node-attachment: #b58a2e;
+  --graph-node-image: #b8507a;
+  --graph-node-pdf: #b8402f;
+  --graph-node-media: #7652b0;
+  --graph-node-office: #3a6fb8;
+  --graph-node-archive: #727a86;
+  --atmos-a: radial-gradient(860px 540px at 82% -10%, rgba(47, 98, 214, 0.035), transparent 70%);
+  --atmos-b: radial-gradient(620px 460px at 4% 114%, rgba(15, 122, 138, 0.03), transparent 72%);
+  --pane-atmos: var(--atmos-a), var(--atmos-b);
+}
+
+/* Contrast — high contrast: pure black, white ink (every text token 7:1 or
+   more), signal-yellow focus, cyan secondary, strong borders, square corners,
+   near-opaque glass. */
+:root[data-theme="contrast"] {
+  --ext-sat: 60%;
+  --ext-light: 72%;
+  --bg: #000000;
+  --bg-1: #050505;
+  --bg-2: #101010;
+  --bg-3: #1c1c1c;
+  --border: rgba(255, 255, 255, 0.32);
+  --text: #f2f2f2;
+  --text-strong: #ffffff;
+  --text-dim: #c4c4c4;
+  --text-faint: #b0b0b0;
+  --accent: #ffd60a;
+  --accent-text: #ffd60a;
+  --accent-2: #4cc9f0;
+  --accent-contrast: #000000;
+  --danger: #ff6b6b;
+  --danger-contrast: #000000;
+  --code-bg: #121212;
+  --radius: 4px;
+  --radius-btn: 4px;
+  --head-weight: 700;
+  --head-tracking: -0.005em;
+  --active-line: rgba(255, 255, 255, 0.07);
+  --selection: rgba(255, 214, 10, 0.32);
+  --pop-shadow: 0 0 0 1px rgba(255, 255, 255, 0.32), 0 18px 48px rgba(0, 0, 0, 0.8);
+  --display-weight: 600;
+  --display-tracking: -0.01em;
+  --ui-letter: 0.01em;
+  --eyebrow: 0.12em;
+  --eyebrow-color: #b0b0b0;
+  --glass: rgba(0, 0, 0, 0.9);
+  --glass-blur: 12px;
+  --scrim: rgba(0, 0, 0, 0.72);
+  --link-underline: rgba(255, 214, 10, 0.75);
+  --measure: 68ch;
+  --spark-3: #4cc9f0;
+  --syn-heading: #ffffff;
+  --syn-strong: #ffffff;
+  --syn-link: #ffd60a;
+  --syn-mark: #9a9a9a;
+  --syn-code: #4cc9f0;
+  --syn-tag: #c39bff;
+  --syn-attr: #9fe0c0;
+  --syn-keyword: #ffd60a;
+  --syn-number: #ffb347;
+  --graph-bg: #000000;
+  --graph-node: #c8c8c8;
+  --graph-node-active: #ffd60a;
+  --graph-node-isolated: #8a8a8a;
+  --graph-link: rgba(255, 255, 255, 0.3);
+  --graph-link-active: rgba(255, 214, 10, 0.8);
+  --graph-flicker-rgb: 255, 214, 10;
+  --graph-label: rgba(255, 255, 255, 0.96);
+  --graph-bloom-alpha: 0.15;
+  --graph-thumb-border: rgba(255, 214, 10, 0.7);
+  --graph-node-tag: #4cc9f0;
+  --graph-node-phantom: #6a6a6a;
+  --graph-node-attachment: #ffb347;
+  --graph-node-image: #ff7eb6;
+  --graph-node-pdf: #ff6b6b;
+  --graph-node-media: #c39bff;
+  --graph-node-office: #6fa8ff;
+  --graph-node-archive: #bdb2a4;
+  --atmos-a: none;
+  --atmos-b: none;
+  --pane-atmos: none;
 }
 
 * {

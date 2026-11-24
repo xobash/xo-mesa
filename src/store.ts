@@ -57,7 +57,10 @@ export const THEMES: { id: ThemeId; label: string; blurb: string; swatch: [strin
   { id: "ember", label: "Ember", blurb: "Warm charcoal, amber light", swatch: ["#171412", "#e5a65e"] },
   { id: "dusk", label: "Dusk", blurb: "Plum night, rose accent", swatch: ["#151119", "#eaa6bc"] },
   { id: "fjord", label: "Fjord", blurb: "Nordic slate, frost accent", swatch: ["#1f232b", "#88c0d0"] },
+  { id: "grove", label: "Grove", blurb: "Forest green, sage and honey", swatch: ["#111915", "#7fc79a"] },
   { id: "paper", label: "Paper", blurb: "Warm light, rust accent", swatch: ["#fbf9f5", "#b0522c"] },
+  { id: "glacier", label: "Glacier", blurb: "Cool daylight, cobalt accent", swatch: ["#f9fbfd", "#2f62d6"] },
+  { id: "contrast", label: "Contrast", blurb: "High contrast, signal yellow", swatch: ["#000000", "#ffd60a"] },
 ];
 
 /** Interface styles change shell shape and density only; every theme works with each. */

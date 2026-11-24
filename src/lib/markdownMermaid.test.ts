@@ -53,6 +53,9 @@ describe('mermaid fences', () => {
     root.dataset.theme = 'system'; expect(mermaidTheme(root)).toBe('neutral');
     root.dataset.mode = 'dark'; expect(mermaidTheme(root)).toBe('dark');
     root.dataset.theme = 'midnight'; expect(mermaidTheme(root)).toBe('dark');
+    root.dataset.theme = 'glacier'; expect(mermaidTheme(root)).toBe('neutral');
+    root.dataset.theme = 'grove'; expect(mermaidTheme(root)).toBe('dark');
+    root.dataset.theme = 'contrast'; expect(mermaidTheme(root)).toBe('dark');
   });
 });
 

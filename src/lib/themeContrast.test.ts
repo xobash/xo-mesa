@@ -1,5 +1,6 @@
 import { readStylesheet } from '../styles/source';
 import { expect, it } from 'vitest';
+import { THEME_IDS } from './persistedUi';
 
 const linear = (c: number) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 const luminance = (hex: string) => {
@@ -11,20 +12,41 @@ const contrast = (a: string, b: string) => {
   return (x + 0.05) / (y + 0.05);
 };
 const palettes = new Map<string, Record<string, string>>();
+// Every token each theme declares, whatever its value (hex, rgba, gradient).
+const declared = new Map<string, Set<string>>();
+let voidBase = new Set<string>();
 const css = readStylesheet().replace(/\/\*[\s\S]*?\*\//g, '');
 for (const block of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+  const names = [...block[2].matchAll(/(--[\w-]+)\s*:/g)].map(match => match[1]);
+  if (block[1].trim() === ':root,\n:root[data-theme="void"]') voidBase = new Set(names);
   for (const selector of block[1].split(',')) {
     const key = selector.trim();
     if (!/^:root\[data-theme="[^"]+"\](?:\[data-mode="[^"]+"\])?$/.test(key)) continue;
     const tokens = palettes.get(key) ?? {};
     for (const token of block[2].matchAll(/(--[\w-]+):\s*(#[\da-f]{6})\s*;/gi)) tokens[token[1]] = token[2];
     palettes.set(key, tokens);
+    const set = declared.get(key) ?? new Set<string>();
+    for (const name of names) set.add(name);
+    declared.set(key, set);
   }
 }
-it('covers all nine themes and both System modes', () => {
-  expect(palettes.size).toBe(10);
+it('covers every theme in THEME_IDS and both System modes', () => {
+  const themes = new Set([...palettes.keys()].map(key => key.match(/data-theme="([^"]+)"/)?.[1]));
+  expect([...themes].sort()).toEqual([...THEME_IDS].sort());
+  expect(palettes.size).toBe(THEME_IDS.length + 1);
   expect([...palettes.keys()].filter(key => key.includes('system'))).toHaveLength(2);
 });
+
+// Named themes must override every Void base token, or they silently inherit Void's colours.
+for (const id of THEME_IDS.filter(theme => theme !== 'void')) {
+  it(`${id} defines the full Void base token set`, () => {
+    expect(voidBase.size).toBeGreaterThan(40);
+    const own = new Set([...(declared.get(`:root[data-theme="${id}"]`) ?? [])]);
+    for (const name of declared.get(`:root[data-theme="${id}"][data-mode="dark"]`) ?? []) own.add(name);
+    const missing = [...voidBase].filter(name => !own.has(name));
+    expect(missing, `${id} is missing`).toEqual([]);
+  });
+}
 for (const [selector, tokens] of palettes) {
   it(`${selector} keeps faint text and eyebrows readable on each surface`, () => {
     expect(tokens['--text-faint']).not.toBe(tokens['--text-dim']);
