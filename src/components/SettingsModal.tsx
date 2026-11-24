@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAppStore, THEMES } from "../store";
+import { useAppStore } from "../store";
 import {
   listRecoveryEntries,
   purgeRecoveryEntry,
@@ -7,8 +7,7 @@ import {
 } from "../lib/vault";
 import { confirmAction } from "../lib/confirmAction";
 import { Modal } from "./Modal";
-import { InterfaceStyleChoice, SettingToggle } from "./SettingsControls";
-import { HotkeySettings } from "./HotkeySettings";
+import { SettingsGroups } from "./settings/SettingsGroups";
 
 const RECOVERY_PAGE_SIZE = 20;
 const REVISION_PAGE_SIZE = 10;
@@ -18,13 +17,6 @@ export function SettingsModal() {
   const open = useAppStore((s) => s.settingsOpen);
   const setOpen = useAppStore((s) => s.setSettingsOpen);
   const revisionHistoryRequest = useAppStore((s) => s.revisionHistoryRequest);
-  const settings = useAppStore((s) => s.settings);
-  const setSetting = useAppStore((s) => s.setSetting);
-  const theme = useAppStore((s) => s.theme);
-  const uiStyle = useAppStore((s) => s.uiStyle);
-  const setUiStyle = useAppStore((s) => s.setUiStyle);
-  const setTheme = useAppStore((s) => s.setTheme);
-  const applyWorkspacePreset = useAppStore((s) => s.applyWorkspacePreset);
   const vaultPath = useAppStore((s) => s.vaultPath);
   const activePath = useAppStore((s) => s.activePath);
   const generation = useAppStore(s => s.getVaultGeneration());
@@ -200,161 +192,18 @@ export function SettingsModal() {
 
   if (!open) return null;
 
+  // Grouped Settings align to the top so a group change, which changes the
+  // dialog's height, never moves the group list under the pointer.
   return (
-    <Modal onClose={() => setOpen(false)} className="settings" title={section === "history" ? "Document history" : section === "deleted" ? "Deleted files" : "Settings"}>
+    <Modal onClose={() => setOpen(false)} align={section === "settings" ? "top" : "center"} className={section === "settings" ? "settings settings-grouped" : "settings"} title={section === "history" ? "Document history" : section === "deleted" ? "Deleted files" : "Settings"}>
       <header className="modal-head">
         <span>{section === "history" ? "Document history" : section === "deleted" ? "Deleted files" : "Settings"}</span>
         <button className="icon-btn" onClick={() => setOpen(false)} aria-label="Close">
           ×
         </button>
       </header>
-      <div className="settings-body">
-        {section === "settings" && <>
-        <div className="setting-row theme-setting-row">
-          <div className="setting-name">Appearance</div>
-          <div className="seg theme-seg">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                className={"seg-btn" + (t.id === theme ? " on" : "")}
-                title={t.blurb}
-                aria-pressed={t.id === theme}
-                onClick={() => setTheme(t.id)}
-              >
-                <span className="theme-swatch" aria-hidden="true" style={{ background: `linear-gradient(135deg, ${t.swatch[0]} 50%, ${t.swatch[1]} 50%)` }} />
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="setting-row theme-setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">Interface</div>
-            <div className="setting-desc">
-              Shape and density of the window. Works with every theme. Classic is the original look.
-            </div>
-          </div>
-          <InterfaceStyleChoice value={uiStyle} onChange={setUiStyle} />
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">Workspace layout</div>
-            <div className="setting-desc">
-              Set up panels for writing, reading, or research. Adjust them anytime.
-            </div>
-          </div>
-          <div className="seg" aria-label="Workspace layout">
-            <button className="seg-btn" onClick={() => applyWorkspacePreset("write")}>Write</button>
-            <button className="seg-btn" onClick={() => applyWorkspacePreset("read")}>Read</button>
-            <button className="seg-btn" onClick={() => applyWorkspacePreset("research")}>Research</button>
-          </div>
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">File tabs</div>
-            <div className="setting-desc">
-              Show open files above the editor.
-            </div>
-          </div>
-          <SettingToggle
-            label="File tabs"
-            on={settings.enableTabs}
-            onChange={(v) => setSetting("enableTabs", v)}
-          />
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">Preview delay</div>
-            <div className="setting-desc">
-              Wait before showing a preview on hover.
-            </div>
-          </div>
-          <div className="seg">
-            {([
-              ["Short", 200],
-              ["Normal", 450],
-              ["Long", 900],
-            ] as const).map(([label, ms]) => (
-              <button
-                key={ms}
-                className={"seg-btn" + (settings.hoverDelayMs === ms ? " on" : "")}
-                aria-pressed={settings.hoverDelayMs === ms}
-                onClick={() => setSetting("hoverDelayMs", ms)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">Layered overlays</div>
-            <div className="setting-desc">
-              Draw menus, hover cards and dialogs on their own layer for smoother fades.
-            </div>
-          </div>
-          <SettingToggle
-            label="Layered overlays"
-            on={settings.hardwareAccel}
-            onChange={(v) => setSetting("hardwareAccel", v)}
-          />
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">Interface animations</div>
-            <div className="setting-desc">Move and fade interface elements.</div>
-          </div>
-          <SettingToggle
-            label="Interface animations"
-            on={settings.animations}
-            onChange={(v) => setSetting("animations", v)}
-          />
-        </div>
-
-        <div className="setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">Auto-hide sidebar</div>
-            <div className="setting-desc">
-              Reveal the sidebar when the pointer reaches the left edge.
-            </div>
-          </div>
-          <SettingToggle
-            label="Auto-hide sidebar"
-            on={settings.sidebarAutoHide}
-            onChange={(v) => {
-              setSetting("sidebarAutoHide", v);
-              // Enabling auto-hide implies the sidebar exists (to reveal on hover).
-              if (v) setSetting("sidebarOpen", true);
-            }}
-          />
-        </div>
-
-        <div className="setting-row"><div className="setting-meta"><div className="setting-name">Hide generated files</div><div className="setting-desc">Hide archives and conflict copies in the sidebar. Search still finds them.</div></div><SettingToggle label="Hide generated files" on={settings.hideGeneratedFiles} onChange={value => setSetting("hideGeneratedFiles", value)} /></div>
-
-        <div className="setting-row">
-          <div className="setting-meta">
-            <div className="setting-name">Templates folder</div>
-            <div className="setting-desc">
-              Notes in this folder appear in Insert template. Use {"{{date}}"}, {"{{time}}"} and {"{{title}}"} as placeholders.
-            </div>
-          </div>
-          <input
-            className="text-input"
-            aria-label="Templates folder"
-            placeholder="Templates"
-            value={settings.templatesFolder}
-            onChange={(event) => setSetting("templatesFolder", event.target.value)}
-          />
-        </div>
-
-        <HotkeySettings />
-        </>}
+      {section === "settings" && <SettingsGroups />}
+      {section !== "settings" && <div className="settings-body">
         {section === "deleted" && <div className="setting-row recovery-setting-row">
           <div className="setting-meta">
             <div className="setting-name">Recovery storage</div>
@@ -483,7 +332,7 @@ export function SettingsModal() {
             ) : null}
           </div>
         </div>}
-      </div>
+      </div>}
       {purgeRequest && purgeRequest.context === context && <Modal title="Permanently delete recovery files" onClose={() => setPurgeRequest(null)}>
         <div className="modal-head">Permanently delete {purgeRequest.label}?</div>
         <div className="modal-body">

@@ -79,16 +79,16 @@ stays visible in the save-recovery UI.
 
 ## Templates
 
-Put Markdown notes in the templates folder (Settings → **Templates folder**,
+Put Markdown notes in the templates folder (Settings → Files → **Templates folder**,
 default `Templates`; subfolders count). The palette command **Insert
 template…** lists them. Mesa fills `{{date}}` (YYYY-MM-DD), `{{time}}` (HH:MM)
 and `{{title}}` (the open note's title) and inserts the result at the cursor of
 the open note. The insert is an ordinary edit with undo and verified save. The
 daily note still uses `daily.md` in the same folder.
 
-## Hotkeys
+## Shortcuts
 
-Settings → **Hotkeys** assigns a shortcut to any command-palette command. Click
+Settings → **Shortcuts** assigns a shortcut to any command-palette command. Click
 **Set**, press the keys, or press Escape to cancel. A shortcut needs
 `Ctrl/Cmd` or `Alt` with a key, or a function key, so ordinary typing never
 runs a command. One setting works on every platform: its `Mod` key is `Cmd` on
@@ -103,7 +103,7 @@ Delete keys, and `Ctrl+S` on Windows and Linux, where it saves) and shortcuts
 that another command has. A user shortcut takes precedence over the editor's own
 keymap; on Windows and Linux a Ctrl+letter shortcut does not fire inside the Pi terminal. One bound to `F5`, `F7` or
 `Ctrl+R` still runs on Windows; only the browser's reload or caret browsing is
-blocked. The palette shows each assigned shortcut beside its command. Hotkeys
+blocked. The palette shows each assigned shortcut beside its command. Shortcuts
 are stored in Mesa's settings, not in the vault.
 
 ## Code
@@ -114,7 +114,7 @@ are stored in Mesa's settings, not in the vault.
 | Find and replace | `src/components/Editor.tsx`, `src/lib/editorCommands.ts` | `editorFindReplace.test.tsx` |
 | Unlinked mentions | `src/lib/unlinkedMentions.ts`, `src/components/Backlinks.tsx`, store `linkUnlinkedMention` | `unlinkedMentions.test.ts`, `Backlinks.unlinked.test.tsx`, `store.noteFeatures.test.ts` |
 | Templates | `src/lib/daily.ts` (`templatePaths`, `applyTemplate`), store `renderTemplate`, `CommandPalette.tsx` | `daily.test.ts`, `store.noteFeatures.test.ts`, `paletteHotkeys.test.tsx` |
-| Hotkeys | `src/lib/hotkeys.ts`, `src/components/paletteCommands.ts`, `useCustomHotkeys.ts`, `HotkeySettings.tsx` | `hotkeys.test.ts`, `settings.test.ts`, `paletteHotkeys.test.tsx` |
+| Shortcuts | `src/lib/hotkeys.ts`, `src/components/paletteCommands.ts`, `useCustomHotkeys.ts`, `HotkeySettings.tsx` | `hotkeys.test.ts`, `settings.test.ts`, `paletteHotkeys.test.tsx` |
 
 ## Limits
 

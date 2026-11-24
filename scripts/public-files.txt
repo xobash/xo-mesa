@@ -372,6 +372,12 @@ src/components/piSession.ts
 src/components/previewTriggers.test.ts
 src/components/previewTriggers.ts
 src/components/rtfDom.ts
+src/components/settings/AppearanceGroup.tsx
+src/components/settings/FilesGroup.tsx
+src/components/settings/SettingsGroups.tsx
+src/components/settings/UpdatesGroup.tsx
+src/components/settings/WorkspaceGroup.tsx
+src/components/settings/settingsGroupList.ts
 src/components/textDocuments.test.tsx
 src/components/useApplyTheme.ts
 src/components/useBrowserKeyGuard.test.tsx
@@ -440,6 +446,8 @@ src/lib/activity.test.ts
 src/lib/activity.ts
 src/lib/agent.test.ts
 src/lib/agent.ts
+src/lib/appVersion.test.ts
+src/lib/appVersion.ts
 src/lib/auditGuards.test.ts
 src/lib/backgroundWorkGovernor.test.ts
 src/lib/backgroundWorkGovernor.ts

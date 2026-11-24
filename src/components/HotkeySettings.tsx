@@ -34,7 +34,7 @@ export function HotkeySettings() {
   return (
     <div className="setting-row hotkey-settings">
       <div className="setting-meta">
-        <div className="setting-name">Hotkeys</div>
+        <div className="setting-name">Shortcuts</div>
         <div className="setting-desc">
           Assign a shortcut to any command-palette command. Use Ctrl/Cmd or Alt with a key, or a function key. Press Escape to cancel.
         </div>
@@ -45,7 +45,7 @@ export function HotkeySettings() {
           const active = recording === command.id;
           return (
             <div className="hotkey-row" key={command.id}>
-              <span>{command.label}</span>
+              <span className="hotkey-label" title={command.label}>{command.label}</span>
               <span className="hotkey-actions">
                 {chord ? <kbd>{formatHotkey(chord)}</kbd> : command.hint ? <kbd aria-label="Built-in shortcut">{formatHotkey(command.hint)}</kbd> : null}
                 <button

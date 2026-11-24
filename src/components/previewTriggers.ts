@@ -6,7 +6,7 @@ import { clamp } from "../lib/clamp";
 /**
  * Shared hover-to-preview triggers for any DOM element (sidebar files/folders,
  * tag chips). They drive the single global preview card in the store, honoring
- * the Settings → hover delay, and place the card beside the element, flipping /
+ * the Settings → Workspace preview delay, and place the card beside the element, flipping /
  * clamping so it always stays on screen. The graph view manages its own hover
  * timing but renders the same <PreviewCard>.
  */

@@ -72,11 +72,20 @@ status bar says what it saved (inside the Pi terminal Pi also receives
 `Ctrl+S`), and AltGr
 (Ctrl+Alt) never triggers a Ctrl shortcut.
 
-Settings → Hotkeys assigns your own shortcut to any of these commands; the
+Settings → Shortcuts assigns your own shortcut to any of these commands; the
 palette shows it beside the command. On Windows and Linux, custom Ctrl+letter
 shortcuts do not fire inside the Pi terminal, so readline keeps them; other
 shortcuts, and every shortcut on macOS, still work there. See [note-features.md](note-features.md)
 for the rules and the reserved shortcuts.
+
+## Settings
+
+Settings shows one group at a time: Appearance, Workspace, Files, Shortcuts
+and Updates. Up and Down (or Home and End) move between groups in the list on
+the left; Enter or Space opens a group; Tab moves into it. Options people
+rarely change sit behind a **More** button inside their group. Settings
+reopens on the last group you used until Mesa restarts. The graph, Sync and Pi
+keep their own settings in their own panels.
 
 ## Overlay Calendar
 

@@ -492,6 +492,113 @@
   margin-top: 2px;
   max-width: 320px;
 }
+/* Grouped Settings: group list on the left, one open group on the right. */
+.modal.settings.settings-grouped {
+  width: min(800px, 92vw);
+}
+.settings-groups {
+  display: grid;
+  grid-template-columns: 156px minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--surface-rule);
+}
+.settings-nav-btn {
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-btn);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.settings-nav-btn:hover {
+  background: var(--surface-control-hover);
+  color: var(--text);
+}
+.settings-nav-btn[aria-expanded="true"] {
+  background: var(--surface-control);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.settings-group-panel {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 18px 12px;
+}
+.settings-more {
+  padding: 8px 0 2px;
+}
+.settings-more-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  margin-left: -6px;
+  border: none;
+  border-radius: var(--radius-btn);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-more-toggle:hover {
+  color: var(--text);
+}
+.settings-more-chevron {
+  width: 10px;
+}
+.settings-more-body > .setting-row:last-child {
+  border-bottom: none;
+}
+.settings-version {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+/* Shortcuts: two columns of hotkey rows so the group fits without scrolling. */
+.settings-group-panel .hotkey-settings .setting-desc {
+  max-width: none;
+}
+.settings-group-panel .hotkey-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 20px;
+}
+.settings-group-panel .hotkey-row {
+  flex-wrap: nowrap;
+}
+.settings-group-panel .hotkey-row .hotkey-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-group-panel .hotkey-conflict {
+  white-space: normal;
+}
+@media (max-width: 560px) {
+  .settings-groups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-group-panel .hotkey-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    border-bottom: 1px solid var(--surface-rule);
+  }
+}
 .settings-foot {
   padding: 12px 18px;
   border-top: 1px solid var(--border);

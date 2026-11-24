@@ -3,6 +3,7 @@ import { useAppStore } from "../store";
 import { type SyncProgress } from "../lib/syncUi";
 import { buildTroubleshootingPackage, formatLogLine } from "../lib/syncDiagnostics";
 import { IN_TAURI } from "../lib/vault";
+import { appVersion } from "../lib/appVersion";
 import { copyText } from "../lib/clipboard";
 
 export function progressLabel(p: SyncProgress | null): string {
@@ -85,22 +86,14 @@ export function SyncConsole() {
   };
 
   const copyPackage = async () => {
-    let appVersion = "dev";
-    if (IN_TAURI) {
-      try {
-        const { getVersion } = await import("@tauri-apps/api/app");
-        appVersion = await getVersion();
-      } catch {
-        /* keep "dev" */
-      }
-    }
+    const version = await appVersion();
     let home: string | undefined;
     if (IN_TAURI) {
       try { home = await (await import("@tauri-apps/api/path")).homeDir(); } catch { /* Generic home-path scrubbing remains available. */ }
     }
     const peer = settings.peers.find((p) => p.id === lastPeerId);
     const pkg = buildTroubleshootingPackage({
-      appVersion,
+      appVersion: version,
       paths: { vaultRoot: vaultPath ?? undefined, home },
       userAgent: navigator.userAgent,
       vaultFileCount: fileCount,

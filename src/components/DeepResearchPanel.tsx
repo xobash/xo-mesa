@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppStore, getStore } from "../store";
 import type { DeepResearchRunState } from "../store";
 import { IN_TAURI } from "../lib/vault";
+import { appVersion } from "../lib/appVersion";
 import { type ResearchContextScope } from "../lib/deepResearch";
 import {
   RESEARCH_DEPTH_PRESETS,
@@ -64,18 +65,10 @@ export function DeepResearchPanel({
     const cur = runOverride ?? getStore().deepResearch;
     if (!cur) return;
     const kitPromise = (async () => {
-      let appVersion = "dev";
-      if (IN_TAURI) {
-        try {
-          const { getVersion } = await import("@tauri-apps/api/app");
-          appVersion = await getVersion();
-        } catch {
-          /* keep "dev" */
-        }
-      }
+      const version = await appVersion();
       const sessionId = cur.piSessionId ?? currentPiSessionId();
       const input = {
-        appVersion,
+        appVersion: version,
         userAgent: navigator.userAgent,
         vaultFileCount: fileCount,
         vaultNoteCount: noteCount,
