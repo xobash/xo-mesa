@@ -12,7 +12,6 @@ export interface AgentContext {
   openFilePaths: string[];
   centerView: string;
   rightViews: string[];
-  accessedPaths: string[];
 }
 
 /** Keep the repeated per-turn context small on local models. The active
@@ -57,7 +56,6 @@ export function buildAgentContext(input: {
       .filter((path): path is string => Boolean(path)),
     centerView: input.settings.centerView,
     rightViews: input.settings.rightStack,
-    accessedPaths: openPaths,
   };
 }
 
@@ -72,9 +70,7 @@ export function contextPrompt(ctx: AgentContext): string {
     `Current document: ${ctx.activePath ?? "(none)"}`,
     `Other open documents: ${otherOpenPaths.length ? otherOpenPaths.join(", ") : "(none)"}`,
     `View: ${ctx.centerView}; side views: ${ctx.rightViews.length ? ctx.rightViews.join(", ") : "(none)"}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  ].join("\n");
 }
 
 export function webSearchUrl(query: string): string {

@@ -52,5 +52,6 @@ describe("diffBlocks", () => {
     const a = Array.from({ length: 50_000 }, (_, i) => `p${i}`);
     const b = a.map((x, i) => (i === 25_000 ? "edited" : x));
     expect(checkMatch(a, b)).toBe(49_999);
-  });
+    // Under 1 s alone; coverage on a loaded machine can pass the 5 s default.
+  }, 30000);
 });

@@ -19,6 +19,7 @@ import {
   researchTroubleshootingTrigger,
 } from "../lib/deepResearchDiagnostics";
 import { currentPiSessionId } from "../lib/deepResearchRun";
+import { snapshotTranscript, type TerminalSnapshot } from "../lib/terminalReplay";
 import { invoke } from "@tauri-apps/api/core";
 import { busy, activeRunStarted, KIND_ICON, SCOPE_INFO, num, saveKitToDisk } from "./deepResearchPanelHelpers";
 import { copyText } from "../lib/clipboard";
@@ -79,8 +80,8 @@ export function DeepResearchPanel({
       if (IN_TAURI) {
         if (sessionId) {
           try {
-            const snapshot = await invoke<{ data: string }>("terminal_snapshot", { sessionId });
-            input.piSessionTranscript = snapshot.data;
+            const snapshot = await invoke<TerminalSnapshot>("terminal_snapshot", { sessionId });
+            input.piSessionTranscript = snapshotTranscript(snapshot);
           } catch {
             input.piSessionLive = false;
             // The PTY can close as a run finishes; keep the structured export.

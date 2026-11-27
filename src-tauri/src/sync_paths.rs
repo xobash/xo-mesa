@@ -2,22 +2,34 @@
 use std::path::{Path, PathBuf};
 
 /// Join a vault-relative path safely (reject traversal / absolute segments).
+/// Sync's portable rule: also refuses names Windows cannot hold, on every OS,
+/// so a manifest never carries a path another device rejects.
 pub fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
+    join_checked(root, rel, true)
+}
+
+/// Local vault operations on this device: every confinement check of
+/// [`safe_join`], but Windows-reserved names are refused only on Windows, so
+/// a file the vault scan lists on macOS or Linux (`Why?.md`, `con.md`) can be
+/// renamed, recovered and read like any other.
+pub fn vault_join(root: &Path, rel: &str) -> Option<PathBuf> {
+    join_checked(root, rel, cfg!(windows))
+}
+
+fn join_checked(root: &Path, rel: &str, refuse_windows_reserved: bool) -> Option<PathBuf> {
     if rel.is_empty() {
         return None;
     }
-    // Keep this policy platform-independent. Windows accepts drive prefixes,
-    // alternate-data-stream syntax, and reserved device names that are not
-    // vault-relative names even when the host is Unix.
-    if rel.contains('\\') {
+    // Windows accepts drive prefixes, alternate-data-stream syntax and device
+    // names that are not vault-relative names even when the host is Unix.
+    if rel.contains('\\') || rel.starts_with('/') {
         return None;
     }
-    let normalized = rel;
-    if normalized.starts_with('/') || normalized.split('/').any(windows_reserved_segment) {
+    if refuse_windows_reserved && rel.split('/').any(windows_reserved_segment) {
         return None;
     }
     let mut p = root.to_path_buf();
-    for seg in normalized.split('/') {
+    for seg in rel.split('/') {
         if seg.is_empty() || seg == "." || seg == ".." {
             return None;
         }
@@ -55,7 +67,15 @@ pub fn windows_reserved_segment(seg: &str) -> bool {
 /// Resolve a sync path only when its existing components stay under `root`.
 /// The final component may be missing for a create-only PUT.
 pub fn safe_join_confined(root: &Path, rel: &str) -> Option<PathBuf> {
-    let path = safe_join(root, rel)?;
+    confined(root, safe_join(root, rel)?)
+}
+
+/// [`safe_join_confined`] under the local [`vault_join`] rule.
+pub fn vault_join_confined(root: &Path, rel: &str) -> Option<PathBuf> {
+    confined(root, vault_join(root, rel)?)
+}
+
+fn confined(root: &Path, path: PathBuf) -> Option<PathBuf> {
     let canonical_root = std::fs::canonicalize(root).ok()?;
     let mut existing = path.parent()?;
     loop {

@@ -6,13 +6,15 @@
  * 2026-11-19: links of graphs with `LINK_LAYER_MIN_LINKS` or more links draw
  * here; where two links cross, the crossing is slightly darker, as in
  * Obsidian's WebGL graph. Highlighted and active links, nodes and labels stay
- * on the 2D canvas above. Living motion, non-default link thickness, arrows
- * and a missing WebGL2 context use the 2D link layer instead.
+ * on the 2D canvas above. Non-default link thickness, arrows and a missing
+ * WebGL2 context use the 2D link layer instead; living motion keeps these
+ * nodes in place, so it uses this path too.
  *
  * The link buffer holds only node-index pairs and changes with the links or
- * the excluded (highlighted) links. Node centres and layout radii go to a
- * float texture each time nodes move (10,000 x 4 floats); the shader trims
- * each line to the two circle edges, so pan, zoom and dimming are uniforms.
+ * the excluded (highlighted) links. Node centres, layout radii and pulse
+ * phases go to a float texture each time nodes move (10,000 x 4 floats); the
+ * shader trims each line to the two drawn circle edges, living-motion pulse
+ * included (`pulsedRadius`), so pan, zoom, dimming and the pulse are uniforms.
  */
 import { clamp } from "../lib/clamp";
 
@@ -23,7 +25,11 @@ uniform int u_width;
 uniform vec2 u_scale;
 uniform vec2 u_offset;
 uniform float u_draw;
+// Living-motion pulse: x = angle (one turn), y = amplitude (0 when off).
+uniform vec2 u_pulse;
 vec4 node(int i) { return texelFetch(u_nodes, ivec2(i % u_width, i / u_width), 0); }
+// The node's drawn radius, as graphLinkGeometry.pulsedRadius computes it.
+float drawn(vec4 n) { return n.z * u_draw * (1.0 + sin(u_pulse.x + n.w) * u_pulse.y); }
 void main() {
   vec4 a = node(a_ends.x);
   vec4 b = node(a_ends.y);
@@ -31,9 +37,9 @@ void main() {
   if (a.z < 0.0 || b.z < 0.0) { gl_Position = vec4(2.0, 2.0, 0.0, 1.0); return; }
   vec2 d = b.xy - a.xy;
   float len = length(d);
-  float r = a.z * u_draw;
+  float r = drawn(a);
   // A link too short to show collapses both ends onto its midpoint.
-  vec2 w = len > r + b.z * u_draw ? a.xy + d / len * r : (a.xy + b.xy) * 0.5;
+  vec2 w = len > r + drawn(b) ? a.xy + d / len * r : (a.xy + b.xy) * 0.5;
   vec2 p = w * u_scale + u_offset;
   gl_Position = vec4(p.x, -p.y, 0.0, 1.0);
 }`;
@@ -66,11 +72,13 @@ export interface GlLinkFrame {
   /** Node index of each link's ends (-1: not drawn). */
   s: Int32Array; t: Int32Array;
   count: number;
-  /** Node centres and layout radii. */
-  x: Float64Array; y: Float64Array; base: Float64Array;
+  /** Node centres, layout radii and pulse phases (`renderPhase`). */
+  x: Float64Array; y: Float64Array; base: Float64Array; phase: Float64Array;
   nodeCount: number;
   /** Drawn radius per layout radius at this zoom (`nodeDrawScale`). */
   drawScale: number;
+  /** Living-motion pulse angle (`pulseAngle`) and amplitude; 0 amplitude when off. */
+  pulseAngle: number; pulseAmp: number;
   /** Per node, 1 when its links draw elsewhere (highlighted or active); null when none do. */
   skipNodes: Uint8Array | null;
   /** Identifies `skipNodes`; a change rebuilds the link buffer. */
@@ -85,7 +93,7 @@ export interface GlLinkFrame {
   alpha: number;
 }
 
-type Uniforms = Record<"scale" | "offset" | "color" | "draw" | "width" | "nodes", WebGLUniformLocation | null>;
+type Uniforms = Record<"scale" | "offset" | "color" | "draw" | "pulse" | "width" | "nodes", WebGLUniformLocation | null>;
 
 export class GlLinkRenderer {
   private gl: WebGL2RenderingContext | null = null;
@@ -142,6 +150,7 @@ export class GlLinkRenderer {
       offset: gl.getUniformLocation(program, "u_offset"),
       color: gl.getUniformLocation(program, "u_color"),
       draw: gl.getUniformLocation(program, "u_draw"),
+      pulse: gl.getUniformLocation(program, "u_pulse"),
       width: gl.getUniformLocation(program, "u_width"),
       nodes: gl.getUniformLocation(program, "u_nodes"),
     };
@@ -179,10 +188,10 @@ export class GlLinkRenderer {
     const rows = Math.max(1, Math.ceil(frame.nodeCount / TEXTURE_WIDTH));
     const size = rows * TEXTURE_WIDTH * 4;
     if (this.texels.length < size) this.texels = new Float32Array(size);
-    const v = this.texels, { x, y, base } = frame;
+    const v = this.texels, { x, y, base, phase } = frame;
     for (let i = 0; i < frame.nodeCount; i++) {
       const fine = Number.isFinite(x[i]) && Number.isFinite(y[i]);
-      v[i * 4] = fine ? x[i] : 0; v[i * 4 + 1] = fine ? y[i] : 0; v[i * 4 + 2] = fine ? base[i] : -1;
+      v[i * 4] = fine ? x[i] : 0; v[i * 4 + 1] = fine ? y[i] : 0; v[i * 4 + 2] = fine ? base[i] : -1; v[i * 4 + 3] = phase[i];
     }
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     if (rows !== this.textureRows) {
@@ -218,6 +227,7 @@ export class GlLinkRenderer {
     gl.uniform1i(this.uniforms.nodes, 0);
     gl.uniform1i(this.uniforms.width, TEXTURE_WIDTH);
     gl.uniform1f(this.uniforms.draw, frame.drawScale);
+    gl.uniform2f(this.uniforms.pulse, frame.pulseAngle, frame.pulseAmp);
     // Device px = dpr * (k * world + pan); clip = device / size * 2 - 1.
     gl.uniform2f(this.uniforms.scale, (2 * frame.dpr * frame.k) / canvas.width, (2 * frame.dpr * frame.k) / canvas.height);
     gl.uniform2f(this.uniforms.offset, (2 * frame.dpr * frame.panX) / canvas.width - 1, (2 * frame.dpr * frame.panY) / canvas.height - 1);

@@ -20,7 +20,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
     "core:webview:default",
-    "dialog:default",
+    "dialog:allow-message",
     "dialog:allow-open",
     "fs:allow-read-text-file",
     "fs:allow-read-file",

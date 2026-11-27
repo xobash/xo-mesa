@@ -11,7 +11,13 @@ The only update traffic is HTTPS to GitHub Releases of `xobash/xo-mesa`:
 
 1. `GET https://github.com/xobash/xo-mesa/releases/latest/download/latest.json`
 2. When that file names a newer version and Mesa is set to download it, `GET`
-   of the one package listed for this platform.
+   of the one package listed for this platform. `latest.json` itself is not
+   signed, so Mesa first checks that the package address is exactly
+   `https://github.com/xobash/xo-mesa/releases/download/<tag>/<file>` (no other
+   host, repository, port, user name, query or dot segment) and otherwise
+   refuses the update as a signature failure without any request. GitHub
+   answers that address with a redirect to its own download host, which the
+   updater follows; the signature check covers the bytes either way.
 
 The URL is fixed: it carries no Mesa version, device, vault or user field. The
 User-Agent is the updater plugin's name and version. GitHub sees the request's
@@ -128,6 +134,7 @@ same way.
 | Overlapping checks or a check over a ready update | `Machine` in `updater.rs` | `updater_tests.rs` |
 | Progress events flooding the UI thread | `ProgressThrottle` | `updater_tests.rs` (bounded events for a 100 MB download) |
 | Update traffic with automatic updates off | `watchUpdates`, `updater_check { download }`, `updater_cancel` | `controllers/updates.test.ts`, `UpdatesSection.test.tsx` |
+| A tampered feed sending the download to another host | `official_package_url` before `update.download` | `updater_tests.rs` |
 | An unsigned or mislabelled package, or another feed | plugin minisign check with `requireSignedVersion`; placeholder key turns updates off; `updaterConfig` | `updater_tests.rs`, `scripts/release-updater.check.mjs` |
 | Renderer access to the plugin's own commands | No capability grants `updater:*`; Mesa's five commands are main-only | `updater_tests.rs`, `nativeScope.test.ts` |
 

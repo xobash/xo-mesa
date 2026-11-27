@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { useAppStore, getStore } from "../store";
 import type { AppState } from "../store";
+import type { Settings } from "../types";
 import { IN_TAURI, DEMO_ROOT } from "../lib/vault";
 import { syncSecretsNeededAtStartup } from "../lib/syncSecrets";
 import { loadRecentVaults, resolveRecentVault } from "../lib/persistedUi";
@@ -98,18 +99,24 @@ export function useMainWindowEffects({
   // not re-render the whole shell just to rebuild this context.
   useEffect(() => {
     if (!mainWindow || !IN_TAURI) return;
-    let published: Pick<AppState, "vaultName" | "vaultPath" | "activePath" | "openTabs" | "settings"> | null = null;
+    // Context reads only these fields; any other settings change (theme, pane
+    // widths, graph tuning) must not send it again.
+    let published: {
+      vaultName: string; vaultPath: string | null; activePath: string | null; openTabs: string[];
+      centerView: Settings["centerView"]; rightStack: Settings["rightStack"];
+    } | null = null;
     const publish = (state: AppState) => {
+      const { vaultName, vaultPath, activePath, openTabs, settings } = state;
       if (
         published &&
-        published.vaultName === state.vaultName &&
-        published.vaultPath === state.vaultPath &&
-        published.activePath === state.activePath &&
-        published.openTabs === state.openTabs &&
-        published.settings === state.settings
+        published.vaultName === vaultName &&
+        published.vaultPath === vaultPath &&
+        published.activePath === activePath &&
+        published.openTabs === openTabs &&
+        published.centerView === settings.centerView &&
+        published.rightStack === settings.rightStack
       ) return;
-      const { vaultName, vaultPath, activePath, openTabs, settings } = state;
-      published = { vaultName, vaultPath, activePath, openTabs, settings };
+      published = { vaultName, vaultPath, activePath, openTabs, centerView: settings.centerView, rightStack: settings.rightStack };
       const liveAgentContext = buildAgentContext({ vaultName, vaultPath, activePath, openTabs, settings });
       const context = vaultPath ? contextPrompt(liveAgentContext) : "";
       void PI_CONTEXT_PUBLISH_QUEUE.enqueue(context, async () => {

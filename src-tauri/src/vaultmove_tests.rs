@@ -146,3 +146,22 @@ fn rejects_linked_source_parent_and_destination_without_outside_mutation() {
     assert!(!outside.0.join("new").exists());
     assert_eq!(fs::read(vault.0.join("inside.md")).unwrap(), b"inside");
 }
+
+#[cfg(unix)]
+#[test]
+fn renames_names_that_only_windows_reserves() {
+    let vault = TempVault::new("reserved");
+    vault.write("Why?.md", "question");
+    vault.write("con.md", "console");
+    rename_no_replace(&vault.0, "Why?.md", "Why not?.md", false).unwrap();
+    rename_no_replace(&vault.0, "con.md", "aux/prn.md", false).unwrap();
+    assert_eq!(fs::read(vault.0.join("Why not?.md")).unwrap(), b"question");
+    assert_eq!(fs::read(vault.0.join("aux/prn.md")).unwrap(), b"console");
+    for to in ["../out?.md", "/tmp/out?.md", "a/../../con.md"] {
+        assert!(
+            rename_no_replace(&vault.0, "Why not?.md", to, false).is_err(),
+            "{to}"
+        );
+    }
+    assert!(vault.0.join("Why not?.md").exists());
+}

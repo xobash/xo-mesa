@@ -23,7 +23,7 @@ try {
     `export { buildGraph } from ${JSON.stringify(resolve('src/lib/graph.ts'))};`,
     `export { createGraphSimulation, graphOpenWarmup, warmGraphSimulation, seedGraphNodes, seedFromReusedLayout, seededRandom, GraphPhysicsSession, snapshotGraphPhysics, GRAPH_FORCE_DEFAULTS, GRAPH_SETTLED_ALPHA, GRAPH_OVERLAP_ALPHA, GRAPH_REHEAT_ALPHA } from ${JSON.stringify(resolve('src/lib/graphPhysics.ts'))};`,
     `export { graphLayoutKey, rememberGraphLayout, reusableGraphLayout } from ${JSON.stringify(resolve('src/lib/graphLayoutCache.ts'))};`,
-    `export { nodeRadius, resolveOverlaps, GraphHitIndex, nearestNodeLinear } from ${JSON.stringify(resolve('src/lib/graphGeometry.ts'))};`,
+    `export { nodeRadius, maxNodeDegree, resolveOverlaps, GraphHitIndex, nearestNodeLinear } from ${JSON.stringify(resolve('src/lib/graphGeometry.ts'))};`,
     `export { buildNeighbors } from ${JSON.stringify(resolve('src/lib/graph.ts'))};`,
   ].join('\n'));
   buildSync({ entryPoints: [entry], outfile: modulePath, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent' });
@@ -101,7 +101,8 @@ const heapBefore = process.memoryUsage().heapUsed;
 const [buildMs, built] = time(() => g.buildGraph(notes, files, opts));
 const { nodes, links } = built;
 const view = { w: 1400, h: 900 };
-const radius = (n) => g.nodeRadius(n, 1);
+const maxDegree = g.maxNodeDegree(nodes);
+const radius = (n) => g.nodeRadius(n, 1, maxDegree);
 const warm = g.graphOpenWarmup(nodes.length);
 const [seedMs] = time(() => g.seedGraphNodes(nodes, new Map(), g.buildNeighbors(links), g.seededRandom(nodes.length)));
 const [createMs, sim] = time(() => g.createGraphSimulation(nodes, links, g.GRAPH_FORCE_DEFAULTS));
@@ -222,7 +223,8 @@ for (let i = 0; i < size; i++) {
 const heap = [];
 for (let cycle = 0; cycle < 6; cycle++) {
   const { nodes, links } = g.buildGraph(notes, files, { showTags: false, existingOnly: false, showOrphans: true, showAttachments: true });
-  const radius = (n) => g.nodeRadius(n, 1);
+  const maxDegree = g.maxNodeDegree(nodes);
+  const radius = (n) => g.nodeRadius(n, 1, maxDegree);
   g.seedGraphNodes(nodes, new Map(), g.buildNeighbors(links), g.seededRandom(nodes.length));
   const sim = g.createGraphSimulation(nodes, links, g.GRAPH_FORCE_DEFAULTS);
   for (let i = 0; i < 5; i++) sim.tick();

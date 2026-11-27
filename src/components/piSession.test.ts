@@ -185,7 +185,7 @@ function channel(index = -1) {
   return all[index < 0 ? all.length + index : index];
 }
 function output(sessionId: string, seq: number, data: string, index = -1) {
-  channel(index).onmessage({ event: "terminal://output", payload: { sessionId, stream: "stdout", data, seq } });
+  channel(index).onmessage({ event: "terminal://output", payload: { sessionId, data, seq } });
 }
 function exit(sessionId: string, code: number | null, index = -1) {
   channel(index).onmessage({ event: "terminal://exit", payload: { sessionId, code } });
@@ -203,7 +203,7 @@ beforeEach(async () => {
   native.fitSize = null;
   native.inTauri = true;
   nextSession = 0;
-  snapshotFor = async () => ({ data: "", seq: 0 });
+  snapshotFor = async () => ({ seq: 0, events: [] });
   native.invoke.mockImplementation(async (cmd, args) => {
     if (cmd === "terminal_start") return `pty-${++nextSession}`;
     if (cmd === "terminal_subscribe") return `sub-${native.FakeChannel.all.length}`;
@@ -260,7 +260,7 @@ describe("shared Pi terminal", () => {
     native.inTauri = false;
     const term = await terminal();
     await expect(pi.ensureSharedPiSession("/vault", ctx, "c", term as never)).rejects.toThrow(/Browser preview/);
-    await expect(pi.adoptSharedPiSession("pty-9", "/vault", "c", term as never)).rejects.toThrow(/Browser preview/);
+    await expect(pi.adoptSharedPiSession("pty-9", "/vault", term as never)).rejects.toThrow(/Browser preview/);
     expect(native.invoke).not.toHaveBeenCalled();
   });
 });
@@ -290,13 +290,13 @@ describe("ensureSharedPiSession", () => {
       },
     });
     expect((calls("terminal_start")[0].envs as Record<string, string>).MESA_DEEP_RESEARCH).toBeUndefined();
-    expect(bridge.getPiSessionSnapshot()).toMatchObject({ sessionId: "pty-1", vaultPath: "/vault", contextText: "ctx" });
+    expect(bridge.getPiSessionSnapshot()).toMatchObject({ sessionId: "pty-1", vaultPath: "/vault" });
   });
 
   it("marks the session for an active Deep Research run", async () => {
     store.reset({ ...store.getState(), deepResearch: { phase: "researching", runId: "run-7" } });
     await start();
-    expect(calls("terminal_start")[0].envs).toMatchObject({ MESA_DEEP_RESEARCH: "1", MESA_DEEP_RESEARCH_RUN_ID: "run-7" });
+    expect(calls("terminal_start")[0].envs).toMatchObject({ MESA_DEEP_RESEARCH_RUN_ID: "run-7" });
   });
 
   it("does not mark a finished Deep Research run", async () => {
@@ -318,7 +318,7 @@ describe("ensureSharedPiSession", () => {
     native.invoke.mockImplementation(async (cmd) => {
       if (cmd === "terminal_start") return gate.promise;
       if (cmd === "terminal_subscribe") return "sub";
-      if (cmd === "terminal_snapshot") return { data: "", seq: 0 };
+      if (cmd === "terminal_snapshot") return { seq: 0, events: [] };
       return undefined;
     });
     const term = await terminal();
@@ -330,7 +330,7 @@ describe("ensureSharedPiSession", () => {
     expect(calls("terminal_start")).toHaveLength(1);
   });
 
-  it("re-evaluates after a superseded start fails", async () => {
+  it("shares one launch for a vault whatever the context, and retries on a later call", async () => {
     let attempt = 0;
     native.invoke.mockImplementation(async (cmd) => {
       if (cmd === "terminal_start") {
@@ -339,14 +339,16 @@ describe("ensureSharedPiSession", () => {
         return "pty-retry";
       }
       if (cmd === "terminal_subscribe") return "sub";
-      if (cmd === "terminal_snapshot") return { data: "", seq: 0 };
+      if (cmd === "terminal_snapshot") return { seq: 0, events: [] };
       return undefined;
     });
     const term = await terminal();
     const first = pi.ensureSharedPiSession("/vault", ctx, "a", term as never);
     const second = pi.ensureSharedPiSession("/vault", ctx, "b", term as never);
     await expect(first).rejects.toThrow("spawn failed");
-    await expect(second).resolves.toBe("pty-retry");
+    await expect(second).rejects.toThrow("spawn failed");
+    expect(calls("terminal_start")).toHaveLength(1);
+    await expect(pi.ensureSharedPiSession("/vault", ctx, "c", term as never)).resolves.toBe("pty-retry");
     expect(calls("terminal_start")).toHaveLength(2);
   });
 
@@ -361,13 +363,26 @@ describe("ensureSharedPiSession", () => {
     expect(calls("terminal_start")[1]).toMatchObject({ cwd: "/vault-b" });
   });
 
+  it("starts one PTY when two callers switch to the same new vault at once", async () => {
+    await start("/vault-a");
+    const term = await terminal();
+    const [a, b] = await Promise.all([
+      pi.ensureSharedPiSession("/vault-b", ctx, "ctx", term as never),
+      pi.ensureSharedPiSession("/vault-b", ctx, "ctx", term as never),
+    ]);
+    expect(a).toBe("pty-2");
+    expect(b).toBe("pty-2");
+    expect(calls("terminal_start")).toHaveLength(2);
+    expect(calls("terminal_stop")).toEqual([{ sessionId: "pty-1" }]);
+  });
+
   it("still starts the new vault when stopping the old PTY fails", async () => {
     await start("/vault-a");
     native.invoke.mockImplementation(async (cmd) => {
       if (cmd === "terminal_stop") throw new Error("gone");
       if (cmd === "terminal_start") return "pty-b";
       if (cmd === "terminal_subscribe") return "sub-b";
-      if (cmd === "terminal_snapshot") return { data: "", seq: 0 };
+      if (cmd === "terminal_snapshot") return { seq: 0, events: [] };
       return undefined;
     });
     await expect(pi.ensureSharedPiSession("/vault-b", ctx, "ctx", (await terminal()) as never)).resolves.toBe("pty-b");
@@ -378,7 +393,6 @@ describe("output subscription and replay", () => {
   it("subscribes before the snapshot and replays it without pushing replay sizes to the PTY", async () => {
     native.fitSize = { cols: 100, rows: 30 };
     snapshotFor = async () => ({
-      data: "ignored",
       seq: 3,
       events: [
         { kind: "resize", cols: 60, rows: 20 },
@@ -408,7 +422,7 @@ describe("output subscription and replay", () => {
     output("pty-1", 2, "old");
     output("pty-1", 5, "new");
     expect(term.written).toEqual([]);
-    snap.resolve({ data: "snapshot", seq: 3 });
+    snap.resolve({ seq: 3, events: [{ kind: "output", data: "snapshot" }] });
     await started;
     await settle();
     expect(term.written).toEqual(["snapshot", "new"]);
@@ -447,7 +461,7 @@ describe("output subscription and replay", () => {
     output("pty-1", 1, "last words");
     exit("pty-1", 2);
     expect(exits).toEqual([]);
-    snap.resolve({ data: "", seq: 0 });
+    snap.resolve({ seq: 0, events: [] });
     await started;
     await settle();
     expect(term.written).toEqual(["last words"]);
@@ -485,7 +499,7 @@ describe("output subscription and replay", () => {
       return undefined;
     });
     const term = await terminal();
-    const adopted = pi.adoptSharedPiSession("pty-a", "/vault", "ctx", term as never);
+    const adopted = pi.adoptSharedPiSession("pty-a", "/vault", term as never);
     await settle();
     // A restart disposes the listener while subscribe is still in flight.
     const restart = bridge.requestSharedPiRestart();
@@ -504,8 +518,8 @@ describe("adoption and resize ownership", () => {
     const term = await terminal();
     term.cols = 120;
     term.rows = 40;
-    snapshotFor = async () => ({ data: "history", seq: 7 });
-    await expect(pi.adoptSharedPiSession("pty-main", "/vault", "ctx", term as never)).resolves.toBe("pty-main");
+    snapshotFor = async () => ({ seq: 7, events: [{ kind: "output", data: "history" }] });
+    await expect(pi.adoptSharedPiSession("pty-main", "/vault", term as never)).resolves.toBe("pty-main");
     await settle();
     expect(calls("terminal_attach")[0]).toEqual({ sessionId: "pty-main", handoffToken: "token-123", cols: 120, rows: 40 });
     expect(calls("terminal_start")).toHaveLength(0);
@@ -541,6 +555,25 @@ describe("adoption and resize ownership", () => {
     native.focusHandlers[0]({ payload: true });
     await settle();
     expect(calls("terminal_attach")).toEqual([{ sessionId: "pty-1", cols: term.cols, rows: term.rows }]);
+  });
+
+  it("drops a refused focus claim without an unhandled rejection", async () => {
+    await start();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      native.invoke.mockImplementation(async (cmd) => {
+        if (cmd === "terminal_attach") throw new Error("not the PTY owner");
+        return undefined;
+      });
+      native.focusHandlers[0]({ payload: true });
+      await settle();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(calls("terminal_attach")).toHaveLength(1);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 
   it("collapses a resize burst to the newest grid", async () => {

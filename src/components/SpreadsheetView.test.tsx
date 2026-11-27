@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { buildPackage } from "../lib/ooxml/fixtures/ooxmlFixtures";
 import { macroWorkbookParts, plainSheet, signedWorkbookParts, workbookParts } from "../lib/ooxml/fixtures/xlsxFixtures";
@@ -208,4 +209,16 @@ it("names a saved copy like the other editors do", async () => {
   await key(host.querySelector("textarea")!, "Enter");
   await act(async () => button("Save as copy")!.click());
   await vi.waitFor(() => expect(io.copies).toEqual(["Book copy.xlsx"]));
+});
+
+it("opens under StrictMode without a bogus reload notice", async () => {
+  await act(async () => root.render(<StrictMode><SpreadsheetView rel="Book.xlsx" editable onDirtyChange={onDirty} /></StrictMode>));
+  await vi.waitFor(() => expect(cells().length).toBeGreaterThan(0));
+  expect(host.textContent).not.toContain("Reloaded");
+});
+
+it("still explains a file it cannot open under StrictMode", async () => {
+  io.read.mockResolvedValue(new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0]));
+  await act(async () => root.render(<StrictMode><SpreadsheetView rel="Book.xlsx" editable /></StrictMode>));
+  await vi.waitFor(() => expect(host.textContent).toMatch(/encrypted or in the legacy binary Office format/));
 });

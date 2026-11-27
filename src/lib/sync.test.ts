@@ -4,7 +4,7 @@ import {
   formatFingerprint,
   mergeSyncLog,
   type SyncLogEntry,
-} from "./sync";
+} from "./syncProtocol";
 
 describe("fingerprint helpers", () => {
   const FP = "A1:B2:c3:d4 e5f6";

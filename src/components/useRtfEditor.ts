@@ -9,7 +9,7 @@ import { formatBytes } from "../lib/formatBytes";
 import { SAVE_WAIT, useSaveLock } from "./useSaveLock";
 
 /** Larger files open as text only; the editor renders every paragraph. */
-export const RTF_EDIT_LIMIT_BYTES = 8 * 1024 * 1024;
+const RTF_EDIT_LIMIT_BYTES = 8 * 1024 * 1024;
 const HISTORY_LIMIT = 100;
 const SNAPSHOT_DELAY_MS = 400;
 

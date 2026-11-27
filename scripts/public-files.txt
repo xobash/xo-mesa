@@ -126,6 +126,7 @@ src-tauri/resources/mesa-goal.ts
 src-tauri/src/activity.rs
 src-tauri/src/activity_tests.rs
 src-tauri/src/applog.rs
+src-tauri/src/atomic_replace.rs
 src-tauri/src/bearer.rs
 src-tauri/src/browse.rs
 src-tauri/src/browse_tests.rs
@@ -207,6 +208,7 @@ src/components/BookmarksList.tsx
 src/components/BrowserHarness.test.tsx
 src/components/BrowserHarness.tsx
 src/components/CenterRegion.tsx
+src/components/CodeText.tsx
 src/components/CodeView.test.tsx
 src/components/CodeView.tsx
 src/components/CommandPalette.tsx
@@ -971,6 +973,7 @@ src/styles/typography.css
 src/styles/unification.css
 src/styles/viewers.css
 src/styles/welcome.css
+src/tray/MiniGraph.test.ts
 src/tray/MiniGraph.tsx
 src/tray/TrayPopover.test.tsx
 src/tray/TrayPopover.tsx
@@ -984,4 +987,5 @@ src/vite-env.d.ts
 tray.html
 tsconfig.json
 tsconfig.node.json
+tsconfig.resources.json
 vite.config.ts

@@ -126,7 +126,10 @@ See Tauri's
 and [window customization guide](https://v2.tauri.app/learn/window-customization/).
 
 A live Pi session is never silently restarted just because the workspace
-context drifted (the user switched files) — relaunching would drop the
+context drifted (the user switched files), and changing files never re-runs
+session setup, takes keyboard focus or relaunches a stopped Pi. When Pi exits
+or cannot start, the surface shows a status banner with **Restart Pi**; a
+restart launches with the current context — relaunching would drop the
 conversation and shed any session-scoped launch env a feature injected at
 spawn (e.g. Deep Research's read-only write-block). Instead, the main Mesa
 renderer publishes the same path-only context shown in the context strip to
@@ -168,19 +171,20 @@ sequence back until the next read instead, so the emulator lays out exactly the
 columns Pi counted.
 
 Decoded bytes do not go straight out. Each session runs two threads: one reads
-the PTY as fast as it produces bytes and only *stages* what it decodes, and one
-emits. Emitting per read meant a bulk Pi response — a long file dump, a big
-tool result — became one `terminal://output` event per ~1 KB. A measured 1.3 MB
-of output was 1,303 events in 0.02 s. On Windows every one of those is a JS
-source string compiled on the app's UI thread plus a forced repaint, which is
-enough to bury the message pump and freeze the window mid-answer.
+the PTY and only *stages* what it decodes, and one emits. Emitting per read
+meant a bulk Pi response — a long file dump, a big tool result — became one
+`terminal://output` message per ~1 KB. A measured 1.3 MB of output was 1,303
+messages in 0.02 s. On Windows every message is work on the app's UI thread
+plus a forced repaint, which is enough to bury the message pump and freeze the
+window mid-answer.
 
 So the emitter coalesces: bytes that arrive within 8 ms of the last send go out
 together, capped at 64 KB per event. Output that arrives after a quiet moment —
 your keystroke echo, a single line after a pause — is sent immediately and pays
 no delay at all; only bytes arriving inside an already-open window wait, and 8
-ms is half a frame. The reader never waits on the emitter, so Pi is never
-slowed by its own output. Bytes and their order are preserved exactly, and any
+ms is half a frame. The reader waits only when 1 MiB of decoded output is
+already staged ahead of the emitter, which bounds memory without dropping
+bytes. Bytes and their order are preserved exactly, and any
 output read before a terminal resize is recorded ahead of that resize, which is
 what keeps a detached window's replay wrapping lines the way Pi wrote them.
 
@@ -209,7 +213,10 @@ review-before-apply workflow. Mesa therefore owns the one PTY process and
 renders it with xterm.js inside a real movable/resizable OS window.
 
 Mesa launches `pi` directly in the current vault folder and passes the launch
-values through `MESA_*` environment variables. `MESA_CONTEXT` is a path-only
+values through `MESA_*` environment variables. If Mesa cannot start its
+loopback bridge and bundled extensions, it does not start Pi: the activity
+extension is what blocks text writes to binary files, so Pi never runs in Mesa
+without it. `MESA_CONTEXT` is a path-only
 fallback: Mesa's `mesa-context` extension adds it to the prompt before a turn
 only when the live context bridge does not answer.
 
@@ -374,7 +381,10 @@ Links route through the broker again. Archive uses verified create-only vault
 writes under `Web Archives/`; the saved document opens offline.
 
 Pi's `browse(url)` returns native-fetched source data and mirrors navigation
-into the reader. `browse_read()` returns the latest fetched source and its age,
+into the reader. Mesa fetches one page at a time; a browse the user cancelled
+keeps fetching until its 20-second limit, so the next `browse` waits it out
+(bounded, and it stops at once when cancelled) instead of failing. The result carries the page title, up to 40 absolute http(s) links from
+`<a href>` and whether the 4 MiB fetch limit cut the page short. `browse_read()` returns the latest fetched source and its age,
 not a page-controlled DOM snapshot or proof of what the user saw. User browsing
 and Pi browsing retain separate in-memory cookie jars. The reader fetches a page
 Pi opened, and links followed from it, with Pi's jar; only addresses the user

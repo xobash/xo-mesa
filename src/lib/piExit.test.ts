@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { piExitMessage, retireExitedPiSession, type PiSessionFields } from "./piExit";
 
-const live = (): PiSessionFields => ({ sessionId: "s1", vaultPath: "/v", contextText: "c", lastOutputSeq: 9 });
+const live = (): PiSessionFields => ({ sessionId: "s1", vaultPath: "/v", lastOutputSeq: 9 });
 
 describe("Pi exit handling", () => {
   it("clears the shared session so the next start spawns a new one", () => {
     const session = live();
     expect(retireExitedPiSession(session, { sessionId: "s1", code: 3 })).toBe(true);
-    expect(session).toEqual({ sessionId: null, vaultPath: null, contextText: null, lastOutputSeq: 0 });
+    expect(session).toEqual({ sessionId: null, vaultPath: null, lastOutputSeq: 0 });
   });
 
   it("ignores exits for another or already-cleared session", () => {

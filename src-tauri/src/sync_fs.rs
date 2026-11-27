@@ -269,6 +269,24 @@ pub(super) fn run_before_move_hook() {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_EXCHANGE: std::cell::RefCell<Option<std::io::Error>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Test seam: fail the next replacement on this thread right after its
+/// atomic exchange, before the displaced-bytes check.
+#[cfg(test)]
+pub(super) fn fail_after_exchange(error: std::io::Error) {
+    AFTER_EXCHANGE.with(|slot| *slot.borrow_mut() = Some(error));
+}
+
+#[cfg(test)]
+fn take_after_exchange_failure() -> Option<std::io::Error> {
+    AFTER_EXCHANGE.with(|slot| slot.borrow_mut().take())
+}
+
 /// The move found different bytes and restored them to the source path.
 pub(super) fn is_source_changed(error: &std::io::Error) -> bool {
     error
@@ -387,12 +405,28 @@ pub(super) fn platform_exclusive_publish(
         return Ok(());
     }
     let error = std::io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(libc::EINVAL) | Some(libc::EOPNOTSUPP) => {
-            Err(ExclusivePublishError::Unsupported(error))
-        }
-        _ => Err(ExclusivePublishError::Failed(error)),
+    if exclusive_rename_unsupported(error.raw_os_error()) {
+        Err(ExclusivePublishError::Unsupported(error))
+    } else {
+        Err(ExclusivePublishError::Failed(error))
     }
+}
+
+/// An exclusive rename (`renameat2(RENAME_NOREPLACE)`, `renamex_np` /
+/// `renameatx_np(RENAME_EXCL)`) the filesystem does not support. macOS
+/// reports `ENOTSUP` (45), which differs from `EOPNOTSUPP` (102) there
+/// (renamex_np(2)); Linux defines them as one value.
+#[cfg(target_os = "macos")]
+pub(super) fn exclusive_rename_unsupported(errno: Option<i32>) -> bool {
+    matches!(
+        errno,
+        Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP | libc::ENOTSUP)
+    )
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(super) fn exclusive_rename_unsupported(errno: Option<i32>) -> bool {
+    matches!(errno, Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP))
 }
 
 #[cfg(windows)]
@@ -675,14 +709,40 @@ impl RootedTarget {
         target
     }
 
+    /// [`Self::resolve`] for local vault operations: the same rooted walk,
+    /// validated by `vault_join` instead of sync's portable `safe_join`.
+    pub(crate) fn resolve_local(
+        root: &Path,
+        rel: &str,
+        create_parents: bool,
+    ) -> std::io::Result<Self> {
+        let display = vault_join(root, rel).ok_or_else(|| invalid_data("unsafe vault path"))?;
+        let mut created = CreatedDirs::default();
+        let target = Self::resolve_joined(display, root, rel, create_parents, &mut created);
+        created.keep();
+        target
+    }
+
     fn resolve_tracked(
         root: &Path,
         rel: &str,
         create_parents: bool,
         created: &mut CreatedDirs,
     ) -> std::io::Result<Self> {
-        use std::os::fd::FromRawFd;
         let display = safe_join(root, rel).ok_or_else(|| invalid_data("unsafe sync path"))?;
+        Self::resolve_joined(display, root, rel, create_parents, created)
+    }
+
+    /// Walk `rel` from the root with `openat(O_NOFOLLOW)`; `display` is the
+    /// already validated lexical join of the same path.
+    fn resolve_joined(
+        display: PathBuf,
+        root: &Path,
+        rel: &str,
+        create_parents: bool,
+        created: &mut CreatedDirs,
+    ) -> std::io::Result<Self> {
+        use std::os::fd::FromRawFd;
         let mut parent = Self::open_root_dir(root)?;
         let mut segments = rel.split('/').peekable();
         while let Some(segment) = segments.next() {
@@ -751,6 +811,28 @@ impl RootedTarget {
         }
     }
 
+    /// Open this existing regular entry for writing without following a link.
+    fn open_write(&self) -> std::io::Result<std::fs::File> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        // SAFETY: parent remains open and self.name is NUL-terminated.
+        let raw = unsafe {
+            libc::openat(
+                self.parent.as_raw_fd(),
+                self.name.as_ptr(),
+                libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+            )
+        };
+        if raw < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a nonnegative descriptor with no other owner.
+        let file = unsafe { std::fs::File::from_raw_fd(raw) };
+        if !file.metadata()?.is_file() {
+            return Err(invalid_data("sync candidate is not a regular file"));
+        }
+        Ok(file)
+    }
+
     fn open_new(&self, name: &std::ffi::CStr) -> std::io::Result<std::fs::File> {
         use std::os::fd::{AsRawFd, FromRawFd};
         // SAFETY: parent remains open and name is NUL-terminated.
@@ -813,10 +895,7 @@ impl RootedTarget {
             return Ok(());
         }
         let error = std::io::Error::last_os_error();
-        if !matches!(
-            error.raw_os_error(),
-            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
-        ) {
+        if !exclusive_rename_unsupported(error.raw_os_error()) {
             return Err(error);
         }
         // SAFETY: both parent Files remain open and both names are NUL-terminated.
@@ -903,6 +982,56 @@ impl RootedTarget {
         self.parent.sync_all()
     }
 
+    /// Permanently remove this file or folder tree through held directory
+    /// handles. Every descent is `openat(O_DIRECTORY | O_NOFOLLOW)` from the
+    /// already open parent, so a link swapped in anywhere (including an
+    /// ancestor after validation) is unlinked as a link or refused, never
+    /// followed. Iterative and bounded by `max_depth` levels and `max_entries`
+    /// removals; reaching a bound fails closed, leaving the rest in place.
+    pub(crate) fn remove_tree_no_follow(
+        &self,
+        max_depth: usize,
+        max_entries: usize,
+    ) -> std::io::Result<()> {
+        match entry_kind(&self.parent, &self.name)? {
+            libc::S_IFREG => return self.remove_entry(),
+            libc::S_IFDIR => {}
+            _ => return Err(invalid_data("recovery item must be a file or folder")),
+        }
+        let mut stack = vec![TreeFrame::open(&self.parent, &self.name)?];
+        // Entries met so far, this item included. Each pass handles one entry
+        // (unlink or descend) or closes one emptied folder, so at most
+        // `2 * max_entries` passes remove an item within the bound.
+        let mut seen = 1usize;
+        for _ in 0..max_entries.saturating_mul(2).saturating_add(1) {
+            let Some(frame) = stack.last_mut() else {
+                return self.parent.sync_all();
+            };
+            let Some(name) = frame.names.pop() else {
+                let done = stack.pop().ok_or_else(|| invalid_data("empty stack"))?;
+                unlink_at(&done.parent, &done.name, libc::AT_REMOVEDIR)?;
+                continue;
+            };
+            seen += 1;
+            if seen > max_entries {
+                return Err(invalid_data("recovery item has too many entries"));
+            }
+            let name = std::ffi::CString::new(name)
+                .map_err(|_| invalid_data("directory entry contains NUL"))?;
+            if entry_kind(&frame.dir, &name)? != libc::S_IFDIR {
+                // Files, links and special files: unlinkat never follows.
+                unlink_at(&frame.dir, &name, 0)?;
+                continue;
+            }
+            let child = TreeFrame::open(&frame.dir, &name)?;
+            if stack.len() >= max_depth {
+                return Err(invalid_data("recovery item is nested too deeply"));
+            }
+            stack.push(child);
+        }
+        Err(invalid_data("recovery item has too many entries"))
+    }
+
     pub fn rename_no_replace(&self, to: &Self) -> std::io::Result<()> {
         let (size, hash) = self.fingerprint(&self.name)?;
         self.move_no_replace(to, size, &hash)
@@ -964,6 +1093,78 @@ impl RootedTarget {
     }
 }
 
+/// One folder being emptied by [`RootedTarget::remove_tree_no_follow`].
+#[cfg(unix)]
+struct TreeFrame {
+    parent: std::fs::File,
+    name: std::ffi::CString,
+    dir: std::fs::File,
+    names: Vec<String>,
+}
+
+#[cfg(unix)]
+impl TreeFrame {
+    fn open(parent: &std::fs::File, name: &std::ffi::CStr) -> std::io::Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        // SAFETY: parent is open and name is NUL-terminated; O_NOFOLLOW refuses a link.
+        let raw = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if raw < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a nonnegative descriptor with no other owner.
+        let dir = unsafe { std::fs::File::from_raw_fd(raw) };
+        let names = RootedTarget::list_dir_names(&dir)?;
+        Ok(Self {
+            parent: parent.try_clone()?,
+            name: name.to_owned(),
+            dir,
+            names,
+        })
+    }
+}
+
+/// `S_IFMT` bits of `name` in `dir`, without following a final link.
+#[cfg(unix)]
+fn entry_kind(dir: &std::fs::File, name: &std::ffi::CStr) -> std::io::Result<libc::mode_t> {
+    use std::os::fd::AsRawFd;
+    let mut meta = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: dir is open, name is NUL-terminated and meta is writable.
+    let checked = unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            meta.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if checked != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: successful fstatat initialized the metadata.
+    Ok(unsafe { meta.assume_init() }.st_mode & libc::S_IFMT)
+}
+
+#[cfg(unix)]
+fn unlink_at(
+    dir: &std::fs::File,
+    name: &std::ffi::CStr,
+    flags: libc::c_int,
+) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: dir is open and name is NUL-terminated; unlinkat never follows links.
+    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 pub struct StagedReceive {
     // Close the candidate handle before the staged file removes it.
     file: std::fs::File,
@@ -1021,10 +1222,7 @@ impl StagedFile {
             false
         } else {
             let error = std::io::Error::last_os_error();
-            if !matches!(
-                error.raw_os_error(),
-                Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
-            ) {
+            if !exclusive_rename_unsupported(error.raw_os_error()) {
                 return match target.fingerprint(&dest) {
                     Ok(actual) if fingerprint_matches(&actual, self.size, &self.hash) => {
                         Ok(CommitOutcome::Unchanged)
@@ -1250,10 +1448,14 @@ impl StagedFile {
     }
 
     /// Publish a one-sided edit only while the target still has the shared
-    /// base bytes. Move those bytes into ordinary recovery storage first, so
-    /// a failed publication or crash never silently destroys the old version.
+    /// base bytes. The verified candidate first takes a fresh `.mesa-trash`
+    /// name; one atomic replace (`atomic_replace`) then puts it at the target
+    /// and the displaced original at that recovery name. The note is never
+    /// missing and its original is never under a disposable name. Bytes that
+    /// another writer put in the target meanwhile go back and are reported as
+    /// a conflict. A filesystem without atomic replace refuses unchanged.
     pub fn commit_replace(
-        self,
+        mut self,
         root: &Path,
         rel: &str,
         expected_size: u64,
@@ -1261,98 +1463,176 @@ impl StagedFile {
     ) -> std::io::Result<CommitOutcome> {
         let target_path = safe_join_confined(root, rel)
             .ok_or_else(|| invalid_data("unsafe replacement target"))?;
-        let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
-        // One held parent serves the check, metadata copy, move and restore.
-        #[cfg(unix)]
-        let source = RootedTarget::resolve(root, rel, false)?;
-        let from = {
-            #[cfg(unix)]
-            {
-                source.fingerprint(&source.name)?
-            }
-            #[cfg(not(unix))]
-            {
-                hash_file_streaming(&target_path)?
-            }
-        };
-        if !fingerprint_matches(&from, expected_size, expected_hash) {
-            return Err(collision_error(&target_path));
-        }
+        let expected = (expected_size, expected_hash);
         #[cfg(unix)]
         {
-            let original = source.open_read()?;
-            let candidate = if let Some(rooted) = &self.rooted {
-                {
-                    use std::os::fd::{AsRawFd, FromRawFd};
-                    // SAFETY: held parent and NUL-terminated candidate remain live.
-                    let fd = unsafe {
-                        libc::openat(
-                            rooted.parent.as_raw_fd(),
-                            rooted.candidate.as_ptr(),
-                            libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                        )
-                    };
-                    if fd < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    // SAFETY: fd has exactly one owner.
-                    unsafe { std::fs::File::from_raw_fd(fd) }
-                }
-            } else {
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(&self.path)?
-            };
-            file_metadata::preserve(&original, &candidate)?;
+            self.replace_rooted(root, rel, &target_path, expected)
         }
-        for offset in 0..16u64 {
-            let tomb_rel = format!(
-                "{}{}.mesa-trash/{}-remote--{}",
-                parent,
-                if parent.is_empty() { "" } else { "/" },
-                now_ms().saturating_add(offset),
-                name,
-            );
-            #[cfg(unix)]
-            let tomb = RootedTarget::resolve(root, &tomb_rel, true)?;
-            #[cfg(unix)]
-            let move_result = source.move_no_replace(&tomb, expected_size, expected_hash);
-            #[cfg(not(unix))]
-            let move_result = {
-                let tomb = safe_join(root, &tomb_rel)
-                    .ok_or_else(|| invalid_data("unsafe replacement recovery path"))?;
-                move_no_replace(&target_path, &tomb, expected_size, expected_hash)
-            };
-            match move_result {
-                Ok(()) => {
-                    let publish = self.commit(&target_path);
-                    if publish.is_err() {
-                        #[cfg(unix)]
-                        let restored = tomb.move_no_replace(&source, expected_size, expected_hash);
-                        #[cfg(not(unix))]
-                        let restored = {
-                            let tomb = safe_join(root, &tomb_rel)
-                                .ok_or_else(|| invalid_data("unsafe replacement recovery path"))?;
-                            move_no_replace(&tomb, &target_path, expected_size, expected_hash)
-                        };
-                        if let Err(restore_error) = restored {
-                            return Err(invalid_data(format!(
-                                "replacement failed; original preserved at {tomb_rel}; restore failed: {restore_error}"
-                            )));
-                        }
-                    }
-                    return publish;
-                }
-                Err(error) if is_source_changed(&error) => {
-                    return Err(collision_error(&target_path))
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
+        #[cfg(not(unix))]
+        {
+            self.replace_paths(root, rel, &target_path, expected)
+        }
+    }
+
+    #[cfg(unix)]
+    fn replace_rooted(
+        &mut self,
+        root: &Path,
+        rel: &str,
+        target_path: &Path,
+        (size, hash): (u64, &str),
+    ) -> std::io::Result<CommitOutcome> {
+        use std::os::fd::AsRawFd;
+        // One held parent serves the check, metadata copy, exchange and put-back.
+        let source = RootedTarget::resolve(root, rel, false)?;
+        if !fingerprint_matches(&source.fingerprint(&source.name)?, size, hash) {
+            return Err(collision_error(target_path));
+        }
+        let stage = self.stage_entry(&source)?;
+        file_metadata::preserve(&source.open_read()?, &stage.open_write()?)?;
+        let (tomb_rel, tomb) = stage_into_tomb(root, rel, &stage)?;
+        // The candidate name is gone; never unlink whatever later takes it.
+        self.preserve = true;
+        #[cfg(test)]
+        run_before_move_hook();
+        let (tomb_fd, source_fd) = (tomb.parent.as_raw_fd(), source.parent.as_raw_fd());
+        if let Err(error) = exchange_at(tomb_fd, &tomb.name, source_fd, &source.name) {
+            // The target is intact; drop only the candidate's recovery copy.
+            if self.holds_stage(tomb.fingerprint(&tomb.name)) {
+                let _ = tomb.unlink(&tomb.name);
             }
+            return Err(replace_error(error));
         }
-        Err(invalid_data("could not allocate replacement recovery path"))
+        let kept = |error: std::io::Error| kept_at(error, &tomb_rel);
+        #[cfg(test)]
+        take_after_exchange_failure()
+            .map_or(Ok(()), Err)
+            .map_err(kept)?;
+        if !fingerprint_matches(&tomb.fingerprint(&tomb.name).map_err(kept)?, size, hash) {
+            return Err(self.put_back_rooted(&source, &tomb, &tomb_rel, target_path));
+        }
+        flush_replaced(&[&source.parent, &tomb.parent]);
+        if self.holds_stage(source.fingerprint(&source.name)) {
+            Ok(CommitOutcome::Created)
+        } else {
+            Err(kept(invalid_data("replacement changed before read-back")))
+        }
+    }
+
+    /// The stage as a rooted entry. A path stage is its target's sibling.
+    #[cfg(unix)]
+    fn stage_entry(&self, source: &RootedTarget) -> std::io::Result<RootedTarget> {
+        if let Some(rooted) = &self.rooted {
+            return Ok(RootedTarget {
+                parent: rooted.parent.try_clone()?,
+                name: rooted.candidate.clone(),
+                display: self.path.clone(),
+            });
+        }
+        if self.path.parent() != source.display.parent() {
+            return Err(invalid_data("sync candidate is not beside its target"));
+        }
+        let name = self.path.file_name().and_then(|name| name.to_str());
+        source.child(name.ok_or_else(|| invalid_data("candidate has no name"))?)
+    }
+
+    /// Another writer changed the target before the exchange took it: swap
+    /// those bytes back and drop the candidate, or name where they are kept.
+    #[cfg(unix)]
+    fn put_back_rooted(
+        &self,
+        source: &RootedTarget,
+        tomb: &RootedTarget,
+        tomb_rel: &str,
+        target_path: &Path,
+    ) -> std::io::Error {
+        use std::os::fd::AsRawFd;
+        let (tomb_fd, source_fd) = (tomb.parent.as_raw_fd(), source.parent.as_raw_fd());
+        if let Err(error) = exchange_at(tomb_fd, &tomb.name, source_fd, &source.name) {
+            return changed_during_replace(tomb_rel, &error.to_string());
+        }
+        if !self.holds_stage(tomb.fingerprint(&tomb.name)) {
+            return changed_during_replace(tomb_rel, "the target changed again");
+        }
+        let _ = tomb.unlink(&tomb.name);
+        collision_error(target_path)
+    }
+
+    #[cfg(not(unix))]
+    fn replace_paths(
+        &mut self,
+        root: &Path,
+        rel: &str,
+        target_path: &Path,
+        (size, hash): (u64, &str),
+    ) -> std::io::Result<CommitOutcome> {
+        #[cfg(windows)]
+        let _target_parents = WindowsParentGuard::acquire(target_path, false)?;
+        if !fingerprint_matches(&hash_file_streaming(target_path)?, size, hash) {
+            return Err(collision_error(target_path));
+        }
+        let (tomb_rel, tomb) = unused_tomb(root, rel, 0)?;
+        #[cfg(windows)]
+        let _tomb_parents = WindowsParentGuard::acquire(&tomb, true)?;
+        #[cfg(not(windows))]
+        ensure_real_parent(&tomb)?;
+        #[cfg(test)]
+        run_before_move_hook();
+        if let Err(error) = replace_preserving(&self.path, target_path, &tomb) {
+            let error = replace_error(error);
+            return Err(if std::fs::symlink_metadata(&tomb).is_ok() {
+                kept_at(error, &tomb_rel)
+            } else {
+                error
+            });
+        }
+        // The candidate now has the target's name; never remove it as a stage.
+        self.preserve = true;
+        let kept = |error: std::io::Error| kept_at(error, &tomb_rel);
+        #[cfg(test)]
+        take_after_exchange_failure()
+            .map_or(Ok(()), Err)
+            .map_err(kept)?;
+        if !fingerprint_matches(&hash_file_streaming(&tomb).map_err(kept)?, size, hash) {
+            return Err(self.put_back_paths(root, rel, target_path, &tomb_rel));
+        }
+        if self.holds_stage(hash_file_streaming(target_path)) {
+            Ok(CommitOutcome::Created)
+        } else {
+            Err(kept(invalid_data("replacement changed before read-back")))
+        }
+    }
+
+    /// [`Self::put_back_rooted`] for path platforms: replace the target with
+    /// the changed bytes again, retaining the candidate under a spare name.
+    #[cfg(not(unix))]
+    fn put_back_paths(
+        &self,
+        root: &Path,
+        rel: &str,
+        target_path: &Path,
+        tomb_rel: &str,
+    ) -> std::io::Error {
+        let Some(tomb) = safe_join(root, tomb_rel) else {
+            return changed_during_replace(tomb_rel, "unsafe recovery path");
+        };
+        let (spare_rel, spare) = match unused_tomb(root, rel, 16) {
+            Ok(found) => found,
+            Err(error) => return changed_during_replace(tomb_rel, &error.to_string()),
+        };
+        if let Err(error) = replace_preserving(&tomb, target_path, &spare) {
+            return changed_during_replace(tomb_rel, &error.to_string());
+        }
+        if !self.holds_stage(hash_file_streaming(&spare)) {
+            return changed_during_replace(&spare_rel, "the target changed again");
+        }
+        let _ = std::fs::remove_file(&spare);
+        collision_error(target_path)
+    }
+
+    /// Whether `observed` is exactly this stage's verified bytes.
+    fn holds_stage(&self, observed: std::io::Result<(u64, String)>) -> bool {
+        observed.is_ok_and(|actual| fingerprint_matches(&actual, self.size, &self.hash))
     }
 
     pub fn commit_conflict(
@@ -1453,6 +1733,84 @@ impl StagedReceive {
         }
         Ok(self.staged)
     }
+}
+/// The `.mesa-trash` name that keeps a replaced sync original, as before.
+fn replacement_tomb_rel(rel: &str, offset: u64) -> String {
+    let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel));
+    format!(
+        "{}{}.mesa-trash/{}-remote--{}",
+        parent,
+        if parent.is_empty() { "" } else { "/" },
+        now_ms().saturating_add(offset),
+        name,
+    )
+}
+
+/// Move the verified stage to a fresh recovery name through held parents.
+#[cfg(unix)]
+fn stage_into_tomb(
+    root: &Path,
+    rel: &str,
+    stage: &RootedTarget,
+) -> std::io::Result<(String, RootedTarget)> {
+    for offset in 0..16u64 {
+        let tomb_rel = replacement_tomb_rel(rel, offset);
+        let tomb = RootedTarget::resolve(root, &tomb_rel, true)?;
+        match stage.rename_entry_no_replace(&tomb) {
+            Ok(()) => return Ok((tomb_rel, tomb)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(invalid_data("could not allocate replacement recovery path"))
+}
+
+/// A recovery name no entry has yet (ReplaceFileW overwrites a backup).
+#[cfg(not(unix))]
+fn unused_tomb(root: &Path, rel: &str, first: u64) -> std::io::Result<(String, PathBuf)> {
+    for offset in first..first + 16 {
+        let tomb_rel = replacement_tomb_rel(rel, offset);
+        let tomb = safe_join(root, &tomb_rel)
+            .ok_or_else(|| invalid_data("unsafe replacement recovery path"))?;
+        if std::fs::symlink_metadata(&tomb).is_err() {
+            return Ok((tomb_rel, tomb));
+        }
+    }
+    Err(invalid_data("could not allocate replacement recovery path"))
+}
+
+/// The publication already happened; a failed folder flush only weakens
+/// crash durability, so it is logged, never reported as a failed replace.
+#[cfg(unix)]
+fn flush_replaced(dirs: &[&std::fs::File]) {
+    for dir in dirs {
+        if let Err(error) = dir.sync_all() {
+            eprintln!("[mesa] sync replaced a file but could not flush its folder: {error}");
+        }
+    }
+}
+
+const UNSUPPORTED_SYNC_REPLACE: &str = "unsupported-filesystem: This vault's filesystem does not support Mesa's atomic replace, so sync cannot update existing files here. The local file is unchanged.";
+
+fn replace_error(error: std::io::Error) -> std::io::Error {
+    if is_atomic_replace_unsupported(&error) {
+        std::io::Error::new(std::io::ErrorKind::Unsupported, UNSUPPORTED_SYNC_REPLACE)
+    } else {
+        error
+    }
+}
+
+fn kept_at(error: std::io::Error, tomb_rel: &str) -> std::io::Error {
+    std::io::Error::new(
+        error.kind(),
+        format!("{error}; the previous version is kept at {tomb_rel}"),
+    )
+}
+
+fn changed_during_replace(kept_rel: &str, detail: &str) -> std::io::Error {
+    invalid_data(format!(
+        "the file changed during replacement; other bytes are kept at {kept_rel}: {detail}"
+    ))
 }
 
 /// Add a numeric collision suffix before the extension. The base conflict

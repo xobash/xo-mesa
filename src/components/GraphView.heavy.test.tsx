@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Simulation } from "d3-force";
@@ -210,6 +210,31 @@ it("warms a large graph in the worker: the frame never runs warm ticks, nothing 
   expect(simulation().alpha()).toBeCloseTo(0.12, 12);
 }, 30000);
 
+it("lays out a heavy graph remounted under StrictMode, as a pane move does in the dev app", async () => {
+  const warms: { type: string; session: number; init?: unknown; count?: number }[] = [];
+  const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];
+  vi.stubGlobal("Worker", class {
+    onmessage: ((event: { data: unknown }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor() { workers.push(this); }
+    postMessage(message: { type: string; session: number }) { if (message.type === "warm") warms.push(message); }
+    terminate() {}
+  });
+  const entries = Object.fromEntries(Array.from({ length: 1200 }, (_, i) => [`N${i}.md`, i % 3 ? `[[N${(i * 7) % 1200}]]` : ""]));
+  const files: VaultFile[] = Object.keys(entries).map((relPath) => ({ path: `/demo/${relPath}`, relPath, name: relPath.slice(0, -3), ext: "md", isMarkdown: true }));
+  // Notes are ready before the mount: the graph moved to another pane.
+  act(() => {
+    useAppStore.setState({ files, notes: buildNotes(files, new Map(Object.entries(entries))),
+      settings: { ...initial.settings, graphShowTags: false, graphShowOrphans: true, animations: false } });
+    root.render(<StrictMode><GraphView /></StrictMode>);
+  });
+  await openSteps();
+  // StrictMode's mount, cleanup, mount cancelled the first open; the second mount opens again.
+  expect(warms.length).toBeGreaterThan(0);
+  act(() => { answerWarm(workers.at(-1)!, warms.at(-1)!); });
+  expect(host.textContent).not.toContain("Laying out");
+  expect(simulation().nodes()).toHaveLength(1200);
+}, 30000);
 it("replays a heavy graph with worker physics: batches admit in the worker, the frame never ticks, the full graph returns", async () => {
   const posted: { type: string; session: number; ids?: string[]; count?: number; seeds?: Float64Array }[] = [];
   const workers: { onmessage: ((event: { data: unknown }) => void) | null }[] = [];

@@ -25,6 +25,12 @@ pub async fn access(root: &Path) -> Result<tokio::sync::RwLockReadGuard<'static,
     Ok(tokio::sync::RwLockWriteGuard::downgrade(guard))
 }
 
+/// The exclusive side of the access lease: a research publication waits for
+/// current readers and holds every later reader until it settles.
+pub(crate) async fn exclusive_access() -> tokio::sync::RwLockWriteGuard<'static, ()> {
+    ACCESS.write().await
+}
+
 pub fn require_recovered_target(path: &Path) -> Result<(), String> {
     for parent in path.ancestors().skip(1) {
         if parent
@@ -189,18 +195,49 @@ fn flush_parents(root: &Path, target: &Path) -> Result<(), String> {
         folder = folder.parent().ok_or("research parent escaped the vault")?;
     }
 }
-fn save_record(root: &Path, record: &Record, first: bool) -> Result<(), String> {
+/// Publish `record` only over the exact record bytes this transaction last
+/// wrote (`previous`), or into a missing record for the first write. A record
+/// changed underneath is refused and kept, never overwritten. Returns the
+/// bytes now on disk for the next precondition.
+fn save_record(root: &Path, record: &Record, previous: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let bytes = serde_json::to_vec(record).map_err(|e| e.to_string())?;
-    let path = root.join(RECORD);
-    write_atomic(
-        &path,
-        &bytes,
-        &if first {
-            ExpectedCurrent::Missing
-        } else {
-            ExpectedCurrent::Any
-        },
-    )
+    write_atomic(&root.join(RECORD), &bytes, &expected(previous))?;
+    Ok(bytes)
+}
+/// After a failed completion marker the record holds either the rollback
+/// intent (the marker never landed) or the marker (a later step failed).
+/// Restore the intent only over one of those two exact versions.
+fn restore_rollback_intent(root: &Path, intent: &[u8], marker: &Record) -> Result<(), String> {
+    let marker = serde_json::to_vec(marker).map_err(|e| e.to_string())?;
+    let current = read_record_bytes(root)?;
+    if current.as_deref() == Some(intent) {
+        return Ok(());
+    }
+    if current.as_deref() != Some(marker.as_slice()) {
+        return Err("the recovery record changed outside the transaction".into());
+    }
+    write_atomic(&root.join(RECORD), intent, &expected(Some(&marker)))
+}
+/// One no-follow, non-blocking, bounded read of the record.
+fn read_record_bytes(root: &Path) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+    // A FIFO or device at the record path must not stall under WRITE_LOCK.
+    let file = match crate::sync_core::open_file_no_follow(&root.join(RECORD)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            return Err("invalid record file".into())
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut bytes = Vec::new();
+    file.take((LIMIT * 8 + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > LIMIT * 8 {
+        return Err("Research recovery is pending: record exceeds limit".into());
+    }
+    Ok(Some(bytes))
 }
 fn remove_record(root: &Path) -> Result<(), String> {
     fs::remove_file(root.join(RECORD)).map_err(|e| e.to_string())?;
@@ -292,16 +329,9 @@ fn recover_unlocked(root: &Path) -> Result<(), String> {
     {
         return Err("Research recovery is pending: invalid record path".into());
     }
-    let mut file = fs::File::open(&path).map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    use std::io::Read;
-    (&mut file)
-        .take((LIMIT * 8 + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
-    if bytes.len() > LIMIT * 8 {
-        return Err("Research recovery is pending: record exceeds limit".into());
-    }
+    let Some(bytes) = read_record_bytes(root)? else {
+        return Ok(());
+    };
     let record: Record = serde_json::from_slice(&bytes)
         .map_err(|_| "Research recovery is pending: unreadable record")?;
     validate(&record)?;
@@ -353,7 +383,7 @@ fn apply(
     if record.entries.is_empty() {
         return Ok(Vec::new());
     }
-    save_record(root, &record, true)?;
+    let intent = save_record(root, &record, None)?;
     for (index, entry) in record.entries.iter().enumerate() {
         if stop_after == Some(index) {
             return Err("simulated interruption".into());
@@ -383,15 +413,17 @@ fn apply(
         return Err("simulated interruption".into());
     }
     record.committed = true;
-    if let Err(error) = save_record(root, &record, false) {
+    #[cfg(test)]
+    tests::before_completion_marker(root);
+    if let Err(error) = save_record(root, &record, Some(&intent)) {
         // Without durable completion, recovery must undo this transaction.
-        record.committed = false;
         // A failed cleanup may leave the completed marker on disk. Publish
         // durable rollback intent before undoing any target. If that fails,
         // keep the complete file set and recovery record for the next open.
-        if let Err(recovery) = save_record(root, &record, false) {
+        if let Err(recovery) = restore_rollback_intent(root, &intent, &record) {
             return Err(format!("{error}. Research recovery is pending: {recovery}"));
         }
+        record.committed = false;
         return match rollback(root, &record) {
             Ok(()) => Err(format!("{error}. The original files were restored.")),
             Err(recovery) => Err(format!("{error}. {recovery}")),
@@ -416,7 +448,7 @@ pub async fn vault_apply_research(
     // need this server to keep accepting readers. Applies and outgoing sync
     // reserve the same run slot before taking the access lease.
     let run = crate::sync::SyncRunGuard::acquire()?;
-    let access = ACCESS.write().await;
+    let access = exclusive_access().await;
     tauri::async_runtime::spawn_blocking(move || {
         let _run = run;
         let _access = access;

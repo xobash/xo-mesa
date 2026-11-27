@@ -279,7 +279,7 @@ export async function forgetVaultIndex(root: string): Promise<void> {
     const db = await database();
     try { await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(['vaults', 'metadata'], 'readwrite'); tx.objectStore('vaults').delete(vaultStorageId(root)); tx.objectStore('metadata').delete(vaultStorageId(root));
-      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
     }); } finally { db.close(); }
   } catch { /* unavailable storage holds no usable index */ }
 }

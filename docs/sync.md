@@ -177,6 +177,8 @@ minted once at first launch (`lib/deviceName.ts`, persisted as
 devices are distinguishable at a glance — plus its LAN address, port, listening status, and
 certificate fingerprint over UDP broadcast (port 47887). The fingerprint is
 a stable LAN identifier; device names and addresses can also identify you.
+A name longer than 256 bytes is shortened to that length, because peers ignore
+packets with longer names.
 Closing the menu stops discovery and clears consent; restart never restores it.
 Merely opening Sync or enabling Receive does not broadcast. It never broadcasts the
 vault path, sync key, or file contents. A discovery packet is unauthenticated,
@@ -378,9 +380,17 @@ A vault with hundreds or thousands of files syncs comfortably:
   `MoveFileExW` on Windows), so FAT/exFAT removable vaults do not require hard
   links. A hard link is only a fallback when that volume reports that exclusive
   rename is unsupported; Mesa fails closed if neither safe primitive works.
-  A conditional edit moves the exact expected old bytes into `.mesa-trash`
-  before publishing the new candidate. The target is read back after
-  publication. An identical existing file
+  A conditional edit checks the exact expected old bytes, gives the verified
+  candidate a fresh `.mesa-trash` name, then swaps it into place with one
+  atomic replace (`RENAME_EXCHANGE` on Linux, `RENAME_SWAP` on macOS,
+  `ReplaceFileW` with a backup on Windows). On macOS and Linux the note is
+  never missing; on Windows `ReplaceFileW` can leave the name absent for a
+  moment, as for saves. The displaced original lands in `.mesa-trash` in the
+  same step. If a local edit
+  changed the note before the swap, Mesa swaps it back and reports a conflict.
+  A filesystem without atomic replace refuses with `unsupported-filesystem:`
+  and leaves the note unchanged; there is no two-rename fallback. The target
+  is read back after publication. An identical existing file
   makes a retry succeed without rewriting it; different existing bytes fail
   with no change (`PUT /sync/file` returns `409`). If final read-back fails,
   Mesa reports the failure and preserves the target because portable file-ID

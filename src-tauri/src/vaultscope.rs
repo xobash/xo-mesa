@@ -401,7 +401,7 @@ fn hidden_inside_approved(roots: &BTreeSet<String>, key: &str) -> bool {
 /// and after the OS resolves its existing components. Windows 8.3 short names
 /// (`GIT~1`) open hidden entries under a visible spelling.
 pub(crate) fn resolves_visible(root: &Path, rel: &str) -> bool {
-    let Some(mut existing) = crate::sync_core::safe_join(root, rel) else {
+    let Some(mut existing) = crate::sync_core::vault_join(root, rel) else {
         return false;
     };
     if !visible_vault_path(Path::new(rel)) {
@@ -551,56 +551,8 @@ fn write_approved_roots(path: &Path, roots: &ApprovedRoots) -> Result<(), String
         .map_err(|error| format!("cannot create Mesa app-data folder: {error}"))?;
     let bytes = serde_json::to_vec(roots)
         .map_err(|error| format!("cannot encode approved vault roots: {error}"))?;
-    let temporary = path.with_extension("json.tmp");
-    use std::io::Write;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let mut file = options
-        .open(&temporary)
-        .map_err(|_| "Cannot stage vault approvals")?;
-    #[cfg(unix)]
-    super::sync_core::file_metadata::private(&file)
-        .map_err(|_| "Cannot restrict vault approvals")?;
-    file.write_all(&bytes)
-        .and_then(|_| file.sync_all())
-        .map_err(|_| "Cannot save vault approvals")?;
-    drop(file);
-    // A failed MoveFileExW leaves the stage in place, so a retry is safe.
-    crate::sync_core::platform_fs::retry_transient_lock(|| replace_file(&temporary, path))
+    crate::vaultwrite::write_atomic(path, &bytes, &crate::vaultwrite::ExpectedCurrent::Any)
         .map_err(|error| format!("cannot publish approved vault roots: {error}"))
-}
-
-#[cfg(not(windows))]
-fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    fs::rename(from, to)
-}
-
-#[cfg(windows)]
-fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
-    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: both paths are NUL-terminated UTF-16 buffers that outlive the call.
-    let moved = unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 /// Restores access only to a vault the user selected previously. A newly picked
@@ -706,38 +658,39 @@ pub(crate) fn revoke_native(app: &AppHandle, root: &str) -> Result<bool, String>
 }
 
 fn is_write_artifact_name(name: &str) -> bool {
+    parse_write_artifact(name).is_some()
+}
+
+/// A parsed Mesa write-artifact file name.
+pub(crate) enum WriteArtifact<'a> {
+    /// `.mesa-sync-tmp-{stamp}-{suffix}`: a sync stage, never an original.
+    SyncStage,
+    /// `.{target}.mesa-{save|backup|rescue}-{stamp}-{token}.tmp`.
+    Write { target: &'a str, label: &'a str },
+}
+
+/// The one grammar for Mesa's hidden write-artifact names. Callers add their
+/// own policy for `target` (recovery also requires a visible name).
+pub(crate) fn parse_write_artifact(name: &str) -> Option<WriteArtifact<'_>> {
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
     if let Some(rest) = name.strip_prefix(".mesa-sync-tmp-") {
-        return rest.split_once('-').is_some_and(|(stamp, suffix)| {
-            !stamp.is_empty() && stamp.bytes().all(|b| b.is_ascii_digit()) && !suffix.is_empty()
-        });
+        let (stamp, suffix) = rest.split_once('-')?;
+        return (digits(stamp) && !suffix.is_empty()).then_some(WriteArtifact::SyncStage);
     }
-    let Some((target, suffix)) = name
-        .strip_prefix('.')
-        .and_then(|name| name.rsplit_once(".mesa-"))
-    else {
-        return false;
-    };
+    let (target, suffix) = name.strip_prefix('.')?.rsplit_once(".mesa-")?;
     if target.is_empty() || target == "." || target == ".." {
-        return false;
+        return None;
     }
-    let Some((label, rest)) = suffix.split_once('-') else {
-        return false;
-    };
+    let (label, rest) = suffix.split_once('-')?;
     if !matches!(label, "save" | "backup" | "rescue") {
-        return false;
+        return None;
     }
-    let Some((stamp, token)) = rest
-        .strip_suffix(".tmp")
-        .and_then(|rest| rest.split_once('-'))
-    else {
-        return false;
-    };
-    !stamp.is_empty()
-        && stamp.bytes().all(|b| b.is_ascii_digit())
-        && !token.is_empty()
+    let (stamp, token) = rest.strip_suffix(".tmp")?.split_once('-')?;
+    let token_ok = !token.is_empty()
         && token
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+    (digits(stamp) && token_ok).then_some(WriteArtifact::Write { target, label })
 }
 
 /// Give the fs plugin exact paths for Mesa's hidden write artifacts. The
@@ -848,7 +801,7 @@ pub(crate) fn approved_path(app: &AppHandle, raw: &str) -> Result<(PathBuf, Stri
             continue;
         };
         if let Some(rel) = relative_to_root(&root, raw) {
-            if rel.is_empty() || crate::sync_core::safe_join(&root, &rel).is_some() {
+            if rel.is_empty() || crate::sync_core::vault_join(&root, &rel).is_some() {
                 return Ok((root, rel));
             }
         }

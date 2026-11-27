@@ -33,6 +33,12 @@ describe("nextAutoSyncDelayMs", () => {
     expect(nextAutoSyncDelayMs(60_000, report(), false)).toBe(60_000);
   });
 
+  it("never retries a failed run sooner than a cadence longer than the backoff cap", () => {
+    const twoHours = 2 * 60 * 60_000;
+    expect(nextAutoSyncDelayMs(twoHours, report({ failed: [{ rel: "a.md", op: "pull", error: "x" }] }), false)).toBe(twoHours);
+    expect(nextAutoSyncDelayMs(twoHours, report({ cancelled: true }), false)).toBe(twoHours);
+  });
+
   it("backs off after cancelled or partially failed syncs", () => {
     expect(nextAutoSyncDelayMs(60_000, report({ cancelled: true }), false)).toBe(
       180_000

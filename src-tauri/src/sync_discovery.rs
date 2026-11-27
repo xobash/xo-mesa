@@ -6,6 +6,8 @@ use super::*;
 
 const DISCOVERY_PORT: u16 = 47887;
 const DISCOVERY_EVENT: &str = "sync://discovered";
+/// Receivers drop a packet whose name is longer, so senders cut to it.
+const DISCOVERY_MAX_NAME_BYTES: usize = 256;
 
 struct DiscoveryState {
     running: Arc<AtomicBool>,
@@ -62,11 +64,7 @@ pub fn sync_discovery_start(
     let own = DiscoveryPacket {
         mesa_discovery: true,
         version: "2.0".to_string(),
-        name: if name.trim().is_empty() {
-            "Mesa device".to_string()
-        } else {
-            name.trim().to_string()
-        },
+        name: announced_name(&name),
         host,
         port,
         protocol: "https".to_string(),
@@ -93,6 +91,19 @@ pub fn sync_discovery_start(
         handle: Some(handle),
     });
     Ok(())
+}
+
+/// The trimmed device name, cut at a char boundary to what receivers admit.
+fn announced_name(name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        return "Mesa device".to_string();
+    }
+    let mut end = name.len().min(DISCOVERY_MAX_NAME_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].trim_end().to_string()
 }
 
 /// The discovery socket operations, so the receive loop runs against injected
@@ -217,7 +228,7 @@ impl DiscoveryFilter {
         if !packet.mesa_discovery
             || packet.fingerprint == self.own_fingerprint
             || !crate::hex::is_lowercase_hex64(&packet.fingerprint)
-            || packet.name.len() > 256
+            || packet.name.len() > DISCOVERY_MAX_NAME_BYTES
         {
             return None;
         }
@@ -269,4 +280,46 @@ pub fn sync_discovery_stop(window: tauri::Window) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    fn packet(name: String) -> DiscoveryPacket {
+        DiscoveryPacket {
+            mesa_discovery: true,
+            version: "2.0".into(),
+            name,
+            host: String::new(),
+            port: 8384,
+            protocol: "https".into(),
+            listening: true,
+            fingerprint: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn a_long_device_name_is_cut_so_peers_still_discover_it() {
+        let mut filter = DiscoveryFilter::new("b".repeat(64));
+        let from: IpAddr = "192.0.2.7".parse().expect("ip");
+        for raw in [
+            "x".repeat(300),
+            "€".repeat(100),
+            format!("  {}  ", "ab".repeat(200)),
+        ] {
+            let name = announced_name(&raw);
+            assert!(name.len() <= DISCOVERY_MAX_NAME_BYTES, "{}", name.len());
+            assert!(raw.trim().starts_with(&name));
+            let mut filter_once = DiscoveryFilter::new("b".repeat(64));
+            assert!(filter_once
+                .admit(packet(name), from, Instant::now())
+                .is_some());
+        }
+        assert_eq!(announced_name("   "), "Mesa device");
+        assert_eq!(announced_name(" Laptop "), "Laptop");
+        assert!(filter
+            .admit(packet("x".repeat(257)), from, Instant::now())
+            .is_none());
+    }
 }

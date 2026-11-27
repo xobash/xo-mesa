@@ -108,3 +108,15 @@ it("locks the edit buttons while a save writes, so the saved image cannot drop a
   await act(async () => { release(); });
   await vi.waitFor(() => expect(button("Rotate left").disabled).toBe(false));
 });
+
+it("keeps the editor and its edits when a later reload cannot read the file", async () => {
+  await click("Rotate right");
+  io.read.mockRejectedValueOnce(new Error("busy"));
+  await act(async () => root.render(<ImageEditor file={{ ...file, mtime: 99 }} onDirtyChange={dirty} onDone={onDone} />));
+  await vi.waitFor(() => expect(io.read).toHaveBeenCalledTimes(2));
+  await act(async () => undefined);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(host.textContent).toContain("2 × 4 px");
+  expect(host.textContent).toContain("Could not reload");
+  expect(button("Undo")).toBeDefined();
+});

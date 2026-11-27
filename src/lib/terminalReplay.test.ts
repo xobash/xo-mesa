@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTerminalReplayGate, replayTerminalSnapshot } from "./terminalReplay";
+import { createTerminalReplayGate, replayTerminalSnapshot, snapshotTranscript } from "./terminalReplay";
 
 describe("replayTerminalSnapshot", () => {
   it("replays output at the historical dimensions in exact order", async () => {
@@ -15,7 +15,6 @@ describe("replayTerminalSnapshot", () => {
     };
 
     await replayTerminalSnapshot(terminal, {
-      data: "ignored-fallback",
       seq: 4,
       events: [
         { kind: "resize", cols: 80, rows: 24 },
@@ -34,20 +33,16 @@ describe("replayTerminalSnapshot", () => {
     ]);
   });
 
-  it("falls back to legacy raw snapshots", async () => {
-    const writes: string[] = [];
-    await replayTerminalSnapshot(
-      {
-        reset: () => undefined,
-        resize: () => undefined,
-        write: (data, callback) => {
-          writes.push(data);
-          callback?.();
-        },
-      },
-      { data: "legacy", seq: 1 }
-    );
-    expect(writes).toEqual(["legacy"]);
+  it("joins only the output into a transcript", () => {
+    expect(snapshotTranscript({
+      events: [
+        { kind: "resize", cols: 80, rows: 24 },
+        { kind: "output", data: "one " },
+        { kind: "resize", cols: 60, rows: 20 },
+        { kind: "output", data: "two" },
+      ],
+    })).toBe("one two");
+    expect(snapshotTranscript({ events: [] })).toBe("");
   });
 });
 

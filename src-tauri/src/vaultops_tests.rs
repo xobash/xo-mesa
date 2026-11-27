@@ -196,3 +196,71 @@ fn recovery_listing_stops_a_single_child_chain_at_the_depth_cap() {
     );
     assert!(listed[0].is_directory);
 }
+#[cfg(unix)]
+#[test]
+fn names_only_windows_reserves_move_restore_and_read_on_unix() {
+    let root = std::env::temp_dir().join(format!("mesa-ops-reserved-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("Why?.md"), b"question").unwrap();
+    fs::write(root.join("con.md"), b"console").unwrap();
+    assert!(visible("Why?.md") && recovery(".mesa-trash/1/Why?.md"));
+    move_entry(&root, "Why?.md", ".mesa-trash/1/Why?.md").unwrap();
+    assert!(!root.join("Why?.md").exists());
+    move_entry(&root, ".mesa-trash/1/Why?.md", "Why?.md").unwrap();
+    prune_empty_trash_parents(&root, ".mesa-trash/1/Why?.md");
+    assert_eq!(fs::read(root.join("Why?.md")).unwrap(), b"question");
+    create_directory(&root, "aux/what?").unwrap();
+    assert!(root.join("aux/what?").is_dir());
+    let read = crate::vaultread::with_visible_file(&root, "con.md", |mut file| {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        Ok(bytes)
+    });
+    assert_eq!(read.unwrap(), b"console");
+    for rel in ["../Why?.md", "/Why?.md", "a/../con.md"] {
+        assert!(!visible(rel), "{rel}");
+        assert!(
+            move_entry(&root, rel, ".mesa-trash/2/x.md").is_err(),
+            "{rel}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn restore_refuses_an_original_over_the_size_limit_before_writing() {
+    let root = std::env::temp_dir().join(format!("mesa-artifact-limit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let rel = ".note.md.mesa-backup-123-ab.tmp";
+    fs::write(root.join(rel), b"original").unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(root.join(rel))
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(120)))
+        .unwrap();
+    assert!(recover_artifact_limited(&root, rel, true, 7).is_err());
+    assert!(!root.join("note.md").exists());
+    assert_eq!(fs::read(root.join(rel)).unwrap(), b"original");
+    recover_artifact_limited(&root, rel, true, 8).unwrap();
+    assert_eq!(fs::read(root.join("note.md")).unwrap(), b"original");
+    fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn recovery_and_artifact_names_share_one_grammar() {
+    use crate::vaultscope::{parse_write_artifact, WriteArtifact};
+    assert!(matches!(
+        parse_write_artifact(".mesa-sync-tmp-1712345-abc"),
+        Some(WriteArtifact::SyncStage)
+    ));
+    assert!(parse_write_artifact(".mesa-sync-tmp-x-abc").is_none());
+    // The grammar accepts a hidden target; recovery adds the visible rule.
+    assert!(parse_write_artifact("..env.mesa-backup-1-ab.tmp").is_some());
+    assert!(artifact("..env.mesa-backup-1-ab.tmp").is_none());
+    // Purge and restore share `recovery`.
+    for rel in ["a/.x/.mesa-trash/1/n.md", ".mesa-trash", "/.mesa-trash/1"] {
+        assert!(!recovery(rel), "{rel}");
+    }
+}

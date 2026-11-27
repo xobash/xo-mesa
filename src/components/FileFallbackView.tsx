@@ -20,7 +20,7 @@ const EpubView = lazy(() => import("./EpubView").then((m) => ({ default: m.EpubV
 const LegacyOfficeView = lazy(() => import("./LegacyOfficeView").then((m) => ({ default: m.LegacyOfficeView })));
 
 /** First read: enough to detect the type and fill the first screens of bytes. */
-export const FALLBACK_HEAD_BYTES = 64 * 1024;
+const FALLBACK_HEAD_BYTES = 64 * 1024;
 
 type Mode = "office" | "book" | "contents" | "bytes";
 

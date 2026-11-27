@@ -436,3 +436,40 @@ fn failures_are_classified_by_kind() {
     assert_eq!(failure_kind(&E::Network("x".into())), FailureKind::Download);
     assert_eq!(failure_kind(&E::TempDirNotFound), FailureKind::Install);
 }
+
+#[test]
+fn only_official_release_package_urls_are_downloaded() {
+    let admitted = |raw: &str| official_package_url(&url::Url::parse(raw).expect("url parses"));
+    assert!(admitted(
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/Mesa_0.2.0_aarch64.app.tar.gz"
+    ));
+    assert!(admitted(
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/Mesa_0.2.0_x64-setup.exe"
+    ));
+    for refused in [
+        "http://github.com/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz",
+        "https://evil.example/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz",
+        "https://github.com.evil.example/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz",
+        "https://github.com@example.com/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz",
+        "https://github.com:8443/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz",
+        "https://github.com/other/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz",
+        "https://github.com/xobash/other/releases/download/v0.2.0/Mesa.app.tar.gz",
+        "https://github.com/xobash/xo-mesa/releases/download/../../other/repo/Mesa.app.tar.gz",
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/%2e%2e/x",
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/..%2Fx",
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/",
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/a/b",
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz?x=1",
+        "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz#x",
+        "https://github.com/xobash/xo-mesa/archive/v0.2.0.tar.gz",
+    ] {
+        assert!(!admitted(refused), "{refused} must be refused");
+    }
+    // Credentials on the official host, set on a parsed URL.
+    let official = "https://github.com/xobash/xo-mesa/releases/download/v0.2.0/Mesa.app.tar.gz";
+    let mut with_user = url::Url::parse(official).expect("url parses");
+    with_user.set_username("user").expect("username");
+    assert!(!official_package_url(&with_user));
+    with_user.set_password(Some("pw")).expect("password");
+    assert!(!official_package_url(&with_user));
+}

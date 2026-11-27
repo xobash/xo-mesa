@@ -2,7 +2,6 @@
 export interface PiSessionSnapshot {
   sessionId: string | null;
   vaultPath: string | null;
-  contextText: string | null;
   cols: number;
   rows: number;
 }
@@ -17,7 +16,6 @@ export const AGENT_CONTEXT_EVENT = "mesa://agent-context";
 let snapshot: PiSessionSnapshot = {
   sessionId: null,
   vaultPath: null,
-  contextText: null,
   cols: 80,
   rows: 24,
 };

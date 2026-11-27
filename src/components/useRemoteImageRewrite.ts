@@ -6,6 +6,9 @@ import { IN_TAURI } from "../lib/vault";
 /** The native broker expires tokens after ten minutes; renew before that. */
 const TOKEN_RENEW_MS = 9 * 60 * 1000;
 
+/** One retry after a failed renewal, so a brief native hiccup does not end remote images. */
+const TOKEN_RETRY_MS = 30 * 1000;
+
 const keepUrl: RemoteImageRewrite = (raw) => raw;
 
 type Listener = (rewrite: RemoteImageRewrite | null) => void;
@@ -42,7 +45,14 @@ function renew(): void {
     publish();
   }, () => {
     shared.pending = null;
+    // An expired token is useless: drop it so callers show their notice. Only a
+    // failed renewal (a token existed) retries, and only once.
+    const hadToken = shared.token !== null;
+    revoke(shared.token);
+    shared.token = null;
     shared.failed = true;
+    if (shared.timer) clearTimeout(shared.timer);
+    shared.timer = hadToken && shared.listeners.size ? setTimeout(renew, TOKEN_RETRY_MS) : null;
     publish();
   });
 }

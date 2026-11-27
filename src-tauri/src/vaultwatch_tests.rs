@@ -308,3 +308,23 @@ fn repeated_watch_errors_rescan_at_most_once_per_interval() {
     assert!(gate.admit(start + ERROR_RESCAN_INTERVAL));
     assert!(!gate.admit(start + ERROR_RESCAN_INTERVAL + Duration::from_secs(1)));
 }
+
+#[test]
+fn revoked_watchers_drop_off_the_calling_thread() {
+    struct Probe(std::sync::mpsc::Sender<std::thread::ThreadId>);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.0.send(std::thread::current().id());
+        }
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    drop_off_thread(vec![Probe(sender.clone()), Probe(sender)]);
+    let caller = std::thread::current().id();
+    for _ in 0..2 {
+        let dropped_on = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_ne!(dropped_on, caller);
+    }
+    drop_off_thread(Vec::<Probe>::new());
+}

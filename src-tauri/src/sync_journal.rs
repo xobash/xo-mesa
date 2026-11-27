@@ -302,10 +302,6 @@ pub(super) fn migrate_legacy_journal(
     validate_journal(journal, "upgraded Mesa sync journal")
 }
 
-pub(super) fn is_valid_hash(hash: &str) -> bool {
-    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 /// Reject malformed peer state before it participates in planning.  A journal
 /// is destructive intent, so accepting a syntactically valid but inconsistent
 /// operation is not a compatibility fallback.
@@ -335,7 +331,7 @@ pub fn validate_journal(journal: &SyncJournal, label: &str) -> std::io::Result<(
             || op.id != format!("{}:{}", op.device, op.sequence)
             || !ids.insert(op.id.clone())
             || !is_peer_rel(&op.from)
-            || !is_valid_hash(&op.hash)
+            || super::hex::normalize_hex64(&op.hash).is_none()
         {
             return Err(invalid_data(format!("invalid {label} operation")));
         }
@@ -1334,5 +1330,36 @@ pub(super) fn apply_journal_operation_rooted(
             }
             Ok(JournalApply::Conflict)
         }
+    }
+}
+
+#[cfg(test)]
+mod hash_spelling_tests {
+    use super::*;
+
+    /// Rename matching case-folds hashes, so either case is a valid operation
+    /// hash; anything but 64 hex digits is malformed.
+    #[test]
+    fn journal_operation_hashes_are_64_hex_digits_in_either_case() {
+        let journal = |hash: String| {
+            let mut journal = SyncJournal::empty("peer".into());
+            journal.operations.push(JournalOperation {
+                id: "d:1".into(),
+                device: "d".into(),
+                sequence: 1,
+                at_ms: 0,
+                kind: JournalOperationKind::Delete,
+                from: "gone.md".into(),
+                to: None,
+                size: 4,
+                hash,
+            });
+            journal
+        };
+        let hash = super::super::hex::sha256_hex(b"gone");
+        assert!(validate_journal(&journal(hash.clone()), "j").is_ok());
+        assert!(validate_journal(&journal(hash.to_uppercase()), "j").is_ok());
+        assert!(validate_journal(&journal(format!("{}g", &hash[..63])), "j").is_err());
+        assert!(validate_journal(&journal(hash[..63].to_string()), "j").is_err());
     }
 }

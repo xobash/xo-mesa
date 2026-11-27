@@ -172,7 +172,7 @@ export function buildTroubleshootingPackage(input: DiagnosticsInput): string {
   push("```");
   push("");
   push(
-    "_Notes for the reader: hashes are FNV-1a/64; transport is TLS with " +
+    "_Notes for the reader: content hashes are SHA-256; transport is TLS with " +
       "SHA-256 certificate pinning (trust-on-first-use); transfers are " +
       "verified against the manifest hash before an atomic write; a failed " +
       "file never aborts the rest of the sync. Sync keys are redacted._"

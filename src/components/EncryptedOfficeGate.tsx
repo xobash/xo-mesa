@@ -9,7 +9,7 @@ import { Modal } from "./Modal";
 import { encryptedSource, OfficeByteSourceContext, PLAIN_SOURCE, primedSource, type OfficeByteSource } from "./officeByteSource";
 
 /** Wrong passwords allowed per prompt; closing and reopening the file starts again (no lockout). */
-export const MAX_PASSWORD_ATTEMPTS = 20;
+const MAX_PASSWORD_ATTEMPTS = 20;
 
 type Gate =
   | { phase: "checking" }
@@ -17,7 +17,7 @@ type Gate =
   | { phase: "unsupported"; reason: string }
   | { phase: "locked"; encrypted: Uint8Array; readOnlyReason: string | null; prompt: boolean };
 
-export type CryptoClientFactory = () => OfficeCryptoClient;
+type CryptoClientFactory = () => OfficeCryptoClient;
 
 /**
  * Opens a Word, Excel or PowerPoint file. A password-protected package

@@ -44,7 +44,7 @@ pub(crate) fn require_main(label: &str) -> Result<(), String> {
     require_main_for(label, MAIN_ONLY)
 }
 /// The main window and its document and panel windows.
-fn is_document_surface(label: &str) -> bool {
+pub(crate) fn is_document_surface(label: &str) -> bool {
     label == "main" || label.starts_with("doc-") || label.starts_with("panel-")
 }
 pub(crate) fn require_document_surface(label: &str) -> Result<(), String> {

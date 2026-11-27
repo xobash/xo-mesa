@@ -26,21 +26,13 @@ fn sessions() -> &'static Mutex<HashMap<String, Session>> {
     static SESSIONS: OnceLock<Mutex<HashMap<String, Session>>> = OnceLock::new();
     SESSIONS.get_or_init(Default::default)
 }
-fn document_surface(owner: &str) -> bool {
-    owner == "main"
-        || owner.starts_with("doc-")
-        || owner.starts_with("panel-")
-        || owner.starts_with("agent-")
-}
 fn create_session(
     owner: &str,
     entry: &Path,
     online: bool,
     expected_text: &str,
 ) -> Result<String, String> {
-    if !document_surface(owner) {
-        return Err("document surface required".into());
-    }
+    crate::require_document_surface(owner)?;
     if !matches!(
         entry
             .extension()
@@ -363,6 +355,26 @@ mod tests {
         assert!(admit_resource(&mut s, &app, Sha256::digest(b"run()").into()).is_ok());
         assert!(admit_resource(&mut s, &app, Sha256::digest(b"run()").into()).is_ok());
         assert!(admit_resource(&mut s, &app, Sha256::digest(b"steal()").into()).is_err());
+    }
+
+    // Agent windows render only Pi, so they get no script-run grant.
+    #[test]
+    fn script_runs_are_refused_outside_document_surfaces() {
+        let entry = Path::new("/nonexistent-mesa-vault/site/index.html");
+        for owner in ["agent-x", "research-1", "tray"] {
+            let refused = crate::require_document_surface(owner).err();
+            assert!(refused.is_some(), "{owner}");
+            assert_eq!(
+                create_session(owner, entry, false, "").err(),
+                refused,
+                "{owner}"
+            );
+        }
+        for owner in ["main", "doc-1", "panel-1"] {
+            let refused = create_session(owner, entry, false, "").expect_err("missing file");
+            assert!(crate::require_document_surface(owner).is_ok(), "{owner}");
+            assert!(!refused.contains("document surface"), "{owner}: {refused}");
+        }
     }
 
     // `u8::from_str_radix` accepted a sign, so `%+f` decoded as 0x0f.

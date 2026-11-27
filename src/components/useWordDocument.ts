@@ -10,16 +10,16 @@ import type { WordCommand, WordFormatting, WordImageMime, WordSurface } from "./
 import { saveWordCopy, saveWordInPlace, type WordSaveOutcome } from "./wordDocumentSave";
 
 /** Larger files open in the details view only; the engine lays out every page in memory. */
-export const WORD_OPEN_LIMIT_BYTES = 64 * 1024 * 1024;
+const WORD_OPEN_LIMIT_BYTES = 64 * 1024 * 1024;
 
-export type WordLoad =
+type WordLoad =
   | { state: "loading" }
   | { state: "unsupported"; message: string }
   | { state: "ready"; pkg: OoxmlPackage; notice: WordPolicyNotice; generation: number };
 
-export type WordMode = "viewing" | "preparing" | "editing";
+type WordMode = "viewing" | "preparing" | "editing";
 
-export interface WordFile { path: string; relPath: string; mtime?: number }
+interface WordFile { path: string; relPath: string; mtime?: number }
 
 /** Mounts the engine; injectable so component tests need not load it. */
 export type WordSurfaceFactory = (
@@ -28,7 +28,7 @@ export type WordSurfaceFactory = (
   events: { onChange(): void; onSelection(): void },
 ) => Promise<WordSurface>;
 
-export const loadWordSurface: WordSurfaceFactory = async (host, bytes, events) =>
+const loadWordSurface: WordSurfaceFactory = async (host, bytes, events) =>
   (await import("./wordEngine")).mountWordSurface(host, bytes, events);
 
 const EMPTY_FORMAT: WordFormatting = { bold: false, italic: false, underline: false, strike: false, alignment: null, inTable: false, canUndo: false, canRedo: false };

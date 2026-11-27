@@ -236,16 +236,32 @@ pub async fn vault_read_text(
         return Err("Text read batch exceeds 128 files".into());
     }
     let path = crate::vaultscope::require_approved(&app, &root)?;
+    let max_text_file_bytes = text_file_limit(max_text_file_bytes);
+    read_text_leased(path, rels, max_text_file_bytes, worker_limit)
+        .await
+        .map(tauri::ipc::Response::new)
+}
+
+/// Bulk text reads hold the shared vault access lease, like every other
+/// vault read: pending research recovery runs first, and a research apply
+/// (the exclusive holder) is seen wholly before or wholly after, never half
+/// applied. Readers never wait for each other.
+async fn read_text_leased(
+    root: PathBuf,
+    rels: Vec<String>,
+    max_text_file_bytes: u64,
+    worker_limit: Option<usize>,
+) -> Result<Vec<u8>, String> {
+    let access = crate::vaulttransaction::access(&root).await?;
     // Blocking syscall work: keep it off the async runtime's worker so other
     // IPC (the editor's own saves, terminal traffic) stays responsive while a
     // batch is in flight.
-    let max_text_file_bytes = text_file_limit(max_text_file_bytes);
-    let body = tauri::async_runtime::spawn_blocking(move || {
-        encode(&read_all(&path, &rels, max_text_file_bytes, worker_limit))
+    tauri::async_runtime::spawn_blocking(move || {
+        let _access = access;
+        encode(&read_all(&root, &rels, max_text_file_bytes, worker_limit))
     })
     .await
-    .map_err(|e| e.to_string())?;
-    Ok(tauri::ipc::Response::new(body))
+    .map_err(|e| e.to_string())
 }
 
 /// Bounded read-only access replaces generic file handles in privileged renderers.
@@ -299,7 +315,7 @@ pub(crate) fn with_visible_file<T>(
         return Err(ONLINE_ONLY_READ.into());
     }
     #[cfg(unix)]
-    let file = crate::sync_core::RootedTarget::resolve(root, rel, false)
+    let file = crate::sync_core::RootedTarget::resolve_local(root, rel, false)
         .map_err(|e| e.to_string())?
         .open_read()
         .map_err(|e| e.to_string())?;
@@ -351,9 +367,22 @@ pub async fn vault_text_fingerprints(
         return Err("Fingerprint batch exceeds 128 files".into());
     }
     let root = crate::vaultscope::require_approved(&app, &root)?;
-    tauri::async_runtime::spawn_blocking(move || fingerprint_all(&root, &rels, None))
-        .await
-        .map_err(|e| e.to_string())
+    fingerprints_leased(root, rels).await
+}
+
+/// Fingerprints take the same shared lease as text reads (see
+/// [`read_text_leased`]).
+async fn fingerprints_leased(
+    root: PathBuf,
+    rels: Vec<String>,
+) -> Result<Vec<Option<String>>, String> {
+    let access = crate::vaulttransaction::access(&root).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _access = access;
+        fingerprint_all(&root, &rels, None)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Hash in request order on the bulk-read workers; a miss is per file.

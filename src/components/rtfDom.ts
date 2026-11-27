@@ -22,11 +22,11 @@ export interface RtfParagraph {
   items: Exclude<RtfEditUnit, { kind: "par" }>[];
 }
 
-export function encodeFormat(f: RtfFormat): string {
+function encodeFormat(f: RtfFormat): string {
   return [f.b ? 1 : 0, f.i ? 1 : 0, f.ul ? 1 : 0, f.strike ? 1 : 0, f.fs, f.f, f.cf, f.cb, f.hl, f.va].join(",");
 }
 
-export function decodeFormat(value: string | null): RtfFormat | null {
+function decodeFormat(value: string | null): RtfFormat | null {
   if (!value) return null;
   const p = value.split(",");
   if (p.length !== 10) return null;
@@ -40,7 +40,7 @@ function cssFont(name: string): string {
 }
 
 /** Inline presentation for one format; colour index 0 follows the theme. */
-export function styleFormat(el: HTMLElement, f: RtfFormat, doc: RtfDocument): void {
+function styleFormat(el: HTMLElement, f: RtfFormat, doc: RtfDocument): void {
   el.setAttribute(FMT, encodeFormat(f));
   const s = el.style;
   s.fontWeight = f.b ? "700" : "";
@@ -97,7 +97,7 @@ export function unitsOf(paragraphs: readonly RtfParagraph[]): RtfEditUnit[] {
 
 type AtomIndex = ReadonlyMap<number, Extract<RtfDocument["units"][number], { kind: "atom" }>>;
 
-export function atomIndex(doc: RtfDocument): AtomIndex {
+function atomIndex(doc: RtfDocument): AtomIndex {
   const out = new Map<number, Extract<RtfDocument["units"][number], { kind: "atom" }>>();
   for (const unit of doc.units) if (unit.kind === "atom") out.set(unit.id, unit);
   return out;

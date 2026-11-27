@@ -94,8 +94,6 @@ export function AgentSurface({
   const deepResearchSurface = useAppStore((s) => s.deepResearchSurface);
   const setDeepResearchSurface = useAppStore((s) => s.setDeepResearchSurface);
   const [researchHostId] = useState(() => `pi-surface-${++nextAgentSurfaceHostId}`);
-  const [sessionId, setSessionId] = useState<string | null>(SHARED_PI_SESSION.sessionId);
-  const sessionIdRef = useRef<string | null>(SHARED_PI_SESSION.sessionId);
   // Consumed on the first session-setup pass only — later re-runs (context
   // text changes as the user navigates files) go through the normal
   // ensureSharedPiSession reuse/restart logic.
@@ -113,8 +111,10 @@ export function AgentSurface({
   // config instead of leaving the session stopped.
   const [restartTick, setRestartTick] = useState(0);
   useEffect(() => onSharedPiRestart(() => setRestartTick((t) => t + 1)), []);
-  const [piExit, setPiExit] = useState<{ code: number | null } | null>(null);
-  useEffect(() => onSharedPiExit((code) => setPiExit({ code })), []);
+  // A stopped Pi (exit or failed launch) restarts only from this banner, a
+  // feature request or a vault change; never because the user changed notes.
+  const [piStopped, setPiStopped] = useState<string | null>(null);
+  useEffect(() => onSharedPiExit((code) => setPiStopped(piExitMessage(code))), []);
   // Browser harness wing: slides out from behind the Pi window (slide-out
   // contexts) or opens as an inline sibling (workspace / popped-out window).
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -162,10 +162,12 @@ export function AgentSurface({
   );
   const ctx = contextOverride ?? localCtx;
   const contextText = useMemo(() => contextPrompt(ctx), [ctx]);
-
+  // Launch-time context only. The live session follows context through the
+  // loopback bridge, so a context change must not re-run session setup.
+  const launchContextRef = useRef({ ctx, contextText });
   useEffect(() => {
-    sessionIdRef.current = sessionId;
-  }, [sessionId]);
+    launchContextRef.current = { ctx, contextText };
+  }, [ctx, contextText]);
 
   useEffect(() => {
     const host = terminalHostRef.current;
@@ -237,37 +239,42 @@ export function AgentSurface({
     }
     let alive = true;
     void (async () => {
+      let id: string;
       try {
         const toAttach = pendingAttachRef.current;
         pendingAttachRef.current = null;
-        const id =
+        const launch = launchContextRef.current;
+        id =
           toAttach && !SHARED_PI_SESSION.sessionId
-            ? await adoptSharedPiSession(toAttach, vaultPath, contextText, term)
-            : await ensureSharedPiSession(vaultPath, ctx, contextText, term);
-        if (!alive) return;
-        setSessionId(id);
-        setPiExit(null);
-        if (term === xtermRef.current) {
-          term.focus();
-          fitRef.current?.fit();
-          if (document.hasFocus()) {
-            await claimSharedPiResizeOwnership(term);
-          } else {
-            queueSharedPiResize(term);
-          }
-        }
-        await onSessionReady?.(id);
+            ? await adoptSharedPiSession(toAttach, vaultPath, term)
+            : await ensureSharedPiSession(vaultPath, launch.ctx, launch.contextText, term);
       } catch (e) {
-        term?.writeln("\x1b[31mpi terminal error:\x1b[0m");
-        term?.writeln(String(e));
-        term?.writeln("");
-        term?.writeln("Mesa tried to launch `pi` in a native PTY.");
+        if (alive) setPiStopped("Pi could not start");
+        term.writeln("\x1b[31mpi terminal error:\x1b[0m");
+        term.writeln(String(e));
+        term.writeln("");
+        term.writeln("Mesa tried to launch `pi` in a native PTY.");
+        return;
       }
+      if (!alive) return;
+      setPiStopped(null);
+      if (term === xtermRef.current) {
+        term.focus();
+        fitRef.current?.fit();
+        // Ownership is best effort: a refused claim leaves the PTY with the
+        // current owner, and focus or the next resize claims it again.
+        if (document.hasFocus()) {
+          await claimSharedPiResizeOwnership(term).catch(() => queueSharedPiResize(term));
+        } else {
+          queueSharedPiResize(term);
+        }
+      }
+      await onSessionReady?.(id);
     })();
     return () => {
       alive = false;
     };
-  }, [termReady, vaultPath, contextText, restartTick, onSessionReady, ctx]);
+  }, [termReady, vaultPath, restartTick, onSessionReady]);
 
   // When the embedded Pi agent uses its `browse` tool, Mesa mirrors the
   // navigation here — pop the wing open so the user can watch the agent work.
@@ -390,10 +397,10 @@ export function AgentSurface({
   return (
     <div className={"agent-surface terminal-first" + (embedded ? " embedded" : "")}>
       <section className="agent-terminal-pane" data-native-webview-occluder="">
-        {piExit && (
+        {piStopped && (
           <div className="pi-exit-banner" role="status">
-            {piExitMessage(piExit.code)}{" "}
-            <button type="button" onClick={() => { setPiExit(null); setRestartTick((t) => t + 1); }}>Restart Pi</button>
+            {piStopped}{" "}
+            <button type="button" onClick={() => { setPiStopped(null); setRestartTick((t) => t + 1); }}>Restart Pi</button>
           </div>
         )}
         <div

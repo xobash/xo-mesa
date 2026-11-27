@@ -10,7 +10,8 @@ sudden-power-loss recovery still need native acceptance.
 
 - Every vault write (note saves, PDF saves, file duplication, drag-and-drop
   imports, zip extraction) goes through one verified-write primitive
-  (`src/lib/verifiedWrite.ts`).
+  (`src/lib/verifiedWrite.ts`). Duplication and single-file imports hold the
+  copy in memory, so a source above 512 MiB is refused before it is read.
 - ZIP import rejects an archive before decompression when its central directory
   has unsafe paths, ZIP64 metadata, more than 10,000 entries, an archive above
   256 MiB, an entry above 64 MiB, or more than 512 MiB expanded data. The
@@ -34,10 +35,13 @@ sudden-power-loss recovery still need native acceptance.
 - PDF candidates require a `%PDF-` header, `%%EOF` marker and full pdf-lib
   parse before commit. Backup, restore and rescue stages preserve existing bytes
   by equality checks; candidate format rules do not apply to those copies.
-- The native command verifies the staged file before publication. If a later
-  directory flush fails, it restores the rescue when the target still has the
-  candidate bytes. If restoration fails or another writer changed the target,
-  Mesa retains the rescue and reports its path. The compatibility path retains
+- The native command verifies the staged file before publication and reads
+  the published file back. Once the verified bytes are in place, a failed
+  folder flush is retried once and logged; it never turns a completed save
+  into a failure, because the edit is already on disk and a retry against the
+  old bytes would be refused. If another writer changed the target during
+  the save, Mesa keeps the displaced version as a rescue and reports its
+  path. The compatibility path retains
   its final read-back and restore-or-rescue behavior.
 - In-flight artifacts are dot-prefixed siblings (`.name.ext.mesa-save-…tmp`,
   `.name.ext.mesa-backup-…tmp`, `.name.ext.mesa-rescue-…tmp`), so the vault
@@ -403,7 +407,9 @@ storage limits. Empty operates on that snapshot, so newer deletions are retained
 Partial failure stops removal and shows how many items were removed. Changing
 vault sessions stops scheduling old actions. The native command permits only
 main-window calls inside approved recovery storage and rejects traversal,
-symlinks, reparse points, and the storage root. Permanent removal affects no
+symlinks, reparse points, and the storage root. It removes the item through
+held folder handles, so a recovery folder swapped for a link during removal
+cannot redirect it outside the vault. Permanent removal affects no
 live file and does not promise SSD erasure or removal from external backups.
 Recovery has no automatic expiry; retention is an explicit user decision.
 
@@ -424,7 +430,10 @@ Saves, renames, folder creation, delete, restore and Deep Research targets check
 the path again after the operating system resolves it, so a Windows 8.3 short
 name such as `GIT~1` cannot reach `.git`. On Windows, a save also refuses a file
 name with `:` (alternate data streams), a device name such as `CON`, `CONIN$`
-or `CLOCK$`, or a trailing dot or space. Bulk text reads accept at most 128
+or `CLOCK$`, or a trailing dot or space. On macOS and Linux such names
+(`Why?.md`, `con.md`) are ordinary files: rename, delete, restore and reads
+accept them, while device sync still refuses them so every device can hold
+the synced set. Bulk text reads accept at most 128
 visible paths per request, never hidden or `node_modules` paths, and never
 above the 8 MiB automatic text limit. Single bounded byte reads and range reads
 (`vault_read_range`, ≤ 1 MiB from an offset no larger than the file) have the

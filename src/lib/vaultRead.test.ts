@@ -163,6 +163,12 @@ describe("readVaultTextOutcomes", () => {
     expect(perFileReads).toHaveLength(2);
   });
 
+  it("never reads around a pending research recovery", async () => {
+    nativeBehaviour = () => Promise.reject(new Error("Research recovery is pending for this vault"));
+    await expect(readVaultText(ROOT, files("a.md"))).rejects.toThrow("Research recovery is pending");
+    expect(perFileReads).toEqual([]);
+  });
+
   it("fallback skips a known oversized non-markdown file before reading it", async () => {
     nativeBehaviour = () => Promise.reject(new Error("command not found"));
     const texts = await readVaultText(

@@ -50,7 +50,9 @@ export class NodePositions {
   r = new Float64Array(0);
   /** Layout radius (zoom-independent), for GPU trimming. */
   base = new Float64Array(0);
-  /** A node other than `still` changed position or layout radius this frame. */
+  /** Radius pulse phase (`renderPhase`), so the GPU trims at the pulsing radius. */
+  phase = new Float64Array(0);
+  /** A node other than `still` changed position, layout radius or phase this frame. */
   placesChanged = false;
   private nodes: readonly GraphNode[] | null = null;
 
@@ -63,20 +65,38 @@ export class NodePositions {
     if (this.x.length < nodes.length) {
       const size = nodes.length;
       this.x = new Float64Array(size); this.y = new Float64Array(size); this.r = new Float64Array(size); this.base = new Float64Array(size);
+      this.phase = new Float64Array(size);
       moved = placed = true;
     }
     this.nodes = nodes;
-    const { x, y, r, base } = this;
+    const { x, y, r, base, phase } = this;
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
-      const nx = n.renderX ?? n.x ?? 0, ny = n.renderY ?? n.y ?? 0, nr = n.renderRadius ?? 0, nb = baseRadius(n);
+      const nx = n.renderX ?? n.x ?? 0, ny = n.renderY ?? n.y ?? 0, nr = n.renderRadius ?? 0, nb = baseRadius(n), np = n.renderPhase ?? 0;
       if (n.id !== still) {
-        if (!placed && (x[i] !== nx || y[i] !== ny || base[i] !== nb)) placed = true;
+        if (!placed && (x[i] !== nx || y[i] !== ny || base[i] !== nb || phase[i] !== np)) placed = true;
         if (!moved && (placed || r[i] !== nr)) moved = true;
       }
-      x[i] = nx; y[i] = ny; r[i] = nr; base[i] = nb;
+      x[i] = nx; y[i] = ny; r[i] = nr; base[i] = nb; phase[i] = np;
     }
     this.placesChanged = placed;
     return moved;
   }
+}
+
+/** Living-motion radius pulse rate, radians per second (period ~3.5 s). */
+export const PULSE_RATE = 1.8;
+
+/**
+ * Pulse angle at `seconds`, reduced to one turn so the GPU's 32-bit `sin`
+ * stays exact on a long-running clock. The 2D nodes and the GPU link trim
+ * both read this value.
+ */
+export function pulseAngle(seconds: number): number {
+  return (seconds * PULSE_RATE) % (Math.PI * 2);
+}
+
+/** Drawn radius under the living-motion pulse; the WebGL link shader computes the same. */
+export function pulsedRadius(radius: number, angle: number, phase: number, amp: number): number {
+  return radius * (1 + Math.sin(angle + phase) * amp);
 }

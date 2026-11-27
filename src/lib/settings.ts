@@ -6,8 +6,11 @@ import { normalizeHotkeys } from "./hotkeys";
 import { GRAPH_FORCE_DEFAULTS } from "./graphForceDefaults";
 import { clamp } from "./clamp";
 export const SETTINGS_KEY = "mesa:settings";
-/** Bump when a graph setting changes units; stored values from an older version reset once. */
-const GRAPH_SETTINGS_VERSION = 2;
+/** Bump when a graph setting changes units. Graph values saved before version 2
+ *  reset to the defaults; version 2 keeps its values and turns living motion on once. */
+const GRAPH_SETTINGS_VERSION = 3;
+/** Version 3 kept version 2's units and turned living motion on by default (owner, 2026-11-23). */
+const LIVING_DEFAULT_FROM_VERSION = 2;
 const GRAPH_SETTING_RANGES: Partial<Record<keyof Settings, [number, number]>> = {
   graphTextFade: [-3, 3], graphNodeSize: [0.1, 5], graphLinkThickness: [0.1, 5],
   graphCenterForce: [0, 1], graphRepelForce: [0, 20], graphLinkForce: [0, 1], graphLinkDistance: [30, 500],
@@ -62,7 +65,8 @@ export const DEFAULT_SETTINGS: Settings = {
   graphRepelForce: GRAPH_FORCE_DEFAULTS.repel,
   graphLinkForce: GRAPH_FORCE_DEFAULTS.linkForce,
   graphLinkDistance: GRAPH_FORCE_DEFAULTS.linkDistance,
-  graphLivingMotion: false,
+  // Twinkle and breathing are on by default (owner ruling 2026-11-23).
+  graphLivingMotion: true,
   graphSettingsVersion: GRAPH_SETTINGS_VERSION,
   centerView: "doc",
   rightStack: ["preview"],
@@ -86,7 +90,8 @@ function withoutLegacyAgentSettings(value: Record<string, unknown>): { value: Re
 }
 
 /** Validate persisted shape. Graph values are clamped to `GRAPH_SETTING_RANGES`,
- *  and graph settings saved by an older version reset to the defaults. */
+ *  graph settings saved before version 2 reset to the defaults, and version 2
+ *  keeps its values and turns living motion on once. */
 export function normalizeSettings(value: unknown): Settings {
   const next: Settings = { ...DEFAULT_SETTINGS, peers: [], bookmarks: [], hotkeys: {}, rightStack: [...DEFAULT_SETTINGS.rightStack] };
   if (!record(value)) return next;
@@ -99,7 +104,11 @@ export function normalizeSettings(value: unknown): Settings {
   }
   // Graph settings saved before the Obsidian-parity units (different slider
   // curves, text fade and filters) would misread; they restart at the defaults.
-  if (value.graphSettingsVersion !== GRAPH_SETTINGS_VERSION) {
+  // Graph settings from version 2 keep their values and turn living motion on once.
+  if (value.graphSettingsVersion === LIVING_DEFAULT_FROM_VERSION) {
+    next.graphLivingMotion = true;
+    next.graphSettingsVersion = GRAPH_SETTINGS_VERSION;
+  } else if (value.graphSettingsVersion !== GRAPH_SETTINGS_VERSION) {
     for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
       if (key.startsWith('graph')) Object.assign(next, { [key]: DEFAULT_SETTINGS[key] });
     }

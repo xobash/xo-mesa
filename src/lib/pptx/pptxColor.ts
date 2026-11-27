@@ -1,4 +1,5 @@
 import { attr, child, intAttr, path, type XmlEl } from "./xmlTree";
+import { bytesToHex } from "../hex";
 
 // DrawingML colour resolution (ECMA-376 Part 1, 20.1.2.3): scheme colours via
 // the master colour map and theme, plus the common modifiers. Anything Mesa
@@ -99,7 +100,7 @@ function applyModifiers(hex: string, mods: readonly XmlEl[]): string {
     else if (mod.localName === "shade") rgb = rgb.map((c) => c * v) as [number, number, number];
   }
   const [r, g, b] = rgb.map((c) => Math.round(Math.min(255, Math.max(0, c))));
-  return alpha >= 1 ? `#${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("")}` : `rgba(${r}, ${g}, ${b}, ${Number(alpha.toFixed(3))})`;
+  return alpha >= 1 ? `#${bytesToHex([r, g, b])}` : `rgba(${r}, ${g}, ${b}, ${Number(alpha.toFixed(3))})`;
 }
 
 /** Resolves the first colour child of `holder` (e.g. `a:solidFill`) to a CSS colour. */
@@ -112,7 +113,7 @@ export function resolveColor(holder: XmlEl | null, theme: ThemeInfo, placeholder
   else if (el.localName === "prstClr") hex = PRESET[attr(el, "val") ?? ""] ?? null;
   else {
     const pct = (n: string) => Math.round(clamp01(intAttr(el, n, 0) / 100_000) * 255);
-    hex = [pct("r"), pct("g"), pct("b")].map((c) => c.toString(16).padStart(2, "0")).join("");
+    hex = bytesToHex([pct("r"), pct("g"), pct("b")]);
   }
   return hex ? applyModifiers(hex, el.children) : null;
 }

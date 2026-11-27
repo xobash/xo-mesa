@@ -11,6 +11,10 @@ afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi
 
 it('replaces a crashed tree with a recoverable panel and can dismiss it', async () => {
   const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+  // React's dev build rethrows the render error as a window error event; mark
+  // it handled so jsdom does not print an expected stack into the test log.
+  const handled = (event: ErrorEvent) => event.preventDefault();
+  window.addEventListener('error', handled);
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(async () => root.render(<ErrorBoundary><Child /></ErrorBoundary>));
   expect(host.querySelector('h1')!.textContent).toBe('Something went wrong');
@@ -20,4 +24,5 @@ it('replaces a crashed tree with a recoverable panel and can dismiss it', async 
   const dismiss = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Dismiss')!;
   await act(async () => dismiss.click());
   expect(host.textContent).toBe('Recovered view');
+  window.removeEventListener('error', handled);
 });

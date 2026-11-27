@@ -12,10 +12,10 @@ import {
 import { urlForPath } from "../lib/vault";
 
 import { clamp } from "../lib/clamp";
-import { GraphHitIndex, graphLinkNodeId, nearestNodeLinear, nodeDrawScale, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "../lib/graphGeometry";
+import { GraphHitIndex, graphLinkNodeId, maxNodeDegree, nearestNodeLinear, nodeDrawScale, nodeRadius, phaseFromId, resolveOverlaps, timelineSortValue } from "../lib/graphGeometry";
 import { readGraphColors, type GraphColors } from "./graphColors";
 import { LazyLinkIndex, linkAdjacency, neighborsOf } from "./graphLinkIndex";
-import { LinkLayer, isWebKitCanvas } from "./graphLinkLayer";
+import { LINK_LAYER_MIN_LINKS, LinkLayer, isWebKitCanvas } from "./graphLinkLayer";
 import { nextTask } from "./nextTask";
 import { GlLinkRenderer } from "./graphLinkGl";
 import { OVERLAP_GAP, clampZoom, drawGraph, isZooming, type GraphBounds, type GraphDisplay, type GraphDrawRefs, type GraphLinkEndpoints, type Transform } from "./graphDraw";
@@ -176,9 +176,11 @@ export function GraphView() {
   // Force values the simulation currently holds; a retune runs only when they change.
   const appliedForcesRef = useRef(forceSettings);
 
+  // Most links on any node of the built graph: the largest node's reference.
+  const maxDegreeRef = useRef(0);
   /** Zoom-independent world radius: layout, collision and bounds use it. */
   const graphNodeRadius = (n: GraphNode) =>
-    nodeRadius(n, graphDisplayRef.current.nodeSize);
+    nodeRadius(n, graphDisplayRef.current.nodeSize, maxDegreeRef.current);
   /** Draw-size factor at the current zoom (nodes grow in world units when zoomed out). */
   const drawScale = () => nodeDrawScale(transformRef.current.k, window.devicePixelRatio || 1);
   /** World radius as drawn at the current zoom. */
@@ -372,6 +374,8 @@ export function GraphView() {
   function kickGraph(dx: number, dy: number, strength = 1): void {
     const settings = getStore().settings;
     if (!settings.animations || !settings.graphLivingMotion) return;
+    // Heavy graphs keep nodes in place under living motion (`drawGraph`).
+    if (linksRef.current.length >= LINK_LAYER_MIN_LINKS) return;
     const dist = Math.hypot(dx, dy);
     if (dist < 0.6) return;
     const now = performance.now();
@@ -684,6 +688,9 @@ export function GraphView() {
     physicsRef.current.worker?.terminate();
     physicsRef.current.worker = null;
     physicsRef.current.active = false;
+    // A remount that keeps refs (StrictMode, a pane move in the dev app) must
+    // build again: the open this cleanup cancelled never finishes otherwise.
+    builtFromRef.current = null;
   }, []);
 
   // Center + scale so the whole graph fits the viewport.
@@ -805,6 +812,7 @@ export function GraphView() {
       return;
     }
     const { nodes, links, topology } = buildGraphRef.current(notes, files, buildOptions);
+    maxDegreeRef.current = maxNodeDegree(nodes);
     // A filter or vault change starts a fresh replay timeline. The complete
     // graph remains the source of truth; the timelapse only changes which
     // already-built nodes are admitted to the live force simulation.

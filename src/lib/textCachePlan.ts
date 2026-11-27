@@ -10,9 +10,8 @@ export type TextualPredicate = (file: {
 
 
 /**
- * One non-markdown text file may not consume the whole search cache or native
- * response buffer by itself. Markdown stays exempt because `buildNotes` owns
- * that startup contract.
+ * One text file may not consume the whole search cache or native response
+ * buffer by itself. The cap applies to every path, Markdown included.
  */
 export const MAX_TEXT_CACHE_FILE_BYTES = 8 * 1024 * 1024;
 /** The cap as status text shows it, in whole MiB. */

@@ -45,6 +45,13 @@ it("grants no window the menu, tray or native image APIs", () => {
   expect(ids.filter((id) => /^core:(menu|tray|image):/.test(id))).toEqual([]);
 });
 
+it("grants only the open and message dialogs, never the save dialog", () => {
+  // `dialog:default` includes save; Mesa saves through native pickers only.
+  const ids = capabilities.flatMap((capability) => capability.permissions ?? [])
+    .map((permission) => (typeof permission === "string" ? permission : permission.identifier));
+  expect([...new Set(ids.filter((id) => id.startsWith("dialog:")))].sort()).toEqual(["dialog:allow-message", "dialog:allow-open"]);
+});
+
 describe("main workspace authority", () => {
   const grants = (label: string) => capabilities.filter(c => c.windows?.some(p => matchesWindow(p, label))).flatMap(c => c.permissions ?? []).filter(p => typeof p === "string");
   it("keeps destructive file, credential and sync operations out of document/panel windows", () => {

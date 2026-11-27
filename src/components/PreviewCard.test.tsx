@@ -104,6 +104,21 @@ async function mountPreview(rel: string): Promise<void> {
 }
 
 describe("PreviewCard content loading", () => {
+  it("swallows a failed excerpt read instead of rejecting unhandled", async () => {
+    const rel = "notes/a.md";
+    mocks.state.files = [{ relPath: rel, path: "/vault/notes/a.md", name: "a", ext: "md", isMarkdown: true }];
+    mocks.ensurePeek.mockRejectedValue(new Error("read failed"));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      await mountPreview(rel);
+      await new Promise((done) => setTimeout(done, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("builds saved-HTML srcDoc from the complete file and hydrates local CSS", async () => {
     const rel = "web/Saved.html";
     mocks.state.files = [

@@ -130,10 +130,6 @@ export interface SearchScan {
   readonly remaining: number;
 }
 
-/** Check the time budget after each file; file sizes vary.
- * Large-file matching also yields within a file. */
-const SCAN_CHECK_INTERVAL = 1;
-
 /** Case-insensitive substring search with optional prefix narrowing over uncapped candidates.
  * Discard previous results when files or content identity changes. */
 export function createSearchScan(
@@ -162,10 +158,7 @@ export function createSearchScan(
 
   // Counting is what ranks the list; a 1-char term (only reachable alongside an
   // `ext:` filter) stays unranked, exactly as before.
-  const counter =
-    term.length >= 2
-      ? new RegExp(escapeRegExp(term), "g")
-      : null;
+  const countMatches = term.length >= 2;
   // One reusable matcher for the whole pass. It runs against RAW text, so no
   // per-file lowercased copy is allocated; that copy is unaffordable when a
   // vault's text is fully cached. `null` (non-ASCII term) and
@@ -211,7 +204,6 @@ export function createSearchScan(
         }
         if (
           budgetMs !== Infinity &&
-          (active !== null || next % SCAN_CHECK_INTERVAL === 0) &&
           performance.now() - start >= budgetMs
         ) {
           return false;
@@ -257,7 +249,7 @@ export function createSearchScan(
           raw,
           nameHit,
           scan: createIncrementalRawScan(raw, rawMatcher, term.length),
-          countMatches: counter !== null,
+          countMatches,
         };
         return;
       } else {
@@ -268,7 +260,7 @@ export function createSearchScan(
           raw,
           nameHit,
           scan: createIncrementalRawScan(text, exactMatcher, term.length),
-          countMatches: counter !== null,
+          countMatches,
         };
         return;
       }

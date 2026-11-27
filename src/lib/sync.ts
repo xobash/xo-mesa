@@ -2,18 +2,8 @@ import { nativeCredential } from "./syncSecrets";
 import { invoke } from "@tauri-apps/api/core";
 import { IN_TAURI } from "./vault";
 import { normalizePeer } from "./syncUi";
-export {
-  SYNC_LOG_EVENT,
-  SYNC_PROGRESS_EVENT,
-  SYNC_LOG_LIMIT,
-  mergeSyncLog,
-  type SyncLogEntry,
-  type SyncProgress,
-  normalizeFingerprint,
-  formatFingerprint,
-} from "./syncProtocol";
-// Discovery, status and remote-vault probes live in syncUi.ts; these re-exports keep older import paths working.
-export { peerFromDiscovery, type DiscoveredSyncPeer } from "./syncUi";
+export type { SyncLogEntry, SyncProgress } from "./syncProtocol";
+export type { DiscoveredSyncPeer } from "./syncUi";
 
 /** Native sync command facade and event types. Hashing, manifests, and file transfers stay in Rust.
  * See docs/sync.md and docs/security.md for authentication and evidence limits. */

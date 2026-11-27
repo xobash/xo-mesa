@@ -315,3 +315,11 @@ it('removes transient signing material before any release build runs', () => {
   const crlf = text => text.replace(/\r?\n/g, '\r\n');
   checkSigningCleanup(crlf(windows), crlf(candidate));
 });
+
+it('registers every security control exactly once, with no gaps', async () => {
+  const { readFileSync } = await import('node:fs');
+  const ids = [...readFileSync('docs/security-controls.md', 'utf8').matchAll(/^\| CONTROL-(\d{3}) \|/gm)].map((m) => Number(m[1]));
+  const duplicates = ids.filter((id, i) => ids.indexOf(id) !== i);
+  assert.deepEqual(duplicates, [], `duplicate control IDs: ${duplicates.join(', ')}`);
+  assert.deepEqual([...ids].sort((a, b) => a - b), Array.from({ length: ids.length }, (_, i) => i + 1));
+});

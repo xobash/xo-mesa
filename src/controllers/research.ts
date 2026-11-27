@@ -595,9 +595,9 @@ export function createResearchController({ get, set, getGeneration, registerExte
         drPatch({
           phase: "error",
           launchStage: "error",
-          error: explainResearchTimeout({ run: cur, piSessionLive: Boolean(sid) }),
+          // Reached only without a live session (a live one re-arms above).
+          error: explainResearchTimeout({ run: cur, piSessionLive: false }),
         });
-        if (sid) void requestSharedPiRestart();
       }, delay);
     };
     armTimeout(DR_TIMEOUT_MS);

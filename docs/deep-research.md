@@ -287,7 +287,10 @@ edit: it retains the record and originals, reports pending recovery, and blocks
 further writes until the conflict is resolved.
 
 These are recoverable multi-file changes, not simultaneous filesystem
-publication. Other applications may observe intermediate files. Records are
+publication. Mesa's own reads (vault scan, indexing, previews) and sync wait
+for an apply and see each note before or after it, never in between; the
+apply only rewrites its recovery record over the exact version it last wrote.
+Other applications may observe intermediate files. Records are
 limited to 256 changes and 16 MiB of combined original and proposed bytes.
 Unix file and directory flushes include newly created parent directories
 and both folders involved in rollback moves. Windows directory metadata

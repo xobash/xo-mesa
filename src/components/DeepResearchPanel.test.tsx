@@ -7,10 +7,11 @@ import { DeepResearchPhaseChip } from "./DeepResearchPhaseChip";
 import { useAppStore } from "../store";
 import { DEFAULT_DEEP_RESEARCH_LIMITS, buildResearchContext, buildResearchPrompt, type DeepResearchResult } from "../lib/deepResearch";
 import type { DeepResearchEvent } from "../lib/deepResearchRun";
+import type { TerminalSnapshot } from "../lib/terminalReplay";
 
 const boundary = vi.hoisted(() => ({
   handlers: new Map<string, (event: { payload: unknown }) => void>(),
-  invoke: vi.fn(async (name: string, _args?: unknown): Promise<unknown> => name === "terminal_snapshot" ? { data: "retained Pi tool transcript" } : name === "research_kit_save" ? true : undefined),
+  invoke: vi.fn(async (name: string, _args?: unknown): Promise<unknown> => name === "terminal_snapshot" ? { seq: 2, events: [{ kind: "resize", rows: 24, cols: 80 }, { kind: "output", data: "retained Pi " }, { kind: "output", data: "tool transcript" }] } : name === "research_kit_save" ? true : undefined),
   copy: vi.fn(async (_value: string) => undefined),
   restart: vi.fn(async () => undefined),
 }));
@@ -171,7 +172,7 @@ describe("Deep Research validation and visible recovery", () => {
     await act(async () => vi.advanceTimersByTimeAsync(2000));
     for (const outcome of [async () => false, async () => { throw "Choose a destination outside the vault."; }]) {
       boundary.copy.mockRejectedValueOnce(new Error("Clipboard denied"));
-      boundary.invoke.mockImplementationOnce(async (name: string) => name === "terminal_snapshot" ? { data: "" } : undefined);
+      boundary.invoke.mockImplementationOnce(async (name: string) => name === "terminal_snapshot" ? { seq: 0, events: [] } : undefined);
       boundary.invoke.mockImplementationOnce(outcome);
       const before = saves().length;
       await act(async () => {
@@ -186,8 +187,8 @@ describe("Deep Research validation and visible recovery", () => {
   it("starts clipboard authorization in the click before the native snapshot resolves", async () => {
     await start();
     await emit({ kind: "agent-end", reason: "No accepted finish" });
-    let resolveSnapshot!: (snapshot: { data: string }) => void;
-    const pending = new Promise<{ data: string }>(resolve => { resolveSnapshot = resolve; });
+    let resolveSnapshot!: (snapshot: TerminalSnapshot) => void;
+    const pending = new Promise<TerminalSnapshot>(resolve => { resolveSnapshot = resolve; });
     boundary.invoke.mockImplementationOnce(() => pending);
     let payload!: Promise<Blob>;
     vi.stubGlobal("ClipboardItem", class {
@@ -206,7 +207,7 @@ describe("Deep Research validation and visible recovery", () => {
       expect(write).toHaveBeenCalledTimes(1);
       await vi.waitFor(() => expect(boundary.invoke).toHaveBeenCalledWith("terminal_snapshot", { sessionId: "pi-test" }));
       expect(host.textContent).not.toContain("Copied");
-      resolveSnapshot({ data: "deferred retained transcript" });
+      resolveSnapshot({ seq: 1, events: [{ kind: "output", data: "deferred retained transcript" }] });
       await payload;
     });
     expect(host.textContent).toContain("Copied");

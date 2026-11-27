@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   ensureContent: vi.fn<(rel: string) => Promise<string>>(),
   state: {
     files: [] as MockFile[],
+    contentCache: {} as Record<string, string>,
   },
 }));
 
@@ -47,6 +48,7 @@ beforeEach(() => {
   root = createRoot(host);
   mocks.ensureContent.mockReset();
   mocks.state.files = [];
+  mocks.state.contentCache = {};
   vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => {
     fn(0);
     return 1;
@@ -102,5 +104,31 @@ describe("CodeView large-file windowing", () => {
     await mount("large.csv", "csv", text);
     expect(host.textContent).toMatch(/6000 rows .* 2 cols/);
     expect(host.querySelectorAll("tbody tr").length).toBeLessThan(80);
+  });
+});
+
+describe("CodeView load failure and freshness", () => {
+  it("shows an error with Retry instead of loading forever when the read rejects", async () => {
+    mocks.state.files = [{ relPath: "a.js", path: "/vault/a.js", name: "a.js", ext: "js", isMarkdown: false }];
+    mocks.ensureContent.mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce("const a = 1;");
+    await act(async () => {
+      root.render(<CodeView rel="a.js" />);
+    });
+    expect(host.textContent).toContain("could not be read");
+    expect(host.textContent).not.toContain("Loading");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>("button")!.click();
+    });
+    expect(host.querySelector(".code-pre code")?.textContent).toBe("const a = 1;");
+  });
+
+  it("follows the store's cached text when the file changes on disk", async () => {
+    await mount("a.js", "js", "old");
+    expect(host.querySelector(".code-pre code")?.textContent).toBe("old");
+    mocks.state.contentCache = { "a.js": "new" };
+    await act(async () => {
+      root.render(<CodeView rel="a.js" />);
+    });
+    expect(host.querySelector(".code-pre code")?.textContent).toBe("new");
   });
 });

@@ -24,7 +24,7 @@ const TEXT_SPEC: OdfDraftSpec<string> = {
 };
 
 /** The document model for a draft; the opened model when nothing changed. */
-export function useDraftOdt(pkg: OdfPackage | null, draft: string | null): OdtDocument | null {
+function useDraftOdt(pkg: OdfPackage | null, draft: string | null): OdtDocument | null {
   return useMemo(() => {
     if (!pkg || draft === null) return null;
     try {
@@ -121,7 +121,7 @@ function OdtTextView({ file, editable, onDirtyChange }: { file: VaultFile; edita
 }
 
 /** The view an extension routes to. */
-export function odfViewKind(ext: string): "text" | "spreadsheet" | "presentation" | null {
+function odfViewKind(ext: string): "text" | "spreadsheet" | "presentation" | null {
   const lower = ext.toLowerCase();
   if (lower === "odt" || lower === "ott") return "text";
   if (lower === "ods" || lower === "ots") return "spreadsheet";

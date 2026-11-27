@@ -234,7 +234,7 @@ export async function replaceText(
   return doc.save();
 }
 
-/** Draw a translucent rectangle — a highlight / redaction marker. */
+/** Draw a translucent highlight rectangle. It hides nothing: the text below stays in the file. */
 export async function addHighlight(bytes: Uint8Array, h: Highlight): Promise<Uint8Array> {
   const doc = await loadForEdit(bytes);
   const page = doc.getPage(h.page);

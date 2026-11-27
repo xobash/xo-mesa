@@ -48,6 +48,7 @@ import { canonicalRoot, isLikelyRemoteVaultPath } from "./vaultPathNormalize";
 import { loadVaultMetadata, walk } from "./vaultWalk";
 import { decodePeekBytes, decodeTextChunkOutcomes, type TextReadOutcome } from "./vaultTextFrame";
 import { readVaultBytes } from "./vaultByteRead";
+import { MAX_DROPPED_FILE_BYTES } from "./vaultImport";
 
 // --- public API -----------------------------------------------------------
 
@@ -88,8 +89,6 @@ export async function assertVaultRootAvailable(root: string): Promise<void> {
   }
 }
 
-/** Recursively list vault files. metadata:false defers per-file stats on the
- * fallback path; metadata is included by default. */
 /** Map native rel/size/mtime/created fields through shared frontend helpers.
  * Return null when scanning is unavailable; propagate research-recovery failures. */
 interface NativeScan {
@@ -145,8 +144,9 @@ async function scanVaultNative(root: string): Promise<NativeScan | null> {
   }
 }
 
-/** List vault files through one native scan, falling back to the plugin walk.
- * metadata:false suppresses per-file stats only on the fallback path.
+/** Recursively list vault files through one native scan, falling back to the
+ * plugin walk. metadata:false suppresses per-file stats only on the fallback
+ * path; metadata is included by default.
  * onArtifacts receives discovered recovery artifacts, or null when discovery
  * is unavailable and recovery must perform its own walk. */
 export async function scanVault(
@@ -257,7 +257,10 @@ async function readVaultTextNative(
       if (outcome.kind === "content" && sha256) outcome.sha256 = sha256;
     }));
     return texts;
-  } catch {
+  } catch (error) {
+    // Reading around the native lease would index a half-applied research
+    // change; the indexer reports this instead.
+    if (String(error).includes("Research recovery is pending")) throw error;
     return null;
   }
 }
@@ -438,7 +441,9 @@ export async function createFolder(root: string, relPath: string): Promise<void>
   await ensureDir(joinPath(root, clean));
 }
 
-/** Duplicate any vault file (text or binary) to a new relPath. */
+/** Duplicate any vault file (text or binary) to a new relPath. The copy is
+ * held in memory, so it has the same size limit as a dropped-file import and
+ * an oversized source is refused before it is read. */
 export async function copyVaultFile(
   root: string,
   srcRel: string,
@@ -450,6 +455,9 @@ export async function copyVaultFile(
   }
   const srcAbs = joinPath(root, srcRel);
   const destAbs = joinPath(root, destRel);
+  if ((await stat(srcAbs)).size > MAX_DROPPED_FILE_BYTES) {
+    throw new Error(`${baseName(srcRel)} exceeds the ${MAX_DROPPED_FILE_BYTES / 1024 / 1024} MiB duplicate limit.`);
+  }
   await ensureDir(parentDir(destAbs));
   const bytes = await readFile(srcAbs);
   await persistVerifiedBytes(destAbs, bytes, VAULT_FS, {

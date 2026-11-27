@@ -10,7 +10,7 @@ import type { GraphNode, GraphLink, Settings, VaultFile } from "../types";
 import { useAppStore } from "../store";
 import { buildNotes } from "../lib/graph";
 import { DEFAULT_SETTINGS } from "../lib/settings";
-import { nodeRadius } from "../lib/graphGeometry";
+import { NODE_RADIUS_MAX, NODE_RADIUS_MIN } from "../lib/graphGeometry";
 import { GRAPH_REHEAT_ALPHA, graphOpenWarmup } from "../lib/graphPhysics";
 import { readGraphColors } from "./graphColors";
 import { GraphView } from "./GraphView";
@@ -96,6 +96,8 @@ function arrange() {
   frames(3);
   return { hub: order[0], a: order[1], b: order[2], lone: order[3], phantom };
 }
+/** Layout radius in VAULT, where Hub has the most links (4). */
+const radiusOf = (links: number) => Math.sqrt(NODE_RADIUS_MIN ** 2 + (NODE_RADIUS_MAX ** 2 - NODE_RADIUS_MIN ** 2) * links / 4);
 const fillAt = (n: GraphNode) => rec.frame.fills.find((f) => f.x === n.x && f.y === n.y)!;
 
 beforeEach(() => {
@@ -179,9 +181,13 @@ it("zooms one wheel notch by 1.5x toward the cursor when zooming in and about th
   open();
   const { hub } = arrange();
   const view = rec.frame.view;
-  // A small graph opens at one device pixel per world unit, centred.
+  // A small graph opens at one device pixel per world unit, centred on its
+  // node bounds (each radius plus 24): Hub (4 links) left, Lone (none) right,
+  // Hub on top, Missing (1 link) below.
   expect(view.k).toBe(1);
-  expect([view.x, view.y]).toEqual([320, 240 - 75]);
+  const pad = (links: number) => radiusOf(links) + 24;
+  expect(view.x).toBeCloseTo(320 - ((-150 - pad(4)) + (150 + pad(0))) / 2, 9);
+  expect(view.y).toBeCloseTo(240 - ((0 - pad(4)) + (150 + pad(1))) / 2, 9);
   const screenX = () => hub.x! * view.k + view.x;
   const cursor = screenX();
   wheel(-120, cursor, 240);
@@ -210,10 +216,12 @@ it("draws nodes, links and labels in Obsidian's default style", () => {
   const { hub, a, lone, phantom } = arrange();
   const colors = readGraphColors();
   const { frame } = rec;
-  // Node radius follows the link count (Hub: 4 links → 8 minimum); every note uses one fill.
-  expect(fillAt(hub)).toMatchObject({ r: nodeRadius(hub), alpha: 1, style: colors.node });
-  expect(nodeRadius(hub)).toBe(8);
-  expect(fillAt(lone)).toMatchObject({ r: 8, alpha: 1, style: colors.node });
+  // Node area follows the link count relative to the most-linked node (owner
+  // ruling 2026-11-23): Hub (4 links) is the largest, A (2 links) has half the
+  // added area, Lone (no links) is the minimum. Every note uses one fill.
+  expect(fillAt(hub)).toMatchObject({ r: NODE_RADIUS_MAX, alpha: 1, style: colors.node });
+  expect(fillAt(a).r).toBeCloseTo(radiusOf(2), 9);
+  expect(fillAt(lone)).toMatchObject({ r: NODE_RADIUS_MIN, alpha: 1, style: colors.node });
   // An unresolved link draws at half strength.
   expect(fillAt(phantom!)).toMatchObject({ alpha: 0.5, style: colors.nodePhantom });
   // All links in one stroke, one device pixel wide, in the link colour.
@@ -225,9 +233,9 @@ it("draws nodes, links and labels in Obsidian's default style", () => {
   expect(frame.texts.map((t) => t.text).sort()).toEqual(["A", "B", "Hub", "Lone", "Missing"]);
   const label = frame.texts.find((t) => t.text === "A")!;
   expect(label.alpha).toBe(1);
-  expect(label.scale).toBeCloseTo((14 + 8 / 4) / 16, 9);
-  expect(label.x).toBeCloseTo(a.x! + 320, 9);
-  expect(label.y).toBeCloseTo(a.y! + 8 + 5 + rec.frame.view.y, 9);
+  expect(label.scale).toBeCloseTo((14 + radiusOf(2) / 4) / 16, 9);
+  expect(label.x).toBeCloseTo(a.x! + rec.frame.view.x, 9);
+  expect(label.y).toBeCloseTo(a.y! + radiusOf(2) + 5 + rec.frame.view.y, 9);
 
   // Half the zoom: labels are gone, nodes draw sqrt(2) larger in world units, links stay one pixel.
   wheel(240);
@@ -235,7 +243,7 @@ it("draws nodes, links and labels in Obsidian's default style", () => {
   const k = frame.view.k;
   expect(k).toBeLessThan(0.5);
   expect(frame.texts).toEqual([]);
-  expect(fillAt(hub).r).toBeCloseTo(8 / Math.sqrt(k), 9);
+  expect(fillAt(hub).r).toBeCloseTo(NODE_RADIUS_MAX / Math.sqrt(k), 9);
   expect(frame.strokes.find((s) => s.segments > 0)!.lineWidth).toBeCloseTo(1 / k, 9);
   // The text-fade setting shifts the range: at -1 the same zoom shows labels again.
   act(() => useAppStore.getState().setSetting("graphTextFade", -1));
@@ -263,7 +271,7 @@ it("highlights a hovered node's neighbourhood and fades the rest to 20%", () => 
   const text = (title: string) => frame.texts.find((t) => t.text === title)!;
   expect(text("A").alpha).toBe(1);
   expect(text("Lone").alpha).toBeCloseTo(0.2, 6);
-  expect(text("Hub").y).toBeCloseTo(hub.y! + 8 + 5 + 15 + frame.view.y, 6);
+  expect(text("Hub").y).toBeCloseTo(hub.y! + NODE_RADIUS_MAX + 5 + 15 + frame.view.y, 6);
   // Leaving the node restores everything.
   pointer("pointermove", 5, 5);
   frames(160);
@@ -327,13 +335,21 @@ it("coasts after a moving background pan is released, then stops and sleeps", ()
   expect(view.x).toBe(stopped);
 });
 
-it("sleeps once settled at the defaults, and adds bloom and ambient frames only with living motion on", () => {
+it("twinkles by default, and sleeps once settled with living motion off", () => {
+  expect(DEFAULT_SETTINGS.graphLivingMotion).toBe(true);
   open({ animations: true });
   arrange();
+  frames(4);
+  expect(host.querySelector(".graph-wrap")!.className).toContain("living");
+  expect(rec.frame.gradients).toBeGreaterThan(0);
+  raf.mockClear();
+  frames(3);
+  expect(raf).toHaveBeenCalled();
+  act(() => useAppStore.getState().setSetting("graphLivingMotion", false));
   frames(30);
   raf.mockClear();
   frames(5);
-  // Animations are on, but Obsidian's graph is still at rest: no frames, no gradients.
+  // Living motion off: the settled graph is at rest, as in Obsidian. No frames, no gradients.
   expect(raf).not.toHaveBeenCalled();
   expect(rec.frame.gradients).toBe(0);
   act(() => useAppStore.getState().setSetting("graphLivingMotion", true));

@@ -101,6 +101,9 @@ describe("buildTroubleshootingPackage", () => {
     expect(pkg).toContain("[pull] notes/broken.md — device responded 500");
     expect(pkg).toContain("pull notes/broken.md failed: device responded 500");
     expect(pkg).toContain("Duration: 4321ms");
+    // The reader note names the content hash sync really uses.
+    expect(pkg).toContain("content hashes are SHA-256");
+    expect(pkg).not.toContain("FNV");
   });
 
   it("NEVER leaks the sync key, even when the log echoes it", () => {

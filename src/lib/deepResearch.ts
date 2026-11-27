@@ -408,4 +408,4 @@ export function researchReportQualityIssues(
 // ---------------------------------------------------------------------------
 
 export { buildApplyPlan } from "./researchApplyPlan";
-export type { ApplyPlan, ApplyStep, RollbackStep } from "./researchApplyPlan";
+export type { ApplyPlan, ApplyStep } from "./researchApplyPlan";

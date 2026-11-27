@@ -159,9 +159,13 @@ function PreviewCardImpl({
     // built from a truncated document. `ensureContent` shares the store cache
     // and deduplicates any in-flight full read.
     const load = isHtml ? ensureContent(noteId) : ensurePeek(noteId);
-    void load.then((text) => {
-      if (alive) setLoadedContent({ rel: noteId, text });
-    });
+    // A failed read leaves the card without an excerpt; it must not reject unhandled.
+    load.then(
+      (text) => {
+        if (alive) setLoadedContent({ rel: noteId, text });
+      },
+      () => undefined
+    );
     return () => {
       alive = false;
     };

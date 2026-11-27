@@ -2,7 +2,7 @@
 // While active, block named text-mutation tools. Shell remains available; this is not a process sandbox.
 // Pi supplies extension-runtime dependencies.
 
-// @ts-ignore
+// @ts-expect-error Pi supplies typebox at runtime; Mesa does not install it.
 import { Type } from "typebox";
 
 // Node's process global, typed locally so this file needs no @types/node.

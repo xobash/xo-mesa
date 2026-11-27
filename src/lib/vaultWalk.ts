@@ -44,12 +44,12 @@ export function isWindowsShellName(name: string): boolean {
   return WINDOWS_SHELL_NAMES.has(name.replace(/[A-Z]/g, (c) => c.toLowerCase()));
 }
 
-/** Shared scan/watch path filter. Exclude dot-prefixed path segments,
- * dependency directories and Windows shell files before registration or
- * fallback rescanning. */
 /** Deepest path the vault indexes (`MAX_REL_SEGMENTS` in `vault_names.rs`). */
 export const MAX_VAULT_REL_SEGMENTS = 255;
 
+/** Shared scan/watch path filter. Exclude dot-prefixed path segments,
+ * dependency directories and Windows shell files before registration or
+ * fallback rescanning. */
 export function isIndexableVaultRelPath(rel: string): boolean {
   if (!rel) return false;
   const segments = rel.split("/");
@@ -61,9 +61,9 @@ export function isIndexableVaultRelPath(rel: string): boolean {
   return true;
 }
 
-/** List sibling directories in bounded level batches; final sorting makes traversal order irrelevant. */
 export const WALK_BATCH = 16;
 
+/** List sibling directories in bounded level batches; final sorting makes traversal order irrelevant. */
 export async function walk(
   dir: string,
   root: string,

@@ -1,33 +1,51 @@
 import { expect, it } from "vitest";
 import type { GraphNode } from "../types";
-import { GraphHitIndex, incidentLinkIndices, nearestNodeLinear, nodeDrawScale, nodeRadius, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+import { GraphHitIndex, incidentLinkIndices, maxNodeDegree, nearestNodeLinear, nodeDrawScale, nodeRadius, NODE_RADIUS_MAX, NODE_RADIUS_MIN, resolveOverlaps, timelineSortValue } from "./graphGeometry";
+
+/** Radius at size 1 in a graph whose most-linked node has 9 links. */
+const radius9 = (n: GraphNode) => nodeRadius(n, 1, 9);
 
 it("separates idle nodes while keeping a pinned node fixed", () => {
   const fixed = { id: "fixed", degree: 0, x: 0, y: 0, fx: 0, fy: 0 } as GraphNode;
   const moving = { id: "moving", degree: 9, x: 0, y: 0 } as GraphNode;
-  expect(resolveOverlaps([fixed, moving], nodeRadius, 8, 2)).toBe(true);
+  expect(resolveOverlaps([fixed, moving], radius9, 8, 2)).toBe(true);
   expect([fixed.x, fixed.y]).toEqual([0, 0]);
-  expect(Math.hypot(moving.x!, moving.y!)).toBeGreaterThanOrEqual(nodeRadius(fixed) + nodeRadius(moving) + 16 - 1e-9);
+  expect(Math.hypot(moving.x!, moving.y!)).toBeGreaterThanOrEqual(radius9(fixed) + radius9(moving) + 16 - 1e-9);
   expect(timelineSortValue(moving)).toBe(Infinity);
 });
 
-it("sizes nodes as Obsidian does: by link count between 8 and 30, growing in world units when zoomed out", () => {
-  const size = (degree: number, multiplier?: number) => nodeRadius({ degree }, multiplier);
-  expect([size(0), size(1), size(6)]).toEqual([8, 8, 8]);
-  expect(size(15)).toBe(12);
-  expect(size(99)).toBe(30);
-  expect(size(5000)).toBe(30);
-  expect(size(15, 2)).toBe(24);
-  expect(size(0, 0.5)).toBe(4);
+it("sizes nodes in proportion to their links: the most-linked node is the largest", () => {
+  const degrees = [0, 1, 2, 3, 6, 15, 40, 99, 250];
+  const max = maxNodeDegree(degrees.map((degree) => ({ degree })));
+  expect(max).toBe(250);
+  const area = (degree: number) => nodeRadius({ degree }, 1, max) ** 2;
+  // Every link adds the same area, so area is linear in the link count.
+  const perLink = (NODE_RADIUS_MAX ** 2 - NODE_RADIUS_MIN ** 2) / max;
+  for (const d of degrees) expect(area(d)).toBeCloseTo(NODE_RADIUS_MIN ** 2 + perLink * d, 9);
+  // Strictly larger with each extra link, with no plateau at either end.
+  for (let d = 1; d <= max; d++) expect(area(d)).toBeGreaterThan(area(d - 1));
+  expect(nodeRadius({ degree: 0 }, 1, max)).toBe(NODE_RADIUS_MIN);
+  expect(nodeRadius({ degree: max }, 1, max)).toBe(NODE_RADIUS_MAX);
+  // The reference is this graph: in a small vault the most-linked note is just as large.
+  expect(nodeRadius({ degree: 3 }, 1, 3)).toBe(NODE_RADIUS_MAX);
+  expect(nodeRadius({ degree: 2 }, 1, 3)).toBeLessThan(NODE_RADIUS_MAX);
+  // A graph without links draws every node at the minimum; the node-size setting scales every radius.
+  expect(nodeRadius({ degree: 0 }, 1, 0)).toBe(NODE_RADIUS_MIN);
+  expect(nodeRadius({ degree: 40 }, 2, max)).toBe(2 * nodeRadius({ degree: 40 }, 1, max));
+  expect(nodeRadius({ degree: 0 }, 0.5, max)).toBe(4);
+  expect(maxNodeDegree([])).toBe(0);
+});
+
+it("grows nodes in world units when zoomed out", () => {
   // One device pixel per world unit draws at layout size; a quarter of that doubles it.
   expect(nodeDrawScale(1, 1)).toBe(1);
   expect(nodeDrawScale(0.5, 2)).toBe(1);
   expect(nodeDrawScale(0.25, 1)).toBe(2);
   // A grabbed target follows the drawn size: 40 world units from a degree-0 node misses at layout size, hits when drawn 8x larger.
   const node = { id: "n", degree: 0, x: 0, y: 0 } as GraphNode;
-  expect(nearestNodeLinear([node], 40, 0, 1, nodeRadius)).toBeNull();
-  expect(nearestNodeLinear([node], 40, 0, 1, nodeRadius, 8)).toBe(node);
-  expect(new GraphHitIndex([node], nodeRadius).nearest(40, 0, 1, 8)).toBe(node);
+  expect(nearestNodeLinear([node], 40, 0, 1, radius9)).toBeNull();
+  expect(nearestNodeLinear([node], 40, 0, 1, radius9, 8)).toBe(node);
+  expect(new GraphHitIndex([node], radius9).nearest(40, 0, 1, 8)).toBe(node);
 });
 
 it("hit-tests with the grid exactly like the linear scan at every zoom", () => {
@@ -36,7 +54,7 @@ it("hit-tests with the grid exactly like the linear scan at every zoom", () => {
   const nodes = Array.from({ length: 3000 }, (_, i) => ({ id: `n${i}`, degree: Math.floor(random() * random() * 60), x: random() * 4000 - 2000, y: random() * 3000 - 1500 }) as GraphNode);
   nodes.push({ id: "same-a", degree: 1, x: 10, y: 10 } as GraphNode, { id: "same-b", degree: 1, x: 10, y: 10 } as GraphNode);
   nodes.push({ id: "nan", degree: 0, x: NaN, y: 0 } as GraphNode, { id: "inf", degree: 0, x: Infinity, y: 0 } as GraphNode, { id: "unplaced", degree: 0 } as GraphNode);
-  const radius = (n: GraphNode) => nodeRadius(n, 1.5);
+  const radius = (n: GraphNode) => nodeRadius(n, 1.5, 60);
   const index = new GraphHitIndex(nodes, radius);
   for (const k of [0.03, 0.2, 1, 4]) {
     for (let q = 0; q < 1500; q++) {
@@ -61,8 +79,8 @@ it("resolves overlaps with numeric grid keys and skips non-finite positions", ()
   const b = { id: "b", degree: 0, x: 1, y: 0 } as GraphNode;
   const lost = { id: "lost", degree: 0, x: NaN, y: 0 } as GraphNode;
   const far = { id: "far", degree: 0, x: Infinity, y: 0 } as GraphNode;
-  expect(resolveOverlaps([a, b, lost, far], nodeRadius, 8, 2)).toBe(true);
-  expect(Math.abs(b.x! - a.x!)).toBeGreaterThanOrEqual(nodeRadius(a) + nodeRadius(b) + 16 - 1e-9);
+  expect(resolveOverlaps([a, b, lost, far], radius9, 8, 2)).toBe(true);
+  expect(Math.abs(b.x! - a.x!)).toBeGreaterThanOrEqual(radius9(a) + radius9(b) + 16 - 1e-9);
   expect(Number.isNaN(lost.x)).toBe(true);
   expect(far.x).toBe(Infinity);
   // Custom phase: coincident nodes separate along the supplied angle.

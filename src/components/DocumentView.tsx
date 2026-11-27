@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
-import { watch } from "@tauri-apps/plugin-fs";
+import { stat, watch } from "@tauri-apps/plugin-fs";
 import type { VaultFile } from "../types";
 import {
   extOf,
@@ -19,6 +19,9 @@ import { installNativeDragDock } from "../lib/windowDock";
 import { MarkdownView } from "./MarkdownView";
 import { Modal } from "./Modal";
 import { CodeView } from "./CodeView";
+import { CodeText } from "./CodeText";
+import { MAX_TEXT_CACHE_FILE_BYTES, MAX_TEXT_CACHE_FILE_LABEL } from "../lib/textCachePlan";
+import { formatBytes } from "../lib/formatBytes";
 import { FileKindView } from "./FileKindView";
 import { useDocumentKind } from "./useDocumentKind";
 import { useAppStore, getStore, type ThemeId } from "../store";
@@ -28,6 +31,20 @@ import { markMesaPerf } from "../lib/mesaPerf";
 
 export const DOCUMENT_CATALOG_REQUEST_EVENT = "mesa://document-catalog-request";
 export const DOCUMENT_CATALOG_EVENT = "mesa://document-catalog";
+
+/** Live byte size of a file, or the catalog's size when it cannot be read. */
+async function liveSize(file: VaultFile): Promise<number | undefined> {
+  if (!IN_TAURI) return file.size;
+  try {
+    return (await stat(file.path)).size;
+  } catch {
+    return file.size;
+  }
+}
+
+function sizeNotice(size: number): string {
+  return `This file is ${formatBytes(size)}, over the ${MAX_TEXT_CACHE_FILE_LABEL} Mesa shows in a document window. Open it in the main window or another app.`;
+}
 
 /**
  * Standalone document window (Tauri). Spawned with ?doc, ?vault, ?theme in the
@@ -45,6 +62,7 @@ export function DocumentView() {
   const [rel, setRel] = useState(initial);
   const [files, setFiles] = useState<VaultFile[]>([]);
   const [content, setContent] = useState("");
+  const [oversize, setOversize] = useState("");
   const [fileRevision, setFileRevision] = useState(0);
   const [closeIssue, setCloseIssue] = useState("");
   const [viewIssue, setViewIssue] = useState("");
@@ -164,17 +182,35 @@ export function DocumentView() {
     // Only text kinds render from this text; every other kind reads its own bytes.
     if (detachedKind !== "text") {
       setContent("");
+      setOversize("");
       return () => {
         alive = false;
       };
     }
-    void readNoteResult(selectedFile).then((result) => {
+    void (async () => {
+      const size = await liveSize(selectedFile);
       if (!alive) return;
-      if (result.ok) {
-        setContent(result.text);
-        setViewIssue((issue) => issue.startsWith("This file is unavailable") ? "" : issue);
-      } else setViewIssue("This file is unavailable. Its previous view remains visible.");
-    });
+      if (size !== undefined && size > MAX_TEXT_CACHE_FILE_BYTES) {
+        setContent("");
+        setOversize(sizeNotice(size));
+        return;
+      }
+      const result = await readNoteResult(selectedFile);
+      if (!alive) return;
+      if (!result.ok) {
+        setViewIssue("This file is unavailable. Its previous view remains visible.");
+        return;
+      }
+      // Characters never outnumber bytes, so this only catches growth after the size check.
+      if (result.text.length > MAX_TEXT_CACHE_FILE_BYTES) {
+        setContent("");
+        setOversize(sizeNotice(result.text.length));
+        return;
+      }
+      setOversize("");
+      setContent(result.text);
+      setViewIssue((issue) => issue.startsWith("This file is unavailable") ? "" : issue);
+    })();
     return () => {
       alive = false;
     };
@@ -206,6 +242,7 @@ export function DocumentView() {
     <div className="doc-window">
       {closeIssue && <div className="doc-window-issue" role="alert">{closeIssue}</div>}
       {viewIssue && <div className="doc-window-issue" role="alert">{viewIssue}</div>}
+      {kind === "text" && oversize && <div className="doc-window-issue" role="status">{oversize}</div>}
       <div className="doc-window-body">
         {kind !== "text" ? (
           // Detached windows are view-only except PDFs, whose edits block close.
@@ -213,7 +250,7 @@ export function DocumentView() {
         ) : isEditableTextExt(selectedFile.ext) ? (
           <MarkdownView source={content} files={files} onWikiClick={onWiki} />
         ) : (
-          <pre className="code-source">{content}</pre>
+          <CodeText text={content} ext={selectedFile.ext} />
         )}
       </div>
     </div>
@@ -236,6 +273,7 @@ export function DocPopoutModal() {
   useEffect(() => {
     if (!rel) return;
     let alive = true;
+    setContent("");
     if (!needsMarkdownContent) return;
     setContentIssue("");
     void ensureContent(rel).then((c) => {

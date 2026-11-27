@@ -3,7 +3,7 @@ import { confirmAction } from "../lib/confirmAction";
 import { prepareReaderResources } from "../lib/browserReader";
 import { MAX_TEXT_CACHE_FILE_BYTES } from "../lib/textCachePlan";
 import { formatBytes } from "../lib/formatBytes";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
 import { CODE_ROW_HEIGHT, buildWrappedRowIndex, visibleCodeLineRange } from "../lib/codeWindow";
 import { stat, readTextFile } from "@tauri-apps/plugin-fs";
 import type { VaultFile } from "../types";
@@ -12,6 +12,7 @@ import { IN_TAURI, urlForPath } from "../lib/vault";
 import { readSavedStylesheet } from "../lib/vaultStylesheet";
 import { MAX_SAVED_HTML_ASSET_CHARS, hydrateSavedHtml, savedFromUrl, savedHtmlFrameDocument } from "../lib/html";
 import { readVaultBytes } from "../lib/vaultByteRead";
+import { useScrollViewport } from "./useScrollViewport";
 
 /** Windowed source: only visible fixed-width rows are laid out, so multi-megabyte or single-line files stay responsive.
  * Copy maps the selection back to source offsets, so wrapped rows add no newlines and select-all copies unmounted rows. */
@@ -20,22 +21,7 @@ function HtmlSource({ text, label }: { text: string; label: string }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const spacerRef = useRef<HTMLDivElement | null>(null);
   const selectedAll = useRef(false);
-  const [viewport, setViewport] = useState({ scrollTop: 0, height: 600 });
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    let raf = 0;
-    const measure = () => {
-      raf = 0;
-      setViewport(prev => prev.scrollTop === el.scrollTop && prev.height === el.clientHeight ? prev : { scrollTop: el.scrollTop, height: el.clientHeight });
-    };
-    const schedule = () => { if (!raf) raf = requestAnimationFrame(measure); };
-    measure();
-    el.addEventListener("scroll", schedule, { passive: true });
-    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
-    ro?.observe(el);
-    return () => { if (raf) cancelAnimationFrame(raf); el.removeEventListener("scroll", schedule); ro?.disconnect(); };
-  }, []);
+  const viewport = useScrollViewport(scrollRef, null);
   useEffect(() => { selectedAll.current = false; }, [text]);
   const sourceOffset = (node: Node, offset: number): number | null => {
     const spacer = spacerRef.current;

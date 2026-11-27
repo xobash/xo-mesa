@@ -1,8 +1,9 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
+import { useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { placeCaretAtEnd } from "../lib/caretAtEnd";
 import { clamp } from "../lib/clamp";
 import { columnLetters } from "../lib/cellRef";
 import { visibleCodeLineRange } from "../lib/codeWindow";
+import { useScrollViewport } from "./useScrollViewport";
 
 // The one windowed cell grid, shared by the CSV/TSV table and the
 // spreadsheet view. Rows and columns are windowed: only cells in view are in
@@ -10,8 +11,8 @@ import { visibleCodeLineRange } from "../lib/codeWindow";
 // or Tab commits; Escape cancels; Shift+Enter adds a line break.
 
 /** Fixed row height: rows are windowed, so only visible rows are in the DOM. */
-export const TABLE_ROW_HEIGHT = 26;
-export const GRID_ROW_HEADER_WIDTH = 56;
+const TABLE_ROW_HEIGHT = 26;
+const GRID_ROW_HEADER_WIDTH = 56;
 const DEFAULT_COLUMN_WIDTH = 160;
 const COLUMN_OVERSCAN = 2;
 
@@ -28,7 +29,7 @@ export interface GridCell {
   readonly hidden?: boolean;
 }
 
-export interface DataGridProps {
+interface DataGridProps {
   rowCount: number;
   columnCount: number;
   cell(row: number, col: number): GridCell;
@@ -52,31 +53,6 @@ export interface DataGridProps {
   className?: string;
   /** Shown above the grid (toolbar). */
   children?: ReactNode;
-}
-
-function useViewport(scrollRef: React.RefObject<HTMLDivElement | null>) {
-  const [viewport, setViewport] = useState({ scrollTop: 0, scrollLeft: 0, height: 600, width: 1200 });
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    let raf = 0;
-    const measure = () => {
-      raf = 0;
-      const next = { scrollTop: el.scrollTop, scrollLeft: el.scrollLeft, height: el.clientHeight || 600, width: el.clientWidth || 1200 };
-      setViewport((prev) => (prev.scrollTop === next.scrollTop && prev.scrollLeft === next.scrollLeft && prev.height === next.height && prev.width === next.width ? prev : next));
-    };
-    const schedule = () => { if (!raf) raf = requestAnimationFrame(measure); };
-    measure();
-    el.addEventListener("scroll", schedule, { passive: true });
-    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
-    ro?.observe(el);
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-      el.removeEventListener("scroll", schedule);
-      ro?.disconnect();
-    };
-  }, [scrollRef]);
-  return viewport;
 }
 
 /** Left edge of every column, plus the total width at the end. */
@@ -104,7 +80,7 @@ export function DataGrid(props: DataGridProps) {
   const widthOf = props.columnWidth ?? fixedWidth;
   const offsets = useMemo(() => columnOffsets(columnCount, widthOf), [columnCount, widthOf]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const viewport = useViewport(scrollRef);
+  const viewport = useScrollViewport(scrollRef, null, true);
   const [cursor, setCursorState] = useState<GridCursor | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const at = cursor && cursor.row < rowCount && cursor.col < columnCount ? cursor : null;

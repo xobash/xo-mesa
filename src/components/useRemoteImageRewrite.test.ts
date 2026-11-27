@@ -32,3 +32,30 @@ it('reports an unavailable broker so callers keep remote media unloaded', async 
   await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(null));
   release();
 });
+
+it('drops the expired token when renewal fails, tells callers, and retries once', async () => {
+  vi.useFakeTimers();
+  try {
+    let renewals = 0;
+    native.invoke.mockImplementation(async (_cmd: string, args: { token: string | null }) => {
+      if (args.token) return null;
+      renewals += 1;
+      if (renewals === 2) throw new Error('native hiccup');
+      return `tok${renewals}`;
+    });
+    const listener = vi.fn();
+    const release = subscribeRemoteImages(listener);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listener.mock.calls.at(-1)![0]).toBeTypeOf('function');
+    await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+    expect(renewals).toBe(2);
+    expect(listener.mock.calls.at(-1)![0]).toBeNull();
+    await vi.advanceTimersByTimeAsync(30 * 1000);
+    expect(renewals).toBe(3);
+    const rewrite = listener.mock.calls.at(-1)![0] as (raw: string) => string;
+    expect(rewrite('https://cdn.example/a.png')).toContain('/tok3?');
+    release();
+  } finally {
+    vi.useRealTimers();
+  }
+});

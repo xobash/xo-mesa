@@ -832,7 +832,7 @@ describe("buildApplyPlan", () => {
     expect(plan.ok).toBe(false);
   });
 
-  it("orders creates before updates and plans rollback in reverse", () => {
+  it("orders creates before updates, keeping creates in proposal order", () => {
     const ops = [
       { kind: "update" as const, relPath: "a.md", title: "A", content: "# A2", expectedBytes: "# A" },
       { kind: "create" as const, relPath: "Research/r.md", title: "R", content: "# R" },
@@ -843,8 +843,7 @@ describe("buildApplyPlan", () => {
     if (plan.ok) {
       const kinds = plan.steps.map((s) => s.kind);
       expect(kinds.indexOf("create")).toBeLessThan(kinds.indexOf("update"));
-      const rollbackCreates = plan.rollback.filter((r) => r.kind === "remove").map((r) => r.relPath);
-      expect(rollbackCreates).toEqual(["Research/s.md", "Research/r.md"]);
+      expect(plan.steps.map((s) => s.relPath)).toEqual(["Research/r.md", "Research/s.md", "a.md"]);
     }
   });
 

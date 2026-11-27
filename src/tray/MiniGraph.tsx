@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationNodeDatum } from "d3-force";
+import { NODE_RADIUS_MAX, maxNodeDegree, nodeRadius } from "../lib/graphGeometry";
 import type { MiniGraph as MiniGraphData, MiniGraphPalette } from "../lib/trayPopover";
 
 interface Point extends SimulationNodeDatum { i: number; r: number; degree: number }
@@ -8,8 +9,10 @@ interface Point extends SimulationNodeDatum { i: number; r: number; degree: numb
 const LAYOUT_TICKS = 300;
 const PAD = 14;
 
-/** A compact degree-scaled size of its own; the real graph uses `graphGeometry.nodeRadius`. */
-const radius = (degree: number) => Math.min(24, 2.4 + 1.75 * Math.sqrt(degree));
+/** Mini-graph radius of the most-linked shown node, in layout px. */
+const MINI_RADIUS_MAX = 24;
+/** The real graph's size rule scaled into mini-graph px: 6.4..24 keeps its 8..30 proportions. */
+const MINI_NODE_SIZE = MINI_RADIUS_MAX / NODE_RADIUS_MAX;
 
 /**
  * A compact force layout of its own (short links from node sizes,
@@ -17,7 +20,9 @@ const radius = (degree: number) => Math.min(24, 2.4 + 1.75 * Math.sqrt(degree));
  * instead of animating. It is not the real graph's force model.
  */
 export function layoutMiniGraph(graph: MiniGraphData): Point[] {
-  const points: Point[] = graph.nodes.map((n, i) => ({ i, r: radius(n.degree), degree: n.degree }));
+  // Sizes are relative to the most-linked node shown, as in the real graph.
+  const maxDegree = maxNodeDegree(graph.nodes);
+  const points: Point[] = graph.nodes.map((n, i) => ({ i, r: nodeRadius(n, MINI_NODE_SIZE, maxDegree), degree: n.degree }));
   const links = graph.links.map(([source, target]) => ({ source, target }));
   forceSimulation(points)
     .force("link", forceLink<Point, { source: number | Point; target: number | Point }>(links)

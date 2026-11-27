@@ -5,7 +5,7 @@ import { GlLinkRenderer, parseCssColor, type GlLinkFrame } from "./graphLinkGl";
 afterEach(() => vi.restoreAllMocks());
 
 function fakeGl() {
-  const calls = { ends: new Int32Array(0), endUploads: 0, texels: new Float32Array(0), nodeUploads: 0, drawn: 0, drawScale: 0, scale: [0, 0], offset: [0, 0], color: [0, 0, 0, 0], clears: 0 };
+  const calls = { ends: new Int32Array(0), endUploads: 0, texels: new Float32Array(0), nodeUploads: 0, drawn: 0, drawScale: 0, pulse: [0, 0], scale: [0, 0], offset: [0, 0], color: [0, 0, 0, 0], clears: 0 };
   const noop = () => {};
   const gl: Record<string, unknown> = {
     VERTEX_SHADER: 1, FRAGMENT_SHADER: 2, COMPILE_STATUS: 3, LINK_STATUS: 4, ARRAY_BUFFER: 5, STATIC_DRAW: 6, INT: 7, FLOAT: 8, COLOR_BUFFER_BIT: 9, BLEND: 10, ONE: 11, ONE_MINUS_SRC_ALPHA: 12, LINES: 13,
@@ -19,7 +19,7 @@ function fakeGl() {
     texImage2D: (...a: unknown[]) => { calls.texels = (a[8] as Float32Array).slice(); calls.nodeUploads++; },
     texSubImage2D: (...a: unknown[]) => { calls.texels = (a[8] as Float32Array).slice(); calls.nodeUploads++; },
     uniform1i: noop, uniform1f: (_n: string, v: number) => { calls.drawScale = v; },
-    uniform2f: (name: string, a: number, b: number) => { if (name === "u_scale") calls.scale = [a, b]; else calls.offset = [a, b]; },
+    uniform2f: (name: string, a: number, b: number) => { if (name === "u_scale") calls.scale = [a, b]; else if (name === "u_pulse") calls.pulse = [a, b]; else calls.offset = [a, b]; },
     uniform4f: (_n: string, ...c: number[]) => { calls.color = c; },
     drawArrays: (_mode: number, _first: number, count: number) => { calls.drawn = count; },
     getExtension: () => null,
@@ -39,7 +39,8 @@ it("uploads node-index pairs once and node centres on movement; pan and zoom are
   const skipNodes = Uint8Array.from([0, 0, 0, 1]);
   const frame: GlLinkFrame = {
     s: Int32Array.from([0, 1, 2, -1]), t: Int32Array.from([1, 2, 3, 0]), count: 4,
-    x: f64([0, 10, 3, NaN]), y: f64([0, 20, 3, 0]), base: f64([4, 5, 6, 7]), nodeCount: 4, drawScale: 0.5,
+    x: f64([0, 10, 3, NaN]), y: f64([0, 20, 3, 0]), base: f64([4, 5, 6, 7]), phase: f64([0.5, 1, 1.5, 2]), nodeCount: 4, drawScale: 0.5,
+    pulseAngle: 1.25, pulseAmp: 0.2,
     skipNodes, skipKey: "n3", moved: true, linksChanged: true,
     k: 2, panX: 5, panY: 10, dpr: 2, color: "rgba(150, 158, 164, 0.5)", alpha: 0.5,
   };
@@ -48,7 +49,9 @@ it("uploads node-index pairs once and node centres on movement; pan and zoom are
   expect([...calls.ends]).toEqual([0, 1, 1, 0, 1, 2, 2, 1]);
   expect(calls.drawn).toBe(4);
   // Node 3 has no finite position: radius -1 hides its links in the shader.
-  expect([...calls.texels.slice(0, 16)]).toEqual([0, 0, 4, 0, 10, 20, 5, 0, 3, 3, 6, 0, 0, 0, -1, 0]);
+  // The fourth channel is the pulse phase, so the shader trims at the pulsing radius.
+  expect([...calls.texels.slice(0, 16)]).toEqual([0, 0, 4, 0.5, 10, 20, 5, 1, 3, 3, 6, 1.5, 0, 0, -1, 2]);
+  expect(calls.pulse.map((v) => +v.toFixed(4))).toEqual([1.25, 0.2]);
   expect([glCanvas.width, glCanvas.height, glCanvas.style.width]).toEqual([200, 100, "100px"]);
   // World (0, 0) lands at device (dpr * pan) = (10, 20): clip (-0.9, -0.6).
   expect(calls.scale).toEqual([2 * 2 * 2 / 200, 2 * 2 * 2 / 100]);
@@ -60,6 +63,10 @@ it("uploads node-index pairs once and node centres on movement; pan and zoom are
   renderer.draw(target, { ...frame, moved: false, linksChanged: false, panX: 50, drawScale: 0.25 });
   expect([calls.endUploads, calls.nodeUploads]).toEqual([1, 1]);
   expect(calls.drawScale).toBe(0.25);
+  // The pulse advances as a uniform: no upload.
+  renderer.draw(target, { ...frame, moved: false, linksChanged: false, pulseAngle: 2.5 });
+  expect([calls.endUploads, calls.nodeUploads]).toEqual([1, 1]);
+  expect(calls.pulse[0]).toBe(2.5);
   // Moved nodes upload only the node texture.
   renderer.draw(target, { ...frame, moved: true, linksChanged: false });
   expect([calls.endUploads, calls.nodeUploads]).toEqual([1, 2]);

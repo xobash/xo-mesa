@@ -323,6 +323,47 @@ pub(crate) fn restart_admission(ready: bool, pi_running: bool) -> Result<(), Str
     Ok(())
 }
 
+/// Where release packages live (`scripts/release-updater.mjs` `DOWNLOAD_BASE`).
+const OFFICIAL_PACKAGE_SEGMENTS: [&str; 4] = ["xobash", "xo-mesa", "releases", "download"];
+
+/// `latest.json` is unsigned, so the package URL it names is checked before
+/// any request: only `https://github.com/xobash/xo-mesa/releases/download/<tag>/<name>`.
+/// GitHub then redirects to its asset host; the plugin follows that redirect
+/// from github.com, and the signature check still covers the bytes.
+pub(crate) fn official_package_url(url: &url::Url) -> bool {
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+    let Some(segments) = url.path_segments() else {
+        return false;
+    };
+    let segments: Vec<&str> = segments.take(OFFICIAL_PACKAGE_SEGMENTS.len() + 3).collect();
+    segments.len() == OFFICIAL_PACKAGE_SEGMENTS.len() + 2
+        && segments[..OFFICIAL_PACKAGE_SEGMENTS.len()] == OFFICIAL_PACKAGE_SEGMENTS
+        && segments[OFFICIAL_PACKAGE_SEGMENTS.len()..]
+            .iter()
+            .all(|segment| package_segment_ok(segment))
+}
+
+/// A tag or file name: not empty, not a dot segment, no encoded separator or dot.
+fn package_segment_ok(segment: &str) -> bool {
+    let lower = segment.to_ascii_lowercase();
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && !segment.contains('\\')
+        && !["%2e", "%2f", "%5c"]
+            .iter()
+            .any(|code| lower.contains(code))
+}
+
 /// The same decode the plugin does before verifying a package. Anything that
 /// is not a minisign public key (the placeholder included) is unusable.
 pub(crate) fn pubkey_usable(key: &str) -> bool {
@@ -652,6 +693,19 @@ async fn run_download<R: Runtime>(
     mut update: tauri_plugin_updater::Update,
 ) -> bool {
     let state = app.state::<UpdaterState>();
+    if !official_package_url(&update.download_url) {
+        record_failure(
+            app,
+            Some(FailedAttempt {
+                version: update.version.clone(),
+                kind: FailureKind::Signature,
+                at_ms: now_ms(),
+            }),
+        );
+        return state
+            .machine()
+            .fail(update_install::SIGNATURE_REFUSED.into());
+    }
     let token = CancellationToken::new();
     *lock(&state.cancel) = Some(token.clone());
     update.timeout = Some(DOWNLOAD_TIMEOUT);

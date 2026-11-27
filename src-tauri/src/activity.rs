@@ -862,9 +862,12 @@ pub(crate) fn start_native(app: tauri::AppHandle) -> Result<ActivityInfo, String
         let token = token.clone();
         let app = app.clone();
         handles.push(std::thread::spawn(move || {
-            serve_until_stopped(&server, &running, |req| {
-                handle_request(req, port, &token, &app, &running, &browse_active)
-            });
+            serve_until_stopped(
+                server.as_ref(),
+                &running,
+                |req| handle_request(req, port, &token, &app, &running, &browse_active),
+                || retire_failed_server(&running),
+            );
         }));
     }
 
@@ -921,14 +924,69 @@ pub(crate) fn stop_native() -> Result<(), String> {
     Ok(())
 }
 
+/// What a worker blocks on: the loopback `Server`, or a fake in tests.
+trait RequestSource {
+    type Item;
+    fn next_request(&self) -> std::io::Result<Self::Item>;
+}
+
+impl RequestSource for Server {
+    type Item = Request;
+    fn next_request(&self) -> std::io::Result<Request> {
+        self.recv()
+    }
+}
+
 /// Worker loop: block until a request or a stop arrives. An idle worker
-/// never wakes on a timer.
-fn serve_until_stopped(server: &Server, running: &AtomicBool, handle: impl Fn(Request)) {
+/// never wakes on a timer. An error while still running is a listener
+/// failure (tiny_http's accept thread has ended for good): `listener_failed`
+/// runs so the dead server is not handed out again.
+fn serve_until_stopped<S: RequestSource>(
+    source: &S,
+    running: &AtomicBool,
+    handle: impl Fn(S::Item),
+    listener_failed: impl FnOnce(),
+) {
     while running.load(Ordering::Acquire) {
-        match server.recv() {
+        match source.next_request() {
             Ok(req) => handle(req),
-            // A stop wake-up or a listener failure.
-            Err(_) => break,
+            Err(_) => {
+                if running.load(Ordering::Acquire) {
+                    listener_failed();
+                }
+                break;
+            }
+        }
+    }
+}
+
+/// The published server if it is the one `running` belongs to.
+fn take_if_current(
+    slot: &mut Option<ActivityServer>,
+    running: &Arc<AtomicBool>,
+) -> Option<ActivityServer> {
+    if slot
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(&current.running, running))
+    {
+        slot.take()
+    } else {
+        None
+    }
+}
+
+/// Forget a server whose listener failed so the next `start_native` binds a
+/// new port. Never joins: the caller is one of its workers.
+fn retire_failed_server(running: &Arc<AtomicBool>) {
+    let Ok(mut guard) = state().lock() else {
+        return;
+    };
+    let failed = take_if_current(&mut guard, running);
+    drop(guard);
+    if let Some(st) = failed {
+        stop_workers(&st.server, &st.running, st.handles.len());
+        if let Err(error) = std::fs::remove_dir_all(&st.extension_dir) {
+            eprintln!("Mesa could not remove a failed Pi bridge's extension directory: {error}");
         }
     }
 }

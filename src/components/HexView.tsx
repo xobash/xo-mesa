@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { HEX_ROW_BYTES, HEX_ROW_HEIGHT, formatHexRow, hexWindow, type ByteWindowCache } from "../lib/hexView";
+import { HEX_ROW_BYTES, HEX_ROW_HEIGHT, formatHexOffset, formatHexRow, hexWindow, type ByteWindowCache } from "../lib/hexView";
 import { useScrollViewport } from "./useScrollViewport";
 
 /** Quiet time after the last scroll before missing bytes are read, so a
  *  scrollbar drag across a multi-GB file asks for one window, not hundreds. */
-export const HEX_SETTLE_MS = 120;
+const HEX_SETTLE_MS = 120;
 
 /**
  * Read-only, windowed hex view (offset / hex / ASCII) over a file of any
@@ -43,7 +43,7 @@ export function HexView({ cache, onFileChanged }: { cache: ByteWindowCache; onFi
   for (let row = win.start; row < win.end; row++) {
     const offset = row * HEX_ROW_BYTES;
     const bytes = cache.slice(offset, offset + HEX_ROW_BYTES);
-    const formatted = bytes.length > 0 ? formatHexRow(offset, bytes) : { offset: offset.toString(16).padStart(8, "0"), hex: "…", ascii: "" };
+    const formatted = bytes.length > 0 ? formatHexRow(offset, bytes) : { offset: formatHexOffset(offset), hex: "…", ascii: "" };
     rows.push(
       <div key={row} className="hex-row" style={{ height: HEX_ROW_HEIGHT }} data-offset={offset}>
         <span className="hex-offset">{formatted.offset}</span>

@@ -222,14 +222,12 @@ struct TerminalSession {
 struct TerminalOutput {
     #[serde(rename = "sessionId")]
     session_id: String,
-    stream: String,
     data: String,
     seq: u64,
 }
 
 #[derive(Serialize)]
 pub struct TerminalSnapshot {
-    data: String,
     seq: u64,
     events: Vec<TerminalReplayEvent>,
 }
@@ -286,8 +284,8 @@ fn retire_exited_session(
 }
 
 /// Emit coalesced output batches for one PTY session, then report its exit.
-fn spawn_flusher(stream: Arc<TerminalStream>, app: AppHandle, id: String, name: &'static str) {
-    let spawned = thread::Builder::new()
+fn spawn_flusher(stream: Arc<TerminalStream>, app: AppHandle, id: String) -> std::io::Result<()> {
+    thread::Builder::new()
         .name("mesa-terminal-flusher".to_string())
         .spawn(move || loop {
             let batch = next_output_batch(&stream);
@@ -298,7 +296,6 @@ fn spawn_flusher(stream: Arc<TerminalStream>, app: AppHandle, id: String, name: 
                 let labels = session_recipients(&app, &id);
                 if let Some(code) = retire_exited_session(&state.sessions, &id) {
                     emit_terminal(
-                        &app,
                         &labels,
                         "terminal://exit",
                         TerminalExit {
@@ -313,21 +310,48 @@ fn spawn_flusher(stream: Arc<TerminalStream>, app: AppHandle, id: String, name: 
                 // Emission stays on this one thread, so `seq` reaches the
                 // webview in the order the bytes left the PTY.
                 emit_terminal(
-                    &app,
                     &session_recipients(&app, &id),
                     "terminal://output",
                     TerminalOutput {
                         session_id: id.clone(),
-                        stream: name.to_string(),
                         data,
                         seq,
                     },
                 );
             }
-        });
-    if let Err(error) = spawned {
-        eprintln!("Mesa could not start the Pi output thread: {error}");
+        })
+        .map(drop)
+}
+
+/// Load Mesa's bundled extensions and hand Pi the bridge credentials; these
+/// travel directly to the approved process, never to a renderer. Fails closed:
+/// the activity extension is what blocks text writes that corrupt binary
+/// files, so Pi never starts without it.
+fn apply_bridge(
+    cmd: &mut CommandBuilder,
+    activity: Result<crate::activity::ActivityInfo, String>,
+    research: bool,
+) -> Result<(), String> {
+    let activity = activity.map_err(|error| {
+        format!("Mesa's Pi bridge is unavailable ({error}); Pi was not started")
+    })?;
+    for path in [
+        &activity.extension_path,
+        &activity.goal_extension_path,
+        &activity.context_extension_path,
+        &activity.browser_extension_path,
+    ] {
+        cmd.arg("--extension");
+        cmd.arg(path);
     }
+    cmd.env("MESA_ACTIVITY_PORT", activity.port.to_string());
+    cmd.env("MESA_ACTIVITY_TOKEN", &activity.token);
+    if research {
+        cmd.arg("--extension");
+        cmd.arg(&activity.deep_research_extension_path);
+        cmd.env("MESA_DEEP_RESEARCH", "1");
+    }
+    Ok(())
 }
 
 fn apply_frontend_env(cmd: &mut CommandBuilder, envs: &HashMap<String, String>) {
@@ -343,7 +367,6 @@ fn apply_frontend_env(cmd: &mut CommandBuilder, envs: &HashMap<String, String>) 
                 | "MESA_CENTER_VIEW"
                 | "MESA_RIGHT_VIEWS"
                 | "MESA_CONTEXT"
-                | "MESA_DEEP_RESEARCH"
                 | "MESA_DEEP_RESEARCH_RUN_ID"
         ) {
             cmd.env(key, value);
@@ -410,27 +433,11 @@ pub async fn terminal_start(
         .get("MESA_DEEP_RESEARCH_RUN_ID")
         .filter(|id| !id.trim().is_empty());
     apply_frontend_env(&mut cmd, &envs);
-    // Bridge secrets travel directly to the approved process, never to a renderer.
-    if let Ok(activity) = crate::activity::start_native(app.clone()) {
-        for path in [
-            &activity.extension_path,
-            &activity.goal_extension_path,
-            &activity.context_extension_path,
-            &activity.browser_extension_path,
-        ] {
-            cmd.arg("--extension");
-            cmd.arg(path);
-        }
-        cmd.env("MESA_ACTIVITY_PORT", activity.port.to_string());
-        cmd.env("MESA_ACTIVITY_TOKEN", &activity.token);
-        if research.is_some() {
-            cmd.arg("--extension");
-            cmd.arg(&activity.deep_research_extension_path);
-            cmd.env("MESA_DEEP_RESEARCH", "1");
-        }
-    } else if research.is_some() {
-        return Err("Deep Research bridge is unavailable; Pi was not started".into());
-    }
+    apply_bridge(
+        &mut cmd,
+        crate::activity::start_native(app.clone()),
+        research.is_some(),
+    )?;
 
     let rows = rows.unwrap_or(24).clamp(2, 500);
     let cols = cols.unwrap_or(80).clamp(2, 500);
@@ -443,8 +450,7 @@ pub async fn terminal_start(
             pixel_height: 0,
         })
         .map_err(|e| e.to_string())?;
-    #[allow(unused_mut)] // Windows kills the child if Job Object setup fails.
-    let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     #[cfg(target_os = "windows")]
     let job = match child
         .process_id()
@@ -453,19 +459,42 @@ pub async fn terminal_start(
     {
         Ok(job) => job,
         Err(error) => {
-            let _ = child.kill();
+            end_child_in_background(child, (), spawn_thread);
             return Err(error);
         }
     };
-    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let input = spawn_input_writer(pair.master.take_writer().map_err(|e| e.to_string())?);
+    // A spawned Pi must never outlive a failed launch: every early return
+    // after the spawn ends and reaps the child.
+    let handles = pair
+        .master
+        .try_clone_reader()
+        .and_then(|reader| Ok((reader, pair.master.take_writer()?)));
+    let (reader, writer) = match handles {
+        Ok(handles) => handles,
+        Err(error) => {
+            end_child_in_background(child, (), spawn_thread);
+            return Err(error.to_string());
+        }
+    };
+    let input = match spawn_input_writer(writer, spawn_thread) {
+        Ok(input) => input,
+        Err(error) => {
+            end_child_in_background(child, (), spawn_thread);
+            return Err(format!(
+                "Mesa could not start Pi's terminal threads: {error}"
+            ));
+        }
+    };
     drop(pair.slave);
 
     let mut initial_history = TerminalHistory::default();
     initial_history.push_resize(rows, cols);
     let stream = Arc::new(TerminalStream::new(initial_history));
     {
-        let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
+        let mut sessions = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         sessions.insert(
             id.clone(),
             TerminalSession {
@@ -484,9 +513,23 @@ pub async fn terminal_start(
         );
     }
     // Start the pump only after the session is registered, so an immediate
-    // exit is still retired by the flusher.
-    spawn_reader(reader, Arc::clone(&stream));
-    spawn_flusher(stream, app, id.clone(), "stdout");
+    // exit is still retired by the flusher. Without both threads the session
+    // could never report output or exit, so end it instead.
+    let pumped = spawn_reader(reader, Arc::clone(&stream))
+        .and_then(|()| spawn_flusher(stream, app, id.clone()));
+    if let Err(error) = pumped {
+        let removed = state
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&id);
+        if let Some(session) = removed {
+            end_session_in_background(session);
+        }
+        return Err(format!(
+            "Mesa could not start Pi's terminal threads: {error}"
+        ));
+    }
     Ok(id)
 }
 
@@ -555,7 +598,6 @@ fn session_recipients(app: &AppHandle, id: &str) -> Vec<tauri::ipc::Channel<serd
         .unwrap_or_default()
 }
 fn emit_terminal<S: Serialize + Clone>(
-    _app: &AppHandle,
     channels: &[tauri::ipc::Channel<serde_json::Value>],
     event: &str,
     payload: S,
@@ -649,7 +691,7 @@ pub fn terminal_attach(
     Ok(())
 }
 
-// Copies up to the whole history twice: run off the main (UI) thread, and
+// Copies up to the whole history: run off the main (UI) thread, and
 // hold the sessions lock only for the access check.
 #[tauri::command(async)]
 pub fn terminal_snapshot(
@@ -670,7 +712,6 @@ pub fn terminal_snapshot(
     // frontend's replay/dedupe path expects.
     let history = stream.lock();
     Ok(TerminalSnapshot {
-        data: history.snapshot(),
         seq: history.seq,
         events: history.replay(),
     })
@@ -699,27 +740,39 @@ pub fn terminal_resize(
 /// Queued input chunks per session. A paste is one chunk.
 const INPUT_QUEUE_CHUNKS: usize = 256;
 
+/// Starts a named detached thread. Tests pass a failing spawner instead.
+type Spawner = fn(&'static str, Box<dyn FnOnce() + Send>) -> std::io::Result<()>;
+
+fn spawn_thread(name: &'static str, job: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    thread::Builder::new()
+        .name(name.to_string())
+        .spawn(job)
+        .map(drop)
+}
+
 /// One thread per session owns the PTY writer. It performs the blocking
 /// `write_all`/`flush` in submission order and ends when the session drops its
-/// sender or the PTY closes.
-fn spawn_input_writer<W>(mut writer: W) -> mpsc::SyncSender<Vec<u8>>
+/// sender or the PTY closes. Without that thread no input could ever reach
+/// Pi, so a failed spawn is an error, never a sender with no receiver.
+fn spawn_input_writer<W>(
+    mut writer: W,
+    spawn: Spawner,
+) -> std::io::Result<mpsc::SyncSender<Vec<u8>>>
 where
     W: Write + Send + 'static,
 {
     let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(INPUT_QUEUE_CHUNKS);
-    let spawned = thread::Builder::new()
-        .name("mesa-terminal-writer".to_string())
-        .spawn(move || {
+    spawn(
+        "mesa-terminal-writer",
+        Box::new(move || {
             while let Ok(chunk) = receiver.recv() {
                 if writer.write_all(&chunk).is_err() || writer.flush().is_err() {
                     return;
                 }
             }
-        });
-    if let Err(error) = spawned {
-        eprintln!("Mesa could not start the Pi input thread: {error}");
-    }
-    sender
+        }),
+    )?;
+    Ok(sender)
 }
 
 /// Queue input without blocking: the sessions lock is released before the send.
@@ -760,26 +813,75 @@ pub fn terminal_stop(
     state: State<TerminalState>,
     session_id: String,
 ) -> Result<(), String> {
-    let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = sessions.get(&session_id) {
-        session.access.require(window.label())?;
-    }
-    if let Some(mut session) = sessions.remove(&session_id) {
-        let _ = session.child.kill();
-        // Waiting for a PTY child is allowed to block indefinitely on some
-        // backends. Reap it away from the IPC thread so closing Pi cannot
-        // freeze the renderer or the Tauri event loop.
-        let mut child = session.child;
-        let spawned = thread::Builder::new()
-            .name("mesa-terminal-reaper".to_string())
-            .spawn(move || {
-                let _ = child.wait();
-            });
-        if let Err(error) = spawned {
-            eprintln!("Mesa could not start the Pi exit thread: {error}");
+    stop_session(&state.sessions, &session_id, window.label())
+}
+
+/// Remove an authorized session and end it off the calling thread. This sync
+/// command runs on the UI thread, and portable-pty's Unix `kill` polls up to
+/// 200 ms for SIGHUP to take effect; holding the sessions lock that long would
+/// also stall every other session's output.
+fn stop_session(
+    sessions: &Mutex<HashMap<String, TerminalSession>>,
+    session_id: &str,
+    label: &str,
+) -> Result<(), String> {
+    let session = {
+        let mut sessions = sessions.lock().map_err(|e| e.to_string())?;
+        match sessions.get(session_id) {
+            Some(session) => session.access.require(label)?,
+            None => return Ok(()),
         }
+        sessions.remove(session_id)
+    };
+    if let Some(session) = session {
+        end_session_in_background(session);
     }
     Ok(())
+}
+
+/// Kill, close and reap a removed session on its own thread. Closing a PTY
+/// master and waiting for a child can both block on some backends.
+fn end_session_in_background(session: TerminalSession) {
+    #[cfg(target_os = "windows")]
+    let rest = (session.master, session._job);
+    #[cfg(not(target_os = "windows"))]
+    let rest = session.master;
+    end_child_in_background(session.child, rest, spawn_thread);
+}
+
+type PtyChild = Box<dyn portable_pty::Child + Send>;
+
+/// Kill `child`, then drop `rest` (its PTY master and job), then reap it, on a
+/// reaper thread. The child reaches that thread through a channel, so a failed
+/// spawn leaves it here to be killed and reaped at once: a `clone_killer`
+/// would only send SIGHUP on Unix, which a HUP-ignoring child survives.
+fn end_child_in_background<T: Send + 'static>(child: PtyChild, rest: T, spawn: Spawner) {
+    let (handoff, receiver) = mpsc::sync_channel::<(PtyChild, T)>(1);
+    let started = spawn(
+        "mesa-terminal-reaper",
+        Box::new(move || {
+            if let Ok((child, rest)) = receiver.recv() {
+                end_child(child, rest);
+            }
+        }),
+    );
+    let left = match started {
+        Ok(()) => handoff.send((child, rest)).err().map(|unsent| unsent.0),
+        Err(error) => {
+            eprintln!("Mesa could not start the Pi exit thread: {error}");
+            Some((child, rest))
+        }
+    };
+    if let Some((child, rest)) = left {
+        end_child(child, rest);
+    }
+}
+
+/// portable-pty's Unix `kill` sends SIGHUP, then SIGKILL after up to 200 ms.
+fn end_child<T>(mut child: PtyChild, rest: T) {
+    let _ = child.kill();
+    drop(rest);
+    let _ = child.wait();
 }
 
 /// Destroyed windows cannot retain grants through a reused label.

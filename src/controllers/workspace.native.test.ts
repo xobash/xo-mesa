@@ -10,6 +10,7 @@ const native = vi.hoisted(() => {
     static existing = new Map<string, FakeWindow>();
     static created: FakeWindow[] = [];
     static throwOnCreate: Error | null = null;
+    static listenError: Error | null = null;
     static getByLabel = async (label: string) => FakeWindow.existing.get(label) ?? null;
     label: string;
     options: Record<string, unknown>;
@@ -24,6 +25,7 @@ const native = vi.hoisted(() => {
       FakeWindow.created.push(this);
     }
     once(event: string, handler: Handler) {
+      if (FakeWindow.listenError) return Promise.reject(FakeWindow.listenError);
       this.handlers.set(event, handler);
       return Promise.resolve(() => undefined);
     }
@@ -133,13 +135,14 @@ beforeEach(() => {
   native.FakeWindow.existing = new Map();
   native.FakeWindow.created = [];
   native.FakeWindow.throwOnCreate = null;
+  native.FakeWindow.listenError = null;
   native.invoke.mockReset();
   native.invoke.mockImplementation(async (cmd) => (cmd === "terminal_prepare_handoff" ? "handoff-token" : undefined));
   native.emitTo.mockReset();
   native.emitTo.mockResolvedValue(undefined);
   native.listeners = new Map();
   native.unlistened = 0;
-  setPiSessionSnapshot({ sessionId: null, vaultPath: null, contextText: null, cols: 80, rows: 24 });
+  setPiSessionSnapshot({ sessionId: null, vaultPath: null, cols: 80, rows: 24 });
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   setup();
 });
@@ -167,6 +170,21 @@ describe("openDocWindow", () => {
     expect(state.getState()).toMatchObject({ popoutDoc: "a.md", status: "Document window could not open; restored inside Mesa." });
   });
 
+  it("reports a creation listener that cannot register instead of rejecting unhandled", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    native.FakeWindow.listenError = new Error("event API unavailable");
+    try {
+      await actions.openDocWindow("a.md");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("could not register"), native.FakeWindow.listenError);
+      expect(lastWindow().label).toMatch(/^doc-a_md-/);
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
   it("falls back to the in-app document popout when the window cannot be constructed", async () => {
     native.FakeWindow.throwOnCreate = new Error("no webview");
     await actions.openDocWindow("a.md");
@@ -183,7 +201,7 @@ describe("openDocWindow", () => {
 
 describe("openAgentWindow", () => {
   beforeEach(() => {
-    setPiSessionSnapshot({ sessionId: "pty-1", vaultPath: "/vault", contextText: "ctx", cols: 100, rows: 30 });
+    setPiSessionSnapshot({ sessionId: "pty-1", vaultPath: "/vault", cols: 100, rows: 30 });
   });
 
   it("hands the live PTY to a new window and keeps the source until adoption", async () => {
@@ -249,7 +267,7 @@ describe("openAgentWindow", () => {
 
   it("waits for Pi to start, then reports and falls back when it never does", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    setPiSessionSnapshot({ sessionId: "pty-other", vaultPath: "/other-vault", contextText: null, cols: 80, rows: 24 });
+    setPiSessionSnapshot({ sessionId: "pty-other", vaultPath: "/other-vault", cols: 80, rows: 24 });
     const result = actions.openAgentWindow();
     await vi.advanceTimersByTimeAsync(40 * 50);
     await expect(result).resolves.toBe(false);
@@ -261,10 +279,10 @@ describe("openAgentWindow", () => {
 
   it("uses a session that finishes starting while it waits", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    setPiSessionSnapshot({ sessionId: null, vaultPath: null, contextText: null, cols: 80, rows: 24 });
+    setPiSessionSnapshot({ sessionId: null, vaultPath: null, cols: 80, rows: 24 });
     const result = actions.openAgentWindow();
     await vi.advanceTimersByTimeAsync(120);
-    setPiSessionSnapshot({ sessionId: "pty-late", vaultPath: "/vault", contextText: null, cols: 80, rows: 24 });
+    setPiSessionSnapshot({ sessionId: "pty-late", vaultPath: "/vault", cols: 80, rows: 24 });
     await vi.advanceTimersByTimeAsync(60);
     const win = lastWindow();
     expect(params(win).get("piSession")).toBe("pty-late");

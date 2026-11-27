@@ -18,10 +18,10 @@ import type { VaultFile } from "../types";
 import { SAVE_WAIT, useSaveLock } from "./useSaveLock";
 
 /** Larger workbooks open in the file details view instead. */
-export const XLSX_OPEN_LIMIT_BYTES = 64 * 1024 * 1024;
+const XLSX_OPEN_LIMIT_BYTES = 64 * 1024 * 1024;
 const HISTORY_LIMIT = 100;
 
-export type XlsxLoad =
+type XlsxLoad =
   | { state: "loading" }
   | { state: "failed"; message: string }
   | { state: "ready"; opened: OpenedXlsx };
@@ -29,7 +29,7 @@ export type XlsxLoad =
 interface History { past: XlsxDraft[]; future: XlsxDraft[] }
 
 /** A row insert or delete running in the worker; other edits wait for it. */
-export interface RowJob { readonly insert: boolean; readonly row: number }
+interface RowJob { readonly insert: boolean; readonly row: number }
 
 const ROW_JOB_WAIT = "Mesa is still moving rows. Edit again when it finishes.";
 
@@ -87,7 +87,9 @@ export function useXlsxEditor(file: VaultFile | undefined, onDirtyChange?: (dirt
   const mtime = file?.mtime;
   useEffect(() => {
     if (!path) return;
-    const first = pathRef.current !== path;
+    // No baseline means nothing is open yet (first open, a failed open, or a
+    // StrictMode re-run), so this read is an open, not a reload.
+    const first = pathRef.current !== path || baselineRef.current === null;
     pathRef.current = path;
     let cancelled = false;
     if (first) { setLoad({ state: "loading" }); setStatus(""); setEditing(false); }

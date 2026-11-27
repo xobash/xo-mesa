@@ -1,5 +1,14 @@
 use super::*;
 
+/// The output text a replay of `history` writes, in order.
+fn output_text(history: &TerminalHistory) -> String {
+    history
+        .replay()
+        .into_iter()
+        .filter_map(|event| event.data)
+        .collect()
+}
+
 #[test]
 fn cmd_shim_fallback_keeps_quoted_paths_and_skips_the_vault_folder() {
     let shim = Path::new(r"C:\Program Files\nodejs\pi.cmd");
@@ -72,6 +81,7 @@ fn frontend_environment_cannot_supply_args_or_native_overrides() {
         ("MESA_CONTEXT".into(), "--extension malicious.js".into()),
         ("MESA_DEEP_RESEARCH_RUN_ID".into(), "run-1".into()),
         ("MESA_UNLISTED".into(), "injected".into()),
+        ("MESA_DEEP_RESEARCH".into(), "injected".into()),
         ("MESA_ACTIVITY_TOKEN".into(), "injected".into()),
         ("PATH".into(), "injected".into()),
     ]);
@@ -85,7 +95,13 @@ fn frontend_environment_cannot_supply_args_or_native_overrides() {
         cmd.get_env("MESA_DEEP_RESEARCH_RUN_ID"),
         Some(std::ffi::OsStr::new("run-1"))
     );
-    for key in ["MESA_UNLISTED", "MESA_ACTIVITY_TOKEN", "PATH"] {
+    // Native code alone sets MESA_DEEP_RESEARCH, together with the extension.
+    for key in [
+        "MESA_UNLISTED",
+        "MESA_ACTIVITY_TOKEN",
+        "PATH",
+        "MESA_DEEP_RESEARCH",
+    ] {
         assert_ne!(cmd.get_env(key), Some(std::ffi::OsStr::new("injected")));
     }
 }
@@ -455,7 +471,7 @@ fn terminal_history_preserves_order_and_sequence() {
     assert_eq!(history.push_resize(24, 80), 1);
     assert_eq!(history.push_output("one".into()), 2);
     assert_eq!(history.push_output(" two".into()), 3);
-    assert_eq!(history.snapshot(), "one two");
+    assert_eq!(output_text(&history), "one two");
     assert_eq!(history.seq, 3);
     let replay = history.replay();
     assert_eq!(replay.len(), 3);
@@ -470,7 +486,7 @@ fn terminal_history_is_bounded_without_dropping_the_latest_chunk() {
     let mut history = TerminalHistory::default();
     history.push_output("a".repeat(TERMINAL_HISTORY_MAX_BYTES));
     history.push_output("latest".into());
-    assert_eq!(history.snapshot(), "latest");
+    assert_eq!(output_text(&history), "latest");
 }
 
 /// Splitting a multi-byte character across PTY reads preserves its columns.
@@ -538,7 +554,7 @@ fn resize_markers_do_not_consume_output_history_budget() {
     history.push_resize(24, 80);
     history.push_resize(30, 100);
     history.push_output("visible".into());
-    assert_eq!(history.snapshot(), "visible");
+    assert_eq!(output_text(&history), "visible");
     assert_eq!(history.replay().len(), 3);
 }
 
@@ -686,10 +702,10 @@ fn a_resize_commits_staged_bytes_ahead_of_its_own_marker() {
 fn staged_bytes_are_invisible_until_committed() {
     let mut history = TerminalHistory::default();
     history.stage_output("in flight");
-    assert_eq!(history.snapshot(), "");
+    assert_eq!(output_text(&history), "");
     assert_eq!(history.seq, 0);
     history.commit_pending(Instant::now());
-    assert_eq!(history.snapshot(), "in flight");
+    assert_eq!(output_text(&history), "in flight");
     assert_eq!(history.seq, 1);
 }
 
@@ -718,7 +734,7 @@ impl Read for BurstReader {
 fn a_bulk_burst_is_coalesced_without_losing_or_reordering_bytes() {
     const TOTAL: usize = 1_303 * 1_023;
     let stream = Arc::new(TerminalStream::new(TerminalHistory::default()));
-    spawn_reader(BurstReader { remaining: TOTAL }, Arc::clone(&stream));
+    spawn_reader(BurstReader { remaining: TOTAL }, Arc::clone(&stream)).expect("reader thread");
 
     let mut events = 0usize;
     let mut bytes = 0usize;
@@ -752,7 +768,7 @@ fn a_bulk_burst_is_coalesced_without_losing_or_reordering_bytes() {
         "expected ~{capped} coalesced events, got {events}"
     );
     assert_eq!(
-        stream.lock().snapshot().len(),
+        output_text(&stream.lock()).len(),
         TOTAL.min(TERMINAL_HISTORY_MAX_BYTES),
         "history must hold the same bytes it emitted, bounded by its budget"
     );
@@ -790,7 +806,7 @@ fn a_real_pty_burst_survives_the_pump_byte_for_byte() {
     drop(pair.slave);
 
     let stream = Arc::new(TerminalStream::new(TerminalHistory::default()));
-    spawn_reader(reader, Arc::clone(&stream));
+    spawn_reader(reader, Arc::clone(&stream)).expect("reader thread");
 
     let mut received = String::new();
     let mut last_seq = 0u64;
@@ -874,7 +890,8 @@ pub(super) fn spawn_test_session(script: &str) -> TerminalSession {
     cmd.arg("-c");
     cmd.arg(script);
     let child = pair.slave.spawn_command(cmd).expect("spawn");
-    let input = spawn_input_writer(pair.master.take_writer().expect("writer"));
+    let input = spawn_input_writer(pair.master.take_writer().expect("writer"), spawn_thread)
+        .expect("writer thread");
     drop(pair.slave);
     TerminalSession {
         child,
@@ -893,7 +910,7 @@ pub(super) fn spawn_test_session(script: &str) -> TerminalSession {
 #[test]
 fn a_stuck_writer_does_not_block_other_session_commands() {
     let (release, stuck) = mpsc::channel();
-    let sender = spawn_input_writer(StuckWriter(stuck));
+    let sender = spawn_input_writer(StuckWriter(stuck), spawn_thread).expect("writer thread");
     let mut stuck_session = spawn_test_session("sleep 30");
     stuck_session.input = sender;
     let sessions = Mutex::new(HashMap::from([
@@ -940,6 +957,163 @@ fn an_exited_child_is_retired_exactly_once_with_its_code() {
         queue_input(&sessions, "s", "late".into(), "main").unwrap_err(),
         "Terminal session not found"
     );
+}
+
+fn bridge_info() -> crate::activity::ActivityInfo {
+    crate::activity::ActivityInfo {
+        port: 8790,
+        token: "t".into(),
+        extension_path: "/x/mesa-activity.ts".into(),
+        goal_extension_path: "/x/mesa-goal.ts".into(),
+        context_extension_path: "/x/mesa-context.ts".into(),
+        browser_extension_path: "/x/mesa-browser.ts".into(),
+        deep_research_extension_path: "/x/mesa-deep-research.ts".into(),
+    }
+}
+
+fn argv(cmd: &CommandBuilder) -> Vec<String> {
+    cmd.get_argv()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn pi_never_starts_without_the_binary_write_guard() {
+    let mut cmd = CommandBuilder::new("pi");
+    let error = apply_bridge(&mut cmd, Err("no free port".into()), false).unwrap_err();
+    assert!(error.contains("Pi was not started"), "{error}");
+    assert_eq!(argv(&cmd), ["pi"]);
+    let mut cmd = CommandBuilder::new("pi");
+    assert!(apply_bridge(&mut cmd, Err("no free port".into()), true).is_err());
+}
+
+#[test]
+fn the_bridge_loads_every_extension_and_research_only_for_a_run() {
+    let mut cmd = CommandBuilder::new("pi");
+    apply_bridge(&mut cmd, Ok(bridge_info()), false).unwrap();
+    let args = argv(&cmd);
+    assert!(args.contains(&"/x/mesa-activity.ts".to_string()));
+    assert!(!args.contains(&"/x/mesa-deep-research.ts".to_string()));
+    assert_eq!(
+        cmd.get_env("MESA_ACTIVITY_TOKEN"),
+        Some(std::ffi::OsStr::new("t"))
+    );
+    assert_eq!(cmd.get_env("MESA_DEEP_RESEARCH"), None);
+    let mut cmd = CommandBuilder::new("pi");
+    apply_bridge(&mut cmd, Ok(bridge_info()), true).unwrap();
+    assert!(argv(&cmd).contains(&"/x/mesa-deep-research.ts".to_string()));
+    assert_eq!(
+        cmd.get_env("MESA_DEEP_RESEARCH"),
+        Some(std::ffi::OsStr::new("1"))
+    );
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+#[test]
+fn stopping_a_session_returns_at_once_and_still_ends_a_hup_ignoring_child() {
+    // `trap '' HUP` makes portable-pty's kill wait its full grace period.
+    let session = spawn_test_session("trap '' HUP; exec sleep 30");
+    let pid = session.child.process_id().expect("pid");
+    let sessions = Mutex::new(HashMap::from([("s".to_string(), session)]));
+    let started = Instant::now();
+    stop_session(&sessions, "s", "main").unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(sessions.lock().unwrap().is_empty());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_alive(pid) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!process_alive(pid), "the stopped child must not survive");
+}
+
+fn refuse_to_spawn(_: &'static str, _: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+    Err(std::io::Error::other("no threads left"))
+}
+
+#[test]
+fn a_writer_thread_that_cannot_start_fails_the_start() {
+    assert!(spawn_input_writer(Vec::<u8>::new(), refuse_to_spawn).is_err());
+}
+
+/// True once `pid` is neither running nor a zombie (`ps` lists both).
+#[cfg(unix)]
+fn process_reaped(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| !status.success())
+}
+
+/// Spawns a child that ignores SIGHUP and waits until `sleep` holds its pid.
+#[cfg(unix)]
+fn spawn_hup_ignoring_session() -> (TerminalSession, u32) {
+    let session = spawn_test_session("trap '' HUP; exec sleep 30");
+    let pid = session.child.process_id().expect("pid");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let running_sleep = || {
+        std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("sleep"))
+    };
+    while !running_sleep() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(running_sleep(), "the test child never reached sleep");
+    (session, pid)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hup_ignoring_child_is_killed_and_reaped_when_no_reaper_thread_starts() {
+    let (session, pid) = spawn_hup_ignoring_session();
+    end_child_in_background(session.child, session.master, refuse_to_spawn);
+    assert!(process_reaped(pid), "the child must be dead and reaped");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unregistered_child_is_killed_and_reaped_off_the_calling_thread() {
+    let (session, pid) = spawn_hup_ignoring_session();
+    let started = Instant::now();
+    end_child_in_background(session.child, (), spawn_thread);
+    assert!(started.elapsed() < Duration::from_millis(100));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !process_reaped(pid) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(process_reaped(pid), "the child must be dead and reaped");
+    drop(session.master);
+}
+
+#[cfg(unix)]
+#[test]
+fn stopping_needs_the_session_grant() {
+    let sessions = Mutex::new(HashMap::from([(
+        "s".to_string(),
+        spawn_test_session("sleep 30"),
+    )]));
+    assert!(stop_session(&sessions, "s", "doc-1").is_err());
+    assert_eq!(sessions.lock().unwrap().len(), 1);
+    assert!(stop_session(&sessions, "missing", "doc-1").is_ok());
+    stop_session(&sessions, "s", "main").unwrap();
 }
 
 /// Update restarts refuse while Pi runs (`updater::updater_restart`).

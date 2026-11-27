@@ -5,7 +5,7 @@ import { incidentLinkIndices, nodeDrawScale, phaseFromId } from "../lib/graphGeo
 import { nodeFill, type GraphColors } from "./graphColors";
 import { LINK_LAYER_MIN_LINKS, type LinkLayer } from "./graphLinkLayer";
 import type { GlLinkRenderer } from "./graphLinkGl";
-import { NodePositions, linkIndex } from "./graphLinkGeometry";
+import { NodePositions, linkIndex, pulseAngle, pulsedRadius } from "./graphLinkGeometry";
 
 // World-space gap enforced by resolveOverlaps() at idle. The living-motion
 // breathing budget keys off it: its amplitude is clamped below OVERLAP_GAP/2
@@ -158,15 +158,17 @@ const visibleNodes: GraphNode[] = [];
 
 /**
  * Write each node's render position and radius. Without living motion these
- * are the layout position and the zoom-scaled radius. Living motion adds
- * render-only offsets that never feed back into the simulation.
+ * are the layout position and the zoom-scaled radius. Living motion adds a
+ * radius pulse (`pulseAmp` at `angle`, `pulsedRadius`) and, with `drift`,
+ * render-only offsets; neither feeds back into the simulation.
  */
 function updateRenderState(
   refs: GraphDrawRefs,
   nodes: GraphNode[],
   lnow: number,
+  angle: number,
   drawScale: number,
-  living: boolean,
+  drift: boolean,
   livingPx: number,
   pulseAmp: number
 ): void {
@@ -176,8 +178,8 @@ function updateRenderState(
     const x = n.x ?? 0;
     const y = n.y ?? 0;
     const r = refs.nodeRadius(n) * drawScale;
-    // The grabbed node tracks the pointer 1:1, with no ambient offset.
-    if (!living || n === dragged || !Number.isFinite(x) || !Number.isFinite(y)) {
+    // The grabbed node tracks the pointer 1:1, with no ambient offset or pulse.
+    if (n === dragged || !Number.isFinite(x) || !Number.isFinite(y) || (!drift && pulseAmp === 0)) {
       n.renderX = x;
       n.renderY = y;
       n.renderRadius = r;
@@ -185,6 +187,13 @@ function updateRenderState(
     }
     const phase = n.renderPhase ?? phaseFromId(n.id);
     n.renderPhase = phase;
+    // Radius pulse (period ~3.5 s). Non-positional, so it cannot cause overlap.
+    n.renderRadius = pulsedRadius(r, angle, phase, pulseAmp);
+    if (!drift) {
+      n.renderX = x;
+      n.renderY = y;
+      continue;
+    }
     const kvx = (n.renderKickVx ?? 0) * 0.82;
     const kvy = (n.renderKickVy ?? 0) * 0.82;
     const kx = ((n.renderKickX ?? 0) + kvx) * 0.84;
@@ -203,8 +212,6 @@ function updateRenderState(
     const mingle = Math.sin(lnow * 0.21 + phase * 0.51) * livingPx * 0.28;
     n.renderX = x + (Math.sin(a) + Math.sin(b) * 0.35) * livingPx * 1.35 + mingle * 0.5 + x * invLen * breathe + kx;
     n.renderY = y + (Math.cos(a * 0.82) + Math.sin(b * 0.7) * 0.32) * livingPx * 1.35 + mingle * -0.28 + y * invLen * breathe + ky;
-    // Radius pulse (period ~3.5 s). Non-positional, so it cannot cause overlap.
-    n.renderRadius = r * (1 + Math.sin(lnow * 1.8 + phase) * pulseAmp);
   }
 }
 
@@ -229,6 +236,16 @@ export function drawGraph(
   const lnow = now / 1000;
   const display = refs.graphDisplayRef.current;
   const living = animationsOn && display.living;
+  const links = refs.linksRef.current;
+  const lc = links.length;
+  // Heavy graphs draw plain links with WebGL, or else through a cached 2D
+  // layer; links of the highlighted or active nodes draw on top in 2D. Living
+  // motion there keeps nodes in place (no drift), so neither redraws its links
+  // per frame; the radius pulse runs only on WebGL, whose shader trims each
+  // link at the same pulsing radius from per-node phases and two uniforms.
+  const heavy = lc >= LINK_LAYER_MIN_LINKS;
+  const gl = heavy && display.linkThickness === 1 && refs.linkGl?.ready() ? refs.linkGl : null;
+  const drift = living && !heavy;
   const zooming = isZooming(t.k, refs.targetKRef.current);
   const fastDraw =
     now < refs.fastDrawUntilRef.current ||
@@ -254,7 +271,6 @@ export function drawGraph(
   const devicePx = 1 / scale; // one device pixel, in world units
 
   const nodes = refs.nodesRef.current;
-  const links = refs.linksRef.current;
   const c = refs.colorsRef.current;
 
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -263,7 +279,7 @@ export function drawGraph(
   ctx.imageSmoothingQuality = nodes.length > 1500 ? "low" : nodes.length > 700 ? "medium" : "high";
   ctx.translate(t.x, t.y);
   ctx.scale(t.k, t.k);
-  if (living && nodes.length > 0) {
+  if (drift && nodes.length > 0) {
     // Sparse, slow orbital drift. World-space so it scales with zoom.
     const driftPhase = lnow * 0.15;
     ctx.translate(
@@ -282,21 +298,22 @@ export function drawGraph(
   const focusSet = focusId ? refs.neighborsRef.current.get(focusId) : undefined;
   const dimK = focusId ? 1 - (1 - DIM_ALPHA) * focusK : 1;
 
-  // ---- Living motion amplitudes (zero unless the user opted in) -----------
+  // ---- Living motion amplitudes (zero with living motion off) ------------
   const tail = clamp((refs.motionUntilRef.current - now) / 4600, 0, 1);
   const lifeBoost = 1 + tail * tail * (3 - 2 * tail) * 0.3;
-  const livingScale = living ? (nodes.length > 1200 ? 1.2 : 1.7) : 0;
+  const livingScale = drift ? (nodes.length > 1200 ? 1.2 : 1.7) : 0;
   // Screen-space breathing amplitude, clamped so two adjacent nodes breathing
   // toward each other can never touch.
   const livingPx = clamp(livingScale * lifeBoost, 0, (OVERLAP_GAP * t.k) / 2 - 0.5) / Math.max(0.2, t.k);
-  const pulseAmp = living ? (nodes.length > 1200 ? 0.2 : nodes.length > 700 ? 0.26 : 0.32) : 0;
+  const pulseAmp = living && (!heavy || gl) ? (nodes.length > 1200 ? 0.2 : nodes.length > 700 ? 0.26 : 0.32) : 0;
   const twinkleAmp = living ? (nodes.length > 1200 ? 0.26 : nodes.length > 700 ? 0.34 : 0.4) : 0;
 
   // Active node ids, collected once per frame for O(1) lookup in the hot loops.
   const actMap = new Map<string, { intensity: number; rate: number }>();
   for (const { id, rec } of activeItems) actMap.set(id, { intensity: rec.intensity, rate: rec.rate });
 
-  updateRenderState(refs, nodes, lnow, drawScale, living, livingPx, pulseAmp);
+  const angle = pulseAngle(lnow);
+  updateRenderState(refs, nodes, lnow, angle, drawScale, drift, livingPx, pulseAmp);
 
   // ---- Viewport culling bounds (world space) ------------------------------
   const margin = 60 / t.k;
@@ -328,11 +345,6 @@ export function drawGraph(
   // thickness 1. Endpoints are NaN for a link too short to show.
   ctx.lineCap = "butt";
   const le = refs.linkEndpointsRef.current;
-  const lc = links.length;
-  // Heavy graphs draw plain links with WebGL, or else through a cached 2D
-  // layer; links of the highlighted or active nodes draw on top in 2D.
-  const heavy = lc >= LINK_LAYER_MIN_LINKS && !living;
-  const gl = heavy && display.linkThickness === 1 && refs.linkGl?.ready() ? refs.linkGl : null;
   const layer = !gl && heavy && refs.linkLayer ? refs.linkLayer : null;
   if (refs.linkLayer) refs.linkLayer.active = layer !== null;
   const index = linkIndex(links, nodes);
@@ -416,7 +428,8 @@ export function drawGraph(
       }
     }
     layered = gl.draw(canvas, {
-      s: index.s, t: index.t, count: lc, x: positions.x, y: positions.y, base: positions.base, nodeCount: nodes.length, drawScale,
+      s: index.s, t: index.t, count: lc, x: positions.x, y: positions.y, base: positions.base, phase: positions.phase, nodeCount: nodes.length, drawScale,
+      pulseAngle: angle, pulseAmp,
       skipNodes,
       skipKey: `${focusId ?? ""}|${actMap.size ? [...actMap.keys()].sort().join("\u0000") : ""}`,
       moved: positions.placesChanged,

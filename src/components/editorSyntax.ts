@@ -72,7 +72,7 @@ const languages = new Map<string, Extension>();
 
 /** Incremental token highlighting for source files. CodeMirror parses
  *  lazily up to the viewport, so typing in a large file stays local. */
-export function codeSyntax(lang: string): Extension {
+function codeSyntax(lang: string): Extension {
   if (lang === "text") return [];
   const known = languages.get(lang);
   if (known) return known;

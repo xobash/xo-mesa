@@ -9,13 +9,30 @@ export function phaseFromId(id: string): number {
   return ((h >>> 0) / 0xffffffff) * Math.PI * 2;
 }
 
+/** Radius bounds in world units at node size 1: a node with no links, and the most-linked node. */
+export const NODE_RADIUS_MIN = 8;
+export const NODE_RADIUS_MAX = 30;
+
 /**
- * Node radius in world units, as in Obsidian: it grows with the square root
- * of the link count (in + out), between 8 and 30 at size 1. Layout, collision
+ * Node radius in world units. Area grows linearly with the link count
+ * (in + out) relative to the most-linked node in the graph: every link adds
+ * the same area, equal counts draw equal sizes, and the most-linked node is
+ * the largest (`NODE_RADIUS_MAX`). A node with no links, or any node in a
+ * graph without links, is `NODE_RADIUS_MIN`. The maximum stays inside the
+ * fixed 60-unit collision, so default sizes never overlap. Layout, collision
  * and bounds use this zoom-independent value.
  */
-export function nodeRadius(n: Pick<GraphNode, "degree">, size = 1): number {
-  return size * Math.max(8, Math.min(3 * Math.sqrt(n.degree + 1), 30));
+export function nodeRadius(n: Pick<GraphNode, "degree">, size: number, maxDegree: number): number {
+  const share = maxDegree > 0 && n.degree > 0 ? Math.min(1, n.degree / maxDegree) : 0;
+  const min2 = NODE_RADIUS_MIN * NODE_RADIUS_MIN;
+  return size * Math.sqrt(min2 + (NODE_RADIUS_MAX * NODE_RADIUS_MAX - min2) * share);
+}
+
+/** Largest link count among `nodes`, the reference for `nodeRadius`. */
+export function maxNodeDegree(nodes: readonly Pick<GraphNode, "degree">[]): number {
+  let max = 0;
+  for (const n of nodes) if (n.degree > max) max = n.degree;
+  return max;
 }
 
 /**

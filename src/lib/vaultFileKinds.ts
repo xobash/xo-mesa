@@ -175,7 +175,7 @@ export function fileKind(ext: string): FileKind {
   // html before the generic text check so it renders, not shows source
   if (ext === "html" || ext === "htm") return "html";
   if (ext === "md" || ext === "markdown" || isTextExt(ext)) return "text";
-  if (isImageExt(ext) || ext === "svg") return "image";
+  if (isImageExt(ext)) return "image";
   // .ogg stays video: <video> also plays audio-only Ogg, and the player
   // switches to the audio layout when the file has no picture.
   if (/^(mp4|webm|ogg|ogv|mov|m4v)$/i.test(ext)) return "video";

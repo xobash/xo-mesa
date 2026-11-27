@@ -20,7 +20,7 @@ export function StatusBar() {
   const syncReport = useAppStore((s) => s.syncReport);
   const peers = useAppStore((s) => s.settings.peers);
   const setSyncOpen = useAppStore((s) => s.setSyncOpen);
-  const linkCount = useAppStore((s) => s.openTabs.length);
+  const openTabCount = useAppStore((s) => s.openTabs.length);
   const status = useAppStore((s) => s.status);
   const importInProgress = useAppStore((s) => s.importInProgress);
   const cancelImport = useAppStore((s) => s.cancelImport);
@@ -65,7 +65,7 @@ export function StatusBar() {
     <footer className="statusbar">
       <span>{noteCount} notes</span>
       {assetCount > 0 && <span>{assetCount} {assetCount === 1 ? "asset" : "assets"}</span>}
-      {linkCount > 0 && <span>{linkCount} open</span>}
+      {openTabCount > 0 && <span>{openTabCount} open</span>}
       <span className="sb-sort">sort: {SORT_LABELS[sortMode].toLowerCase()}</span>
       {activePath && <span className="sb-path">{activePath}</span>}
       {statusMsg && (

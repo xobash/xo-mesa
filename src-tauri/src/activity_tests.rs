@@ -12,9 +12,14 @@ fn idle_workers_serve_a_request_and_exit_at_once_on_stop() {
             let server = server.clone();
             let running = running.clone();
             std::thread::spawn(move || {
-                serve_until_stopped(&server, &running, |req| {
-                    let _ = req.respond(Response::from_string("ok"));
-                });
+                serve_until_stopped(
+                    server.as_ref(),
+                    &running,
+                    |req| {
+                        let _ = req.respond(Response::from_string("ok"));
+                    },
+                    || panic!("a stop is not a listener failure"),
+                );
             })
         })
         .collect();
@@ -350,4 +355,101 @@ fn pending_fallback_stops_with_the_server() {
     });
     stopper.join().unwrap();
     assert_eq!(result.unwrap(), None);
+}
+
+/// Each call pops the next scripted result; then reports a stop wake-up.
+struct ScriptedSource(Mutex<Vec<std::io::Result<u8>>>);
+
+impl RequestSource for ScriptedSource {
+    type Item = u8;
+    fn next_request(&self) -> std::io::Result<u8> {
+        let mut script = self.0.lock().unwrap();
+        if script.is_empty() {
+            Err(std::io::Error::other("thread unblocked"))
+        } else {
+            script.remove(0)
+        }
+    }
+}
+
+#[test]
+fn a_listener_failure_retires_the_server_but_a_stop_does_not() {
+    let failures = std::sync::atomic::AtomicUsize::new(0);
+    let served = std::sync::atomic::AtomicUsize::new(0);
+    let source = ScriptedSource(Mutex::new(vec![
+        Ok(1),
+        Err(std::io::Error::other("accept failed")),
+        Ok(2),
+    ]));
+    let running = AtomicBool::new(true);
+    serve_until_stopped(
+        &source,
+        &running,
+        |_| {
+            served.fetch_add(1, Ordering::SeqCst);
+        },
+        || {
+            failures.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(served.load(Ordering::SeqCst), 1);
+    assert_eq!(failures.load(Ordering::SeqCst), 1);
+
+    running.store(false, Ordering::SeqCst);
+    let stopped = ScriptedSource(Mutex::new(vec![]));
+    serve_until_stopped(
+        &stopped,
+        &AtomicBool::new(true),
+        |_| {},
+        || {
+            failures.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(
+        failures.load(Ordering::SeqCst),
+        2,
+        "an error while running is a failure"
+    );
+    serve_until_stopped(
+        &stopped,
+        &running,
+        |_| {},
+        || {
+            failures.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(
+        failures.load(Ordering::SeqCst),
+        2,
+        "a stopped worker never reports"
+    );
+}
+
+#[test]
+fn only_the_failed_server_is_forgotten() {
+    let server = |running: &Arc<AtomicBool>| ActivityServer {
+        running: running.clone(),
+        server: Arc::new(Server::http("127.0.0.1:0").unwrap()),
+        handles: Vec::new(),
+        info: ActivityInfo {
+            port: 0,
+            token: String::new(),
+            extension_path: String::new(),
+            goal_extension_path: String::new(),
+            context_extension_path: String::new(),
+            browser_extension_path: String::new(),
+            deep_research_extension_path: String::new(),
+        },
+        extension_dir: std::path::PathBuf::new(),
+    };
+    let current = Arc::new(AtomicBool::new(true));
+    let older = Arc::new(AtomicBool::new(true));
+    let mut slot = Some(server(&current));
+    assert!(take_if_current(&mut slot, &older).is_none());
+    assert!(
+        slot.is_some(),
+        "a replaced server's failure keeps the new one"
+    );
+    assert!(take_if_current(&mut slot, &current).is_some());
+    assert!(slot.is_none(), "the next start binds a new server");
 }

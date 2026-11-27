@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   scanVault: vi.fn(async () => []),
   readNoteResult: vi.fn(async () => ({ ok: true, text: "A live document" })),
   sniffVaultText: vi.fn(async () => false),
+  stat: vi.fn(async (_path: string): Promise<{ size: number }> => { throw new Error("Unexpected stat in document window test"); }),
   watch: vi.fn(async (_path: string, _callback: (event: { paths: string[] }) => void) => () => {}),
   close: vi.fn(async () => {}),
   invoke: vi.fn(async (_command: string, _args?: unknown, _options?: unknown) => {}),
@@ -42,7 +43,7 @@ vi.mock("@tauri-apps/plugin-fs", () => {
     watch: mocks.watch,
     readDir: unexpected, readTextFile: unexpected, readFile: unexpected,
     writeFile: unexpected, remove: unexpected, rename: unexpected,
-    mkdir: unexpected, exists: unexpected, stat: unexpected, open: unexpected,
+    mkdir: unexpected, exists: unexpected, stat: mocks.stat, open: unexpected,
   };
 });
 vi.mock("../lib/vault", async (importOriginal) => ({
@@ -259,8 +260,48 @@ describe("document windows open unknown-extension text as text, like the main pa
     mocks.sniffVaultText.mockResolvedValueOnce(true);
     history.replaceState(null, "", `/?doc=${encodeURIComponent("server.conf2")}&vault=%2Fvault`);
     await act(async () => { root.render(<DocumentView />); });
-    await vi.waitFor(() => expect(host.querySelector(".doc-window-body .code-source")?.textContent).toBe("A live document"));
+    await vi.waitFor(() => expect(host.querySelector(".doc-window-body .code-pre code")?.textContent).toBe("A live document"));
     expect(host.querySelector("[data-viewer='fallback']")).toBeNull();
+  });
+
+  it("detached window mounts only a window of rows for a large text file", async () => {
+    mocks.sniffVaultText.mockResolvedValueOnce(true);
+    mocks.readNoteResult.mockResolvedValue({ ok: true, text: Array.from({ length: 6_000 }, (_, i) => `line ${i}`).join("\n") });
+    history.replaceState(null, "", `/?doc=${encodeURIComponent("big.conf2")}&vault=%2Fvault`);
+    await act(async () => { root.render(<DocumentView />); });
+    await vi.waitFor(() => expect(host.querySelector(".doc-window-body .code-virtual-scroll")).not.toBeNull());
+    expect(host.querySelectorAll(".code-line-row").length).toBeLessThan(80);
+    expect(host.querySelector("pre.code-source")).toBeNull();
+  });
+
+  it("detached window shows a size notice and does not read a file over the limit", async () => {
+    mocks.sniffVaultText.mockResolvedValueOnce(true);
+    mocks.stat.mockResolvedValueOnce({ size: 9 * 1024 * 1024 });
+    history.replaceState(null, "", `/?doc=${encodeURIComponent("huge.conf2")}&vault=%2Fvault`);
+    await act(async () => { root.render(<DocumentView />); });
+    await vi.waitFor(() => expect(host.querySelector('[role="status"]')?.textContent).toContain("8 MiB"));
+    expect(mocks.readNoteResult).not.toHaveBeenCalled();
+    expect(host.querySelector(".code-line-row")).toBeNull();
+  });
+
+  it("browser popout does not show the previous note's text under the new title", async () => {
+    const a = { ...catalogFile("a.md"), isMarkdown: true };
+    const b = { ...catalogFile("b.md"), isMarkdown: true };
+    const files = [a, b];
+    let finishB: (text: string) => void = () => {};
+    useAppStore.setState({
+      popoutDoc: a.relPath,
+      files,
+      fileFor: (path: string) => files.find((f) => f.relPath === path),
+      ensureContent: (path: string) => (path === "a.md" ? Promise.resolve("Text of A") : new Promise<string>((done) => { finishB = done; })),
+    });
+    await act(async () => { root.render(<DocPopoutModal />); });
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Text of A"));
+    await act(async () => useAppStore.setState({ popoutDoc: b.relPath }));
+    expect(document.body.textContent).not.toContain("Text of A");
+    await act(async () => finishB("Text of B"));
+    expect(document.body.textContent).toContain("Text of B");
+    act(() => useAppStore.setState({ popoutDoc: null }));
   });
 
   it("browser popout sniffs an unknown extension and opens the code view", async () => {

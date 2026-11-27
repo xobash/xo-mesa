@@ -238,7 +238,7 @@ describe("graph open warm-up", () => {
         closest = Math.min(closest, Math.hypot(nodes[i].x! - nodes[j].x!, nodes[i].y! - nodes[j].y!));
       }
     }
-    expect(closest).toBeGreaterThan(nodeRadius(hub) + nodeRadius(nodes[1]));
+    expect(closest).toBeGreaterThan(nodeRadius(hub, 1, hub.degree) + nodeRadius(nodes[1], 1, hub.degree));
   });
 });
 
@@ -388,7 +388,8 @@ describe("graph settle session with idle overlap cleanup", () => {
   it("matches GraphView's frame order: tick while hot, resolve overlaps at low alpha, settle when nothing moves", () => {
     const { sim, nodes } = graphSim();
     // Enlarged nodes: the 60-unit collision no longer covers them, so the idle cleanup has work.
-    const r = (n: Node) => nodeRadius(n, 4);
+    const maxDegree = Math.max(...nodes.map((n) => n.degree));
+    const r = (n: Node) => nodeRadius(n, 4, maxDegree);
     const init = snapshotGraphPhysics(sim, {
       grab: null,
       overlap: { gap: 8, radius: r, phase: (n) => phaseFromId(n.id) },

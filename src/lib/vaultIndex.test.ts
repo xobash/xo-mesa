@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { VaultFile } from "../types";
-import { fingerprintText, loadIndexedNotes, retainedSnapshotMetadata, type VaultIndexStorage } from "./vaultIndex";
+import { fingerprintText, forgetVaultIndex, loadIndexedNotes, retainedSnapshotMetadata, type VaultIndexStorage } from "./vaultIndex";
 
 describe("persisted vault-index accounting", () => {
   it("retains newest metadata inside the shared budget without document payloads", () => {
@@ -165,5 +165,35 @@ describe("first open without a stored index", () => {
     expect(result.read).toBe(2);
     expect(result.cache["A.md"]).toBe("body of A.md");
     expect(result.changed.size).toBe(0);
+  });
+});
+
+describe("forgetting a vault index", () => {
+  it("settles when the delete transaction aborts without a request error", async () => {
+    const tx: Record<string, unknown> = {
+      error: null,
+      objectStore: () => ({ delete: () => ({}) }),
+    };
+    const db = {
+      close: vi.fn(),
+      onversionchange: null,
+      transaction: () => { queueMicrotask(() => (tx.onabort as () => void)?.()); return tx; },
+    };
+    const open = () => {
+      const request: Record<string, unknown> = { result: db };
+      queueMicrotask(() => (request.onsuccess as () => void)());
+      return request;
+    };
+    vi.stubGlobal("indexedDB", { open });
+    try {
+      const outcome = await Promise.race([
+        forgetVaultIndex("/v").then(() => "settled"),
+        new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+      ]);
+      expect(outcome).toBe("settled");
+      expect(db.close).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

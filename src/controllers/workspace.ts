@@ -43,6 +43,15 @@ export async function createSurfaceWindow(
   return window;
 }
 
+/** A creation-event listener that cannot register is reported, never left as an unhandled rejection. */
+function reportListenFailure(error: unknown): void {
+  console.warn("[mesa] window event listener could not register:", error);
+}
+
+/** macOS windows hide the title and draw Mesa's chrome under the traffic lights. */
+const macTitleOverlay = () => /Macintosh|Mac OS X/i.test(navigator.userAgent);
+const TITLE_OVERLAY_CHROME = { titleBarStyle: "overlay" as const, hiddenTitle: true };
+
 async function reclaimMainPiResizeOwnership(): Promise<void> {
   const session = getPiSessionSnapshot();
   if (!session.sessionId) return;
@@ -128,13 +137,13 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
           });
           // WebviewWindow creation is asynchronous. A constructor catch does
           // not catch a native failure such as an unavailable WebView2.
-          void win.once("tauri://error", (event) => {
+          win.once("tauri://error", (event) => {
             console.warn("[mesa] document window creation failed:", event.payload ?? event);
             set({
               popoutDoc: relPath,
               status: "Document window could not open; restored inside Mesa.",
             });
-          });
+          }).catch(reportListenFailure);
           return;
         } catch {
           /* fall back to in-app modal */
@@ -172,7 +181,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
           )}`;
           const label = `agent-${Date.now().toString(36)}`;
           const handoffToken = await invoke<string>("terminal_prepare_handoff", { sessionId: liveSession.sessionId, targetLabel: label });
-          const titleOverlay = /Macintosh|Mac OS X/i.test(navigator.userAgent);
+          const titleOverlay = macTitleOverlay();
           const url = `index.html?agent=1&vault=${encodeURIComponent(
             vault
           )}&theme=${theme}&agentLabel=${encodeURIComponent(label)}${titleOverlay ? "&titleOverlay=1" : ""
@@ -205,12 +214,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
               resizable: true,
               decorations: true,
               ...MESA_WINDOW_CHROME,
-              ...(titleOverlay
-                ? {
-                  titleBarStyle: "overlay" as const,
-                  hiddenTitle: true,
-                }
-                : {}),
+              ...(titleOverlay ? TITLE_OVERLAY_CHROME : {}),
               shadow: true,
               // Create the OS window visibly. The source Pi remains mounted
               // until the child acknowledges PTY adoption, but visibility
@@ -218,11 +222,11 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
               // detached realm finishing a full vault scan.
               visible: true,
             });
-            void win.once("tauri://error", (e) => {
+            win.once("tauri://error", (e) => {
               creationFailed = true;
               console.warn("[mesa] Pi window creation failed:", e.payload ?? e);
               resolveReady(false);
-            });
+            }).catch(reportListenFailure);
             const timeout = window.setTimeout(
               () => resolveReady(false),
               15_000
@@ -305,7 +309,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
         const label = `research-${Date.now().toString(36)}`;
         const surface = `native:${label}`;
         const url = `index.html?research=1&vault=${encodeURIComponent(vault)}&theme=${theme}&researchLabel=${encodeURIComponent(label)}`;
-        const titleOverlay = /Macintosh|Mac OS X/i.test(navigator.userAgent);
+        const titleOverlay = macTitleOverlay();
         const win = await createSurfaceWindow(WebviewWindow, label, {
           url,
           title: `Deep Research — ${get().vaultName || "Mesa"}`,
@@ -317,7 +321,7 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
           resizable: true,
           decorations: true,
           ...MESA_WINDOW_CHROME,
-          ...(titleOverlay ? { titleBarStyle: "overlay" as const, hiddenTitle: true } : {}),
+          ...(titleOverlay ? TITLE_OVERLAY_CHROME : {}),
           shadow: true,
           visible: true,
         });
@@ -325,15 +329,15 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
         // Native creation reports errors asynchronously. Restore the shared
         // Research surface in Mesa so a failed WebView2/WKWebView creation
         // cannot leave the run with no visible presentation.
-        void win.once("tauri://error", (event) => {
+        win.once("tauri://error", (event) => {
           if (get().deepResearchSurface !== surface) return;
           console.warn("[mesa] Deep Research window creation failed:", event.payload ?? event);
           set({ status: "Deep Research window could not open; restored inside Mesa." });
           get().openDeepResearch(true);
-        });
-        void win.once("tauri://destroyed", () => {
+        }).catch(reportListenFailure);
+        win.once("tauri://destroyed", () => {
           if (get().deepResearchSurface === surface) set({ deepResearchSurface: null });
-        });
+        }).catch(reportListenFailure);
         return true;
       } catch (error) {
         set({ status: `Deep Research tear-out failed: ${String(error)}` });
@@ -432,10 +436,10 @@ export function createWorkspaceController({ get, set, commitSettings }: Dependen
         });
         // The constructor only starts the native request. Handle a real
         // creation error as well as the synchronous import/constructor path.
-        void win.once("tauri://error", (event) => {
+        win.once("tauri://error", (event) => {
           console.warn(`[mesa] ${panel} window creation failed:`, event.payload ?? event);
           dockPanel();
-        });
+        }).catch(reportListenFailure);
       } catch {
         dockPanel();
       } finally {

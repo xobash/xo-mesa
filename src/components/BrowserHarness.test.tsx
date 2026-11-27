@@ -22,7 +22,7 @@ async function navigate(url: string) {
   await act(async () => root.render(<BrowserHarness externalNav={{ url, seq: Date.now() + Math.random() }} />));
 }
 afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); });
-const page = (url: string, body: string) => ({ finalUrl: url, body, contentType: 'text/html', status: 200, frameBlocked: false });
+const page = (url: string, body: string) => ({ finalUrl: url, body, contentType: 'text/html', status: 200 });
 it('always reads through the broker and never navigates a webview to the approved hostname', async () => {
   await mount(); mock.invoke.mockResolvedValue(page('https://example.com', '<script>bad()</script><p>Safe page</p>'));
   await navigate('https://example.com');

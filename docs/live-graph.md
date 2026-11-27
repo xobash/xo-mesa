@@ -18,7 +18,7 @@ and simulation worker. `src/lib/graphPhysics.test.ts`,
 | Forces | One model at every size. Pull to the origin on x and y with strength 0.1. Charge -1000 with a 30-unit minimum distance. Link springs with rest length 250 and strength `1 / min(link count of the two ends)`. A fixed 60-unit collision at strength 0.5. Velocity decay 0.4. |
 | Sliders | Center force and link force are 0..1 on a log curve (defaults 0.52 and 1). Repel force is 0..20 and is cubed (default 10). Link distance is 30..500 (default 250). A slider change reheats the simulation to alpha 0.3 in place. |
 | Seeding | A new node starts near the centroid of its placed neighbours. A node with none starts in a ring outside the placed graph, sized at 60 by 60 units per new node. The same graph seeds the same way every time. |
-| Node size | Radius `clamp(3 * sqrt(links + 1), 8, 30)` world units times the node-size setting. Nodes grow in world units as the view zooms out (`sqrt(1 / scale)`), so they shrink on screen more slowly than the layout. Every note uses one fill; an unresolved link draws at half strength. |
+| Node size | Mesa's own rule (owner ruling 2026-11-23, see below): area grows linearly with the link count relative to the most-linked node, from 8 to 30 world units of radius, times the node-size setting; the tray mini graph uses the same rule at 6.4 to 24 px. Nodes grow in world units as the view zooms out (`sqrt(1 / scale)`), so they shrink on screen more slowly than the layout. Every note uses one fill; an unresolved link draws at half strength. |
 | Links | One device pixel wide at thickness 1, drawn between the two circle edges. Arrows are off; when on they fade in between 0.3 and 0.8 device pixels per world unit. |
 | Labels | Every visible node has a label below it, sized by its radius and wrapped at 300 world units. Labels are fully visible at one device pixel per world unit and gone at half that. The text-fade setting (-3..3) shifts the range by powers of two. At most 600 labels draw per frame. |
 | Hover | The hovered or grabbed node takes the accent fill and an accent ring. Its links take the accent color. Everything outside its neighbourhood fades to 20% over about half a second. Its label is always shown, at a constant size when zoomed out. |
@@ -38,7 +38,20 @@ Where Mesa differs on purpose:
 - **Click** opens the note in its own window. Double-click on the background
   fits the graph.
 - **Previews, thumbnails and activity** (below) have no Obsidian equivalent.
-- **Living motion** is an opt-in display setting, off by default.
+- **Node size** is proportional to links (owner ruling 2026-11-23). Obsidian
+  clamps the radius to `3 * sqrt(links + 1)` between 8 and 30, so every node
+  with up to 6 links looks the same and every hub over 99 links does too.
+  Mesa sizes each node against the most-linked node in the shown graph:
+  radius `sqrt(8² + (30² − 8²) × links / most links)`. Every link adds the same
+  area, equal counts draw equal sizes, a node without links is the smallest
+  and the most-linked node is always the largest. Because the radius never
+  exceeds 30, the 60-unit collision still keeps default-size nodes apart, so
+  at the default node size the layout is unchanged; a larger node-size
+  setting resolves overlaps against the new radii. Fit frames the node edges,
+  so a large hub can shift the opening frame slightly.
+- **Living motion** (twinkle and breathing) is on by default (owner ruling
+  2026-11-23); Obsidian's graph is still at rest. Turn it off in graph
+  settings for Obsidian's look.
 - **All files** is an opt-in filter, off by default (see below).
 
 ## All files
@@ -95,10 +108,11 @@ thumbnails, and only once the node is at least 4 screen pixels in radius.
 
 ## Living Motion
 
-Living motion is an opt-in display setting ("Living motion" in graph
-settings). It is off by default, because Obsidian's graph is still at rest.
-With it on, and with the global Animations setting on and no reduced-motion
-preference, Mesa adds render-layer motion that never reheats the simulation:
+Living motion ("Living motion" in graph settings) is on by default (owner
+ruling 2026-11-23). Settings saved before then keep every other graph value
+and turn it on once; turning it off afterwards sticks. With it on, and with
+the global Animations setting on and no reduced-motion preference, Mesa adds
+render-layer motion that never reheats the simulation:
 
 - a slow, sparse orbital drift and positional breathing, written only to
   `renderX`/`renderY` and capped at `(OVERLAP_GAP * k) / 2` so two nodes
@@ -107,6 +121,14 @@ preference, Mesa adds render-layer motion that never reheats the simulation:
   as static);
 - a soft bloom behind the graph, scaled per theme by `--graph-bloom-alpha`,
   and the drifting backdrop layers behind the canvas.
+
+Graphs with 20,000 or more links keep every node in place: they twinkle and
+pulse but do not drift, so their plain links stay on WebGL (or the cached 2D
+layer) and are never redrawn per frame. The WebGL shader trims each link at
+the node's pulsing radius (per-node phase in the node texture, pulse angle and
+amplitude as uniforms), so link ends meet the drawn node edge at every pulse
+phase. Without WebGL2 the radius pulse is off too, so the cached link layer is
+only blitted.
 
 Living frames run at 30 fps (20 fps above 4,000 nodes). They stop while the
 window is unfocused or after 15 seconds without pointer, key or wheel input,
@@ -194,7 +216,7 @@ skipped; they return when the interaction settles.
 | ≥ 1,000 | The open warm-up runs in the worker; the pane shows "Laying out N nodes…" and draws the graph once the same layout returns. The main-thread preparation runs in short steps (at most 65 ms each at 10,302 nodes, Measured), so the app stays responsive. |
 | ≥ 2,000 | Settling after open, data changes and slider retunes also runs in the worker, including the idle overlap cleanup, and so does Animate's replay. The main thread copies each posted state and draws. |
 | > 4,000 | Living-motion redraws use 20 fps instead of 30 fps. |
-| ≥ 20,000 links | Plain links draw with WebGL2 on a canvas under the 2D canvas (owner sign-off 2026-11-19): where links cross, the crossing is slightly darker, as in Obsidian. Highlighted and active links, nodes and labels stay on the 2D canvas. Without WebGL2, with living motion, arrows or a non-default link thickness, plain links draw through a cached 2D layer instead. |
+| ≥ 20,000 links | Plain links draw with WebGL2 on a canvas under the 2D canvas (owner sign-off 2026-11-19): where links cross, the crossing is slightly darker, as in Obsidian. Highlighted and active links, nodes and labels stay on the 2D canvas. Without WebGL2, with arrows or a non-default link thickness, plain links draw through a cached 2D layer instead. Living motion keeps these nodes in place (twinkle and pulse only). |
 
 The warm-up anneals from alpha 1 down to the open alpha within its ticks.
 The visible tail then decays quickly and reaches rest in under 90 frames,
@@ -268,9 +290,9 @@ Heavy-graph drawing (owner request "nothing still slow", 2026-11-19). WebKit's
 40 ms a frame in Safari 27.2 however they were batched, sized or cached as
 paths, so a 10,000-note graph dragged at 19 to 22 fps and panned at 33 fps.
 The WebGL2 renderer keeps one buffer of node-index pairs, uploads node centres
-and layout radii as a small texture when nodes move, and trims each line to the
-two circle edges in the shader, so pan, zoom and the highlight dim are shader
-values. Measured with the real GraphView in Safari 27.2 on a synthetic
+layout radii and pulse phases as a small texture when nodes move, and trims
+each line to the two drawn circle edges in the shader, so pan, zoom, the
+highlight dim and the living-motion pulse are shader values. Measured with the real GraphView in Safari 27.2 on a synthetic
 10,000-note, 92,775-link vault: pan 62 fps, zoom 61 fps, drag 59 fps with
 8 ms of work per frame. The 2D fallback layer is redrawn only when a plain
 link moves and blitted otherwise; on WebKit it takes worker states at most
@@ -350,7 +372,8 @@ motion.
 
 ## Theme palette
 
-System, Void, Darkroom, Graphite, Midnight, Ember, Dusk, Fjord and Paper share
+System, Void, Darkroom, Graphite, Midnight, Ember, Dusk, Fjord, Grove, Paper,
+Glacier and Contrast share
 semantic color tokens. Source-editor syntax follows each palette. File-type
 badges retain stable extension hues and theme lightness; green-hued extensions
 use zero saturation so SVG/TXT badges do not tint the workspace green. Both

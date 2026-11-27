@@ -98,7 +98,7 @@ fn committed_recovery_keeps_the_complete_published_set() {
         }],
     };
     fs::write(root.join("old.md"), "updated").unwrap();
-    save_record(&root, &record, true).unwrap();
+    save_record(&root, &record, None).unwrap();
     recover(&root).unwrap();
     assert_eq!(fs::read(root.join("old.md")).unwrap(), b"updated");
     assert!(!root.join(RECORD).exists());
@@ -223,5 +223,81 @@ fn failed_move_back_names_the_trash_path_and_keeps_bytes_and_record() {
     assert_eq!(fs::read(root.join(trash_rel)).unwrap(), b"edited elsewhere");
     assert_eq!(fs::read(root.join("new.md")).unwrap(), b"recreated");
     assert!(root.join(RECORD).exists());
+    fs::remove_dir_all(root).unwrap();
+}
+#[cfg(unix)]
+#[test]
+fn recovery_refuses_a_fifo_record_without_blocking() {
+    let root = folder("fifo-record");
+    let record = std::ffi::CString::new(root.join(RECORD).to_str().unwrap()).unwrap();
+    // SAFETY: the path is NUL-terminated and owned for the call.
+    assert_eq!(unsafe { libc::mkfifo(record.as_ptr(), 0o600) }, 0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let probe = root.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(recover(&probe));
+    });
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(10));
+    if result.is_err() {
+        // Release a blocked reader so WRITE_LOCK frees for the other tests.
+        let _ = fs::OpenOptions::new().write(true).open(root.join(RECORD));
+        panic!("recovery blocked on a FIFO record");
+    }
+    assert!(result.unwrap().is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+type RecordHook = Box<dyn FnOnce(&Path)>;
+
+thread_local! {
+    /// Runs once on this test thread just before apply writes its completion
+    /// marker, to change the record underneath the transaction.
+    static BEFORE_COMPLETION_MARKER: std::cell::RefCell<Option<RecordHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_completion_marker(root: &Path) {
+    if let Some(hook) = BEFORE_COMPLETION_MARKER.with(|slot| slot.borrow_mut().take()) {
+        hook(root);
+    }
+}
+
+#[test]
+fn a_record_changed_underneath_is_refused_not_overwritten() {
+    let root = folder("record-changed");
+    fs::write(root.join("old.md"), "original").unwrap();
+    BEFORE_COMPLETION_MARKER.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|root: &Path| {
+            fs::write(root.join(RECORD), b"changed elsewhere").unwrap();
+        }));
+    });
+    let error = apply(&root, changes(), None).unwrap_err();
+    assert!(error.contains("Research recovery is pending"), "{error}");
+    assert_eq!(fs::read(root.join(RECORD)).unwrap(), b"changed elsewhere");
+    // Nothing is undone over a record this transaction no longer owns.
+    assert_eq!(fs::read(root.join("old.md")).unwrap(), b"updated");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_failed_completion_marker_restores_rollback_intent_over_its_own_marker() {
+    let root = folder("marker-restore");
+    let mut record = Record {
+        version: 1,
+        committed: false,
+        entries: vec![Entry {
+            rel: "old.md".into(),
+            before: Some(b"original".to_vec()),
+            after: b"updated".to_vec(),
+        }],
+    };
+    let intent = save_record(&root, &record, None).unwrap();
+    record.committed = true;
+    let marker = save_record(&root, &record, Some(&intent)).unwrap();
+    restore_rollback_intent(&root, &intent, &record).unwrap();
+    assert_eq!(fs::read(root.join(RECORD)).unwrap(), intent);
+    // Already intent: nothing to rewrite.
+    restore_rollback_intent(&root, &intent, &record).unwrap();
+    assert!(save_record(&root, &record, Some(&marker)).is_err());
     fs::remove_dir_all(root).unwrap();
 }

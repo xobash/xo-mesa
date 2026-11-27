@@ -8,7 +8,7 @@ import {
   normalizeSyncPort,
   parsePeerInput,
 } from "./pairing";
-import { peerFromDiscovery } from "./sync";
+import { peerFromDiscovery } from "./syncUi";
 
 describe("pairing codes", () => {
   it("round-trips IPv4 + port", () => {

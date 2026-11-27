@@ -2819,3 +2819,211 @@ fn local_walk_of_the_deepest_tree_fits_a_small_thread_stack() {
     let rels: Vec<String> = files.into_iter().map(|(rel, _)| rel).collect();
     assert_eq!(rels, vec![format!("{rel}/note.md")]);
 }
+
+#[test]
+fn sync_keeps_the_portable_rule_and_local_vault_ops_use_the_host_rule() {
+    let root = Path::new("/vault");
+    for rel in ["Why?.md", "con.md", "notes/AUX", "a:b", "name."] {
+        assert!(safe_join(root, rel).is_none(), "sync accepted {rel:?}");
+        assert_eq!(vault_join(root, rel).is_some(), !cfg!(windows), "{rel:?}");
+    }
+    for rel in ["", "/abs", "../x", "a/../b", "a//b", "./a", "a\\b", "C:\\x"] {
+        assert!(vault_join(root, rel).is_none(), "local accepted {rel:?}");
+    }
+    assert_eq!(vault_join(root, "a/b.md"), safe_join(root, "a/b.md"));
+}
+
+#[cfg(unix)]
+#[test]
+fn rooted_resolve_keeps_sync_portable_and_local_resolve_opens_reserved_names() {
+    let root = std::env::temp_dir().join(format!("mesa-rooted-local-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    for rel in ["Why?.md", "con.md"] {
+        std::fs::write(root.join(rel), b"x").unwrap();
+        assert!(RootedTarget::resolve(&root, rel, false).is_err(), "{rel}");
+        assert!(safe_join_confined(&root, rel).is_none(), "{rel}");
+        let file = RootedTarget::resolve_local(&root, rel, false).unwrap();
+        assert!(file.open_read().is_ok(), "{rel}");
+        assert!(vault_join_confined(&root, rel).is_some(), "{rel}");
+    }
+    assert!(RootedTarget::resolve_local(&root, "../con.md", false).is_err());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn exclusive_rename_reports_enotsup_as_unsupported() {
+    for errno in [libc::ENOTSUP, libc::EOPNOTSUPP, libc::EINVAL, libc::ENOSYS] {
+        assert!(exclusive_rename_unsupported(Some(errno)), "{errno}");
+    }
+    for errno in [Some(libc::EEXIST), Some(libc::EACCES), None] {
+        assert!(!exclusive_rename_unsupported(errno), "{errno:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn rooted_tree_removal_is_bounded_and_never_follows_links() {
+    let base = std::env::temp_dir().join(format!("mesa-rooted-tree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let root = base.join("vault");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("keep.md"), b"keep").unwrap();
+    // item/a/b/n.md plus item/a/link -> outside: five removals, three levels.
+    let build = || {
+        let _ = std::fs::remove_dir_all(root.join("item"));
+        std::fs::create_dir_all(root.join("item/a/b")).unwrap();
+        std::fs::write(root.join("item/a/b/n.md"), b"n").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("item/a/link")).unwrap();
+        RootedTarget::resolve_local(&root, "item", false).unwrap()
+    };
+    assert!(build().remove_tree_no_follow(2, 100).is_err());
+    assert!(root.join("item").exists());
+    assert!(build().remove_tree_no_follow(8, 4).is_err());
+    assert!(root.join("item").exists());
+    build().remove_tree_no_follow(3, 5).unwrap();
+    assert!(!root.join("item").exists());
+    assert_eq!(std::fs::read(outside.join("keep.md")).unwrap(), b"keep");
+    std::os::unix::fs::symlink(&outside, root.join("top-link")).unwrap();
+    let link = RootedTarget::resolve_local(&root, "top-link", false).unwrap();
+    assert!(link.remove_tree_no_follow(8, 100).is_err());
+    assert_eq!(std::fs::read(outside.join("keep.md")).unwrap(), b"keep");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+fn trash_entries(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let Ok(entries) = std::fs::read_dir(dir.join(".mesa-trash")) else {
+        return Vec::new();
+    };
+    entries
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            (name, std::fs::read(entry.path()).unwrap())
+        })
+        .collect()
+}
+
+fn staged_edit(v: &ManifestVault, rel: &str, bytes: &[u8], rooted: bool) -> StagedFile {
+    let hash = crate::hex::sha256_hex(bytes);
+    #[cfg(unix)]
+    if rooted {
+        return StagedFile::receive_rooted(&v.0, rel, bytes, 1024, None, Some(&hash)).unwrap();
+    }
+    let _ = rooted;
+    StagedFile::receive(&v.0.join(rel), bytes, 1024, None, Some(&hash)).unwrap()
+}
+
+/// A failure (or crash) right after the atomic exchange leaves the new bytes
+/// at the target and the displaced original in recovery: never neither.
+#[test]
+fn replacement_failing_after_the_exchange_keeps_new_bytes_and_the_original() {
+    for rooted in [true, false] {
+        let v = ManifestVault::new(&format!("replace-after-exchange-{rooted}"));
+        v.write("sub/note.md", b"old");
+        let staged = staged_edit(&v, "sub/note.md", b"new", rooted);
+        fail_after_exchange(std::io::Error::other("injected"));
+        let error = staged
+            .commit_replace(&v.0, "sub/note.md", 3, &crate::hex::sha256_hex(b"old"))
+            .unwrap_err();
+        assert_eq!(std::fs::read(v.0.join("sub/note.md")).unwrap(), b"new");
+        let trash = trash_entries(&v.0.join("sub"));
+        assert_eq!(trash.len(), 1, "{trash:?}");
+        assert!(trash[0].0.ends_with("-remote--note.md"), "{trash:?}");
+        assert_eq!(trash[0].1, b"old");
+        assert!(error
+            .to_string()
+            .contains(&format!("sub/.mesa-trash/{}", trash[0].0)));
+        let _ = std::fs::remove_dir_all(&v.0);
+    }
+}
+
+/// While replacements run, a reader always finds the target with either the
+/// old or the new bytes; the old version always lands in recovery. Unix only:
+/// Windows `ReplaceFileW` keeps the original but can leave the name absent
+/// for a moment (docs/sync.md).
+#[cfg(unix)]
+#[test]
+fn replacement_never_leaves_the_target_missing() {
+    let v = ManifestVault::new("replace-never-missing");
+    v.write("note.md", b"v0");
+    let target = v.0.join("note.md");
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observer = {
+        let (done, target) = (done.clone(), target.clone());
+        std::thread::spawn(move || {
+            let mut missing = 0usize;
+            for _ in 0..50_000_000usize {
+                if done.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if std::fs::symlink_metadata(&target).is_err() {
+                    missing += 1;
+                }
+            }
+            missing
+        })
+    };
+    for round in 0..200u32 {
+        let (old, new) = (format!("v{round}"), format!("v{}", round + 1));
+        let staged = staged_edit(&v, "note.md", new.as_bytes(), true);
+        staged
+            .commit_replace(
+                &v.0,
+                "note.md",
+                old.len() as u64,
+                &crate::hex::sha256_hex(old.as_bytes()),
+            )
+            .unwrap();
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(observer.join().unwrap(), 0, "the target was missing");
+    assert_eq!(std::fs::read(&target).unwrap(), b"v200");
+    assert_eq!(trash_entries(&v.0).len(), 200);
+    let _ = std::fs::remove_dir_all(&v.0);
+}
+
+/// A local edit that lands between the precondition and the exchange goes
+/// back to the target and the replacement reports a conflict.
+#[cfg(unix)]
+#[test]
+fn rooted_replacement_restores_a_racing_local_edit() {
+    let v = ManifestVault::new("replace-race-rooted");
+    v.write("note.md", b"old");
+    let staged = staged_edit(&v, "note.md", b"new", true);
+    let racing = v.0.join("note.md");
+    set_before_move_hook(move || std::fs::write(&racing, b"racing edit").unwrap());
+    let error = staged
+        .commit_replace(&v.0, "note.md", 3, &crate::hex::sha256_hex(b"old"))
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+    assert_eq!(std::fs::read(v.0.join("note.md")).unwrap(), b"racing edit");
+    assert!(trash_entries(&v.0).is_empty());
+    let names: Vec<_> = std::fs::read_dir(&v.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        names.len(),
+        2,
+        "only the note and the empty trash: {names:?}"
+    );
+    let _ = std::fs::remove_dir_all(&v.0);
+}
+
+#[test]
+fn unsupported_atomic_replace_is_a_clear_refusal() {
+    let error = replace_error(std::io::Error::new(std::io::ErrorKind::Unsupported, "x"));
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(error.to_string().starts_with("unsupported-filesystem:"));
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    assert!(
+        replace_error(std::io::Error::from_raw_os_error(libc::EINVAL))
+            .to_string()
+            .starts_with("unsupported-filesystem:")
+    );
+    let other = replace_error(std::io::Error::other("denied"));
+    assert!(!other.to_string().contains("unsupported-filesystem"));
+}

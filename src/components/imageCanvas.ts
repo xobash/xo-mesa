@@ -32,7 +32,7 @@ export async function encodeCanvas(canvas: HTMLCanvasElement, format: EditableIm
 }
 
 /** Header check of encoded bytes: right format and size. */
-export function assertEncoded(bytes: Uint8Array, format: EditableImageFormat, width: number, height: number): void {
+function assertEncoded(bytes: Uint8Array, format: EditableImageFormat, width: number, height: number): void {
   const info = inspectImage(bytes);
   if (info.format !== format || info.width !== width || info.height !== height) {
     throw new Error("The encoded image did not match the edit; nothing was saved.");

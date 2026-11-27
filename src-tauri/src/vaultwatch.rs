@@ -202,8 +202,10 @@ fn start_debouncer<F: DebounceEventHandler>(
 }
 
 /// Live watchers, keyed by the id `vault_watch` returns and owned by the
-/// window that started them. Dropping a debouncer stops its watch and joins
-/// its thread, so removal is a `remove` followed by a drop outside the lock.
+/// window that started them. `Debouncer::drop` only flags its thread to stop,
+/// but the watcher it owns can block: macOS `FsEventWatcher::drop` spins until
+/// its run loop waits, then joins that thread. Removal is therefore a
+/// `remove` followed by a drop outside the lock and off the UI thread.
 #[derive(Default)]
 pub struct WatchState {
     inner: Registry<FsDebouncer>,
@@ -263,10 +265,23 @@ impl<T> Registry<T> {
     }
 }
 
-/// Stop every watcher a destroyed window started.
+/// Stop every watcher a destroyed window started. Runs on the event-loop
+/// thread, so the watchers are dropped on a helper thread.
 pub fn revoke_window(state: &WatchState, label: &str) {
-    let removed = state.inner.remove_owner(label);
-    drop(removed);
+    drop_off_thread(state.inner.remove_owner(label));
+}
+
+/// Drop `values` on a new thread. If the thread cannot start, `spawn` drops
+/// the closure, and with it `values`, on the calling thread.
+fn drop_off_thread<T: Send + 'static>(values: Vec<T>) {
+    if values.is_empty() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("mesa-watch-drop".into())
+        .spawn(move || drop(values));
+    // Detached on purpose; a failed spawn already dropped the watchers inline.
+    let _ = spawned;
 }
 
 /// Start watching `root` recursively. Returns an id for `vault_unwatch`.

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 fn safe_relative_path(rel: &str) -> Option<PathBuf> {
     let normalized = rel.replace('\\', "/");
-    crate::sync_core::safe_join(Path::new(""), &normalized)
+    crate::sync_core::vault_join(Path::new(""), &normalized)
 }
 
 fn move_confined(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
@@ -15,13 +15,13 @@ fn move_confined(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
             path.strip_prefix(root)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
         };
-        let source = crate::sync_core::RootedTarget::resolve(
+        let source = crate::sync_core::RootedTarget::resolve_local(
             root,
             &rel(from).map_err(|e| e.to_string())?,
             false,
         )
         .map_err(|e| e.to_string())?;
-        let destination = crate::sync_core::RootedTarget::resolve(
+        let destination = crate::sync_core::RootedTarget::resolve_local(
             root,
             &rel(to).map_err(|e| e.to_string())?,
             true,
@@ -153,50 +153,69 @@ pub async fn vault_rename_no_replace(
 #[path = "vaultmove_tests.rs"]
 mod tests;
 
+/// Most entries one purge removes; a larger item fails closed part-way.
+#[cfg(unix)]
+const PURGE_MAX_ENTRIES: usize = 1_000_000;
+
+#[cfg(test)]
+thread_local! {
+    /// Runs after the item is resolved and before it is removed.
+    static AFTER_PURGE_RESOLVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+fn after_purge_resolve() {
+    #[cfg(test)]
+    AFTER_PURGE_RESOLVE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
 /// Permanently remove only an explicit recovery item in an approved vault.
+/// Unix removes through held directory handles; Windows holds every
+/// ancestor open (no rename or delete sharing) until the removal ends.
 fn purge_recovery(root: &Path, rel: &str) -> Result<(), String> {
-    if rel.contains('\\')
-        || rel
-            .split('/')
-            .any(|p| p.is_empty() || p == "." || p == ".." || p.contains(':'))
-    {
-        return Err("invalid recovery path".into());
-    }
-    let parts: Vec<_> = rel.split('/').collect();
-    let trash = parts
-        .iter()
-        .position(|part| *part == ".mesa-trash")
-        .ok_or("not recovery storage")?;
-    if trash + 1 >= parts.len() || parts[..trash].iter().any(|p| p.starts_with('.')) {
+    if !crate::vaultops::recovery(rel) {
         return Err("select a recovery item, not its storage root".into());
     }
-    let mut path = root.to_path_buf();
-    for part in parts {
-        path.push(part);
+    #[cfg(unix)]
+    {
+        let item = crate::sync_core::RootedTarget::resolve_local(root, rel, false)
+            .map_err(|e| e.to_string())?;
+        after_purge_resolve();
+        item.remove_tree_no_follow(crate::vault_names::MAX_REL_SEGMENTS, PURGE_MAX_ENTRIES)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(windows)]
+    {
+        let path =
+            crate::sync_core::vault_join_confined(root, rel).ok_or("invalid recovery path")?;
+        let _guard = crate::sync_core::WindowsParentGuard::acquire(&path, false)
+            .map_err(|e| e.to_string())?;
         let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if metadata.file_type().is_symlink() {
-            return Err("recovery path must not contain symlinks".into());
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            if !crate::sync_core::platform_fs::path_is_in_place(&path, metadata.file_attributes())
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_type().is_symlink()
+            || !crate::sync_core::platform_fs::path_is_in_place(&path, metadata.file_attributes())
                 .map_err(|e| e.to_string())?
-            {
-                return Err("recovery path must not contain links or junctions".into());
-            }
+        {
+            return Err("recovery path must not contain links or junctions".into());
         }
+        after_purge_resolve();
+        // std's Windows remove_dir_all removes links inside the tree without following them.
+        if metadata.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        }
+        .map_err(|e| e.to_string())
     }
-    let canonical = fs::canonicalize(&path).map_err(|e| e.to_string())?;
-    if !canonical.starts_with(fs::canonicalize(root).map_err(|e| e.to_string())?) {
-        return Err("recovery path escapes the vault".into());
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (root, after_purge_resolve);
+        Err("recovery purge is unavailable on this platform".into())
     }
-    if path.is_dir() {
-        fs::remove_dir_all(&path)
-    } else {
-        fs::remove_file(&path)
-    }
-    .map_err(|e| e.to_string())
 }
 
 pub(crate) const PURGE_MAIN_ONLY: &str = "only the main workspace may purge recovery";
@@ -208,8 +227,10 @@ pub async fn vault_purge_recovery(
     trash_rel_path: String,
 ) -> Result<(), String> {
     crate::require_main_for(window.label(), PURGE_MAIN_ONLY)?;
+    let root = crate::vaultscope::require_approved(&app, &root)?;
+    let access = crate::vaulttransaction::access(&root).await?;
     tauri::async_runtime::spawn_blocking(move || {
-        let root = crate::vaultscope::require_approved(&app, &root)?;
+        let _access = access;
         let _guard = crate::vaultwrite::WRITE_LOCK
             .write()
             .unwrap_or_else(|e| e.into_inner());
@@ -244,6 +265,49 @@ mod purge_tests {
         assert_eq!(fs::read(root.join("live.md")).unwrap(), b"live");
         assert!(!root.join(".mesa-trash/100/sub").exists());
         let _ = fs::remove_dir_all(root);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn purge_and_restore_accept_the_same_items() {
+        let root = std::env::temp_dir().join(format!("mesa-purge-names-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".mesa-trash/100")).unwrap();
+        fs::write(root.join(".mesa-trash/100/con.md"), b"deleted").unwrap();
+        fs::write(root.join(".mesa-trash/100/Why?.md"), b"deleted").unwrap();
+        for rel in [".mesa-trash/100/con.md", ".mesa-trash/100/Why?.md"] {
+            assert!(crate::vaultops::recovery(rel), "{rel}");
+            purge_recovery(&root, rel).unwrap();
+            assert!(!root.join(rel).exists(), "{rel}");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn purge_never_follows_a_trash_folder_swapped_for_a_link() {
+        let base = std::env::temp_dir().join(format!("mesa-purge-swap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("vault");
+        let outside = base.join("outside");
+        fs::create_dir_all(root.join(".mesa-trash/100/sub")).unwrap();
+        fs::write(root.join(".mesa-trash/100/sub/note.md"), b"deleted").unwrap();
+        fs::create_dir_all(outside.join("100/sub")).unwrap();
+        fs::write(outside.join("100/sub/keep.md"), b"keep").unwrap();
+        let (trash, moved, target) = (
+            root.join(".mesa-trash"),
+            root.join(".mesa-trash-moved"),
+            outside.clone(),
+        );
+        AFTER_PURGE_RESOLVE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                fs::rename(&trash, &moved).unwrap();
+                std::os::unix::fs::symlink(&target, &trash).unwrap();
+            }));
+        });
+        let _ = purge_recovery(&root, ".mesa-trash/100/sub");
+        assert_eq!(fs::read(outside.join("100/sub/keep.md")).unwrap(), b"keep");
+        // The held handles removed the validated item where it now lives.
+        assert!(!root.join(".mesa-trash-moved/100/sub").exists());
+        let _ = fs::remove_dir_all(base);
     }
     #[cfg(unix)]
     #[test]

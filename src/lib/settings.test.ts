@@ -27,7 +27,7 @@ describe('settings upgrade and failure behavior', () => {
     expect(DEFAULT_SETTINGS).toMatchObject({
       graphShowTags: false, graphShowAttachments: false, graphShowAllFiles: false, graphExistingFilesOnly: false, graphShowOrphans: true,
       graphArrows: false, graphTextFade: 0, graphNodeSize: 1, graphLinkThickness: 1,
-      graphRepelForce: 10, graphLinkForce: 1, graphLinkDistance: 250, graphLivingMotion: false,
+      graphRepelForce: 10, graphLinkForce: 1, graphLinkDistance: 250, graphLivingMotion: true,
     });
     expect(DEFAULT_SETTINGS.graphCenterForce).toBeCloseTo(0.518713248970312, 12);
     // Saved before the unit change: every graph value restarts at the default; other settings stay.
@@ -35,9 +35,21 @@ describe('settings upgrade and failure behavior', () => {
     expect(old.hoverDelayMs).toBe(900);
     expect(Object.entries(old).filter(([key]) => key.startsWith('graph'))).toEqual(Object.entries(DEFAULT_SETTINGS).filter(([key]) => key.startsWith('graph')));
     // Saved in the current units: values survive a reload, limited to each slider's range.
-    const current = normalizeSettings({ ...DEFAULT_SETTINGS, graphShowAttachments: true, graphShowAllFiles: true, graphRepelForce: 18, graphNodeSize: 99, graphTextFade: -7, graphLinkDistance: 5, graphLivingMotion: true });
-    expect(current).toMatchObject({ graphShowAttachments: true, graphShowAllFiles: true, graphRepelForce: 18, graphNodeSize: 5, graphTextFade: -3, graphLinkDistance: 30, graphLivingMotion: true });
+    const current = normalizeSettings({ ...DEFAULT_SETTINGS, graphShowAttachments: true, graphShowAllFiles: true, graphRepelForce: 18, graphNodeSize: 99, graphTextFade: -7, graphLinkDistance: 5, graphLivingMotion: false });
+    expect(current).toMatchObject({ graphShowAttachments: true, graphShowAllFiles: true, graphRepelForce: 18, graphNodeSize: 5, graphTextFade: -3, graphLinkDistance: 30, graphLivingMotion: false });
     expect(normalizeSettings(current)).toEqual(current);
+  });
+  it('turns living motion on once for graph settings saved before it was the default, keeping every other graph value', () => {
+    const v2 = { ...DEFAULT_SETTINGS, graphSettingsVersion: 2, graphLivingMotion: false, graphRepelForce: 18, graphNodeSize: 2, graphShowTags: true };
+    const migrated = normalizeSettings(v2);
+    expect(migrated).toMatchObject({ graphLivingMotion: true, graphRepelForce: 18, graphNodeSize: 2, graphShowTags: true, graphSettingsVersion: DEFAULT_SETTINGS.graphSettingsVersion });
+    // Turned off after the migration, it stays off.
+    expect(normalizeSettings({ ...migrated, graphLivingMotion: false }).graphLivingMotion).toBe(false);
+    // The migration is written in full on the next save.
+    const source = storage(JSON.stringify(v2));
+    const loaded = loadSettings(source).settings;
+    expect(persistSettings(loaded, source, loaded)).toBe('');
+    expect(JSON.parse(source.getItem(SETTINGS_KEY)!)).toMatchObject({ graphLivingMotion: true, graphSettingsVersion: DEFAULT_SETTINGS.graphSettingsVersion });
   });
   it('loads a saved multi-pane layout as a split view', () => {
     const settings = normalizeSettings({ centerView: 'doc', rightStack: ['doc', 'agent', 'preview', 'graph'] });

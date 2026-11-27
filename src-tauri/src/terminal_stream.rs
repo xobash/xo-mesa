@@ -11,15 +11,15 @@ pub(super) const TERMINAL_RESIZE_HISTORY_COST: usize = 4;
 /// flush_delay emits the first output after a quiet interval immediately.
 pub(super) const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(8);
 
-/// Emit early once a batch reaches this size instead of growing one enormous JS
-/// source string. The eval is parsed and compiled in a single go, so an
-/// unbounded payload would trade many short stalls for one long one.
+/// Emit early once a batch reaches this size. The webview decodes and writes
+/// each Channel message in one task, so an unbounded payload would trade many
+/// short stalls for one long one.
 pub(super) const OUTPUT_FLUSH_MAX_BYTES: usize = 64 * 1024;
 
-/// Hard ceiling for decoded output waiting behind a slow webview consumer.
+/// Hard ceiling for decoded output staged ahead of the flusher thread.
 /// Once reached, the reader waits on the same condvar until the flusher drains
-/// an event. This applies backpressure to the PTY without dropping bytes or
-/// allowing a Windows UI-thread stall to grow the Rust heap without bound.
+/// an event. This bounds Rust memory without dropping bytes; Channel sends do
+/// not wait for the webview, so it reflects only the flusher's own pace.
 pub(super) const OUTPUT_PENDING_MAX_BYTES: usize = 1024 * 1024;
 
 /// The PTY history plus the coalescing pump's wakeup channel.
@@ -187,16 +187,6 @@ impl TerminalHistory {
         self.seq
     }
 
-    pub(super) fn snapshot(&self) -> String {
-        let mut text = String::with_capacity(self.bytes);
-        for entry in &self.entries {
-            if let TerminalHistoryEntry::Output(data) = entry {
-                text.push_str(data);
-            }
-        }
-        text
-    }
-
     pub(super) fn replay(&self) -> Vec<TerminalReplayEvent> {
         self.entries
             .iter()
@@ -295,11 +285,11 @@ impl Utf8Stream {
 }
 
 /// The reader stages decoded output; the flusher emits it. Only the bounded pending queue applies backpressure.
-pub(super) fn spawn_reader<R>(mut reader: R, stream: Arc<TerminalStream>)
+pub(super) fn spawn_reader<R>(mut reader: R, stream: Arc<TerminalStream>) -> std::io::Result<()>
 where
     R: Read + Send + 'static,
 {
-    let spawned = thread::Builder::new()
+    thread::Builder::new()
         .name("mesa-terminal-reader".to_string())
         .spawn(move || {
             let mut buf = [0u8; 4096];
@@ -312,10 +302,8 @@ where
                 }
             }
             stream.close(&decoder.flush());
-        });
-    if let Err(error) = spawned {
-        eprintln!("Mesa could not start the Pi reader thread: {error}");
-    }
+        })
+        .map(drop)
 }
 
 /// Wait for due output. Return an empty batch once after reader closure and complete drain.

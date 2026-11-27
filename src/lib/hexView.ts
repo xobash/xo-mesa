@@ -17,6 +17,11 @@ export interface HexRow {
 }
 
 /** Offset (at least 8 hex digits), spaced hex pairs, printable ASCII or ".". */
+/** Eight-digit lowercase hex offset, as the gutter shows it. */
+export function formatHexOffset(offset: number): string {
+  return offset.toString(16).padStart(8, "0");
+}
+
 export function formatHexRow(offset: number, bytes: Uint8Array): HexRow {
   const pairs = bytesToHex(bytes).match(/../g) ?? [];
   let ascii = "";
@@ -25,7 +30,7 @@ export function formatHexRow(offset: number, bytes: Uint8Array): HexRow {
     ascii += c >= 0x20 && c < 0x7f ? String.fromCharCode(c) : ".";
   }
   const hex = pairs.slice(0, 8).join(" ") + (pairs.length > 8 ? "  " + pairs.slice(8).join(" ") : "");
-  return { offset: offset.toString(16).padStart(8, "0"), hex, ascii };
+  return { offset: formatHexOffset(offset), hex, ascii };
 }
 
 export interface HexWindow {

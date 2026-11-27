@@ -254,14 +254,21 @@ describe("Pi context publication", () => {
     expect(first).not.toContain("/vault/notes");
     await vi.waitFor(() => expect(h.emit).toHaveBeenCalledWith(AGENT_CONTEXT_EVENT, expect.objectContaining({ activePath: "notes/a.md" })));
 
-    // A store change that does not touch context never republishes.
+    // A store change that does not touch context never republishes, and
+    // neither does a settings change outside the two views context names.
     act(() => useAppStore.setState({ status: "typing" }));
+    act(() => useAppStore.setState((s) => ({ settings: { ...s.settings, rightWidth: s.settings.rightWidth + 40 } })));
     await act(async () => { await Promise.resolve(); });
     expect(invoked("activity_set_context")).toHaveLength(1);
+    expect(h.emit.mock.calls.filter(([name]) => name === AGENT_CONTEXT_EVENT)).toHaveLength(1);
 
     act(() => useAppStore.setState({ activePath: "notes/b.md" }));
     await vi.waitFor(() => expect(invoked("activity_set_context")).toHaveLength(2));
     expect((invoked("activity_set_context")[1][1] as { context: string }).context).toContain("Current document: notes/b.md");
+
+    act(() => useAppStore.setState((s) => ({ settings: { ...s.settings, rightStack: ["graph"] } })));
+    await vi.waitFor(() => expect(invoked("activity_set_context")).toHaveLength(3));
+    expect((invoked("activity_set_context")[2][1] as { context: string }).context).toContain("side views: graph");
   });
 
   it("without a vault it clears Pi's context and sends no context event", async () => {

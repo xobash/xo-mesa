@@ -8,14 +8,6 @@ import { markMesaPerf } from "../lib/mesaPerf";
 import { rewriteSrcset, type RemoteImageRewrite } from "../lib/remoteImages";
 import { useRemoteImageRewrite } from "./useRemoteImageRewrite";
 
-/**
- * Parses Markdown in a worker, sanitizes accepted output, delegates wiki clicks,
- * and resolves embedded images (![[img]] / ![](rel)) to real vault URLs.
- * Raw HTML in the source is preserved by the renderer.
- *
- * `files`/`onWikiClick` default to the global store, but can be supplied so the
- * popout document windows can render against their own vault scan.
- */
 /** Renderer placeholders that markdownEnhance typesets after insertion. */
 const ENHANCED = ".math, .mermaid-block";
 /** Keep sanitized URL markers so reused blocks can revoke consent before paint. */
@@ -46,6 +38,14 @@ async function openExternalInReader(url: string) {
   useAppStore.setState((s) => ({ piBrowse: { url, seq: (s.piBrowse?.seq ?? 0) + 1 } }));
 }
 
+/**
+ * Parses Markdown in a worker, sanitizes accepted output, delegates wiki clicks,
+ * and resolves embedded images (![[img]] / ![](rel)) to real vault URLs.
+ * Raw HTML in the source is preserved by the renderer.
+ *
+ * `files`/`onWikiClick` default to the global store, but can be supplied so the
+ * popout document windows can render against their own vault scan.
+ */
 export function MarkdownView({
   source,
   files,

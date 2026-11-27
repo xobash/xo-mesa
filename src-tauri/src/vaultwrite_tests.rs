@@ -160,6 +160,38 @@ fn unsupported_replacement_leaves_original_and_clear_error() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+/// A failed folder flush after the verified swap must not report a failed
+/// save: the new bytes are in place, and a retry against the old bytes could
+/// only be refused.
+#[cfg(unix)]
+#[test]
+fn published_save_succeeds_when_the_folder_flush_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        return; // root ignores directory permissions
+    }
+    let dir = test_folder("flush-fails");
+    let target = dir.join("note.md");
+    fs::write(&target, b"old").unwrap();
+    let locked = dir.clone();
+    let result = write_atomic_with_replace(
+        &target,
+        b"new",
+        &ExpectedCurrent::Any,
+        || {},
+        |from, to, displaced| {
+            replace_preserving(from, to, displaced)?;
+            // Write and search but not read: opening the folder to flush it
+            // now fails, while the file itself stays readable.
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o300))
+        },
+    );
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(fs::read(&target).unwrap(), b"new");
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn published_save_succeeds_when_rescue_cleanup_fails() {

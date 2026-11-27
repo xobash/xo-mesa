@@ -464,3 +464,37 @@ fn bytes_and_range_reads_refuse_an_online_only_file_without_opening_it() {
     );
     ONLINE_ONLY.with(|paths| paths.borrow_mut().clear());
 }
+
+/// Bulk indexing reads share the vault access lease: they never see a
+/// research apply half done, and they never wait for one another.
+#[tokio::test]
+async fn bulk_reads_wait_for_a_research_apply_and_see_its_result() {
+    let v = TempVault::new("lease");
+    v.file("note.md", b"before");
+    let rels = vec!["note.md".to_string()];
+    let before = fingerprint_all(&v.0, &rels, None);
+    let apply = crate::vaulttransaction::exclusive_access().await;
+    let text = tokio::spawn(read_text_leased(v.0.clone(), rels.clone(), 1024, None));
+    let prints = tokio::spawn(fingerprints_leased(v.0.clone(), rels.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(!text.is_finished(), "a text read ran during the apply");
+    assert!(!prints.is_finished(), "a fingerprint ran during the apply");
+    fs::write(v.0.join("note.md"), b"after").unwrap();
+    drop(apply);
+    let mut framed = 1u32.to_le_bytes().to_vec();
+    framed.extend_from_slice(&5u32.to_le_bytes());
+    framed.extend_from_slice(b"after");
+    assert_eq!(text.await.unwrap().unwrap(), framed);
+    let after = prints.await.unwrap().unwrap();
+    assert_eq!(after, fingerprint_all(&v.0, &rels, None));
+    assert_ne!(after, before);
+    // Another reader holding the shared side does not block a bulk read.
+    let reader = crate::vaulttransaction::access(&v.0).await.unwrap();
+    let shared = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        read_text_leased(v.0.clone(), rels, 1024, None),
+    )
+    .await;
+    drop(reader);
+    assert_eq!(shared.unwrap().unwrap(), framed);
+}

@@ -22,15 +22,8 @@ export interface ApplyStep {
   originalContent?: string;
 }
 
-export interface RollbackStep {
-  kind: "remove" | "restore";
-  relPath: string;
-  /** Restore-only: the bytes to put back. */
-  content?: string;
-}
-
 export type ApplyPlan =
-  | { ok: true; steps: ApplyStep[]; rollback: RollbackStep[] }
+  | { ok: true; steps: ApplyStep[] }
   | { ok: false; error: string; failedRelPath?: string };
 
 function isSafeRelPath(rel: string): boolean {
@@ -49,12 +42,10 @@ export function buildApplyPlan(input: {
 }): ApplyPlan {
   const known = new Set(input.files.map((file) => file.relPath));
   const steps: ApplyStep[] = [];
-  const rollback: RollbackStep[] = [];
   for (const op of [...input.ops.filter((o) => o.kind === "create"), ...input.ops.filter((o) => o.kind === "update")]) {
     if (!isSafeRelPath(op.relPath)) return { ok: false, error: `Refusing unsafe vault path: ${op.relPath}`, failedRelPath: op.relPath };
     if (op.kind === "create") {
       steps.push({ kind: "create", relPath: op.relPath, title: op.title, content: op.content });
-      rollback.unshift({ kind: "remove", relPath: op.relPath });
       continue;
     }
     if (!known.has(op.relPath) || !input.notes[op.relPath]) return { ok: false, error: `Note no longer exists: ${op.relPath}`, failedRelPath: op.relPath };
@@ -62,7 +53,6 @@ export function buildApplyPlan(input: {
     if (op.expectedBytes === undefined) return { ok: false, error: `Update is missing its version precondition: ${op.relPath}`, failedRelPath: op.relPath };
     if (current !== op.expectedBytes) return { ok: false, error: `"${op.relPath}" changed on disk since the proposal was made — review again.`, failedRelPath: op.relPath };
     steps.push({ kind: "update", relPath: op.relPath, title: op.title, content: op.content, expectedBytes: op.expectedBytes, originalContent: current });
-    rollback.unshift({ kind: "restore", relPath: op.relPath, content: current });
   }
-  return { ok: true, steps, rollback };
+  return { ok: true, steps };
 }

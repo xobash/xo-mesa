@@ -9,7 +9,9 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 
-use crate::sync_core::platform_fs;
+#[cfg(test)]
+use crate::sync_core::restore_unmoved_replacement;
+use crate::sync_core::{is_atomic_replace_unsupported, platform_fs, replace_preserving};
 
 // Destructive operations exclude every ordinary save; unrelated saves may overlap.
 pub(crate) static WRITE_LOCK: RwLock<()> = RwLock::new(());
@@ -149,108 +151,21 @@ fn sync_parent(target: &Path) -> io::Result<()> {
     }
 }
 
-// Retain the actual destination displaced at publication, not a preflight copy.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn replace_preserving(from: &Path, to: &Path, displaced: &Path) -> io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    let to_c = CString::new(to.as_os_str().as_bytes())?;
-    // Before swapping, name the candidate as rescue so a process interruption
-    // never leaves displaced user bytes under a disposable save-artifact name.
-    super::sync_core::move_file_no_replace(from, displaced)?;
-    let displaced_c = CString::new(displaced.as_os_str().as_bytes())?;
-    // SAFETY: both C strings are NUL-terminated and outlive the call;
-    // AT_FDCWD resolves them relative to the working directory like rename(2).
-    #[cfg(target_os = "linux")]
-    let result = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            displaced_c.as_ptr(),
-            libc::AT_FDCWD,
-            to_c.as_ptr(),
-            libc::RENAME_EXCHANGE,
-        )
-    };
-    // SAFETY: both C strings are NUL-terminated and outlive the call.
-    #[cfg(target_os = "macos")]
-    let result =
-        unsafe { libc::renamex_np(displaced_c.as_ptr(), to_c.as_ptr(), libc::RENAME_SWAP) };
-    if result != 0 {
-        let error = io::Error::last_os_error();
-        // No unsupported-filesystem overwrite fallback: destination is intact.
-        let _ = fs::remove_file(displaced);
-        return Err(error);
+/// Persist a publication that already happened. The atomic replace (or
+/// no-replace create) has put the verified bytes at `target`, so a failed
+/// directory flush only weakens crash durability of the new name; it never
+/// makes the save fail, because the edit is on disk and a retry against the
+/// old bytes could only be refused. One retry, then a log line.
+fn flush_published(target: &Path) {
+    if sync_parent(target).is_ok() {
+        return;
     }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn replace_preserving(from: &Path, to: &Path, displaced: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect::<Vec<u16>>()
-    };
-    let (from_wide, to_wide, displaced_wide) = (wide(from), wide(to), wide(displaced));
-    let replace_once = || {
-        // SAFETY: all three paths are NUL-terminated and outlive the call.
-        let result = unsafe {
-            ReplaceFileW(
-                to_wide.as_ptr(),
-                from_wide.as_ptr(),
-                displaced_wide.as_ptr(),
-                0,
-                std::ptr::null(),
-                std::ptr::null(),
-            )
-        };
-        if result == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    };
-    // Sharing, lock, access and ERROR_UNABLE_TO_REMOVE_REPLACED failures leave
-    // both files under their original names. Retry only while that is still
-    // true: a backup that already exists means the OS moved something.
-    let result = platform_fs::retry_with(
-        replace_once,
-        |error| platform_fs::is_transient_lock(error) && fs::symlink_metadata(displaced).is_err(),
-        std::thread::sleep,
-    );
-    result.map_err(|error| restore_unmoved_replacement(error, to, displaced))
-}
-
-/// ReplaceFileW's ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 leaves the original only
-/// at the backup name. Put it back unless another writer created the target.
-#[cfg(any(windows, test))]
-fn restore_unmoved_replacement(error: io::Error, to: &Path, displaced: &Path) -> io::Error {
-    const ERROR_UNABLE_TO_MOVE_REPLACEMENT_2: i32 = 1177;
-    if error.raw_os_error() != Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT_2)
-        || fs::symlink_metadata(to).is_ok()
-    {
-        return error;
+    if let Err(error) = sync_parent(target) {
+        eprintln!(
+            "Mesa saved {} but could not flush its folder: {error}",
+            target.display()
+        );
     }
-    match crate::sync_core::move_file_no_replace(displaced, to) {
-        Ok(()) => error,
-        Err(restore) => io::Error::new(
-            error.kind(),
-            format!(
-                "{error}; original kept at {}: {restore}",
-                displaced.display()
-            ),
-        ),
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn replace_preserving(_from: &Path, _to: &Path, _displaced: &Path) -> io::Result<()> {
-    Err(io::Error::other(
-        "filesystem does not support replacement with displaced-byte preservation",
-    ))
 }
 
 pub(crate) fn write_atomic(
@@ -300,19 +215,7 @@ fn discard_displaced(displaced: &Path, remove: impl Fn(&Path) -> io::Result<()>)
 }
 
 fn replacement_error(error: io::Error) -> String {
-    #[cfg(target_os = "linux")]
-    let unsupported = matches!(
-        error.raw_os_error(),
-        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
-    );
-    #[cfg(target_os = "macos")]
-    let unsupported = matches!(
-        error.raw_os_error(),
-        Some(libc::ENOTSUP | libc::EINVAL | libc::ENOSYS)
-    );
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let unsupported = error.kind() == io::ErrorKind::Unsupported;
-    if unsupported || error.kind() == io::ErrorKind::Unsupported {
+    if is_atomic_replace_unsupported(&error) {
         "unsupported-filesystem: This folder's filesystem does not support Mesa's atomic replace, so edits to existing files cannot be saved here. Your edits are still open; save copies outside the vault or move the vault to a filesystem that supports atomic replacement.".into()
     } else {
         format!("cannot publish vault file: {error}")
@@ -366,7 +269,7 @@ fn write_atomic_with_replace(
         at_commit();
         if let Some(original) = before_commit {
             replace(&temporary, target, &displaced).map_err(replacement_error)?;
-            sync_parent(target).map_err(|e| e.to_string())?;
+            flush_published(target);
             // A writer can change the destination after the last comparison.
             // Compare the version retained by the OS at the instant of commit.
             if observed(&displaced)? != Some(original) {
@@ -376,7 +279,7 @@ fn write_atomic_with_replace(
             // The no-replace primitive retries short Windows locks itself.
             super::sync_core::move_file_no_replace(&temporary, target)
                 .map_err(|e| format!("cannot publish vault file: {e}"))?;
-            sync_parent(target).map_err(|e| e.to_string())?;
+            flush_published(target);
         }
         if observed(target)? != Some(candidate) {
             return Err("Published vault file changed before read-back completed.".into());

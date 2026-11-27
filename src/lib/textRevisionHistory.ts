@@ -1,5 +1,6 @@
 import { vaultStorageId } from "./vaultStorage";
 import { openIdbWithTimeout } from "./idbOpen";
+import { compareNames } from "./sort";
 
 export interface TextRevision {
   id: string;
@@ -111,7 +112,7 @@ function trim(entries: TextRevision[]): TextRevision[] {
 function compareNewestFirst(a: TextRevision, b: TextRevision): number {
   if (a.savedAt !== b.savedAt) return b.savedAt - a.savedAt;
   if ((a.order ?? 0) !== (b.order ?? 0)) return (b.order ?? 0) - (a.order ?? 0);
-  return b.id.localeCompare(a.id, undefined, { numeric: true });
+  return compareNames(b.id, a.id);
 }
 
 /**

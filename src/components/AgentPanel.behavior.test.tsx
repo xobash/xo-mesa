@@ -116,6 +116,7 @@ beforeEach(() => {
   for (const fn of [pi.ensure, pi.adopt, pi.claim, pi.queue, pi.register, pi.release, pi.addFont, pi.removeFont, fit.fit]) fn.mockReset();
   pi.ensure.mockResolvedValue("s-1");
   pi.adopt.mockResolvedValue("s-adopted");
+  pi.claim.mockResolvedValue(undefined);
   pi.session.sessionId = null;
   pi.session.fit = fit;
   term = fakeTerm();
@@ -181,18 +182,46 @@ describe("AgentSurface session setup", () => {
     expect(pi.queue).not.toHaveBeenCalled();
   });
 
-  it("adopts the handed-off session once, then reuses the shared session on context change", async () => {
-    act(() => root.render(<AgentSurface attachSessionId="s-live" vaultPathOverride="/detached" />));
+  it("adopts the handed-off session once and leaves it alone when the context changes", async () => {
+    const ready = vi.fn();
+    act(() => root.render(<AgentSurface attachSessionId="s-live" vaultPathOverride="/detached" onSessionReady={ready} />));
     await flush();
     expect(pi.adopt).toHaveBeenCalledTimes(1);
     expect(pi.adopt.mock.calls[0][0]).toBe("s-live");
     expect(pi.adopt.mock.calls[0][1]).toBe("/detached");
-    expect(pi.ensure).not.toHaveBeenCalled();
+    expect(ready).toHaveBeenCalledTimes(1);
     act(() => useAppStore.setState({ activePath: "Notes/B.md", openTabs: ["Notes/B.md"] }));
     await flush();
     expect(pi.adopt).toHaveBeenCalledTimes(1);
+    expect(pi.ensure).not.toHaveBeenCalled();
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".agent-context")?.textContent).toContain("Notes/B.md");
+  });
+
+  it("does not re-run setup, take focus or claim the PTY when the user changes notes", async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    act(() => root.render(<AgentSurface />));
+    await flush();
     expect(pi.ensure).toHaveBeenCalledTimes(1);
-    expect(pi.ensure.mock.calls[0][0]).toBe("/detached");
+    const focusCalls = term.focus.mock.calls.length;
+    const claims = pi.claim.mock.calls.length;
+    act(() => useAppStore.setState({ activePath: "Notes/B.md", openTabs: ["Notes/A.md", "Notes/B.md"] }));
+    await flush();
+    expect(pi.ensure).toHaveBeenCalledTimes(1);
+    expect(term.focus.mock.calls.length).toBe(focusCalls);
+    expect(pi.claim.mock.calls.length).toBe(claims);
+  });
+
+  it("launches with the newest context after a restart", async () => {
+    act(() => root.render(<AgentSurface />));
+    await flush();
+    act(() => useAppStore.setState({ activePath: "Notes/B.md", openTabs: ["Notes/B.md"] }));
+    await flush();
+    act(() => notifySharedPiExit(0));
+    await click(host.querySelector(".pi-exit-banner button")!);
+    await flush();
+    expect(pi.ensure).toHaveBeenCalledTimes(2);
+    expect(pi.ensure.mock.calls[1][2]).toContain("Current document: Notes/B.md");
   });
 
   it("never adopts over a session this realm already runs", async () => {
@@ -203,18 +232,40 @@ describe("AgentSurface session setup", () => {
     expect(pi.ensure).toHaveBeenCalledTimes(1);
   });
 
-  it("prints a launch failure into the terminal", async () => {
+  it("prints a launch failure into the terminal and retries only from the banner", async () => {
     pi.ensure.mockRejectedValue(new Error("pi not found"));
     act(() => root.render(<AgentSurface />));
     await flush();
     expect(term.writeln).toHaveBeenCalledWith("Error: pi not found");
     expect(term.writeln).toHaveBeenCalledWith("Mesa tried to launch `pi` in a native PTY.");
+    act(() => useAppStore.setState({ activePath: "Notes/B.md", openTabs: ["Notes/B.md"] }));
+    await flush();
+    expect(pi.ensure).toHaveBeenCalledTimes(1);
+    const banner = host.querySelector(".pi-exit-banner");
+    expect(banner?.textContent).toContain("Pi could not start");
+    pi.ensure.mockResolvedValue("s-2");
+    await click(banner!.querySelector("button")!);
+    await flush();
+    expect(pi.ensure).toHaveBeenCalledTimes(2);
+    expect(host.querySelector(".pi-exit-banner")).toBeNull();
+  });
+
+  it("keeps a started session usable when the resize claim is refused", async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    pi.claim.mockRejectedValue(new Error("not the owner"));
+    const ready = vi.fn();
+    act(() => root.render(<AgentSurface onSessionReady={ready} />));
+    await flush();
+    expect(ready).toHaveBeenCalledWith("s-1");
+    expect(pi.queue).toHaveBeenCalled();
+    expect(term.writeln).not.toHaveBeenCalled();
+    expect(host.querySelector(".pi-exit-banner")).toBeNull();
   });
 
   it("uses the mirrored context in a detached realm", async () => {
     const contextOverride = {
       vaultName: "V", vaultPath: "/vault", activePath: "Mirror.md", activeFilePath: "/vault/Mirror.md",
-      openPaths: ["Mirror.md"], openFilePaths: ["/vault/Mirror.md"], centerView: "editor", rightViews: ["graph"], accessedPaths: [],
+      openPaths: ["Mirror.md"], openFilePaths: ["/vault/Mirror.md"], centerView: "editor", rightViews: ["graph"],
     } as unknown as Parameters<typeof AgentSurface>[0]["contextOverride"];
     act(() => root.render(<AgentSurface contextOverride={contextOverride} />));
     await flush();

@@ -88,7 +88,10 @@ export function ImageEditor({ file, onDirtyChange, onDone }: {
       }
       await adopt(bytes);
     }).catch((error) => {
-      if (!cancelled) setRefusal(`Could not open this image: ${String(error)}`);
+      if (cancelled) return;
+      // Only a first open refuses; a failed reload keeps the editor and its edits.
+      if (!first && loadedRef.current) setStatus(`Could not reload this image: ${String(error)}. Your edits are still here.`);
+      else setRefusal(`Could not open this image: ${String(error)}`);
     });
     return () => {
       cancelled = true;

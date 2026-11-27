@@ -11,14 +11,16 @@ fn main_only(window: &tauri::Window) -> Result<(), String> {
     crate::require_main_for(window.label(), RECOVERY_MAIN_ONLY)
 }
 fn visible(rel: &str) -> bool {
-    sync_core::safe_join(Path::new(""), rel).is_some()
+    sync_core::vault_join(Path::new(""), rel).is_some()
         && rel
             .split('/')
             .all(|p| !crate::vault_names::is_hidden_name(p))
 }
-fn recovery(rel: &str) -> bool {
+/// A recovery item: an entry below a `.mesa-trash` folder that is not itself
+/// under a hidden folder. Restore and purge both use this rule.
+pub(crate) fn recovery(rel: &str) -> bool {
     let parts: Vec<_> = rel.split('/').collect();
-    sync_core::safe_join(Path::new(""), rel).is_some()
+    sync_core::vault_join(Path::new(""), rel).is_some()
         && parts
             .iter()
             .position(|p| *p == ".mesa-trash")
@@ -33,7 +35,7 @@ fn create_directory(root: &Path, rel: &str) -> Result<(), String> {
     }
     #[cfg(unix)]
     {
-        sync_core::RootedTarget::resolve(root, &format!("{rel}/.directory-check"), true)
+        sync_core::RootedTarget::resolve_local(root, &format!("{rel}/.directory-check"), true)
             .map_err(|e| e.to_string())?;
     }
     #[cfg(windows)]
@@ -48,14 +50,15 @@ pub(crate) fn move_entry(root: &Path, from: &str, to: &str) -> Result<(), String
     #[cfg(unix)]
     {
         let from =
-            sync_core::RootedTarget::resolve(root, from, false).map_err(|e| e.to_string())?;
-        let to = sync_core::RootedTarget::resolve(root, to, true).map_err(|e| e.to_string())?;
+            sync_core::RootedTarget::resolve_local(root, from, false).map_err(|e| e.to_string())?;
+        let to =
+            sync_core::RootedTarget::resolve_local(root, to, true).map_err(|e| e.to_string())?;
         from.move_entry_no_replace(&to).map_err(|e| e.to_string())
     }
     #[cfg(windows)]
     {
-        let from = sync_core::safe_join_confined(root, from).ok_or("invalid source")?;
-        let to = sync_core::safe_join_confined(root, to).ok_or("invalid destination")?;
+        let from = sync_core::vault_join_confined(root, from).ok_or("invalid source")?;
+        let to = sync_core::vault_join_confined(root, to).ok_or("invalid destination")?;
         let _source =
             sync_core::WindowsParentGuard::acquire(&from, false).map_err(|e| e.to_string())?;
         let _target =
@@ -138,22 +141,14 @@ pub async fn vault_restore_recovery(
     .map_err(|e| e.to_string())?
 }
 
+/// A save/backup/rescue artifact of a visible target: `(target, label)`.
 fn artifact(name: &str) -> Option<(&str, &str)> {
-    let (target, rest) = name.strip_prefix('.')?.rsplit_once(".mesa-")?;
-    let (label, rest) = rest.split_once('-')?;
-    let (stamp, id) = rest.strip_suffix(".tmp")?.split_once('-')?;
-    if !visible(target)
-        || !matches!(label, "save" | "backup" | "rescue")
-        || stamp.is_empty()
-        || !stamp.bytes().all(|c| c.is_ascii_digit())
-        || id.is_empty()
-        || !id
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-    {
-        return None;
+    match crate::vaultscope::parse_write_artifact(name)? {
+        crate::vaultscope::WriteArtifact::Write { target, label } if visible(target) => {
+            Some((target, label))
+        }
+        _ => None,
     }
-    Some((target, label))
 }
 fn stale(path: &Path) -> Result<bool, String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
@@ -166,18 +161,38 @@ fn stale(path: &Path) -> Result<bool, String> {
         .elapsed()
         .is_ok_and(|age| age >= Duration::from_secs(60)))
 }
+/// Largest original `recover_artifact` restores: `vaultwrite`'s save limit.
+const RECOVER_LIMIT: u64 = 1024 * 1024 * 1024;
 pub(crate) fn recover_artifact(root: &Path, rel: &str, restore: bool) -> Result<(), String> {
-    let path = sync_core::safe_join_confined(root, rel).ok_or("invalid artifact path")?;
+    recover_artifact_limited(root, rel, restore, RECOVER_LIMIT)
+}
+/// Read at most `limit` bytes; a longer original is refused before any write.
+fn read_original(file: fs::File, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("recovery original exceeds the 1 GiB save limit".into());
+    }
+    Ok(bytes)
+}
+fn recover_artifact_limited(
+    root: &Path,
+    rel: &str,
+    restore: bool,
+    limit: u64,
+) -> Result<(), String> {
+    let path = sync_core::vault_join_confined(root, rel).ok_or("invalid artifact path")?;
     let name = path
         .file_name()
         .and_then(|p| p.to_str())
         .ok_or("invalid artifact")?;
-    let sync_temp = name
-        .strip_prefix(".mesa-sync-tmp-")
-        .and_then(|s| s.split_once('-'))
-        .is_some_and(|(s, id)| {
-            !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()) && !id.is_empty()
-        });
+    let sync_temp = matches!(
+        crate::vaultscope::parse_write_artifact(name),
+        Some(crate::vaultscope::WriteArtifact::SyncStage)
+    );
     let details = artifact(name);
     if details.is_none() && !sync_temp {
         return Err("not a write artifact".into());
@@ -186,7 +201,8 @@ pub(crate) fn recover_artifact(root: &Path, rel: &str, restore: bool) -> Result<
         return Err("write artifact is still active".into());
     }
     #[cfg(unix)]
-    let held = sync_core::RootedTarget::resolve(root, rel, false).map_err(|e| e.to_string())?;
+    let held =
+        sync_core::RootedTarget::resolve_local(root, rel, false).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     let _guard = sync_core::WindowsParentGuard::acquire(&path, false).map_err(|e| e.to_string())?;
     if let Some((target, label)) = details {
@@ -212,25 +228,10 @@ pub(crate) fn recover_artifact(root: &Path, rel: &str, restore: bool) -> Result<
                 return Err("candidate bytes are not recovery originals".into());
             }
             #[cfg(unix)]
-            let bytes = {
-                use std::io::Read;
-                let mut bytes = Vec::new();
-                held.open_read()
-                    .map_err(|e| e.to_string())?
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| e.to_string())?;
-                bytes
-            };
+            let file = held.open_read().map_err(|e| e.to_string())?;
             #[cfg(windows)]
-            let bytes = {
-                use std::io::Read;
-                let mut bytes = Vec::new();
-                sync_core::open_file_no_follow(&path)
-                    .map_err(|e| e.to_string())?
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| e.to_string())?;
-                bytes
-            };
+            let file = sync_core::open_file_no_follow(&path).map_err(|e| e.to_string())?;
+            let bytes = read_original(file, limit)?;
             vaultwrite::write_atomic(&target_path, &bytes, &vaultwrite::ExpectedCurrent::Missing)?;
         } else if label == "rescue" || (label == "backup" && !target_path.is_file()) {
             return Err("original recovery bytes must be retained".into());
@@ -427,10 +428,10 @@ pub(crate) fn prune_empty_trash_parents(root: &Path, trash_rel: &str) {
     for depth in (2..parts.len()).rev() {
         let rel = parts[..depth].join("/");
         #[cfg(unix)]
-        let removed = sync_core::RootedTarget::resolve(root, &rel, false)
+        let removed = sync_core::RootedTarget::resolve_local(root, &rel, false)
             .and_then(|dir| dir.remove_empty_dir());
         #[cfg(not(unix))]
-        let removed = match sync_core::safe_join_confined(root, &rel) {
+        let removed = match sync_core::vault_join_confined(root, &rel) {
             Some(path) => fs::remove_dir(path),
             None => return,
         };

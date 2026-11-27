@@ -34,6 +34,52 @@ async fn next_connection(
 mod accept_tests {
     use super::*;
 
+    #[test]
+    fn a_failed_server_setup_is_reported_and_never_serves() {
+        let served = Arc::new(AtomicBool::new(false));
+        let flag = served.clone();
+        let failed = spawn_when_ready(
+            || Err::<(), String>("sync runtime failed: no threads".into()),
+            move |()| flag.store(true, Ordering::SeqCst),
+            Duration::from_secs(5),
+        );
+        assert!(failed.is_err_and(|error| error.contains("no threads")));
+        assert!(!served.load(Ordering::SeqCst));
+
+        let flag = served.clone();
+        let started = spawn_when_ready(
+            || Ok(7u8),
+            move |value| flag.store(value == 7, Ordering::SeqCst),
+            Duration::from_secs(5),
+        )
+        .expect("setup succeeded");
+        started.join().expect("server thread");
+        assert!(served.load(Ordering::SeqCst));
+
+        let slow = spawn_when_ready(
+            || {
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(())
+            },
+            |()| {},
+            Duration::from_millis(20),
+        );
+        assert!(
+            slow.is_err(),
+            "a setup that never reports is a failed start"
+        );
+    }
+
+    #[test]
+    fn the_server_runtime_takes_a_bound_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let (runtime, listener) = server_runtime(listener).expect("runtime and listener");
+        assert!(listener.local_addr().is_ok());
+        drop(listener);
+        finish_server_runtime(runtime);
+    }
+
     #[tokio::test]
     async fn repeated_accept_errors_back_off_and_warn_once() {
         let mut warned = false;
@@ -739,8 +785,7 @@ async fn serve_journal_put(
         .headers()
         .get("x-mesa-fingerprint")
         .and_then(|value| value.to_str().ok())
-        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .map(str::to_ascii_lowercase);
+        .and_then(crate::hex::normalize_hex64);
     // Journal operations are control-plane data, not ordinary vault files.
     // Apply them while the receiver owns the request so an initiator's
     // delete cannot be immediately reintroduced by the receiver's stale
@@ -812,8 +857,7 @@ async fn serve_base_put(
         .headers()
         .get("x-mesa-fingerprint")
         .and_then(|value| value.to_str().ok())
-        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .map(str::to_ascii_lowercase)
+        .and_then(crate::hex::normalize_hex64)
     else {
         return hyper_response(StatusCode::BAD_REQUEST, "missing peer identity");
     };
@@ -956,10 +1000,10 @@ async fn serve_file_put(
                 .and_then(|text| text.strip_suffix('"'))
                 .and_then(|text| text.split_once(':'))
                 .and_then(|(size, hash)| {
-                    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                        return None;
-                    }
-                    Some((size.parse::<u64>().ok()?, hash.to_string()))
+                    Some((
+                        size.parse::<u64>().ok()?,
+                        crate::hex::normalize_hex64(hash)?,
+                    ))
                 });
             let Some(parsed) = parsed else {
                 return hyper_response(StatusCode::BAD_REQUEST, "invalid If-Match base");
@@ -1236,35 +1280,14 @@ pub fn sync_start(
     let running_for_thread = running.clone();
     let stop = Arc::new(tokio::sync::Notify::new());
     let stop_for_thread = stop.clone();
-    let handle = std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .worker_threads(SERVER_WORKERS)
-            .thread_name("mesa-sync-server")
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                emit_log(
-                    &app_for_thread,
-                    "error",
-                    format!("[serve] sync runtime failed: {error}"),
-                );
-                return;
-            }
-        };
+    let app_for_setup = app.clone();
+    let setup = move || {
+        server_runtime(listener).inspect_err(|error| {
+            emit_log(&app_for_setup, "error", format!("[serve] {error}"));
+        })
+    };
+    let serve = move |(runtime, listener): (tokio::runtime::Runtime, TcpListener)| {
         runtime.block_on(async move {
-            let listener = match TcpListener::from_std(listener) {
-                Ok(listener) => listener,
-                Err(error) => {
-                    emit_log(
-                        &app_for_thread,
-                        "error",
-                        format!("[serve] sync listen failed: {error}"),
-                    );
-                    return;
-                }
-            };
             let acceptor = TlsAcceptor::from(tls_config);
             let connection_slots = Arc::new(tokio::sync::Semaphore::new(SERVER_CONNECTION_LIMIT));
             let auth_limiter = Arc::new(AuthLimiter::default());
@@ -1337,7 +1360,16 @@ pub fn sync_start(
             }
         });
         finish_server_runtime(runtime);
-    });
+    };
+    let handle = match spawn_when_ready(setup, serve, SERVER_READY_TIMEOUT) {
+        Ok(handle) => handle,
+        Err(error) => {
+            // A late setup sees the cleared flag and serves nothing.
+            running.store(false, Ordering::Relaxed);
+            stop.notify_one();
+            return Err(error);
+        }
+    };
     *guard = Some(ServerState {
         running,
         stop,
@@ -1349,6 +1381,55 @@ pub fn sync_start(
     });
     SERVER_RUNNING.store(true, Ordering::Release);
     Ok(())
+}
+
+/// How long `sync_start` waits for the server thread's runtime and listener.
+pub(super) const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The server runtime and its listener. Runs on the server thread: a runtime
+/// must never be dropped on the async command thread.
+fn server_runtime(
+    listener: std::net::TcpListener,
+) -> Result<(tokio::runtime::Runtime, TcpListener), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(SERVER_WORKERS)
+        .thread_name("mesa-sync-server")
+        .build()
+        .map_err(|error| format!("sync runtime failed: {error}"))?;
+    let listener = {
+        let _context = runtime.enter();
+        TcpListener::from_std(listener).map_err(|error| format!("sync listen failed: {error}"))?
+    };
+    Ok((runtime, listener))
+}
+
+/// Run `setup` on a new thread and wait (bounded) for its result; only a
+/// successful setup goes on to `serve`. The caller publishes receiving state
+/// only after this returns `Ok`, so a failed start never reports receiving.
+pub(super) fn spawn_when_ready<T: 'static>(
+    setup: impl FnOnce() -> Result<T, String> + Send + 'static,
+    serve: impl FnOnce(T) + Send + 'static,
+    timeout: Duration,
+) -> Result<JoinHandle<()>, String> {
+    let (ready, outcome) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+    let handle = std::thread::spawn(move || match setup() {
+        Ok(value) => {
+            let _ = ready.send(Ok(()));
+            serve(value);
+        }
+        Err(error) => {
+            let _ = ready.send(Err(error));
+        }
+    });
+    match outcome.recv_timeout(timeout) {
+        Ok(Ok(())) => Ok(handle),
+        Ok(Err(error)) => {
+            let _ = handle.join();
+            Err(format!("could not start TLS sync server: {error}"))
+        }
+        Err(_) => Err("could not start TLS sync server: it did not become ready".into()),
+    }
 }
 
 /// Bound server shutdown. Dropping a runtime waits for every blocking task

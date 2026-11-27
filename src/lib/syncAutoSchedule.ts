@@ -32,8 +32,10 @@ export function nextAutoSyncDelayMs(
     : Math.min(MAX_TIMER_DELAY_MS, Math.max(1, baseDelayMs));
   if (syncBusy) return Math.min(AUTO_SYNC_BUSY_RETRY_MS, safeBaseDelayMs);
   if (!hasIncompleteSyncReport(report)) return safeBaseDelayMs;
-  return Math.min(
-    safeBaseDelayMs * AUTO_SYNC_FAILURE_BACKOFF_MULTIPLIER,
-    AUTO_SYNC_MAX_BACKOFF_MS
+  // A failure waits longer than the cadence (capped), never shorter: a long
+  // configured interval must not retry a failing peer more often.
+  return Math.max(
+    safeBaseDelayMs,
+    Math.min(safeBaseDelayMs * AUTO_SYNC_FAILURE_BACKOFF_MULTIPLIER, AUTO_SYNC_MAX_BACKOFF_MS)
   );
 }

@@ -71,6 +71,15 @@ pub fn is_lowercase_hex64(text: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Exactly 64 hex digits in either case, as lowercase: fingerprints and
+/// `If-Match` hashes from request headers, and journal operation hashes
+/// (rename matching case-folds them). Keys, manifest hashes and discovery
+/// fingerprints use the strict `is_lowercase_hex64` instead.
+pub fn normalize_hex64(text: &str) -> Option<String> {
+    (text.len() == 64 && text.bytes().all(|byte| nibble(byte).is_some()))
+        .then(|| text.to_ascii_lowercase())
+}
+
 /// `N` bytes from the OS secure random source; `None` when it is unavailable.
 pub fn random_bytes<const N: usize>() -> Option<[u8; N]> {
     let mut bytes = [0u8; N];
@@ -173,6 +182,27 @@ mod tests {
         }
         for odd in ["", "0", "€", "0€", "€0", "ab€"] {
             assert_eq!(decode_exact::<1>(odd), None, "{odd:?}");
+        }
+    }
+
+    /// Acceptance set of header fingerprints and `If-Match` hashes.
+    #[test]
+    fn normalize_hex64_lowercases_exactly_64_hex_digits() {
+        let valid = "0123456789abcdef".repeat(4);
+        assert_eq!(normalize_hex64(&valid).as_deref(), Some(valid.as_str()));
+        assert_eq!(
+            normalize_hex64(&valid.to_uppercase()).as_deref(),
+            Some(valid.as_str())
+        );
+        for wrong in [
+            String::new(),
+            valid[..63].to_string(),
+            format!("{valid}0"),
+            format!("{}g", &valid[..63]),
+            format!("{}+", &valid[..63]),
+            format!("{}€", &valid[..61]),
+        ] {
+            assert_eq!(normalize_hex64(&wrong), None, "{wrong:?}");
         }
     }
 

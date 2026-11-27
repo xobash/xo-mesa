@@ -1,3 +1,5 @@
+#[path = "atomic_replace.rs"]
+mod atomic_replace;
 #[path = "file_metadata.rs"]
 pub(crate) mod file_metadata;
 #[path = "sync_fs.rs"]
@@ -8,6 +10,7 @@ pub(crate) mod hex;
 pub(crate) mod platform_fs;
 #[path = "vault_names.rs"]
 pub(crate) mod vault_names;
+pub(crate) use atomic_replace::*;
 pub use filesystem::*;
 
 #[path = "sync_journal.rs"]

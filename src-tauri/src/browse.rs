@@ -119,9 +119,6 @@ pub struct BrowsePage {
     pub status: u16,
     #[serde(rename = "contentType")]
     pub content_type: String,
-    /// True when response headers forbid rendering this page in our iframe.
-    #[serde(rename = "frameBlocked")]
-    pub frame_blocked: bool,
     pub body: Option<String>,
     pub truncated: bool,
     #[serde(rename = "subresourceToken", skip_serializing_if = "Option::is_none")]
@@ -191,31 +188,6 @@ async fn read_text_body(
         }
     }
     Ok((decode_page_body(&buf, content_type), truncated))
-}
-
-/// Would the webview refuse to render this response inside our iframe?
-/// We are a cross-origin ancestor (tauri://localhost), so any `sameorigin` /
-/// `deny` XFO or any CSP `frame-ancestors` that isn't a plain wildcard blocks.
-fn frame_blocked(headers: &reqwest::header::HeaderMap) -> bool {
-    if let Some(xfo) = headers.get("x-frame-options").and_then(|v| v.to_str().ok()) {
-        let v = xfo.trim().to_ascii_lowercase();
-        if v.contains("deny") || v.contains("sameorigin") || v.contains("allow-from") {
-            return true;
-        }
-    }
-    if let Some(csp) = headers
-        .get("content-security-policy")
-        .and_then(|v| v.to_str().ok())
-    {
-        for directive in csp.split(';') {
-            if let Some(rest) = directive.trim().strip_prefix("frame-ancestors") {
-                if !rest.split_whitespace().any(|s| s == "*") {
-                    return true;
-                }
-            }
-        }
-    }
-    false
 }
 
 fn is_texty(content_type: &str) -> bool {
@@ -298,7 +270,6 @@ async fn fetch_inner(url: String, agent: bool) -> Result<BrowsePage, String> {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let blocked = frame_blocked(resp.headers());
 
     let (body, truncated) = if is_texty(&content_type) {
         let (body, truncated) = read_text_body(&mut resp, &content_type).await?;
@@ -311,7 +282,6 @@ async fn fetch_inner(url: String, agent: bool) -> Result<BrowsePage, String> {
         final_url,
         status,
         content_type,
-        frame_blocked: blocked,
         body,
         truncated,
         subresource_token: None,
@@ -645,11 +615,8 @@ pub fn browse_resource_session(
     token: Option<String>,
 ) -> Result<Option<String>, String> {
     let owner = window.label();
-    if owner != "main"
-        && !owner.starts_with("agent-")
-        && !owner.starts_with("doc-")
-        && !owner.starts_with("panel-")
-    {
+    // Pi windows also hold page tokens (`browse_fetch` with `agent: true`).
+    if !crate::is_document_surface(owner) && !owner.starts_with("agent-") {
         return Err("surface denied".into());
     }
     if let Some(token) = token {

@@ -7,7 +7,6 @@ export interface PiExitEvent {
 export interface PiSessionFields {
   sessionId: string | null;
   vaultPath: string | null;
-  contextText: string | null;
   lastOutputSeq: number;
 }
 
@@ -20,7 +19,6 @@ export function retireExitedPiSession(session: PiSessionFields, event: PiExitEve
   if (!session.sessionId || session.sessionId !== event.sessionId) return false;
   session.sessionId = null;
   session.vaultPath = null;
-  session.contextText = null;
   session.lastOutputSeq = 0;
   return true;
 }

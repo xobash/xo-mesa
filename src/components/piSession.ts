@@ -35,7 +35,6 @@ import {
 
 interface TerminalEvent {
   sessionId: string;
-  stream: "stdout" | "stderr";
   data: string;
   seq: number;
 }
@@ -48,8 +47,6 @@ interface SharedPiSessionState {
   outputUnlisten: UnlistenFn | null;
   startPromise: Promise<string> | null;
   startingVaultPath: string | null;
-  startingContextText: string | null;
-  contextText: string | null;
   outputGeneration: number;
   lastOutputSeq: number;
 }
@@ -93,8 +90,6 @@ export const SHARED_PI_SESSION: SharedPiSessionState = {
   outputUnlisten: null,
   startPromise: null,
   startingVaultPath: null,
-  startingContextText: null,
-  contextText: null,
   outputGeneration: 0,
   lastOutputSeq: 0,
 };
@@ -152,7 +147,8 @@ async function installSharedPiResizeFocusListener(term: Terminal): Promise<void>
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (focused) void claimSharedPiResizeOwnership(term);
+      // A refused claim (another window owns the PTY) is expected; drop it.
+      if (focused) claimSharedPiResizeOwnership(term).catch(() => undefined);
     });
   } catch {
     resizeFocusListenerInstalled = false;
@@ -166,7 +162,6 @@ function publishPiSessionSnapshot(): void {
   setPiSessionSnapshot({
     sessionId: SHARED_PI_SESSION.sessionId,
     vaultPath: SHARED_PI_SESSION.vaultPath,
-    contextText: SHARED_PI_SESSION.contextText,
     cols: SHARED_PI_SESSION.terminal?.cols ?? 80,
     rows: SHARED_PI_SESSION.terminal?.rows ?? 24,
   });
@@ -387,7 +382,6 @@ async function stopSharedPiSession(): Promise<void> {
   }
   SHARED_PI_SESSION.sessionId = null;
   SHARED_PI_SESSION.vaultPath = null;
-  SHARED_PI_SESSION.contextText = null;
   SHARED_PI_SESSION.lastOutputSeq = 0;
   publishPiSessionSnapshot();
 }
@@ -450,29 +444,29 @@ async function attachSharedPiOutputListener(): Promise<void> {
   }
   SHARED_PI_SESSION.outputUnlisten = async () => { await invoke("terminal_unsubscribe", { sessionId, subscriptionId }); };
 
-  if (sessionId) {
-    try {
-      const snapshot = await invoke<TerminalSnapshot>("terminal_snapshot", { sessionId });
-      if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) return;
-      const terminal = SHARED_PI_SESSION.terminal;
-      if (terminal) {
-        replayingTerminalSnapshot = true;
-        try {
-          await replayTerminalSnapshot(terminal, snapshot);
-        } finally {
-          replayingTerminalSnapshot = false;
-          reconcileSharedPiSizeAfterReplay(terminal);
-        }
+  try {
+    const snapshot = await invoke<TerminalSnapshot>("terminal_snapshot", { sessionId });
+    if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) return;
+    const terminal = SHARED_PI_SESSION.terminal;
+    if (terminal) {
+      replayingTerminalSnapshot = true;
+      try {
+        await replayTerminalSnapshot(terminal, snapshot);
+      } finally {
+        replayingTerminalSnapshot = false;
+        reconcileSharedPiSizeAfterReplay(terminal);
       }
-      if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) return;
-      SHARED_PI_SESSION.lastOutputSeq = snapshot.seq;
-    } catch {
-      // If the session disappears between attach and replay, draining the
-      // already-buffered live events still preserves the best available view.
     }
+    if (outputGeneration !== SHARED_PI_SESSION.outputGeneration) return;
+    SHARED_PI_SESSION.lastOutputSeq = snapshot.seq;
+  } catch {
+    // If the session disappears between attach and replay, draining the
+    // already-buffered live events still preserves the best available view.
   }
   gate.complete();
 }
+
+const MAX_START_WAITS = 8;
 
 export async function ensureSharedPiSession(
   vaultPath: string,
@@ -484,19 +478,12 @@ export async function ensureSharedPiSession(
     throw new Error("Browser preview mode: native Pi terminal is unavailable.");
   }
 
-  if (SHARED_PI_SESSION.startPromise) {
-    if (
-      SHARED_PI_SESSION.startingVaultPath === vaultPath &&
-      SHARED_PI_SESSION.startingContextText === contextText
-    ) {
-      return SHARED_PI_SESSION.startPromise;
-    }
-    try {
-      await SHARED_PI_SESSION.startPromise;
-    } catch {
-      /* superseded startup failed; re-evaluate below */
-    }
-    return ensureSharedPiSession(vaultPath, ctx, contextText, terminal);
+  // Join a start for this vault; let a start for another vault finish first.
+  // Each wait outlives one start, so the bound only guards a pathological churn.
+  for (let waits = 0; SHARED_PI_SESSION.startPromise; waits++) {
+    if (SHARED_PI_SESSION.startingVaultPath === vaultPath) return SHARED_PI_SESSION.startPromise;
+    if (waits >= MAX_START_WAITS) throw new Error("Pi is restarting for another vault; try again.");
+    await SHARED_PI_SESSION.startPromise.catch(() => undefined);
   }
 
   // Changing context must not restart the live session or discard its conversation and launch configuration.
@@ -504,13 +491,13 @@ export async function ensureSharedPiSession(
     return SHARED_PI_SESSION.sessionId;
   }
 
-  if (SHARED_PI_SESSION.sessionId && SHARED_PI_SESSION.vaultPath !== vaultPath) {
-    await stopSharedPiSession();
-  }
-
+  // Claim the start before any await, so a concurrent call for this vault
+  // joins it instead of stopping and starting a second PTY. A live session
+  // here belongs to another vault.
+  const replacing = Boolean(SHARED_PI_SESSION.sessionId);
   SHARED_PI_SESSION.startingVaultPath = vaultPath;
-  SHARED_PI_SESSION.startingContextText = contextText;
   SHARED_PI_SESSION.startPromise = (async () => {
+    if (replacing) await stopSharedPiSession();
     terminal.reset();
     // Deep Research: while a run is active, also load the deep-research
     // extension + mark the run so its fail-safe write/edit block engages for
@@ -521,7 +508,8 @@ export async function ensureSharedPiSession(
       dr && (dr.phase === "planning" || dr.phase === "researching" || dr.phase === "synthesizing")
         ? dr
         : null;
-    const drEnv = drActive ? { MESA_DEEP_RESEARCH: "1", MESA_DEEP_RESEARCH_RUN_ID: drActive.runId } : {};
+    // Native code sets MESA_DEEP_RESEARCH itself when it loads the extension.
+    const drEnv = drActive ? { MESA_DEEP_RESEARCH_RUN_ID: drActive.runId } : {};
     const envs = {
       MESA_VAULT_NAME: ctx.vaultName,
       MESA_VAULT_PATH: ctx.vaultPath ?? "",
@@ -543,7 +531,6 @@ export async function ensureSharedPiSession(
     });
     SHARED_PI_SESSION.sessionId = id;
     SHARED_PI_SESSION.vaultPath = vaultPath;
-    SHARED_PI_SESSION.contextText = contextText;
     SHARED_PI_SESSION.lastOutputSeq = 0;
     publishPiSessionSnapshot();
     await attachSharedPiOutputListener();
@@ -555,7 +542,6 @@ export async function ensureSharedPiSession(
   } finally {
     SHARED_PI_SESSION.startPromise = null;
     SHARED_PI_SESSION.startingVaultPath = null;
-    SHARED_PI_SESSION.startingContextText = null;
   }
 }
 
@@ -564,7 +550,6 @@ export async function ensureSharedPiSession(
 export async function adoptSharedPiSession(
   sessionId: string,
   vaultPath: string,
-  contextText: string,
   terminal: Terminal
 ): Promise<string> {
   if (!IN_TAURI) {
@@ -579,7 +564,6 @@ export async function adoptSharedPiSession(
 
   SHARED_PI_SESSION.sessionId = sessionId;
   SHARED_PI_SESSION.vaultPath = vaultPath;
-  SHARED_PI_SESSION.contextText = contextText;
   SHARED_PI_SESSION.lastOutputSeq = 0;
   publishPiSessionSnapshot();
   await attachSharedPiOutputListener();

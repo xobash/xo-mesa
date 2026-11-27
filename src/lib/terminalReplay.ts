@@ -5,10 +5,19 @@ interface TerminalReplayEvent {
   cols?: number;
 }
 
+/** Native `terminal_snapshot`: the ordered output/resize history up to `seq`. */
 export interface TerminalSnapshot {
-  data: string;
   seq: number;
-  events?: TerminalReplayEvent[];
+  events: TerminalReplayEvent[];
+}
+
+/** The snapshot's output as one text, without the grid timeline. */
+export function snapshotTranscript(snapshot: Pick<TerminalSnapshot, "events">): string {
+  let text = "";
+  for (const event of snapshot.events) {
+    if (event.kind === "output" && typeof event.data === "string") text += event.data;
+  }
+  return text;
 }
 
 interface ReplayTerminal {
@@ -32,11 +41,6 @@ export async function replayTerminalSnapshot(
   snapshot: TerminalSnapshot
 ): Promise<void> {
   terminal.reset();
-  if (!snapshot.events?.length) {
-    await writeAndWait(terminal, snapshot.data);
-    return;
-  }
-
   for (const event of snapshot.events) {
     if (
       event.kind === "resize" &&

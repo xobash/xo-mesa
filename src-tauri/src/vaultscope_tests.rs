@@ -613,3 +613,43 @@ fn only_mesa_write_artifact_names_are_accepted() {
         assert!(!is_write_artifact_name(name), "{name}");
     }
 }
+
+#[test]
+fn approvals_save_when_a_folder_holds_the_old_stage_name() {
+    let dir = std::env::temp_dir().join(format!("mesa-vault-scope-stage-{}", std::process::id()));
+    let path = dir.join(APPROVED_ROOTS_FILE);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join(format!("{APPROVED_ROOTS_FILE}.tmp"))).unwrap();
+    let mut roots = ApprovedRoots::default();
+    roots.roots.insert("/vault".into());
+    save_approved_roots(&path, &roots).unwrap();
+    roots.roots.insert("/second".into());
+    save_approved_roots(&path, &roots).unwrap();
+    assert_eq!(load_approved_roots(&path).unwrap().roots, roots.roots);
+    invalidate_approved_roots();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn names_only_windows_reserves_stay_visible_on_unix() {
+    let root = std::env::temp_dir().join(format!("mesa-scope-reserved-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("Why?.md"), b"q").unwrap();
+    fs::write(root.join("con.md"), b"c").unwrap();
+    assert!(resolves_visible(&root, "Why?.md"));
+    assert!(resolves_visible(&root, "con.md"));
+    assert!(resolves_visible(&root, "new/AUX"));
+    for rel in [
+        "../Why?.md",
+        "/Why?.md",
+        "a/../con.md",
+        "a\\con.md",
+        "",
+        "a//b",
+    ] {
+        assert!(!resolves_visible(&root, rel), "{rel:?}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}

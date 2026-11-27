@@ -40,7 +40,7 @@ export async function sendResearchPrompt(sessionId: string, prompt: string): Pro
  */
 export async function interruptPi(sessionId: string): Promise<void> {
   if (!IN_TAURI) return;
-  await invoke("terminal_write", { sessionId, input: "" }).catch(() => undefined);
+  await invoke("terminal_write", { sessionId, input: "\u0003" }).catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------

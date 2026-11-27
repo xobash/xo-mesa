@@ -3,7 +3,7 @@
 // On failure retain launch context; no note contents are included in this bridge payload.
 // Pi supplies extension-runtime dependencies.
 
-// @ts-ignore
+// @ts-expect-error Pi supplies typebox at runtime; Mesa does not install it.
 import { Type } from "typebox";
 
 // Node globals, typed locally so this file needs no @types/node.

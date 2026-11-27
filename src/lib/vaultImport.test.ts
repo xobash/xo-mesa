@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   readFile: async (path: string) => { fs.read.push(path); return fs.bytes.get(path) ?? new Uint8Array(); },
 }));
 (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
-const { importDroppedPaths, MAX_DROPPED_FILE_BYTES } = await import("./vault");
+const { copyVaultFile, importDroppedPaths, MAX_DROPPED_FILE_BYTES } = await import("./vault");
 
 beforeEach(() => {
   fs.sizes.clear(); fs.bytes.clear(); fs.read = []; fs.written = [];
@@ -64,4 +64,11 @@ it("skips hidden ZIP entries such as .DS_Store and Mesa write artifacts", async 
   expect(result.failures).toEqual([]);
   expect(result.created.map((file) => file.relPath).sort()).toEqual(["pack/a.md", "pack/sub/d.md"]);
   expect(fs.written.sort()).toEqual(["/vault/pack/a.md", "/vault/pack/sub/d.md"]);
+});
+
+it("refuses to duplicate a file above the in-memory copy limit without reading it", async () => {
+  fs.sizes.set("/vault/Media/huge.mov", MAX_DROPPED_FILE_BYTES + 1);
+  await expect(copyVaultFile("/vault", "Media/huge.mov", "Media/huge 2.mov")).rejects.toThrow("512 MiB duplicate limit");
+  expect(fs.read).toEqual([]);
+  expect(fs.written).toEqual([]);
 });
