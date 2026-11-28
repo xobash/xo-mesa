@@ -77,6 +77,34 @@ it("opens text read-only, edits a paragraph after Edit, and saves only content.x
   expect(host.querySelector("h1")?.textContent).toBe("Final report");
 });
 
+it("shows the text of table cells and lets a cell paragraph be edited", async () => {
+  await open("odt", buildOdt(), "odt-view");
+  const cells = () => Array.from(host.querySelectorAll(".odt-table td")).map((td) => td.textContent);
+  expect(cells()).toEqual(["A1", "B1"]);
+  await act(async () => button("Edit").click());
+  const cell = host.querySelector(".odt-table td .odt-para") as HTMLElement;
+  act(() => cell.click());
+  type(host.querySelector("textarea") as HTMLTextAreaElement, "A1 edited");
+  expect(cells()[0]).toContain("A1 edited");
+  expect(cells()[1]).toBe("B1");
+});
+
+it("changes only the edited paragraph while typing", async () => {
+  const body = Array.from({ length: 40 }, (_, i) => `<text:p>Paragraph ${i}</text:p>`).join("");
+  await open("odt", buildOdt(body), "odt-view");
+  await act(async () => button("Edit").click());
+  const paragraphs = () => Array.from(host.querySelectorAll<HTMLElement>(".odt-para"));
+  act(() => paragraphs()[7].click());
+  const firstSpans = paragraphs().map((p) => p.querySelector("span"));
+  type(host.querySelector("textarea") as HTMLTextAreaElement, "Paragraph 7 typed");
+  type(host.querySelector("textarea") as HTMLTextAreaElement, "Paragraph 7 typed more");
+  const after = paragraphs();
+  expect(after[7].textContent).toBe("Paragraph 7 typed more");
+  expect(after.map((p) => p.textContent).filter((_, i) => i !== 7)).toEqual(Array.from({ length: 40 }, (_, i) => `Paragraph ${i}`).filter((_, i) => i !== 7));
+  // The other paragraphs' elements are the same ones as before the edit.
+  expect(after.every((p, i) => i === 7 || p.querySelector("span") === firstSpans[i])).toBe(true);
+});
+
 it("shows why a paragraph cannot be edited and keeps templates read-only", async () => {
   await open("odt", buildOdt(), "odt-view");
   act(() => button("Edit").click());

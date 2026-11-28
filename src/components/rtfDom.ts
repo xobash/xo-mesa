@@ -1,4 +1,4 @@
-import { defaultFormat, type RtfDocument, type RtfFormat } from "../lib/rtfDocument";
+import { defaultFormat, sameFormat, type RtfDocument, type RtfFormat } from "../lib/rtfDocument";
 import type { RtfEditUnit } from "../lib/rtfEdit";
 
 /**
@@ -90,8 +90,52 @@ export function unitsOf(paragraphs: readonly RtfParagraph[]): RtfEditUnit[] {
   const out: RtfEditUnit[] = [];
   paragraphs.forEach((p, k) => {
     if (k > 0) out.push({ kind: "par" });
-    out.push(...p.items);
+    // Not `push(...items)`: a call cannot take the items of a very long paragraph as arguments.
+    for (const item of p.items) out.push(item);
   });
+  return out;
+}
+
+function sameItems(x: RtfParagraph["items"], y: RtfParagraph["items"]): boolean {
+  if (x.length !== y.length) return false;
+  for (let j = 0; j < x.length; j++) {
+    const p = x[j];
+    const q = y[j];
+    if (p.kind !== q.kind) return false;
+    if (p.kind === "atom" && q.kind === "atom" && p.id !== q.id) return false;
+    if (p.kind === "char" && q.kind === "char" && (p.ch !== q.ch || !sameFormat(p.fmt, q.fmt))) return false;
+  }
+  return true;
+}
+
+/** True when two snapshots hold the same text, formats and objects. */
+export function sameParagraphs(a: readonly RtfParagraph[], b: readonly RtfParagraph[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let k = 0; k < a.length; k++) if (!sameItems(a[k].items, b[k].items)) return false;
+  return true;
+}
+
+function sameParagraph(a: RtfParagraph, b: RtfParagraph): boolean {
+  return a === b || (a.style === b.style && sameFormat(a.fmt, b.fmt) && sameItems(a.items, b.items));
+}
+
+/**
+ * `next` with each paragraph that equals its counterpart in `previous`
+ * replaced by that earlier object. A snapshot holds one object per character,
+ * so history entries that share their unchanged paragraphs cost the changed
+ * paragraphs only, not the whole document each. Paragraphs are matched from
+ * the start and from the end, which covers an edit, a split and a join.
+ */
+export function shareParagraphs(previous: readonly RtfParagraph[], next: readonly RtfParagraph[]): RtfParagraph[] {
+  const out = [...next];
+  const limit = Math.min(previous.length, next.length);
+  let head = 0;
+  while (head < limit && sameParagraph(previous[head], next[head])) { out[head] = previous[head]; head++; }
+  for (let tail = 1; tail <= limit - head; tail++) {
+    const old = previous[previous.length - tail];
+    if (!sameParagraph(old, next[next.length - tail])) break;
+    out[next.length - tail] = old;
+  }
   return out;
 }
 

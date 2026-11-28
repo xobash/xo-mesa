@@ -77,3 +77,20 @@ it('reuses one codec worker across compactions and releases it when idle', async
     vi.unstubAllGlobals();
   }
 });
+
+it('compacts every entry of a queue longer than one batch, each once', async () => {
+  vi.useFakeTimers();
+  const count = 300; // five 64-entry batches
+  const base = indexedContentCache([['seed.md', encodeDocument('seed')]]);
+  const update: Record<string, string> = {};
+  for (let i = 0; i < count; i++) update[`note-${i}.md`] = `text ${i}`;
+  const cache = forkContentCache(base, update);
+  codec.encode.mockClear();
+
+  await vi.advanceTimersByTimeAsync(2100);
+  vi.useRealTimers();
+  await vi.waitFor(() => expect([...documentEntries(cache)].every(entry => entry.document !== undefined)).toBe(true));
+
+  expect(codec.encode.mock.calls.map(call => call[0])).toEqual(Array.from({ length: count }, (_, i) => `text ${i}`));
+  expect(cache['note-299.md']).toBe('text 299');
+});

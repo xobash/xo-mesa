@@ -8,12 +8,35 @@ import {
   scanDelimited,
   serializeTable,
   setCell,
+  tableUndoBytes,
   type DelimitedTable,
 } from "../lib/delimitedTable";
 import { DataGrid, type GridCursor } from "./DataGrid";
 
-/** Undo steps kept in the table view (bounded memory). */
+/** Most undo steps kept in the table view. */
 const MAX_TABLE_UNDO = 50;
+/**
+ * Memory the undo steps may hold. A step is a whole earlier table, and on a
+ * very large file one column edit decodes every row, so a step count alone
+ * let the history reach gigabytes. The newest step is always kept.
+ */
+export const MAX_TABLE_UNDO_BYTES = 128 * 1024 * 1024;
+
+interface UndoStep {
+  readonly table: DelimitedTable;
+  /** `tableUndoBytes` against the table that replaced it. */
+  readonly bytes: number;
+}
+
+/** `steps` plus `table` (replaced by `next`), trimmed from the oldest end to both limits. */
+export function pushTableUndo(steps: readonly UndoStep[], table: DelimitedTable, next: DelimitedTable, maxBytes = MAX_TABLE_UNDO_BYTES): UndoStep[] {
+  const kept = [...steps.slice(-(MAX_TABLE_UNDO - 1)), { table, bytes: tableUndoBytes(table, next) }];
+  let total = 0;
+  for (const step of kept) total += step.bytes;
+  let drop = 0;
+  while (drop < kept.length - 1 && total > maxBytes) total -= kept[drop++].bytes;
+  return drop ? kept.slice(drop) : kept;
+}
 
 interface Props {
   text: string;
@@ -29,7 +52,7 @@ interface TableModel {
   delimiter: string;
   table: DelimitedTable;
   /** Earlier tables, newest last. Cleared when the text changes from outside. */
-  undo: readonly DelimitedTable[];
+  undo: readonly UndoStep[];
 }
 
 /** Keep the parsed table for text this view wrote itself; rescan any other text. */
@@ -56,19 +79,19 @@ export function TableEditor({ text, delimiter, readOnlyReason, onChange }: Props
   const rowCount = table.rows.length;
   const at = cursor && cursor.row < rowCount ? cursor : null;
 
-  const publish = (next: DelimitedTable, undo: readonly DelimitedTable[]) => {
+  const publish = (next: DelimitedTable, undo: readonly UndoStep[]) => {
     const nextText = serializeTable(next);
     setModel({ text: nextText, delimiter, table: next, undo });
     onChange(nextText);
   };
   const apply = (next: DelimitedTable) => {
     if (next === table || !editable) return;
-    publish(next, [...model.undo.slice(-(MAX_TABLE_UNDO - 1)), table]);
+    publish(next, pushTableUndo(model.undo, table, next));
   };
   const undoLast = () => {
     const previous = model.undo[model.undo.length - 1];
     if (!previous || !editable) return;
-    publish(previous, model.undo.slice(0, -1));
+    publish(previous.table, model.undo.slice(0, -1));
   };
 
   return (

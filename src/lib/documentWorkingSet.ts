@@ -60,17 +60,20 @@ async function drainCompactions(): Promise<void> {
   const queue = compactions.splice(0);
   try {
     const active = await sharedCodec();
-    while (queue.length) {
+    // A head index, not `shift()`: the queue holds every file of a vault open,
+    // and removing from the front moves the rest of it each time.
+    let head = 0;
+    while (head < queue.length) {
       const entries: Entry[] = [];
       let chars = 0;
-      while (queue.length && entries.length < 64 && chars < 2 * 1024 * 1024) {
-        const entry = queue.shift()!.deref();
+      while (head < queue.length && entries.length < 64 && chars < 2 * 1024 * 1024) {
+        const entry = queue[head++].deref();
         if (entry?.value !== undefined && !entry.superseded) { entries.push(entry); chars += entry.value.length; }
       }
       const texts = entries.map(entry => entry.value!);
       const docs = await active.encode(texts, entries.map(entry => entry.markdown ?? true));
       entries.forEach((entry, i) => { entry.indexed = docs[i]; delete entry.value; });
-      if (queue.length) await new Promise(resolve => setTimeout(resolve, 0));
+      if (head < queue.length) await new Promise(resolve => setTimeout(resolve, 0));
     }
   } catch {
     // Compaction is optional; uncompacted entries keep their exact text.

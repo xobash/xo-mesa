@@ -465,10 +465,12 @@ it did not change.
   value in the last row are checked), then the worker writes the pending
   cells, renumbers the rows and re-indexes. While it runs the view says
   "Inserting row N…" and cell edits, undo, sheet changes and saves are
-  disabled; a result for a draft that changed meanwhile is dropped. Measured
-  (Node 22, 100,000 rows x 6 columns): 555 to 656 ms of work, of which about
-  33 ms (proof and job copy) plus about 6 ms (result copy) stays on the
-  interface thread; worker messaging in WebKit or WebView2 is not measured.
+  disabled; a result for a draft that changed meanwhile is dropped. The
+  usual cell reference (`<c r="B12"`) gets only its row digits replaced; any
+  other spelling is parsed and written in canonical form. Measured (Node 22,
+  100,000 rows x 6 columns): 318 to 451 ms of work, of which about 32 ms
+  (proof and job copy) plus about 8 ms (result copy) stays on the interface
+  thread; worker messaging in WebKit or WebView2 is not measured.
 - Rename sheet checks Excel's naming rules and refuses when a formula, a
   defined name or another part mentions the sheet; Excel, which updates
   references, should rename it then.
@@ -591,7 +593,9 @@ details view with the reason.
   `saveDocumentBytes` (opened bytes as precondition): same kind, `mimetype`
   first and stored, manifest complete, the same entries, every entry except
   `content.xml` byte-equal, `content.xml` exactly as edited and well-formed,
-  and a kind-specific read-back. A no-op edit writes nothing.
+  and a kind-specific read-back. A no-op edit writes nothing. After the
+  write, the editor continues from the package that check opened from the
+  candidate bytes (`openSavedOdfPackage`); it does not read the file again.
 - **Text.** Headings, paragraphs, lists, tables (one level), images and
   bold, italic, underline and colour from automatic and common styles. Edit
   a paragraph's text, or bold or italicize a selection. White space follows
@@ -601,7 +605,10 @@ details view with the reason.
   is read-only with the reason; so is every paragraph inside a
   `text:change-start` ... `text:change-end` region. Formatting adds
   `Mesa_T<n>` automatic text styles to `content.xml` only, each derived from
-  the run's existing style.
+  the run's existing style. An edit re-parses `content.xml`, then takes over
+  every paragraph whose XML did not change from the model before it, so only
+  the edited paragraph is read and drawn again (Measured, Node 22, 10,000
+  paragraphs: 52 to 23 ms per key; the XML parse is the rest).
 - **Spreadsheets.** Sheets show in the shared `DataGrid`. Cell edits splice
   only the touched cells; a repeated row or cell run is split only where an
   edit lands. Numbers are written as `float`, other text as `string`, and
@@ -616,7 +623,10 @@ details view with the reason.
 - **Presentations.** Slides draw through the PowerPoint `PresentationSlide`
   model (frames, text boxes, custom shapes, lines, pictures, tables). Edit
   text boxes and notes (one paragraph per line; a new line copies the last
-  paragraph's list item) and move slides up or down.
+  paragraph's list item) and move slides up or down. An edit keeps the
+  render model of every slide it did not change, so only the edited slide
+  and its thumbnail are drawn again (Measured, Node 22, 300 slides: slide
+  models 11 to 1.5 ms per key).
 
 Acceptance is pending: the evidence is synthetic fflate fixtures and jsdom
 runs, not a native run or a reopen in LibreOffice.

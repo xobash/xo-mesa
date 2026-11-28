@@ -2,7 +2,8 @@
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { TableEditor } from "./TableEditor";
+import { insertColumn, scanDelimited, setCell } from "../lib/delimitedTable";
+import { pushTableUndo, TableEditor } from "./TableEditor";
 
 /**
  * CSV/TSV TABLE EDITS CHANGE ONLY WHAT THE USER CHANGED.
@@ -120,4 +121,30 @@ it("puts the caret after the value when a cell edit starts", () => {
   input.setSelectionRange(0, 0);
   act(() => { input.dispatchEvent(new FocusEvent("focus")); input.dispatchEvent(new FocusEvent("focusin", { bubbles: true })); });
   expect([input.selectionStart, input.selectionEnd]).toEqual([2, 2]);
+});
+
+it("keeps undo history inside its memory limit, newest steps first, and never drops the newest", () => {
+  const source = Array.from({ length: 2000 }, (_, i) => `a${i},b${i}`).join("\n") + "\n";
+  let table = scanDelimited(source, ",");
+  let steps: ReturnType<typeof pushTableUndo> = [];
+  // Each column insert decodes all 2,000 rows, so each earlier table holds its own copy of them.
+  for (let i = 0; i < 6; i++) {
+    const next = insertColumn(table, 0);
+    steps = pushTableUndo(steps, table, next, 400_000);
+    table = next;
+  }
+  expect(steps.length).toBeGreaterThan(0);
+  expect(steps.length).toBeLessThan(6);
+  expect(steps.reduce((sum, step) => sum + step.bytes, 0)).toBeLessThanOrEqual(400_000);
+  expect(steps[steps.length - 1].table.columns).toBe(table.columns - 1);
+
+  // One step larger than the whole limit is still kept: Undo always has the last change.
+  const one = pushTableUndo([], table, insertColumn(table, 0), 1);
+  expect(one).toHaveLength(1);
+
+  // Small edits stay under the limit and keep the 50-step depth.
+  let small = scanDelimited("a,b\n1,2\n", ",");
+  let many: ReturnType<typeof pushTableUndo> = [];
+  for (let i = 0; i < 60; i++) { const next = setCell(small, 1, 0, `v${i}`); many = pushTableUndo(many, small, next); small = next; }
+  expect(many).toHaveLength(50);
 });

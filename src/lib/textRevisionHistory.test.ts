@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearTextRevisionsForTests,
   recordTextRevisionAsync,
+  recordTextRevisionsAsync,
   listTextRevisionsAsync,
   migrateRevisionNamespaces,
   migrateTextRevisionsAsync,
@@ -37,6 +38,34 @@ describe("text revision history", () => {
       "second",
       "first",
     ]);
+  });
+
+  it("records an external batch like the same saves one by one", async () => {
+    await recordTextRevisionAsync("/vault", "A.md", "a0", 5, { source: "external" });
+    await recordTextRevisionAsync("/other", "A.md", "elsewhere", 6, { source: "external" });
+    const results = await recordTextRevisionsAsync("/vault", [
+      { relPath: "A.md", content: "a0", source: "external" }, // same content: no new copy
+      { relPath: "B.md", content: "b1", source: "external" },
+      { relPath: "A.md", content: "a1", source: "external" },
+      { relPath: "A.md", content: "a1", source: "external" }, // repeats the item before it
+      { relPath: "B.md", content: "b2", source: "autosave" },
+      { relPath: "", content: "no path", source: "external" },
+      { relPath: "Big.md", content: "x".repeat(1_000_001), source: "external" },
+    ], 10);
+
+    expect(results.map((revision) => revision?.content ?? null)).toEqual(["a0", "b1", "a1", "a1", "b2", null, null]);
+    expect(results[2]).toBe(results[3]);
+    expect(results[0]?.savedAt).toBe(5);
+    expect((await listTextRevisionsAsync("/vault", "A.md")).map((revision) => revision.content)).toEqual(["a1", "a0"]);
+    expect((await listTextRevisionsAsync("/vault", "B.md")).map((revision) => revision.content)).toEqual(["b2", "b1"]);
+    expect((await listTextRevisionsAsync("/other", "A.md")).map((revision) => revision.content)).toEqual(["elsewhere"]);
+    const orders = [results[1], results[2], results[4]].map((revision) => revision!.order!);
+    expect(orders[1]).toBeGreaterThan(orders[0]);
+    expect(orders[2]).toBeGreaterThan(orders[1]);
+
+    // A later save still sorts after the whole batch at one timestamp.
+    await recordTextRevisionAsync("/vault", "A.md", "a2", 10, { source: "external" });
+    expect((await listTextRevisionsAsync("/vault", "A.md")).map((revision) => revision.content)).toEqual(["a2", "a1", "a0"]);
   });
 
   it("moves revisions with a verified file rename", async () => {

@@ -171,6 +171,20 @@ export function verifyOdfSave(pkg: OdfPackage, bytes: Uint8Array, changed: Reado
   return saved;
 }
 
+/** The package each save candidate re-opened as, by the candidate's byte array. */
+const checkedSaves = new WeakMap<Uint8Array, OdfPackage>();
+
+/**
+ * Opens bytes that `buildOdfSave` returned. The save check already opened and
+ * read back exactly this byte array, so that package is handed over instead
+ * of inflating and parsing the file a second time. Any other array is opened
+ * as usual.
+ */
+export function openSavedOdfPackage(bytes: Uint8Array): OdfPackage {
+  const checked = checkedSaves.get(bytes);
+  return checked && checked.original === bytes ? checked : openOdfPackage(bytes);
+}
+
 /**
  * Bytes to write for new `content.xml` text, or `null` when nothing changed.
  * `check` runs on the re-opened candidate (kind-specific read-back).
@@ -183,5 +197,6 @@ export function buildOdfSave(pkg: OdfPackage, contentText: string, check?: (save
   const bytes = writeZipContainer(pkg.container, changed);
   const saved = verifyOdfSave(pkg, bytes, changed);
   check?.(saved);
+  checkedSaves.set(bytes, saved);
   return bytes;
 }

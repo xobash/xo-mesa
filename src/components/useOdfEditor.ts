@@ -5,7 +5,7 @@ import { DocumentChangedOnDiskError, readDocumentBytes, saveDocumentBytes } from
 import { duplicateRelPath } from "../lib/fsnames";
 import { pdfBytesEqual } from "../lib/pdfBytes";
 import { writeVaultBinaryFile } from "../lib/vault";
-import { buildOdfSave, openOdfPackage, type OdfPackage } from "../lib/odf/odfPackage";
+import { buildOdfSave, openSavedOdfPackage, type OdfPackage } from "../lib/odf/odfPackage";
 import type { VaultFile } from "../types";
 import { SAVE_WAIT, useSaveLock } from "./useSaveLock";
 
@@ -56,7 +56,8 @@ export function useOdfEditor<D>(file: VaultFile, spec: OdfDraftSpec<D>, onDirtyC
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const adopt = useCallback((bytes: Uint8Array) => {
-    const opened = openOdfPackage(bytes);
+    // After a save, `bytes` is the checked candidate and its package is at hand.
+    const opened = openSavedOdfPackage(bytes);
     pkgRef.current = opened;
     setLoad({ state: "ready", pkg: opened });
     setDraft(spec.initial(opened));

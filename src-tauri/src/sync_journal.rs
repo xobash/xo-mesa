@@ -427,19 +427,51 @@ fn store_peer_baseline(
         return Err(invalid_data("too many peer sync bases"));
     }
     journal.peer_bases.insert(fingerprint.to_string(), common);
-    save_journal_if_changed(root, &journal, on_disk.as_ref())?;
+    save_journal_if_changed(root, journal, on_disk.as_ref())?;
     Ok(())
 }
+
+/// A `SyncJournal` as a peer receives it: the exchanged fields borrowed, the
+/// local-only ones empty. Field names and order match `SyncJournal`, so the
+/// bytes equal a journal serialized with those fields cleared, and the local
+/// manifest copies are never cloned to be thrown away.
+#[derive(Serialize)]
+struct WireJournal<'a> {
+    version: u32,
+    device: &'a str,
+    next_sequence: u64,
+    operations: &'a [JournalOperation],
+    applied: &'a [String],
+    acked_by: &'a HashMap<String, Vec<String>>,
+    peers_seen: &'a [String],
+    known: [JournalEntry; 0],
+    peer_bases: EmptyObject,
+    peer_bindings: EmptyObject,
+    retired_peers: [String; 0],
+    retired_fingerprints: [String; 0],
+}
+
+/// Serializes as `{}`.
+#[derive(Serialize)]
+struct EmptyObject {}
 
 /// The baseline is local crash-reconstruction state, not peer intent. Omitting
 /// it keeps a 12,000-file idle journal small without weakening reconciliation.
 pub fn journal_wire_bytes(journal: &SyncJournal) -> std::io::Result<Vec<u8>> {
-    let mut wire = journal.clone();
-    wire.known.clear();
-    wire.peer_bases.clear();
-    wire.peer_bindings.clear();
-    wire.retired_peers.clear();
-    wire.retired_fingerprints.clear();
+    let wire = WireJournal {
+        version: journal.version,
+        device: &journal.device,
+        next_sequence: journal.next_sequence,
+        operations: &journal.operations,
+        applied: &journal.applied,
+        acked_by: &journal.acked_by,
+        peers_seen: &journal.peers_seen,
+        known: [],
+        peer_bases: EmptyObject {},
+        peer_bindings: EmptyObject {},
+        retired_peers: [],
+        retired_fingerprints: [],
+    };
     let bytes = serde_json::to_vec(&wire).map_err(|error| invalid_data(error.to_string()))?;
     if bytes.len() > MAX_JOURNAL_WIRE_BYTES {
         return Err(invalid_data(
@@ -479,7 +511,7 @@ pub fn bind_journal_peer(
         journal.retired_peers.retain(|peer| peer != device);
         note_peer_seen(&mut journal, device);
     }
-    save_journal_if_changed(root, &journal, on_disk.as_ref())?;
+    save_journal_if_changed(root, journal, on_disk.as_ref())?;
     Ok(())
 }
 
@@ -717,18 +749,19 @@ pub(super) fn save_journal_unlocked(
     root: &Path,
     journal: &SyncJournal,
 ) -> std::io::Result<SyncJournal> {
-    save_journal_if_changed(root, journal, None)
+    save_journal_if_changed(root, journal.clone(), None)
 }
 
 /// Save the compacted journal unless it equals `on_disk` (from
 /// `load_journal_for_update`). A sync run with no changes then rewrites and
-/// flushes nothing. Returns the compacted journal in both cases.
+/// flushes nothing. Returns the compacted journal in both cases. It takes the
+/// journal by value: a read-modify-save step is done with it, and a copy
+/// would hold a second full manifest.
 pub(super) fn save_journal_if_changed(
     root: &Path,
-    journal: &SyncJournal,
+    mut saved: SyncJournal,
     on_disk: Option<&SyncJournal>,
 ) -> std::io::Result<SyncJournal> {
-    let mut saved = journal.clone();
     compact_journal(&mut saved);
     if on_disk == Some(&saved) {
         return Ok(saved);
@@ -936,7 +969,7 @@ pub fn reconcile_journal(root: &Path, manifest: &[ManifestEntry]) -> std::io::Re
             hash: entry.hash.clone(),
         })
         .collect();
-    save_journal_if_changed(root, &journal, on_disk.as_ref())
+    save_journal_if_changed(root, journal, on_disk.as_ref())
 }
 
 /// Reconciliation is destructive intent generation.  A scan that could not
@@ -1008,7 +1041,7 @@ pub fn apply_incoming_journal(
         outcomes.push(JournalOperationOutcome { operation, result });
     }
     extend_unique(&mut local.applied, acknowledged);
-    let saved = save_journal_if_changed(root, &local, on_disk.as_ref())?;
+    let saved = save_journal_if_changed(root, local, on_disk.as_ref())?;
     Ok((saved, outcomes))
 }
 

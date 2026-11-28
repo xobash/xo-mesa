@@ -62,12 +62,6 @@ function writeAll(entries: TextRevision[]): boolean {
 
 let fallbackSequence = 0;
 
-function nextOrder(entries: readonly TextRevision[]): number {
-  const highest = entries.reduce((value, entry) => Math.max(value, entry.order ?? 0), fallbackSequence);
-  fallbackSequence = highest + 1;
-  return fallbackSequence;
-}
-
 function revisionId(now: number): string {
   // UUIDs identify records across windows; the transaction assigns their order.
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -203,13 +197,36 @@ function coalescesWith(last: TextRevision | undefined, item: RevisionInput, now:
     (item.source === "autosave" && now >= last.savedAt && now - last.savedAt < REVISION_COALESCE_MS));
 }
 
-function addRevision(entries: TextRevision[], root: string, item: RevisionInput, now: number): TextRevision | null {
-  if (!root || !item.relPath || item.content.length > MAX_REVISION_CHARS) return null;
-  const last = entries.filter(entry => entry.root === root && entry.relPath === item.relPath).sort(compareNewestFirst)[0];
-  if (coalescesWith(last, item, now)) return last;
-  const revision: TextRevision = { id: revisionId(now), root, ...item, savedAt: now, order: nextOrder(entries) };
-  entries.unshift(revision);
-  return revision;
+/**
+ * Adds a batch to `entries` and returns the new list (new revisions first,
+ * the last item's in front) with one result per item. The stored entries are
+ * read once: an external batch can hold thousands of files, and a search of
+ * the whole history per file made it quadratic.
+ */
+function addRevisions(entries: readonly TextRevision[], root: string, items: readonly RevisionInput[], now: number): { updated: TextRevision[]; results: (TextRevision | null)[] } {
+  const newestByPath = new Map<string, TextRevision>();
+  let highestOrder = 0;
+  for (const entry of entries) {
+    highestOrder = Math.max(highestOrder, entry.order ?? 0);
+    if (entry.root !== root) continue;
+    const seen = newestByPath.get(entry.relPath);
+    // Strictly newer only: among equals the earlier entry stays, as a stable sort keeps it.
+    if (!seen || compareNewestFirst(entry, seen) < 0) newestByPath.set(entry.relPath, entry);
+  }
+  const added: TextRevision[] = [];
+  const results = items.map((item) => {
+    if (!root || !item.relPath || item.content.length > MAX_REVISION_CHARS) return null;
+    const last = newestByPath.get(item.relPath);
+    if (coalescesWith(last, item, now)) return last;
+    const id = revisionId(now);
+    fallbackSequence = Math.max(highestOrder, fallbackSequence) + 1;
+    const revision: TextRevision = { id, root, ...item, savedAt: now, order: fallbackSequence };
+    added.push(revision);
+    // A new revision sits in front of the stored ones, so it also wins a tie.
+    if (!last || compareNewestFirst(revision, last) <= 0) newestByPath.set(item.relPath, revision);
+    return revision;
+  });
+  return { updated: [...added.reverse(), ...entries], results };
 }
 
 /** One retention transaction for a complete external-change batch. */
@@ -217,8 +234,7 @@ export function recordTextRevisionsAsync(root: string, items: RevisionInput[], n
   root = vaultStorageId(root);
   if (!items.length) return Promise.resolve([]);
   const mutation = (entries: TextRevision[]) => {
-    const updated = [...entries];
-    const results = items.map(item => addRevision(updated, root, item, now));
+    const { updated, results } = addRevisions(entries, root, items, now);
     const retained = trim(updated);
     const ids = new Set(retained.map(entry => entry.id));
     return { value: results.map(entry => entry && ids.has(entry.id) ? entry : null), entries: retained };

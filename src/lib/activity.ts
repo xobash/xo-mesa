@@ -107,6 +107,16 @@ export function changedLineStats(
 }
 
 const records = new Map<string, ActivityRec>();
+/**
+ * Record ids, least recently bumped first (a Map keeps insertion order and a
+ * bump re-inserts its id). The cap evicts from the front, so a batch of new
+ * ids costs one step each instead of a scan of every record.
+ */
+const bumpOrder = new Set<string>();
+/** A bump decays every record only when this much time has passed since the
+ * last decay. Decay is exponential, so a skipped step is made up exactly by
+ * the next one; a batch of bumps in one task then decays once, not per bump. */
+const BUMP_DECAY_MIN_MS = 1;
 let lastDecay = typeof performance !== "undefined" ? performance.now() : 0;
 
 /** Activity is a transient visual signal, not a session history. */
@@ -138,7 +148,7 @@ export function bumpActivityAmount(
 ): void {
   if (!id) return;
   const now = performance.now();
-  decayActivity(now);
+  if (now - lastDecay >= BUMP_DECAY_MIN_MS) decayActivity(now);
   const rec = records.get(id) ?? { intensity: 0, rate: 0, last: now, op };
   const dt = Math.max(1, now - rec.last);
   const inst = Math.min(20, 1000 / dt); // events/sec, capped
@@ -156,20 +166,16 @@ export function bumpActivityAmount(
     rec.removed = Math.max(0, stats.removed ?? 0);
   }
   records.set(id, rec);
+  bumpOrder.delete(id);
+  bumpOrder.add(id);
   for (const listener of activityListeners) listener();
   // GraphView normally reclaims faded records every frame, but activity can
   // arrive while that optional surface is closed. Keep the module-level map
   // bounded even during a long Pi session with many unique paths.
   while (records.size > ACTIVITY_MAX_RECORDS) {
-    let oldestId: string | undefined;
-    let oldest = Number.POSITIVE_INFINITY;
-    for (const [candidateId, candidate] of records) {
-      if (candidate.last < oldest) {
-        oldest = candidate.last;
-        oldestId = candidateId;
-      }
-    }
+    const oldestId: string | undefined = bumpOrder.values().next().value;
     if (oldestId === undefined) break;
+    bumpOrder.delete(oldestId);
     records.delete(oldestId);
   }
 }
@@ -203,6 +209,9 @@ export function decayActivity(now: number): void {
   for (const [id, rec] of records) {
     rec.intensity *= ki;
     rec.rate *= kr;
-    if (rec.intensity < 0.002 && rec.rate < 0.05) records.delete(id);
+    if (rec.intensity < 0.002 && rec.rate < 0.05) {
+      records.delete(id);
+      bumpOrder.delete(id);
+    }
   }
 }

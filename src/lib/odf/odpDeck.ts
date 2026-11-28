@@ -124,8 +124,20 @@ function sizeFor(cls: string | null): number {
   return 1800;
 }
 
+const containerIndexes = new WeakMap<OdpDeck, Map<XmlEl, number>>();
+
+/** Position of a container in `deck.containers`, from a map built once per deck (a search per shape made rendering a deck quadratic). */
+function containerIndex(deck: OdpDeck, container: XmlEl): number {
+  let indexes = containerIndexes.get(deck);
+  if (!indexes) {
+    indexes = new Map(deck.containers.map((el, i) => [el, i]));
+    containerIndexes.set(deck, indexes);
+  }
+  return indexes.get(container) ?? -1;
+}
+
 function bodyRef(deck: OdpDeck, container: XmlEl): TextBodyRef | null {
-  const index = deck.containers.indexOf(container);
+  const index = containerIndex(deck, container);
   return index < 0 ? null : { part: CONTENT_PART, index };
 }
 
@@ -160,8 +172,9 @@ function frameShape(deck: OdpDeck, el: XmlEl, box: Box, key: string): RenderShap
   return { kind: "placeholder", key, box, label: object ? "Chart or embedded object" : cls ? `Empty ${cls} placeholder` : "Frame" };
 }
 
-function shapeOf(deck: OdpDeck, el: XmlEl): RenderShape | null {
-  const key = String(el.start);
+/** `origin` is the slide's start: keys are positions inside the slide, so they stay the same when text before the slide changes length. */
+function shapeOf(deck: OdpDeck, el: XmlEl, origin: number): RenderShape | null {
+  const key = String(el.start - origin);
   if (isOdf(el, "draw", "line")) {
     const line = lineBox(el);
     return line ? { kind: "line", key, box: line.box, color: "#3465a4", width: 12700 } : null;
@@ -185,7 +198,7 @@ export function renderOdpSlide(deck: OdpDeck, slide: OdpSlide): RenderSlide {
     const el = todo.pop()!;
     if (isOdf(el, "presentation", "notes")) continue;
     if (isOdf(el, "draw", "g")) { for (let i = el.children.length - 1; i >= 0; i--) todo.push(el.children[i]); continue; }
-    const shape = shapeOf(deck, el);
+    const shape = shapeOf(deck, el, slide.el.start);
     if (!shape) continue;
     if (shapes.length >= MAX_SHAPES) omitted++;
     else shapes.push(shape);
@@ -194,6 +207,40 @@ export function renderOdpSlide(deck: OdpDeck, slide: OdpSlide): RenderSlide {
   const bgProps = bg?.el.children.find((c) => isOdf(c, "style", "drawing-page-properties"));
   const bgColor = odfAttr(bgProps, "draw", "fill") === "solid" ? odfAttr(bgProps, "draw", "fill-color") : null;
   return { width: deck.width, height: deck.height, background: bgColor && /^#[0-9a-f]{6}$/i.test(bgColor) ? { color: bgColor } : null, shapes, omitted };
+}
+
+/**
+ * Renders every slide of successive decks of one document and returns the
+ * model object of the deck before for each slide that did not change. A text
+ * edit re-reads the whole content part; without this every slide model was
+ * rebuilt and every thumbnail drawn again on each key.
+ *
+ * A slide's model depends on its own XML, on where its text containers sit in
+ * the deck (their numbers are in the model), on the automatic styles of the
+ * content part and on the slide size; all four are compared. styles.xml also
+ * feeds the model and cannot change while a package is open, so one renderer
+ * must serve one opened package.
+ */
+export function createOdpSlideRenderer(): (deck: OdpDeck) => RenderSlide[] {
+  let context = "";
+  let previous = new Map<string, RenderSlide>();
+  return (deck) => {
+    const automatic = deck.doc.root.children.find((c) => isOdf(c, "office", "automatic-styles"));
+    const nextContext = `${deck.width}x${deck.height}\n${automatic ? deck.doc.text.slice(automatic.start, automatic.end) : ""}`;
+    if (nextContext !== context) previous = new Map();
+    context = nextContext;
+    const current = new Map<string, RenderSlide>();
+    let firstContainer = 0;
+    const models = deck.slides.map((slide) => {
+      while (firstContainer < deck.containers.length && deck.containers[firstContainer].start < slide.el.start) firstContainer++;
+      const key = `${firstContainer}\n${deck.doc.text.slice(slide.el.start, slide.el.end)}`;
+      const model = previous.get(key) ?? current.get(key) ?? renderOdpSlide(deck, slide);
+      current.set(key, model);
+      return model;
+    });
+    previous = current;
+    return models;
+  };
 }
 
 export function odpNotes(deck: OdpDeck, slide: OdpSlide): OdpNotes {

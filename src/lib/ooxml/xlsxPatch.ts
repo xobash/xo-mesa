@@ -1,8 +1,8 @@
 import { formatCellRange, formatCellRef, MAX_SHEET_COLUMNS, parseCellRange, parseCellRef, type CellRange } from "../cellRef";
 import { cellXml, type CellInput } from "./xlsxCells";
 import { findRow, readRowCells, type CellRecord, type SheetIndex } from "./xlsxSheet";
-import { findElement } from "./xlsxText";
-import { findAttributeSpan, findAttributeValue, localName, nextTag } from "./xmlScan";
+import { isNameBoundary } from "./xlsxText";
+import { findAttributeSpan, findAttributeValue, localName, nextTag, tagEnd } from "./xmlScan";
 
 // Splices edits into worksheet XML. Every byte outside a changed cell, a
 // renumbered reference or an updated count stays as it was; nothing is
@@ -14,18 +14,26 @@ export interface Splice {
   readonly text: string;
 }
 
+function inStartOrder(splices: readonly Splice[]): boolean {
+  for (let i = 1; i < splices.length; i++) if (splices[i].start < splices[i - 1].start) return false;
+  return true;
+}
+
 /** Applies non-overlapping splices; equal starts keep their order. Throws on overlap. */
 export function applySplices(source: string, splices: readonly Splice[]): string {
   if (!splices.length) return source;
-  const ordered = splices.map((s, i) => ({ s, i })).sort((a, b) => a.s.start - b.s.start || a.i - b.i).map((x) => x.s);
-  let out = "";
+  // A row move emits one splice per cell, mostly in document order already.
+  // `sort` is stable, so equal starts keep their order without an index key.
+  const ordered = inStartOrder(splices) ? splices : [...splices].sort((a, b) => a.start - b.start);
+  const out: string[] = [];
   let at = 0;
   for (const splice of ordered) {
     if (splice.start < at || splice.end < splice.start) throw new Error("Overlapping worksheet edits.");
-    out += source.slice(at, splice.start) + splice.text;
+    out.push(source.slice(at, splice.start), splice.text);
     at = splice.end;
   }
-  return out + source.slice(at);
+  out.push(source.slice(at));
+  return out.join("");
 }
 
 /** Map key of a 0-based cell address. */
@@ -147,16 +155,71 @@ export function patchSheetCells(index: SheetIndex, edits: ReadonlyMap<number, Ce
 
 // ---------- row insertion and deletion ----------
 
-function renumberRow(index: SheetIndex, i: number, newRow: number, out: Splice[]): void {
+/**
+ * Finds `<c>` start tags for callers that ask in ascending document order.
+ * A match past the asked range is kept for the next call, so a whole sheet
+ * is searched once however many rows have no cells.
+ */
+function cellFinder(xml: string, pfx: string): (from: number, to: number) => number {
+  const needle = `<${pfx}c`;
+  let found = -1;
+  return (from, to) => {
+    if (found < from) {
+      found = xml.indexOf(needle, from);
+      for (let guard = 0; guard <= xml.length && found >= 0 && !isNameBoundary(xml[found + needle.length]); guard++) found = xml.indexOf(needle, found + needle.length);
+      if (found < 0) found = Number.MAX_SAFE_INTEGER;
+    }
+    return found + needle.length <= to ? found : -1;
+  };
+}
+
+const CODE_A = 65;
+const CODE_Z = 90;
+const CODE_0 = 48;
+const CODE_9 = 57;
+
+/**
+ * Index of the row digits in a reference written as one or two capital
+ * letters and one to six digits ("AB12"), else -1. Such a reference is always
+ * inside the grid and keeps its letters when only the row changes.
+ */
+function plainRefDigits(xml: string, start: number, end: number): number {
+  let digits = start;
+  while (digits < end && xml.charCodeAt(digits) >= CODE_A && xml.charCodeAt(digits) <= CODE_Z) digits++;
+  const count = end - digits;
+  if (digits === start || digits - start > 2 || count < 1 || count > 6 || xml.charCodeAt(digits) === CODE_0) return -1;
+  for (let i = digits; i < end; i++) {
+    const ch = xml.charCodeAt(i);
+    if (ch < CODE_0 || ch > CODE_9) return -1;
+  }
+  return digits;
+}
+
+/** End of the `r` value when the cell tag at `c` begins `<c r="`, else -1. */
+function leadingRefEnd(xml: string, nameEnd: number): number {
+  return xml.startsWith(' r="', nameEnd) ? xml.indexOf('"', nameEnd + 4) : -1;
+}
+
+function renumberRow(index: SheetIndex, i: number, newRow: number, nextCell: (from: number, to: number) => number, out: Splice[]): void {
   const { xml, pfx } = index;
   const rowTag = nextTag(xml, index.rowStart[i])!;
   const r = findAttributeValue(xml, rowTag.attrStart, rowTag.attrEnd, "r")!;
-  out.push({ start: r.start, end: r.end, text: String(newRow + 1) });
+  const rowText = String(newRow + 1);
+  out.push({ start: r.start, end: r.end, text: rowText });
   let at = index.rowOpenEnd[i];
   const to = index.rowCloseStart[i];
+  const nameLength = pfx.length + 2;
   for (let guard = 0; guard <= to - at; guard++) {
-    const c = findElement(xml, `${pfx}c`, at, to);
+    const c = nextCell(at, to);
     if (c < 0) break;
+    // Usual shape `<c r="B12" ...>`: only the digits change, and nothing is parsed.
+    const quickEnd = leadingRefEnd(xml, c + nameLength);
+    const digits = quickEnd < 0 ? -1 : plainRefDigits(xml, c + nameLength + 4, quickEnd);
+    if (digits >= 0) {
+      out.push({ start: digits, end: quickEnd, text: rowText });
+      at = tagEnd(xml, quickEnd + 1);
+      continue;
+    }
     const tag = nextTag(xml, c, to)!;
     const ref = findAttributeValue(xml, tag.attrStart, tag.attrEnd, "r")!;
     const address = parseCellRef(xml.slice(ref.start, ref.end))!;
@@ -213,11 +276,12 @@ function shiftMerges(index: SheetIndex, at: number, delta: 1 | -1, out: Splice[]
  */
 export function shiftSheetRows(index: SheetIndex, at: number, delta: 1 | -1): string {
   const out: Splice[] = [];
+  const nextCell = cellFinder(index.xml, index.pfx);
   for (let i = 0; i < index.rowCount; i++) {
     const row = index.rowNumbers[i] - 1;
     if (row < at) continue;
     if (delta === -1 && row === at) { out.push({ start: index.rowStart[i], end: index.rowEnd[i], text: "" }); continue; }
-    renumberRow(index, i, row + delta, out);
+    renumberRow(index, i, row + delta, nextCell, out);
   }
   shiftMerges(index, at, delta, out);
   const dim = index.dimension;

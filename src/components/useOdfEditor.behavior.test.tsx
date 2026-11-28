@@ -176,6 +176,14 @@ it("saves the edited content against the opened bytes and re-adopts the saved pa
   expect(editor.status).toBe("Saved.");
   expect(editor.dirty).toBe(false);
   expect(editor.canUndo).toBe(false);
+  // The adopted package is the one the save check read back from these bytes.
+  const saved = disk.saves[0].bytes;
+  expect(editor.pkg?.original).toBe(saved);
+  expect(headingOf(editor.pkg!.original)).toBe("Saved title");
+  act(() => { editor.apply(rename("Saved again")); });
+  await act(async () => editor.save());
+  expect(disk.saves[1].expected).toBe(saved);
+  expect(headingOf(disk.saves[1].bytes)).toBe("Saved again");
 });
 
 it("a clean save writes nothing and says so", async () => {

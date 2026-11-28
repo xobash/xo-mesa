@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DocumentChangedOnDiskError, readDocumentBytes, saveDocumentBytes } from "../lib/documentBytesSave";
 import { pdfBytesEqual } from "../lib/pdfBytes";
 import { confirmAction } from "../lib/confirmAction";
-import { parseRtfDocument, rtfBytesFromSource, rtfSourceFromBytes, sameFormat, type RtfDocument, type RtfFormat } from "../lib/rtfDocument";
+import { parseRtfDocument, rtfBytesFromSource, rtfSourceFromBytes, type RtfDocument, type RtfFormat } from "../lib/rtfDocument";
 import { buildRtfEdit, rtfContentChanged } from "../lib/rtfEdit";
-import { applyRtfFormat, insertPlainText, paragraphsOf, readRtf, renderRtf, selectedFormats, unitsOf, type RtfParagraph } from "./rtfDom";
+import { applyRtfFormat, insertPlainText, paragraphsOf, readRtf, renderRtf, sameParagraphs, selectedFormats, shareParagraphs, unitsOf, type RtfParagraph } from "./rtfDom";
 import { formatBytes } from "../lib/formatBytes";
 import { SAVE_WAIT, useSaveLock } from "./useSaveLock";
 
@@ -120,9 +120,11 @@ export function useRtfEditor(file: RtfEditorFile | undefined, onDirtyChange?: (d
     const root = rootRef.current;
     const doc = docRef.current;
     if (!root || !doc || doc.readOnlyReason) return;
-    const next = readRtf(root, doc);
+    const read = readRtf(root, doc);
     const previous = currentRef.current;
-    if (previous && sameParagraphs(previous, next)) return;
+    if (previous && sameParagraphs(previous, read)) return;
+    // Unchanged paragraphs are the earlier snapshot's objects, so the history holds each of them once.
+    const next = previous ? shareParagraphs(previous, read) : read;
     if (previous) undoRef.current = [...undoRef.current.slice(1 - HISTORY_LIMIT), previous];
     redoRef.current = [];
     currentRef.current = next;
@@ -239,21 +241,4 @@ export function useRtfEditor(file: RtfEditorFile | undefined, onDirtyChange?: (d
   }, [adopt]);
 
   return { rootRef, load, dirty, status, saving, history, onInput, format, paste, save, discard, undo: () => restore("undo"), redo: () => restore("redo") };
-}
-
-function sameParagraphs(a: readonly RtfParagraph[], b: readonly RtfParagraph[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let k = 0; k < a.length; k++) {
-    const x = a[k].items;
-    const y = b[k].items;
-    if (x.length !== y.length) return false;
-    for (let j = 0; j < x.length; j++) {
-      const p = x[j];
-      const q = y[j];
-      if (p.kind !== q.kind) return false;
-      if (p.kind === "atom" && q.kind === "atom" && p.id !== q.id) return false;
-      if (p.kind === "char" && q.kind === "char" && (p.ch !== q.ch || !sameFormat(p.fmt, q.fmt))) return false;
-    }
-  }
-  return true;
 }

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { OdfPackage } from "../lib/odf/odfPackage";
-import { editContainerText, moveOdpSlide, odpNotes, openOdpDeck, readOdpDeck, renderOdpSlide, type OdpDeck } from "../lib/odf/odpDeck";
+import { createOdpSlideRenderer, editContainerText, moveOdpSlide, odpNotes, openOdpDeck, readOdpDeck, type OdpDeck } from "../lib/odf/odpDeck";
 import type { RenderShape, RenderSlide, TextBodyRef } from "../lib/pptx/pptxRender";
 import { parseXmlTree } from "../lib/pptx/xmlTree";
 import type { VaultFile } from "../types";
@@ -38,7 +38,15 @@ export function OdfSlidesView({ file, editable, onDirtyChange }: { file: VaultFi
   const [mainRef, mainWidth] = useMainSlideWidth();
   const [index, setIndex] = useState(0);
   const [selected, setSelected] = useState<TextBodyRef | null>(null);
-  const models = useMemo(() => (deck ? deck.slides.map((s) => renderOdpSlide(deck, s)) : []), [deck]);
+  // One renderer per opened package: it hands back the same model for each
+  // slide an edit did not touch, so only the edited slide is drawn again.
+  const renderer = useRef<{ pkg: OdfPackage; render: ReturnType<typeof createOdpSlideRenderer> } | null>(null);
+  const pkg = editor.pkg;
+  const models = useMemo(() => {
+    if (!deck || !pkg) return [];
+    if (renderer.current?.pkg !== pkg) renderer.current = { pkg, render: createOdpSlideRenderer() };
+    return renderer.current.render(deck);
+  }, [deck, pkg]);
   const count = deck?.slides.length ?? 0;
   const current = Math.min(index, Math.max(0, count - 1));
   useEffect(() => { setSelected(null); }, [current]);

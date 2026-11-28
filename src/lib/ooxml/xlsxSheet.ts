@@ -182,15 +182,17 @@ function columnWidths(xml: string, children: readonly TopLevelChild[]): Map<numb
   return widths;
 }
 
-/** Anchors of shared formulas and ranges of array formulas, found by attribute search. */
+/** Anchors of shared formulas and ranges of array formulas, found by attribute search; `any` when the range has a formula at all. */
 function formulaAnchors(xml: string, pfx: string, from: number, to: number) {
   const shared = new Map<string, SheetFormulaAnchor>();
   const arrays: CellRange[] = [];
   let at = from;
   let sharedSeen = false;
+  let any = false;
   for (let guard = 0; guard <= to - from; guard++) {
     const f = findElement(xml, `${pfx}f`, at, to);
     if (f < 0) break;
+    any = true;
     const tag = nextTag(xml, f, to);
     if (!tag) break;
     at = tag.end;
@@ -209,7 +211,7 @@ function formulaAnchors(xml: string, pfx: string, from: number, to: number) {
       if (close > 0 && close < to) shared.set(si, { ...anchor, text: decodeXmlText(xml.slice(tag.end, close)) });
     }
   }
-  return { shared, arrays, sharedSeen };
+  return { shared, arrays, sharedSeen, any };
 }
 
 function dimensionOf(xml: string, children: readonly TopLevelChild[]): SheetIndex["dimension"] {
@@ -243,14 +245,14 @@ export function indexWorksheet(xml: string): SheetIndex {
   return {
     xml, pfx, children, dataOpenEnd, dataSelfClosing, dataClose,
     rowCount: rows.numbers.length,
-    rowNumbers: Int32Array.from(rows.numbers), rowStart: Int32Array.from(rows.start), rowOpenEnd: Int32Array.from(rows.openEnd),
-    rowCloseStart: Int32Array.from(rows.closeStart), rowEnd: Int32Array.from(rows.end),
+    rowNumbers: new Int32Array(rows.numbers), rowStart: new Int32Array(rows.start), rowOpenEnd: new Int32Array(rows.openEnd),
+    rowCloseStart: new Int32Array(rows.closeStart), rowEnd: new Int32Array(rows.end),
     usedRows: Math.max(lastRow, merges.reduce((m, r) => Math.max(m, r.bottom + 1), 0)),
     usedColumns: Math.max(maxCol + 1, merges.reduce((m, r) => Math.max(m, r.right + 1), 0)),
     dimension, merges, frozenRows: frozen.rows, frozenColumns: frozen.cols,
     columnWidths: columnWidths(xml, children),
     defaultColumnWidth: Number(formatPr?.get("defaultColWidth")) || Number(formatPr?.get("baseColWidth")) + 0.71 || 8.43,
-    hasFormulas: findElement(xml, `${pfx}f`, dataOpenEnd, dataClose) >= 0,
+    hasFormulas: anchors.any,
     sharedFormulas: anchors.shared, hasSharedFormulas: anchors.sharedSeen, arrayRanges: anchors.arrays,
     structureIssue: !ordered ? "its rows are out of order" : markup ? "its cell data contains comments or CDATA sections" : null,
     implicitRefs,

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   bumpActivityAmount,
   decayActivity,
@@ -62,6 +62,62 @@ describe("activity tracker", () => {
     for (let i = 0; i < ACTIVITY_MAX_RECORDS + 20; i++) {
       bumpActivityAmount(`bounded-${i}`, 0.1, "read");
     }
+    expect(activeRecords(0).length).toBeLessThanOrEqual(ACTIVITY_MAX_RECORDS);
+  });
+
+  it("evicts the least recently bumped record first at the cap", () => {
+    const now = vi.spyOn(performance, "now");
+    let clock = 1_000_000;
+    now.mockImplementation(() => clock);
+    try {
+      decayActivity(clock); // drop what earlier tests left
+      clock += 60_000;
+      decayActivity(clock);
+      expect(activeRecords(0)).toHaveLength(0);
+      for (let i = 0; i < ACTIVITY_MAX_RECORDS; i++) { clock += 0.001; bumpActivityAmount(`cap-${i}`, 1, "read"); }
+      clock += 0.001;
+      bumpActivityAmount("cap-0", 1, "read"); // the oldest id is fresh again
+      clock += 0.001;
+      bumpActivityAmount("cap-new-a", 1, "read");
+      clock += 0.001;
+      bumpActivityAmount("cap-new-b", 1, "read");
+      const ids = new Set(activeRecords(0).map((record) => record.id));
+      expect(ids.size).toBe(ACTIVITY_MAX_RECORDS);
+      expect(["cap-0", "cap-new-a", "cap-new-b", "cap-3"].every((id) => ids.has(id))).toBe(true);
+      expect(ids.has("cap-1") || ids.has("cap-2")).toBe(false);
+      // A record that fades out leaves the eviction order too.
+      clock += 60_000;
+      decayActivity(clock);
+      expect(activeRecords(0)).toHaveLength(0);
+      for (let i = 0; i < ACTIVITY_MAX_RECORDS; i++) { clock += 0.001; bumpActivityAmount(`again-${i}`, 1, "read"); }
+      expect(activeRecords(0)).toHaveLength(ACTIVITY_MAX_RECORDS);
+    } finally {
+      now.mockRestore();
+      decayActivity(performance.now());
+    }
+  });
+
+  it("decays a burst of bumps the same as bumps a frame apart", () => {
+    const now = vi.spyOn(performance, "now");
+    let clock = 5_000_000;
+    now.mockImplementation(() => clock);
+    try {
+      decayActivity(clock);
+      bumpActivityAmount("burst-first", 1, "edit");
+      for (let i = 0; i < 50; i++) { clock += 0.01; bumpActivityAmount(`burst-${i}`, 0.5, "edit"); }
+      clock += 219.5; // 220 ms after the first bump: one time constant
+      decayActivity(clock);
+      expect(getActivity("burst-first")!.intensity).toBeCloseTo(Math.exp(-1), 6);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("takes a 12,000-file batch without scanning every record per bump", () => {
+    const started = performance.now();
+    for (let i = 0; i < 12_000; i++) bumpActivityAmount(`batch-${i}`, 0.4, "create");
+    // Measured: 1.1 s before the fix at 10,000 bumps, about 15 ms after.
+    expect(performance.now() - started).toBeLessThan(400);
     expect(activeRecords(0).length).toBeLessThanOrEqual(ACTIVITY_MAX_RECORDS);
   });
 

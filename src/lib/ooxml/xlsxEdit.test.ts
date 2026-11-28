@@ -9,7 +9,9 @@ import {
   addSheet, cellEditRefusal, cellView, createDraft, isDraftClean, renameSheet, setCellText,
   XlsxEditRefusal, type XlsxDraft, type XlsxSession,
 } from "./xlsxDraft";
+import { applySplices, shiftSheetRows } from "./xlsxPatch";
 import { shiftRows } from "./xlsxRowShift";
+import { indexWorksheet } from "./xlsxSheet";
 import { MAX_SHEET_ROWS } from "../cellRef";
 import { planXlsxSave, verifyXlsxBytes, writeXlsx } from "./xlsxSave";
 import { xmlWellFormedProblem } from "./xmlWellFormed";
@@ -271,6 +273,65 @@ describe("xlsx rows and sheets", () => {
     expect(reopened.session.workbook.sheets.map((s) => [s.name, s.part])).toContainEqual(["New", part]);
     expect(cellView(reopened.session, createDraft(reopened.session), part, 0, 0).display).toBe("hello");
     for (const name of plan.changes.keys()) expect(xmlWellFormedProblem(text(reopened.session.pkg.parts.get(name)!)), name).toBeNull();
+  });
+});
+
+/**
+ * A ROW MOVE RENUMBERS EVERY CELL REFERENCE, WHATEVER ITS SPELLING.
+ *
+ * The usual `<c r="B12"` is renumbered without parsing; every other spelling
+ * goes through the reference parser. Both must give the canonical reference
+ * and leave all other text as it was.
+ */
+describe("xlsx row renumbering", () => {
+  const sheet = (rows: string, pfx = "", tail = "") => pfx
+    ? `<?xml version="1.0"?><x:worksheet xmlns:x="${MAIN_NS}"><x:sheetData>${rows}</x:sheetData>${tail}</x:worksheet>`
+    : worksheetXml(`<sheetData>${rows}</sheetData>${tail}`);
+  const dataOf = (xml: string) => xml.slice(xml.indexOf("sheetData>") + 10, xml.lastIndexOf("</"));
+
+  it("renumbers plain, unusual and prefixed references alike", () => {
+    const rows = `<row r="1"><c r="A1"><v>1</v></c><c r="a1"/><c r="$B$1"/><c s="3" r="C1"/><c  r="D1"/><c r='E1'/><c r="XFD1"/><c r="ZZ1" t="s"><v>0</v></c></row>`
+      + `<row r="2"></row><row r="3"/>`
+      + `<row r="999999" ht="20"><c r="AB999999" note="x>y &lt;c "><v>2</v></c><c r="AC999999"/></row>`
+      + `<row r="1000000"><c r="A1000000"/></row>`;
+    const moved = shiftSheetRows(indexWorksheet(sheet(rows)), 0, 1);
+    expect(dataOf(moved)).toContain(
+      `<row r="2"><c r="A2"><v>1</v></c><c r="A2"/><c r="B2"/><c s="3" r="C2"/><c  r="D2"/><c r='E2'/><c r="XFD2"/><c r="ZZ2" t="s"><v>0</v></c></row>`
+      + `<row r="3"></row><row r="4"/>`
+      + `<row r="1000000" ht="20"><c r="AB1000000" note="x>y &lt;c "><v>2</v></c><c r="AC1000000"/></row>`
+      + `<row r="1000001"><c r="A1000001"/></row>`,
+    );
+    expect(xmlWellFormedProblem(moved)).toBeNull();
+    const prefixed = shiftSheetRows(indexWorksheet(sheet(`<x:row r="4"><x:c r="A4"/><x:cols/><x:c r="b4"/></x:row><x:row r="5"></x:row>`, "x:")), 4, -1);
+    expect(prefixed).toContain(`<x:sheetData><x:row r="4"><x:c r="A4"/><x:cols/><x:c r="b4"/></x:row></x:sheetData>`);
+  });
+
+  it("deletes a row and renumbers the rows after it, through rows without cells", () => {
+    const empty = Array.from({ length: 40 }, (_, i) => `<row r="${i + 2}"></row>`).join("");
+    const xml = sheet(`<row r="1"><c r="A1"/></row>${empty}<row r="42"><c r="A42"/><c r="B42"/></row>`, "", `<mergeCells count="1"><mergeCell ref="A42:B42"/></mergeCells>`);
+    const moved = shiftSheetRows(indexWorksheet(xml), 0, -1);
+    const index = indexWorksheet(moved);
+    expect([index.rowCount, index.rowNumbers[0], index.rowNumbers[40]]).toEqual([41, 1, 41]);
+    expect(moved).toContain(`<row r="41"><c r="A41"/><c r="B41"/></row></sheetData><mergeCells count="1"><mergeCell ref="A41:B41"/></mergeCells>`);
+  });
+
+  it("refuses a reference outside the grid as before", () => {
+    expect(() => shiftSheetRows(indexWorksheet(sheet(`<row r="1"><c r="A1"/><c r="ZZZZ1"/></row>`)), 0, 1)).toThrow(TypeError);
+  });
+
+  it("reports formulas only when the cell data has one", () => {
+    expect(indexWorksheet(sheet(`<row r="1"><c r="A1"><v>1</v></c></row>`, "", `<f>outside</f>`)).hasFormulas).toBe(false);
+    expect(indexWorksheet(sheet(`<row r="1"><c r="A1"><f>1+1</f><v>2</v></c></row>`)).hasFormulas).toBe(true);
+    expect(indexWorksheet(sheet(`<row r="1"><c r="A1"><foo/></c></row>`)).hasFormulas).toBe(false);
+  });
+
+  it("applies splices in start order and keeps the given order at one position", () => {
+    const splices = [{ start: 4, end: 5, text: "E" }, { start: 2, end: 2, text: "x" }, { start: 2, end: 2, text: "y" }, { start: 0, end: 1, text: "" }];
+    expect(applySplices("abcdef", splices)).toBe("bxycdEf");
+    expect(applySplices("abcdef", [...splices].reverse().reverse())).toBe("bxycdEf");
+    expect(applySplices("abcdef", [{ start: 1, end: 2, text: "B" }, { start: 3, end: 3, text: "-" }])).toBe("aBc-def");
+    expect(() => applySplices("abcdef", [{ start: 3, end: 5, text: "" }, { start: 1, end: 4, text: "" }])).toThrow(/Overlapping/);
+    expect(() => applySplices("abcdef", [{ start: 1, end: 4, text: "" }, { start: 3, end: 5, text: "" }])).toThrow(/Overlapping/);
   });
 });
 

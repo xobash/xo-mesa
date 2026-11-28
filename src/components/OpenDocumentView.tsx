@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { placeCaretAtEnd } from "../lib/caretAtEnd";
 import type { OdfPackage } from "../lib/odf/odfPackage";
 import { applyOdtEdit, openOdtDocument, readOdtDocument, type OdtDocument, type OdtRun } from "../lib/odf/odtDocument";
@@ -14,6 +14,7 @@ import { useOdfEditor, type OdfDraftSpec } from "./useOdfEditor";
 // extension picks the view and the package's mimetype must agree.
 
 const MAX_BLOCKS_STEP = 2000;
+const NO_RUNS: readonly OdtRun[] = [];
 const UTF8 = new TextEncoder();
 
 const TEXT_SPEC: OdfDraftSpec<string> = {
@@ -23,13 +24,20 @@ const TEXT_SPEC: OdfDraftSpec<string> = {
   check: (saved) => { openOdtDocument(saved); },
 };
 
-/** The document model for a draft; the opened model when nothing changed. */
+/**
+ * The document model for a draft; the opened model when nothing changed. Each
+ * model is read with the one before it for the same package, so paragraphs an
+ * edit did not touch are taken over (`readOdtDocument`).
+ */
 function useDraftOdt(pkg: OdfPackage | null, draft: string | null): OdtDocument | null {
+  const last = useRef<{ pkg: OdfPackage; odt: OdtDocument } | null>(null);
   return useMemo(() => {
     if (!pkg || draft === null) return null;
     try {
       const doc = draft === pkg.content.text ? pkg.content : parseXmlTree(UTF8.encode(draft));
-      return readOdtDocument(doc, pkg.styles, pkg.policy.trackedChanges);
+      const odt = readOdtDocument(doc, pkg.styles, pkg.policy.trackedChanges, last.current?.pkg === pkg ? last.current.odt : null);
+      last.current = { pkg, odt };
+      return odt;
     } catch {
       return null;
     }
@@ -46,6 +54,15 @@ function Runs({ runs }: { runs: readonly OdtRun[] }) {
   if (!runs.length) return <br />;
   return <>{runs.map((r, i) => <span key={i} style={runStyle(r)}>{r.text}</span>)}</>;
 }
+
+/**
+ * One paragraph's text. Memoized: an unchanged paragraph keeps its `runs`
+ * array from one model to the next, so a key press draws one paragraph again.
+ */
+const ParagraphText = memo(function ParagraphText({ index, heading, listLevel, runs, onPick }: { index: number; heading: number; listLevel: number; runs: readonly OdtRun[]; onPick: ((index: number) => void) | null }) {
+  const Tag = (heading ? `h${Math.min(6, heading)}` : "p") as "p";
+  return <Tag className="odt-para" onClick={onPick ? () => onPick(index) : undefined}>{listLevel > 0 && <span className="odt-bullet" aria-hidden="true">• </span>}<Runs runs={runs} /></Tag>;
+});
 
 function ParagraphEditor({ odt, index, onText, onFormat }: { odt: OdtDocument; index: number; onText: (text: string) => void; onFormat: (start: number, end: number, prop: FormatProp) => void }) {
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -74,16 +91,18 @@ function OdtTextView({ file, editable, onDirtyChange }: { file: VaultFile; edita
   const imageUrl = useOdfImageUrls(editor.pkg);
   const [selected, setSelected] = useState<number | null>(null);
   const [limit, setLimit] = useState(MAX_BLOCKS_STEP);
+  // `pick` keeps one identity so memoized paragraphs are not drawn again; it calls the handler of the latest render.
+  const pickRef = useRef<(index: number) => void>(() => {});
+  const pick = useCallback((index: number) => pickRef.current(index), []);
   if (editor.load.state === "loading") return <div className="editor-empty">Opening document…</div>;
   if (editor.load.state === "failed") return <Failed file={file} message={editor.load.message} />;
   if (!odt) return <Failed file={file} message="This file is not an OpenDocument text document." />;
   const editing = editable && editor.editing;
+  pickRef.current = (index) => { editor.endCoalesce(); setSelected(index); };
   const paragraphNode = (index: number, heading: number, listLevel: number, runs: readonly OdtRun[], key: string | number): ReactNode => {
-    const Tag = (heading ? `h${Math.min(6, heading)}` : "p") as "p";
-    const pick = editing ? () => { editor.endCoalesce(); setSelected(index); } : undefined;
     return (
       <div key={key} className={`odt-block${editing ? " is-editable" : ""}${selected === index && editing ? " is-selected" : ""}`} style={listLevel ? { marginLeft: `${listLevel * 1.5}em` } : undefined}>
-        <Tag className="odt-para" onClick={pick}>{listLevel > 0 && <span className="odt-bullet" aria-hidden="true">• </span>}<Runs runs={runs} /></Tag>
+        <ParagraphText index={index} heading={heading} listLevel={listLevel} runs={runs} onPick={editing ? pick : null} />
         {editing && selected === index && (
           <ParagraphEditor odt={odt} index={index}
             onText={(text) => editor.apply(() => applyOdtEdit(odt, { kind: "text", paragraph: index, text }), `p${index}`)}
@@ -91,10 +110,6 @@ function OdtTextView({ file, editable, onDirtyChange }: { file: VaultFile; edita
         )}
       </div>
     );
-  };
-  const runsAt = (index: number) => {
-    const block = odt.blocks.find((b) => b.kind === "paragraph" && b.index === index);
-    return block?.kind === "paragraph" ? block.runs : [];
   };
   return (
     <div className="odt-view" data-testid="odt-view">
@@ -110,7 +125,7 @@ function OdtTextView({ file, editable, onDirtyChange }: { file: VaultFile; edita
           }
           return (
             <table key={`t${block.key}`} className="odt-table"><tbody>
-              {block.rows.map((row, r) => <tr key={r}>{row.map((cell, c) => <td key={c}>{cell.map((index) => paragraphNode(index, 0, 0, runsAt(index), index))}</td>)}</tr>)}
+              {block.rows.map((row, r) => <tr key={r}>{row.map((cell, c) => <td key={c}>{cell.map((index) => paragraphNode(index, 0, 0, odt.runs[index] ?? NO_RUNS, index))}</td>)}</tr>)}
             </tbody></table>
           );
         })}

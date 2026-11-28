@@ -473,6 +473,15 @@ difference. An added or removed final line break still shows as a change.
 Applying a change, or typing in **Reviewed text**, keeps the reviewed text's own
 line endings, so a review never produces a mixed file by accident.
 
+The comparison stays fast on a large note. When the two copies differ over a
+long stretch (more than about 2,900 lines on each side after the shared
+beginning), Mesa finds a smallest set of changed lines without comparing every
+line with every other line; where repeated lines allow several equally small
+results, it may pick a different one than for a short note. If the copies then
+differ in more than 2,048 lines, the whole differing stretch is shown as one
+change. Measured (Node 22, 1 MiB note, 20,000 lines, one early and one late
+change): 5.2 s and about 800 MB before this rule, 14 ms with it.
+
 A failed read, preservation write, or baseline check stops the review save.
 If the final save fails, the reviewed buffer remains in save recovery. Reopen a
 stale comparison instead of overriding newer disk content. This is an explicit

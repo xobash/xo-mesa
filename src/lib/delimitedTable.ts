@@ -223,6 +223,26 @@ export function removeColumn(table: DelimitedTable, at: number): DelimitedTable 
   return withRows(table, rows, table.columns - 1);
 }
 
+/**
+ * Rough bytes an undo copy of `older` keeps in memory that `newer`, the table
+ * one edit later, does not hold too: its row list, and every decoded row that
+ * is not also a row of `newer`. One edit moves rows by at most one place, so
+ * the same place and its two neighbours are checked. Rows still read from the
+ * source text are shared with every copy and count as nothing.
+ */
+export function tableUndoBytes(older: DelimitedTable, newer: DelimitedTable): number {
+  const rows = older.rows;
+  const others = newer.rows;
+  let bytes = rows.length * 8;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row.cells || row === others[i] || row === others[i - 1] || row === others[i + 1]) continue;
+    bytes += 48 + row.cells.length * 16;
+    for (const cell of row.cells) bytes += cell.length * 2;
+  }
+  return bytes;
+}
+
 const DELIMITER_CANDIDATES = [",", ";", "\t", "|"];
 /** Bounded sample for delimiter detection: leading rows of the first 16 KiB. */
 const DETECT_PREFIX_CHARS = 16 * 1024;

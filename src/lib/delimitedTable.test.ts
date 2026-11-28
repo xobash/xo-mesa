@@ -12,6 +12,7 @@ import {
   scanDelimited,
   serializeTable,
   setCell,
+  tableUndoBytes,
 } from "./delimitedTable";
 
 describe("parseDelimitedRows", () => {
@@ -163,5 +164,27 @@ describe("helpers", () => {
     expect(serializeTable(setCell(table, 5, 0, "x"))).toBe(
       row.repeat(5) + 'x,"two, quoted",3\r\n' + row.repeat(99_994)
     );
+  });
+});
+
+describe("undo memory estimate", () => {
+  const base = scanDelimited(Array.from({ length: 1000 }, (_, i) => `a${i},b${i},c${i}`).join("\n") + "\n", ",");
+
+  it("counts the row list, plus only decoded rows the newer table does not hold", () => {
+    const list = base.rows.length * 8;
+    const edited = setCell(base, 10, 1, "changed");
+    expect(tableUndoBytes(base, edited)).toBe(list); // every row of the older table is still read from the source
+    const again = setCell(edited, 10, 1, "changed again");
+    expect(tableUndoBytes(edited, again)).toBe(list + 48 + 3 * 16 + ("a10".length + "changed".length + "c10".length) * 2);
+    const other = setCell(again, 500, 0, "x");
+    expect(tableUndoBytes(again, other)).toBe(list); // row 10 is the same object in both
+  });
+
+  it("does not charge for rows that only moved by a row insert or delete", () => {
+    const wide = insertColumn(base, 0); // every row decoded
+    const list = wide.rows.length * 8;
+    expect(tableUndoBytes(wide, insertRow(wide, 400))).toBe(list);
+    expect(tableUndoBytes(wide, removeRow(wide, 400))).toBeLessThan(list + 200);
+    expect(tableUndoBytes(wide, insertColumn(wide, 1))).toBeGreaterThan(1000 * 100);
   });
 });

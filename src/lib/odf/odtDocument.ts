@@ -41,6 +41,8 @@ export interface OdtDocument {
   readonly styles: OdfStyles;
   readonly paragraphs: readonly OdfParagraph[];
   readonly paragraphStyle: readonly (string | null)[];
+  /** Display runs of every paragraph, by paragraph index (table cells included). */
+  readonly runs: readonly (readonly OdtRun[])[];
   readonly blocks: readonly OdtBlock[];
 }
 
@@ -113,7 +115,7 @@ function tableOf(el: XmlEl, key: number, paragraphIndex: ReadonlyMap<XmlEl, numb
 interface Pending { el: XmlEl; listLevel: number }
 
 /** Blocks in reading order. Tables are flattened one level; frames become image blocks after their paragraph. */
-function buildBlocks(body: XmlEl, paragraphIndex: ReadonlyMap<XmlEl, number>, styles: OdfStyles, paragraphs: readonly OdfParagraph[], paragraphStyle: readonly (string | null)[]): OdtBlock[] {
+function buildBlocks(body: XmlEl, paragraphIndex: ReadonlyMap<XmlEl, number>, runs: readonly (readonly OdtRun[])[]): OdtBlock[] {
   const blocks: OdtBlock[] = [];
   const todo: Pending[] = [...body.children].reverse().map((el) => ({ el, listLevel: 0 }));
   for (let guard = 0; todo.length && guard < 2_000_000; guard++) {
@@ -121,7 +123,7 @@ function buildBlocks(body: XmlEl, paragraphIndex: ReadonlyMap<XmlEl, number>, st
     if (isParagraph(el)) {
       const index = paragraphIndex.get(el)!;
       const heading = isOdf(el, "text", "h") ? Math.max(1, Math.min(10, Number(odfAttr(el, "text", "outline-level") ?? 1) || 1)) : 0;
-      blocks.push({ kind: "paragraph", index, heading, listLevel, runs: runsOf(styles, paragraphStyle[index], paragraphs[index]) });
+      blocks.push({ kind: "paragraph", index, heading, listLevel, runs: runs[index] });
       for (const frame of el.children.concat(el.children.flatMap((c) => c.children))) if (isOdf(frame, "draw", "frame")) blocks.push(imageOf(frame, frame.start));
       continue;
     }
@@ -134,19 +136,62 @@ function buildBlocks(body: XmlEl, paragraphIndex: ReadonlyMap<XmlEl, number>, st
   return blocks;
 }
 
-/** Reads an .odt content part into paragraphs and blocks. */
-export function readOdtDocument(doc: XmlDoc, stylesDoc: XmlDoc | null, trackedChanges: boolean): OdtDocument {
+/** What a later read of the same document can take over from this one. */
+interface OdtCarry {
+  readonly doc: XmlDoc;
+  readonly stylesDoc: XmlDoc | null;
+  /** Root start tag and automatic styles: what a paragraph's reading and look depend on outside itself. */
+  readonly rootTag: string;
+  readonly automaticStyles: string;
+  readonly elements: readonly XmlEl[];
+  /** Paragraphs as read, before the tracked-change refusal is added. */
+  readonly reads: readonly OdfParagraph[];
+}
+
+const carries = new WeakMap<OdtDocument, OdtCarry>();
+
+function automaticStylesText(doc: XmlDoc): string {
+  const el = doc.root.children.find((c) => isOdf(c, "office", "automatic-styles"));
+  return el ? doc.text.slice(el.start, el.end) : "";
+}
+
+/**
+ * Reads an .odt content part into paragraphs and blocks.
+ *
+ * `previous` is the model of an earlier text of the same opened package. A
+ * paragraph whose XML is the same as the paragraph at the same position there
+ * is taken over instead of read again, and keeps the same `runs` array when
+ * the styles are the same too. An edit changes one paragraph, so a key press
+ * in a long document reads one paragraph, not all of them.
+ */
+export function readOdtDocument(doc: XmlDoc, stylesDoc: XmlDoc | null, trackedChanges: boolean, previous: OdtDocument | null = null): OdtDocument {
   const body = officeText(doc);
   const styles = readOdfStyles(doc, stylesDoc);
   const elements = descendants(body, tracksRegion).filter(isParagraph);
+  const rootTag = doc.text.slice(doc.root.start, doc.root.innerStart);
+  const automaticStyles = automaticStylesText(doc);
+  const carry = previous ? carries.get(previous) : undefined;
+  const from = carry && carry.elements.length === elements.length && carry.doc.utf8 === doc.utf8 && carry.rootTag === rootTag ? carry : null;
+  const sameStyles = !!from && from.stylesDoc === stylesDoc && from.automaticStyles === automaticStyles;
+  const reads: OdfParagraph[] = [];
+  const paragraphStyle: (string | null)[] = [];
+  const runs: (readonly OdtRun[])[] = [];
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    const old = from?.elements[i];
+    const same = !!from && !!old && old.end - old.start === el.end - el.start && doc.text.startsWith(from.doc.text.slice(old.start, old.end), el.start);
+    reads.push(same ? { ...from.reads[i], el } : readParagraph(doc, el));
+    paragraphStyle.push(odfAttr(el, "text", "style-name"));
+    runs.push(same && sameStyles ? previous!.runs[i] : runsOf(styles, paragraphStyle[i], reads[i]));
+  }
   const changed = trackedChanges ? changedParagraphs(body, elements) : new Set<number>();
-  const paragraphs = elements.map((el, i) => {
-    const p = readParagraph(doc, el);
-    return changed.has(i) && !p.refusal ? { ...p, refusal: "This paragraph is part of a tracked change, which Mesa does not edit." } : p;
-  });
-  const paragraphStyle = elements.map((el) => odfAttr(el, "text", "style-name"));
+  const paragraphs = changed.size
+    ? reads.map((p, i) => (changed.has(i) && !p.refusal ? { ...p, refusal: "This paragraph is part of a tracked change, which Mesa does not edit." } : p))
+    : reads;
   const paragraphIndex = new Map(elements.map((el, i) => [el, i]));
-  return { doc, styles, paragraphs, paragraphStyle, blocks: buildBlocks(body, paragraphIndex, styles, paragraphs, paragraphStyle) };
+  const odt: OdtDocument = { doc, styles, paragraphs, paragraphStyle, runs, blocks: buildBlocks(body, paragraphIndex, runs) };
+  carries.set(odt, { doc, stylesDoc, rootTag, automaticStyles, elements, reads });
+  return odt;
 }
 
 export function openOdtDocument(pkg: OdfPackage): OdtDocument {

@@ -26,7 +26,8 @@ const SHEET_SPEC: OdfDraftSpec<OdsEdits> = {
   initial: () => NO_EDITS,
   content: (pkg, edits) => applyOdsEdits(workbookOf(pkg), edits),
   isClean: (_pkg, edits) => edits.size === 0,
-  check: (saved, edits) => checkOdsEdits(openOdsWorkbook(saved), edits),
+  // `workbookOf` keeps the read-back workbook: the editor adopts this same package after the save.
+  check: (saved, edits) => checkOdsEdits(workbookOf(saved), edits),
 };
 
 function mergeAt(merges: readonly CellRange[], row: number, col: number): CellRange | null {

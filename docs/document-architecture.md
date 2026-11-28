@@ -128,7 +128,9 @@ newline are kept: untouched lines keep their break (`lib/lineEndings.ts`) and
   consistently, respecting quotes; ties keep the extension's default, and
   edits keep the file's delimiter. Select a cell, then Enter, F2 or a
   double-click edits; Enter or Tab commits, Escape cancels, Shift+Enter adds a
-  line break in the cell. Add or delete rows and columns, and Undo (50 steps).
+  line break in the cell. Add or delete rows and columns, and Undo (50 steps;
+  on a very large table fewer, because the steps together may hold at most
+  about 128 MiB, and the last change can always be undone).
   `lib/delimitedTable.ts` indexes rows in one pass and keeps each untouched
   row's exact source text and break; an edited row is re-serialized with RFC
   4180 quoting, new rows take the dominant break, and the final-newline shape
@@ -162,8 +164,11 @@ in the body, raw 8-bit text, `\'xx` escapes under a code page other than
 Editing happens only in the main pane, where the store's unsaved-edit guard
 (`setBinaryDirty`) protects navigation, close and vault actions. A file that
 changes on disk while edited keeps the edits and blocks Save; Discard
-(confirmed) loads the disk version. `rtfEdit.test.ts` holds byte-exact
-round-trip fixtures in TextEdit, Word and WordPad style.
+(confirmed) loads the disk version. Undo keeps up to 100 snapshots; a
+snapshot shares every paragraph that did not change with the one before it,
+so the history costs the edited paragraphs, not the document per step.
+`rtfEdit.test.ts` holds byte-exact round-trip fixtures in TextEdit, Word and
+WordPad style.
 
 ## Image editing
 

@@ -230,6 +230,69 @@ fn idle_large_baseline_stays_local() {
     assert_eq!(journal.known.len(), 12_000);
 }
 
+/// The wire form is built from borrowed fields. It must stay byte-identical
+/// to the journal serialized with its local-only fields cleared, which is
+/// what peers on older builds send and parse.
+#[test]
+fn wire_journal_equals_the_journal_with_local_fields_cleared() {
+    let entry = |rel: &str| JournalEntry {
+        rel: rel.into(),
+        size: 3,
+        hash: "ab".repeat(32),
+    };
+    let operation = |sequence: u64, to: Option<&str>| JournalOperation {
+        id: format!("local:{sequence}"),
+        device: "local".into(),
+        sequence,
+        at_ms: 7,
+        kind: if to.is_some() {
+            JournalOperationKind::Rename
+        } else {
+            JournalOperationKind::Delete
+        },
+        from: "a \"quoted\" \u{e9}.md".into(),
+        to: to.map(str::to_string),
+        size: 3,
+        hash: "cd".repeat(32),
+    };
+    let mut journal = SyncJournal::empty("local".into());
+    journal.next_sequence = 3;
+    journal.operations = vec![operation(1, None), operation(2, Some("b.md"))];
+    journal.applied = vec!["peer:1".into(), "peer:2".into()];
+    journal
+        .acked_by
+        .insert("peer".into(), vec!["local:1".into()]);
+    journal.peers_seen = vec!["peer".into()];
+    journal.known = vec![entry("a.md"), entry("b.md")];
+    journal.peer_bases.insert("fp".into(), vec![entry("a.md")]);
+    journal
+        .peer_bindings
+        .insert("fp".into(), vec!["peer".into()]);
+    journal.retired_peers = vec!["old".into()];
+    journal.retired_fingerprints = vec!["old-fp".into()];
+
+    let mut cleared = journal.clone();
+    cleared.known.clear();
+    cleared.peer_bases.clear();
+    cleared.peer_bindings.clear();
+    cleared.retired_peers.clear();
+    cleared.retired_fingerprints.clear();
+    let wire = journal_wire_bytes(&journal).unwrap();
+    assert_eq!(
+        String::from_utf8(wire.clone()).unwrap(),
+        serde_json::to_string(&cleared).unwrap()
+    );
+    assert_eq!(
+        serde_json::from_slice::<SyncJournal>(&wire).unwrap(),
+        cleared
+    );
+    assert_eq!(
+        journal.known.len(),
+        2,
+        "the local journal keeps its manifest"
+    );
+}
+
 #[test]
 fn removed_peer_cannot_be_reintroduced_by_gossip() {
     let mut journal = SyncJournal::empty("local".into());

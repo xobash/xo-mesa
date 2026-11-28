@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyTextDiffChoice, diffTextLines, lineEndingOnlyLines } from "./textDiff";
+import { applyTextDiffChoice, DIFF_SCRIPT_CHANGE_LIMIT, DIFF_TABLE_CELL_LIMIT, diffTextLines, lineEndingOnlyLines } from "./textDiff";
 
 describe("conflict text diffs", () => {
   const reference = (original: string[], other: string[]) => {
@@ -68,6 +68,85 @@ describe("conflict text diffs", () => {
       const b = Array.from({ length: random() + random() }, () => `${random()}\n`);
       expect(diffTextLines(a.join(""), b.join(""))).toEqual(reference(a, b));
     }
+  });
+
+  /** Copies large enough to pass the table limit, with seeded edits. */
+  const largeCopies = (lines: number, edits: number, seed: number) => {
+    let state = seed;
+    const random = (below: number) => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0) % below);
+    // A third of the lines repeat, so equal alignments exist.
+    const a = Array.from({ length: lines }, (_, i) => (i % 3 === 0 ? `repeat ${i % 7}\n` : `line ${i}\n`));
+    const b = [...a];
+    for (let e = 0; e < edits; e++) {
+      const at = random(b.length);
+      const kind = random(3);
+      if (kind === 0) b.splice(at, 1);
+      else if (kind === 1) b.splice(at, 0, `added ${e}\n`);
+      else b[at] = `changed ${e}\n`;
+    }
+    return { a, b };
+  };
+  const lcsLength = (a: string[], b: string[]) => {
+    let previous = new Uint16Array(b.length + 1);
+    let row = new Uint16Array(b.length + 1);
+    for (let i = a.length - 1; i >= 0; i--) {
+      for (let j = b.length - 1; j >= 0; j--) row[j] = a[i] === b[j] ? previous[j + 1] + 1 : Math.max(previous[j], row[j + 1]);
+      [previous, row] = [row, previous];
+    }
+    return previous[0];
+  };
+  const sides = (parts: ReturnType<typeof diffTextLines>) => ({
+    original: parts.flatMap((part) => (part.kind === "same" ? part.lines : part.original)),
+    other: parts.flatMap((part) => (part.kind === "same" ? part.lines : part.other)),
+    changed: parts.reduce((sum, part) => sum + (part.kind === "change" ? part.original.length + part.other.length : 0), 0),
+  });
+
+  it("gives a smallest diff that rebuilds both copies above the table limit", () => {
+    for (const [lines, edits, seed] of [[3500, 40, 11], [4000, 300, 12], [3200, 1, 13]] as const) {
+      const { a, b } = largeCopies(lines, edits, seed);
+      expect((a.length + 1) * (b.length + 1)).toBeGreaterThan(DIFF_TABLE_CELL_LIMIT);
+      const result = sides(diffTextLines(a.join(""), b.join("")));
+      expect(result.original).toEqual(a);
+      expect(result.other).toEqual(b);
+      expect(result.changed).toBe(a.length + b.length - 2 * lcsLength(a, b));
+    }
+  });
+
+  it("reviews a 1 MiB note with an early and a late change without a quadratic table", () => {
+    const a = Array.from({ length: 20_000 }, (_, i) => `${"text ".repeat(9)}${i}\n`);
+    const b = [...a];
+    b[40] = "early change\n";
+    b.splice(19_950, 1, "late change\n", "one more line\n");
+    const started = performance.now();
+    const parts = diffTextLines(a.join(""), b.join(""));
+    // Measured: 5.2 s and about 800 MB of table before; under 50 ms after.
+    expect(performance.now() - started).toBeLessThan(1500);
+    expect(parts.filter((part) => part.kind === "change")).toEqual([
+      { kind: "change", original: [a[40]], other: ["early change\n"] },
+      { kind: "change", original: [a[19_950]], other: ["late change\n", "one more line\n"] },
+    ]);
+    expect(sides(parts).other).toEqual(b);
+  });
+
+  it("shows one whole change when large copies differ in more lines than it follows", () => {
+    const a = Array.from({ length: 3000 }, (_, i) => `left ${i}\n`);
+    const b = Array.from({ length: 3000 }, (_, i) => `right ${i}\n`);
+    expect(a.length + b.length).toBeGreaterThan(DIFF_SCRIPT_CHANGE_LIMIT);
+    const parts = diffTextLines(["head\n", ...a, "tail\n"].join(""), ["head\n", ...b, "tail\n"].join(""));
+    expect(parts).toEqual([
+      { kind: "same", lines: ["head\n"] },
+      { kind: "change", original: a, other: b },
+      { kind: "same", lines: ["tail\n"] },
+    ]);
+  });
+
+  it("keeps line-ending-only matches counted above the table limit", () => {
+    const a = Array.from({ length: 3200 }, (_, i) => `line ${i}\r\n`);
+    const b = a.map((line) => line.replace("\r\n", "\n"));
+    b[1600] = "theirs\n";
+    const parts = diffTextLines(a.join(""), b.join(""));
+    expect(lineEndingOnlyLines(parts)).toBe(3199);
+    expect(parts[1]).toEqual({ kind: "change", original: ["line 1600\r\n"], other: ["theirs\n"] });
   });
 
   it("treats CRLF and LF lines as the same line and counts them", () => {

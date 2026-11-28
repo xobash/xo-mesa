@@ -1,10 +1,10 @@
 import { unzipSync, strFromU8 } from "fflate";
 import { describe, expect, it } from "vitest";
 import { buildOdf, buildOdp, buildOds, buildOdt, contentXml, ODS_BODY } from "./fixtures/odfFixtures";
-import { buildOdfSave, openOdfPackage } from "./odfPackage";
+import { buildOdfSave, openOdfPackage, openSavedOdfPackage } from "./odfPackage";
 import { applyOdtEdit, openOdtDocument, readOdtDocument } from "./odtDocument";
 import { applyOdsEdits, cellAt, cellKey, checkOdsEdits, odsCellRefusal, openOdsWorkbook, readOdsWorkbook } from "./odsSheet";
-import { editContainerText, moveOdpSlide, odpNotes, openOdpDeck, readOdpDeck, renderOdpSlide } from "./odpDeck";
+import { createOdpSlideRenderer, editContainerText, moveOdpSlide, odpNotes, openOdpDeck, readOdpDeck, renderOdpSlide } from "./odpDeck";
 import { encodeOdfText, MAX_PARAGRAPH_CHARS, readParagraph } from "./odfText";
 import { parseXmlTree } from "../pptx/xmlTree";
 import { readZipContainer } from "../ooxml/zipContainer";
@@ -96,6 +96,24 @@ describe("ODF text runs", () => {
   });
 });
 
+describe("ODF save hand-over", () => {
+  it("hands over the package the save check opened, for that byte array only", () => {
+    const pkg = openOdfPackage(buildOdt());
+    const doc = openOdtDocument(pkg);
+    let checked: ReturnType<typeof openOdfPackage> | null = null;
+    const bytes = buildOdfSave(pkg, applyOdtEdit(doc, { kind: "text", paragraph: 0, text: "New title" }), (saved) => { checked = saved; })!;
+    const adopted = openSavedOdfPackage(bytes);
+    expect(adopted).toBe(checked);
+    expect(adopted.original).toBe(bytes);
+    expect(openOdtDocument(adopted).paragraphs[0].plain).toBe("New title");
+    // An equal copy, and the opened file itself, are read from their own bytes.
+    const copy = openSavedOdfPackage(bytes.slice());
+    expect(copy).not.toBe(checked);
+    expect(copy.content.text).toBe(adopted.content.text);
+    expect(openSavedOdfPackage(pkg.original)).not.toBe(pkg);
+  });
+});
+
 describe("ODT", () => {
   const odt = () => openOdtDocument(openOdfPackage(buildOdt()));
 
@@ -135,6 +153,61 @@ describe("ODT", () => {
     const off = applyOdtEdit(reopened, { kind: "format", paragraph: 0, start: 0, end: 6, prop: "bold" });
     const again = readOdtDocument(parseXmlTree(enc.encode(off)), null, false);
     expect(again.blocks[0].kind === "paragraph" && again.blocks[0].runs.every((r) => !r.bold)).toBe(true);
+  });
+
+  it("gives every paragraph its display runs, table cells included", () => {
+    const doc = odt();
+    const cells = doc.blocks.flatMap((b) => (b.kind === "table" ? b.rows.flat(2) : []));
+    expect(cells.map((index) => doc.runs[index].map((r) => r.text).join(""))).toEqual(["A1", "B1"]);
+    for (const block of doc.blocks) if (block.kind === "paragraph") expect(block.runs).toBe(doc.runs[block.index]);
+    expect(doc.runs).toHaveLength(doc.paragraphs.length);
+  });
+
+  it("reads a model from the one before it without changing the result", () => {
+    const comparable = (model: ReturnType<typeof odt>) => ({
+      paragraphs: model.paragraphs.map((p) => ({ items: p.items, plain: p.plain, refusal: p.refusal, start: p.el.start, end: p.el.end })),
+      paragraphStyle: model.paragraphStyle, runs: model.runs, blocks: model.blocks,
+    });
+    const tracked = '<text:tracked-changes><text:changed-region text:id="c1"><text:insertion/></text:changed-region></text:tracked-changes>'
+      + '<text:p>Before</text:p><text:p>A <text:change-start text:change-id="c1"/>new<text:change-end text:change-id="c1"/> word</text:p><text:p>After <text:span text:style-name="T1">it</text:span></text:p>';
+    for (const [body, trackedChanges] of [[undefined, false], [tracked, true]] as const) {
+      const pkg = openOdfPackage(buildOdt(body));
+      const first = readOdtDocument(pkg.content, pkg.styles, trackedChanges);
+      const last = first.paragraphs.length - 1;
+      const edits = [
+        applyOdtEdit(first, { kind: "text", paragraph: 0, text: "A longer first paragraph" }),
+        applyOdtEdit(first, { kind: "text", paragraph: last, text: "" }),
+        applyOdtEdit(first, { kind: "format", paragraph: 0, start: 0, end: 3, prop: "bold" }),
+      ];
+      for (const text of edits) {
+        const doc = parseXmlTree(enc.encode(text));
+        const fresh = readOdtDocument(doc, pkg.styles, trackedChanges);
+        const carried = readOdtDocument(doc, pkg.styles, trackedChanges, first);
+        expect(comparable(carried)).toEqual(comparable(fresh));
+        for (const p of carried.paragraphs) expect(carried.doc.text.slice(p.el.start, p.el.end)).toMatch(/^<text:[ph][ >/]/);
+      }
+      // A text edit keeps the run arrays of the other paragraphs; a new style or another styles part keeps none of them.
+      const typed = parseXmlTree(enc.encode(edits[0]));
+      const afterText = readOdtDocument(typed, pkg.styles, trackedChanges, first);
+      expect(afterText.runs.map((runs, i) => runs === first.runs[i])).toEqual(first.runs.map((_, i) => i !== 0));
+      const afterFormat = readOdtDocument(parseXmlTree(enc.encode(edits[2])), pkg.styles, trackedChanges, first);
+      expect(afterFormat.runs.some((runs, i) => runs === first.runs[i])).toBe(false);
+      expect(readOdtDocument(typed, null, trackedChanges, first).runs.some((runs, i) => runs === first.runs[i])).toBe(false);
+    }
+  });
+
+  it("reads one paragraph, not every paragraph, after an edit in a long document", () => {
+    const body = Array.from({ length: 6000 }, (_, i) => `<text:p>Paragraph ${i} with <text:span text:style-name="T1">styled words</text:span> and a tail of prose.</text:p>`).join("");
+    const pkg = openOdfPackage(buildOdt(body));
+    const first = readOdtDocument(pkg.content, pkg.styles, false);
+    const doc = parseXmlTree(enc.encode(applyOdtEdit(first, { kind: "text", paragraph: 3000, text: "typed" })));
+    const best = (previous: typeof first | null) => {
+      let ms = Infinity;
+      for (let i = 0; i < 5; i++) { const t = performance.now(); readOdtDocument(doc, pkg.styles, false, previous); ms = Math.min(ms, performance.now() - t); }
+      return ms;
+    };
+    // Measured at 10,000 paragraphs: 36 ms without the model before, 12 ms with it.
+    expect(best(first)).toBeLessThan(Math.max(4, best(null) * 0.7));
   });
 
   it("refuses edits inside a tracked-change region", () => {
@@ -235,6 +308,31 @@ describe("ODP", () => {
     const notes = odpNotes(deck, deck.slides[0]);
     const withNotes = editContainerText(deck, notes.body!.index, "Speak clearly");
     expect(buildOdfSave(pkg, withNotes)).not.toBeNull();
+  });
+
+  it("keeps the model of every slide an edit did not change", () => {
+    const pages = Array.from({ length: 6 }, (_, i) => `<draw:page draw:name="page${i}" draw:master-page-name="Default">`
+      + `<draw:frame presentation:class="title" svg:x="2cm" svg:y="1cm" svg:width="24cm" svg:height="3cm"><draw:text-box><text:p>Title ${i}</text:p></draw:text-box></draw:frame>`
+      + `<draw:custom-shape svg:x="6cm" svg:y="5cm" svg:width="4cm" svg:height="3cm"><text:p>Shape</text:p></draw:custom-shape></draw:page>`).join("");
+    const pkg = openOdfPackage(buildOdp(pages));
+    const deck = openOdpDeck(pkg);
+    const render = createOdpSlideRenderer();
+    const before = render(deck);
+    expect(before).toEqual(deck.slides.map((s) => renderOdpSlide(deck, s)));
+
+    const title2 = before[2].shapes[0];
+    const typed = readOdpDeck(parseXmlTree(enc.encode(editContainerText(deck, title2.kind === "shape" ? title2.body!.index : -1, "A much longer title for slide two"))), pkg.styles);
+    const after = render(typed);
+    expect(after).toEqual(typed.slides.map((s) => renderOdpSlide(typed, s)));
+    expect(after.map((model, i) => model === before[i])).toEqual([true, true, false, true, true, true]);
+    // Text boxes after the edited slide still point at their own containers.
+    const title5 = after[5].shapes[0];
+    expect(typed.containers[title5.kind === "shape" ? title5.body!.index : -1]).toBe(typed.slides[5].el.children[0].children[0]);
+
+    // A move changes which containers a slide owns; a new opened package gets its own renderer.
+    const moved = readOdpDeck(parseXmlTree(enc.encode(moveOdpSlide(typed, 0, 5))), pkg.styles);
+    expect(render(moved)).toEqual(moved.slides.map((s) => renderOdpSlide(moved, s)));
+    expect(render(typed)).toEqual(typed.slides.map((s) => renderOdpSlide(typed, s)));
   });
 
   it("reorders slides keeping each page's source intact", () => {

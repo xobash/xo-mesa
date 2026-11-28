@@ -125,3 +125,39 @@ it('stops typing while a save writes, so re-rendering the saved bytes cannot dro
   await act(async () => { release(); });
   await vi.waitFor(() => expect(page().getAttribute('contenteditable')).toBe('true'));
 });
+
+it('shares unchanged paragraphs between undo snapshots and reads a very long paragraph', async () => {
+  const { paragraphsOf, shareParagraphs, sameParagraphs, unitsOf } = await import('./rtfDom');
+  const { parseRtfDocument } = await import('../lib/rtfDocument');
+  const doc = parseRtfDocument(String.raw`{\rtf1\ansi{\fonttbl{\f0 Helvetica;}}\f0\fs24 One\par Two\par Three\par Four}`);
+  const previous = paragraphsOf(doc);
+  expect(previous).toHaveLength(4);
+  const copy = () => paragraphsOf(doc); // an equal snapshot made of new objects, as a read of the page is
+  const char = (ch: string) => ({ kind: 'char' as const, ch, fmt: previous[1].fmt });
+
+  // An edit: only the edited paragraph is a new object.
+  const edited = copy();
+  edited[1] = { ...edited[1], items: [...edited[1].items, char('!')] };
+  const shared = shareParagraphs(previous, edited);
+  expect(shared.map((p, k) => p === previous[k])).toEqual([true, false, true, true]);
+  expect(sameParagraphs(shared, edited)).toBe(true);
+
+  // A split and a join: paragraphs after the change are matched from the end.
+  const split = copy();
+  split.splice(1, 1, { ...split[1], items: split[1].items.slice(0, 1) }, { ...split[1], items: split[1].items.slice(1) });
+  const afterSplit = shareParagraphs(previous, split);
+  expect(afterSplit).toHaveLength(5);
+  expect([afterSplit[0] === previous[0], afterSplit[3] === previous[2], afterSplit[4] === previous[3]]).toEqual([true, true, true]);
+  const joined = copy();
+  joined.splice(1, 2, { ...joined[1], items: [...joined[1].items, ...joined[2].items] });
+  expect(shareParagraphs(previous, joined).map((p) => previous.indexOf(p))).toEqual([0, -1, 3]);
+
+  // A paragraph with a different typing format is not shared, even with equal text.
+  const restyled = copy();
+  restyled[2] = { ...restyled[2], fmt: { ...restyled[2].fmt, b: !restyled[2].fmt.b } };
+  expect(shareParagraphs(previous, restyled)[2]).toBe(restyled[2]);
+
+  // 200,000 characters in one paragraph: more than one call can take as arguments.
+  const long = [{ ...previous[0], items: Array.from({ length: 200_000 }, () => char('x')) }, previous[1]];
+  expect(unitsOf(long)).toHaveLength(200_000 + 1 + previous[1].items.length);
+});
